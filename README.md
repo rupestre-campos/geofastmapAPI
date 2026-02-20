@@ -2,6 +2,16 @@
 
 OGC API - Features–style service built with **FastAPI**, **PostgreSQL**, and **SQLAlchemy**, following an MVC-ish layout:
 
+### Push to GitHub (first time)
+
+1. Create a new **private** repository on GitHub named `geofastAPI` (no README, no .gitignore).
+2. In this project directory run (replace `YOUR_GITHUB_USERNAME` with your GitHub username):
+
+   ```bash
+   git remote add origin https://github.com/YOUR_GITHUB_USERNAME/geofastAPI.git
+   git push -u origin main
+   ```
+
 - `app/models`: ORM models (`Collection`, `Feature`)
 - `app/schemas`: Pydantic schemas (collections, Feature, FeatureCollection)
 - `app/crud`: data access and business logic
