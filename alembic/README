@@ -1,0 +1,7 @@
+This directory contains Alembic migration scripts.
+
+Use typical commands for managing migrations, e.g.:
+
+  alembic revision -m "message"
+  alembic upgrade head
+

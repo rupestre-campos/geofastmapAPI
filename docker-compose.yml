@@ -1,0 +1,34 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: geofast_db
+    environment:
+      POSTGRES_DB: geofast
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5434:5432"
+    volumes:
+      # Persistent DB data: survives `docker compose down`; only removed with `docker compose down -v`
+      - geofast_pgdata:/var/lib/postgresql/data
+
+  api:
+    build: .
+    container_name: geofast_api
+    depends_on:
+      - db
+    environment:
+      # Used by app.core.config.Settings.database_url
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofast
+      ENVIRONMENT: docker
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  geofast_pgdata:  # Persistent DB data across compose down/up
+
