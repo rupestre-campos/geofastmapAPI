@@ -51,3 +51,14 @@ def test_ogc_conformance():
     assert "http://www.opengis.net/spec/ogcapi-features-4/1.0-draft/conf/create-replace-delete" in conforms
     assert "http://www.opengis.net/spec/ogcapi-features-4/1.0-draft/conf/update" in conforms
 
+
+def test_openapi_at_api():
+    """GET /api returns OpenAPI JSON (same as /openapi.json)."""
+    app = create_app()
+    client = TestClient(app)
+    resp = client.get("/api")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "openapi" in data
+    assert "paths" in data
+

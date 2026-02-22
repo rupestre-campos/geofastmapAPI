@@ -1,18 +1,10 @@
 import os
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import sqlalchemy as sa
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
 from app.db import session as db_session
-from app.db.base import Base
-
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5434/geofast",
-)
 
 
 def test_settings_can_read_env(monkeypatch):
@@ -24,30 +16,43 @@ def test_settings_can_read_env(monkeypatch):
     assert "host:9999" in settings.database_url
 
 
+def test_database_sync_url_replaces_asyncpg(monkeypatch):
+    """database_sync_url converts asyncpg to psycopg2 for sync engine."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+    settings = Settings()
+    assert settings.database_sync_url == "postgresql+psycopg2://u:p@localhost/db"
+
+
+def test_database_sync_url_plain_postgresql(monkeypatch):
+    """database_sync_url leaves postgresql:// as-is (psycopg2 default)."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@localhost/db")
+    settings = Settings()
+    assert settings.database_sync_url == "postgresql://u:p@localhost/db"
+
+
+def test_database_sync_url_fallback(monkeypatch):
+    """database_sync_url returns url as-is when no asyncpg and not postgresql://."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql+other://u@p/db")
+    settings = Settings()
+    assert settings.database_sync_url == "postgresql+other://u@p/db"
+
+
 @pytest.mark.asyncio
-async def test_get_db_uses_async_session(monkeypatch):
-    # Model uses PostGIS Geometry + JSONB, so we must use PostgreSQL (SQLite can't create that schema).
-    if "postgresql" not in TEST_DATABASE_URL:
-        pytest.skip("test_get_db_uses_async_session requires PostgreSQL (TEST_DATABASE_URL)")
+async def test_get_db_yields_session():
+    """get_db is an async generator that yields a session. No real DB required."""
+    mock_session = MagicMock()
+    mock_session_context = AsyncMock()
+    mock_session_context.__aenter__.return_value = mock_session
+    mock_session_context.__aexit__.return_value = None
+    mock_session_factory = MagicMock(return_value=mock_session_context)
 
-    test_engine = create_async_engine(TEST_DATABASE_URL, future=True)
-    async with test_engine.begin() as conn:
-        await conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS postgis"))
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-
-    TestSessionLocal = async_sessionmaker(
-        bind=test_engine,
-        expire_on_commit=False,
-        autoflush=False,
-    )
-    monkeypatch.setattr(db_session, "AsyncSessionLocal", TestSessionLocal)
-
-    gen = db_session.get_db()
-    async for session in gen:  # type: ignore[assignment]
-        result = await session.execute(text("SELECT 1"))
-        assert result.scalar_one() == 1
-        break
-
-    await test_engine.dispose()
+    with patch.object(db_session, "AsyncSessionLocal", mock_session_factory):
+        gen = db_session.get_db()
+        sessions = []
+        async for session in gen:
+            sessions.append(session)
+            break
+        assert len(sessions) == 1
+        assert sessions[0] is mock_session
+        mock_session_factory.assert_called_once()
 

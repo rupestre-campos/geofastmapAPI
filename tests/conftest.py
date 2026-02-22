@@ -1,70 +1,78 @@
+"""
+Test fixtures. Database is mocked via in-memory Store; no real Postgres required.
+"""
 import os
+import tempfile
 from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest_asyncio
-import sqlalchemy as sa
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
 
-from app.db.base import Base
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.main import create_app
 
-# PostGIS/JSONB require PostgreSQL. Use same host as docker-compose (port 5434).
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5434/geofast",
-)
+from tests.fake_db import FakeCollectionTilesCrud, FakeCollectionsCrud, FakeFeaturesCrud, Store
 
 
-@pytest_asyncio.fixture()
-async def engine():
-    engine = create_async_engine(TEST_DATABASE_URL, future=True)
-    async with engine.begin() as conn:
-        if "postgresql" in TEST_DATABASE_URL:
-            await conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS postgis"))
-            # Drop and recreate so schema matches current model (Geometry + JSONB).
-            await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-    try:
-        yield engine
-    finally:
-        await engine.dispose()
+@pytest_asyncio.fixture(autouse=True)
+def bulk_queue_memory_and_storage():
+    """Use in-memory queue and temp storage so tests don't need Redis or shared disk."""
+    tmp = tempfile.mkdtemp()
+    prev_queue = os.environ.get("BULK_QUEUE_TYPE")
+    prev_storage = os.environ.get("BULK_STORAGE_PATH")
+    os.environ["BULK_QUEUE_TYPE"] = "memory"
+    os.environ["BULK_STORAGE_PATH"] = tmp
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+    if prev_queue is not None:
+        os.environ["BULK_QUEUE_TYPE"] = prev_queue
+    else:
+        os.environ.pop("BULK_QUEUE_TYPE", None)
+    if prev_storage is not None:
+        os.environ["BULK_STORAGE_PATH"] = prev_storage
+    else:
+        os.environ.pop("BULK_STORAGE_PATH", None)
 
 
-@pytest_asyncio.fixture()
-async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
-    async_session = async_sessionmaker(
-        bind=engine,
-        expire_on_commit=False,
-        autoflush=False,
-    )
-    async with async_session() as session:
-        # Clean tables so each test sees an empty DB (no leftover data from other tests).
-        if "postgresql" in TEST_DATABASE_URL:
-            await session.execute(sa.text("TRUNCATE features, collections RESTART IDENTITY CASCADE"))
-            await session.commit()
-        yield session
+@pytest_asyncio.fixture
+def store() -> Store:
+    """Fresh in-memory store per test. No real DB."""
+    return Store()
 
 
-@pytest_asyncio.fixture()
-async def app(db_session: AsyncSession):
+@pytest_asyncio.fixture
+def app(store: Store):
+    """App with get_db overridden to a mock and CRUD patched to use the in-memory store."""
     app = create_app()
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=MagicMock())
+    mock_db.__aexit__ = AsyncMock(return_value=None)
 
-    async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
-        yield db_session
+    async def override_get_db() -> AsyncGenerator[MagicMock, None]:
+        yield MagicMock()
 
     app.dependency_overrides[get_db] = override_get_db
-    return app
+
+    fake_coll = FakeCollectionsCrud(store)
+    fake_feat = FakeFeaturesCrud(store)
+
+    fake_tiles = FakeCollectionTilesCrud()
+    with (
+        patch("app.api.routes.collections.collections_crud", fake_coll),
+        patch("app.api.routes.items.collections_crud", fake_coll),
+        patch("app.api.routes.items.features_crud", fake_feat),
+        patch("app.api.routes.tiles.collections_crud", fake_coll),
+        patch("app.api.routes.tiles.tiles_crud", fake_tiles),
+    ):
+        yield app
 
 
-@pytest_asyncio.fixture()
+@pytest_asyncio.fixture
 async def client(app):
+    """HTTP client for the test app (with mocked DB)."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
-

@@ -1,3 +1,6 @@
+import asyncio
+from unittest.mock import patch
+
 import pytest
 
 
@@ -114,4 +117,191 @@ async def test_put_replace_and_patch_feature(client):
     # PUT with id mismatch
     resp = await client.put(f"/collections/parcels/items/{feature_id}", json={**replace_payload, "id": "other"})
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_items_pagination_bbox_datetime_sort(client):
+    """OGC query params: limit, offset, bbox, datetime, sortby, sortdesc."""
+    resp = await client.post(
+        "/collections",
+        json={"id": "paginated", "title": "P", "extent": {"bbox": [[0, 0, 10, 10]], "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"}},
+    )
+    assert resp.status_code == 201
+    # Add two features
+    for i in range(2):
+        resp = await client.post(
+            "/collections/paginated/items",
+            json={
+                "collection_id": "paginated",
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [1.0 + i, 2.0]},
+                "properties": {"name": f"F{i}", "order": 10 - i},
+            },
+        )
+        assert resp.status_code == 201
+    # Pagination: limit=1, offset=0
+    resp = await client.get("/collections/paginated/items?limit=1&offset=0")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["numberMatched"] == 2
+    assert data["numberReturned"] == 1
+    assert len(data["features"]) == 1
+    assert "next" in [l["rel"] for l in data["links"]]
+    # sortby property
+    resp = await client.get("/collections/paginated/items?sortby=order&sortdesc=true")
+    assert resp.status_code == 200
+    data2 = resp.json()
+    assert data2["numberMatched"] == 2
+    # bbox filter (point 1,2 and 2,2 are inside 0,0,3,3)
+    resp = await client.get("/collections/paginated/items?bbox=0,0,3,3")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["numberMatched"] >= 1
+    assert data["numberReturned"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_items_attribute_filter_and_selection(client):
+    """OGC attribute filtering (name=value, * partial) and attribute selection (properties=)."""
+    resp = await client.post(
+        "/collections",
+        json={"id": "attrs", "title": "A", "extent": {"bbox": [[0, 0, 10, 10]], "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"}},
+    )
+    assert resp.status_code == 201
+    for name, order in [("Alpha", 1), ("Beta", 2), ("Alpine", 3)]:
+        resp = await client.post(
+            "/collections/attrs/items",
+            json={
+                "collection_id": "attrs",
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [0, 0]},
+                "properties": {"name": name, "order": order},
+            },
+        )
+        assert resp.status_code == 201
+    # Attribute filter: name=Alpha (exact)
+    resp = await client.get("/collections/attrs/items?name=Alpha")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["numberMatched"] == 1
+    assert data["features"][0]["properties"]["name"] == "Alpha"
+    # Partial: *pha (ends with pha) -> Alpha, Alpine
+    resp = await client.get("/collections/attrs/items?name=*pha")
+    assert resp.status_code == 200
+    data2 = resp.json()
+    assert data2["numberMatched"] >= 1
+    assert all("pha" in (f["properties"].get("name") or "") for f in data2["features"])
+    # Attribute selection: only return "order"
+    resp = await client.get("/collections/attrs/items?properties=order")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["numberMatched"] == 3
+    for feat in data["features"]:
+        assert "order" in feat["properties"]
+        assert "name" not in feat["properties"]
+
+
+@pytest.mark.asyncio
+async def test_items_structured_filter_and_fulltext(client):
+    """Structured filter=key:op:value and full-text q= across all properties."""
+    resp = await client.post(
+        "/collections",
+        json={"id": "flt", "title": "F", "extent": {"bbox": [[0, 0, 1, 1]], "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"}},
+    )
+    assert resp.status_code == 201
+    for car_code, count in [("GO-5206206-69BE7A7C3DD542DCAF95F50D32BD9154", 10), ("GO-OTHER", 5), ("GO-5206206-69BE7A7C3DD542DCAF95F50D32BD9154", 20)]:
+        resp = await client.post(
+            "/collections/flt/items",
+            json={
+                "collection_id": "flt",
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [0, 0]},
+                "properties": {"car_code": car_code, "count": count},
+            },
+        )
+        assert resp.status_code == 201
+    # Structured filter: car_code eq value
+    resp = await client.get(
+        "/collections/flt/items",
+        params={"filter": "car_code:eq:GO-5206206-69BE7A7C3DD542DCAF95F50D32BD9154"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["numberMatched"] == 2
+    assert all(f["properties"]["car_code"] == "GO-5206206-69BE7A7C3DD542DCAF95F50D32BD9154" for f in data["features"])
+    # Combined: filter count gte 15
+    resp = await client.get(
+        "/collections/flt/items",
+        params=[
+            ("filter", "car_code:eq:GO-5206206-69BE7A7C3DD542DCAF95F50D32BD9154"),
+            ("filter", "count:gte:15"),
+        ],
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["numberMatched"] == 1
+    assert data["features"][0]["properties"]["count"] == 20
+    # Full-text search: q=OTHER (matches one feature's car_code)
+    resp = await client.get("/collections/flt/items", params={"q": "OTHER"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["numberMatched"] >= 1
+    assert any("OTHER" in str(f["properties"].get("car_code", "")) for f in data["features"])
+
+
+@pytest.mark.asyncio
+async def test_items_invalid_bbox_ignored(client):
+    """Invalid bbox (non-numeric or not 4 parts) is ignored; no filter applied."""
+    resp = await client.post(
+        "/collections",
+        json={"id": "bx", "title": "B", "extent": {"bbox": [[0, 0, 1, 1]], "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"}},
+    )
+    assert resp.status_code == 201
+    resp = await client.get("/collections/bx/items?bbox=1,2,3,not-a-number")
+    assert resp.status_code == 200
+    # bbox filter not applied (invalid), so all features returned if any
+    data = resp.json()
+    assert "features" in data
+
+
+@pytest.mark.asyncio
+async def test_bulk_import_202_and_job_status(client):
+    """Bulk import returns 202 and job status is visible; sync import is mocked."""
+    resp = await client.post(
+        "/collections",
+        json={
+            "id": "bulk_coll",
+            "title": "Bulk",
+            "description": "For bulk test",
+        },
+    )
+    assert resp.status_code == 201
+
+    with patch("app.services.bulk_worker.run_bulk_import_sync", return_value=(2, 0, None)):
+        resp = await client.post(
+            "/collections/bulk_coll/items/bulk",
+            files={"file": ("data.geojson", b'{"type":"FeatureCollection","features":[]}', "application/geo+json")},
+            data={"mode": "append"},
+        )
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert "job_id" in body
+        assert "status_url" in body
+        assert body["status_url"].endswith(f"/jobs/{body['job_id']}")
+
+        # Background task runs after response; keep patch active until it completes
+        await asyncio.sleep(0.2)
+        resp = await client.get(f"/jobs/{body['job_id']}")
+        assert resp.status_code == 200, resp.text
+        job = resp.json()
+        assert job["status"] == "completed"
+        assert job["items_created"] == 2
+        assert job["collection_id"] == "bulk_coll"
+
+
+@pytest.mark.asyncio
+async def test_job_status_404(client):
+    """Unknown job id returns 404."""
+    resp = await client.get("/jobs/00000000-0000-0000-0000-000000000000")
+    assert resp.status_code == 404
 

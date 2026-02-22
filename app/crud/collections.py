@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.collection import Collection
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
+from app.crud import collection_tiles as collection_tiles_crud
 
 
 async def list_collections(db: AsyncSession) -> Sequence[Collection]:
@@ -115,7 +116,6 @@ async def delete_collection(db: AsyncSession, collection_id: str) -> bool:
     collection = await get_collection(db, collection_id)
     if collection is None:
         return False
-
     await db.delete(collection)
     await db.commit()
     return True

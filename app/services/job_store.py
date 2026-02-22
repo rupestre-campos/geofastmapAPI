@@ -1,0 +1,182 @@
+"""Job status for bulk import. In-memory or Redis (when queue is Redis)."""
+
+from __future__ import annotations
+
+import json
+import threading
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+from app.core.config import get_settings
+
+
+@dataclass
+class JobInfo:
+    job_id: str
+    collection_id: str
+    status: str  # pending, running, replacing, completed, failed
+    message: str | None = None
+    items_created: int = 0
+    items_failed: int = 0
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "collection_id": self.collection_id,
+            "status": self.status,
+            "message": self.message,
+            "items_created": self.items_created,
+            "items_failed": self.items_failed,
+            "created_at": self.created_at.isoformat() + "Z",
+            "updated_at": self.updated_at.isoformat() + "Z",
+        }
+
+
+# ----- In-memory backend -----
+_mem_lock = threading.Lock()
+_mem_jobs: dict[str, JobInfo] = {}
+
+
+def _create_job_memory(collection_id: str) -> JobInfo:
+    job_id = str(uuid.uuid4())
+    job = JobInfo(job_id=job_id, collection_id=collection_id, status="pending")
+    with _mem_lock:
+        _mem_jobs[job_id] = job
+    return job
+
+
+def _get_job_memory(job_id: str) -> JobInfo | None:
+    with _mem_lock:
+        return _mem_jobs.get(job_id)
+
+
+def _update_job_memory(
+    job_id: str,
+    *,
+    status: str | None = None,
+    message: str | None = None,
+    items_created: int | None = None,
+    items_failed: int | None = None,
+) -> JobInfo | None:
+    with _mem_lock:
+        job = _mem_jobs.get(job_id)
+        if not job:
+            return None
+        if status is not None:
+            job.status = status
+        if message is not None:
+            job.message = message
+        if items_created is not None:
+            job.items_created = items_created
+        if items_failed is not None:
+            job.items_failed = items_failed
+        job.updated_at = datetime.utcnow()
+        return job
+
+
+# ----- Redis backend -----
+def _redis_key(job_id: str) -> str:
+    return f"geofast:job:{job_id}"
+
+
+def _create_job_redis(collection_id: str) -> JobInfo:
+    import redis
+    settings = get_settings()
+    r = redis.from_url(settings.redis_url, decode_responses=True)
+    job_id = str(uuid.uuid4())
+    job = JobInfo(job_id=job_id, collection_id=collection_id, status="pending")
+    key = _redis_key(job_id)
+    r.hset(key, mapping={
+        "job_id": job_id,
+        "collection_id": collection_id,
+        "status": job.status,
+        "message": job.message or "",
+        "items_created": str(job.items_created),
+        "items_failed": str(job.items_failed),
+        "created_at": job.created_at.isoformat() + "Z",
+        "updated_at": job.updated_at.isoformat() + "Z",
+    })
+    r.expire(key, 86400 * 7)  # 7 days
+    return job
+
+
+def _get_job_redis(job_id: str) -> JobInfo | None:
+    import redis
+    settings = get_settings()
+    r = redis.from_url(settings.redis_url, decode_responses=True)
+    key = _redis_key(job_id)
+    raw = r.hgetall(key)
+    if not raw:
+        return None
+    return JobInfo(
+        job_id=raw["job_id"],
+        collection_id=raw["collection_id"],
+        status=raw["status"],
+        message=raw.get("message") or None,
+        items_created=int(raw.get("items_created", 0)),
+        items_failed=int(raw.get("items_failed", 0)),
+        created_at=datetime.fromisoformat(raw["created_at"].replace("Z", "+00:00")),
+        updated_at=datetime.fromisoformat(raw["updated_at"].replace("Z", "+00:00")),
+    )
+
+
+def _update_job_redis(
+    job_id: str,
+    *,
+    status: str | None = None,
+    message: str | None = None,
+    items_created: int | None = None,
+    items_failed: int | None = None,
+) -> JobInfo | None:
+    import redis
+    settings = get_settings()
+    r = redis.from_url(settings.redis_url, decode_responses=True)
+    key = _redis_key(job_id)
+    if not r.exists(key):
+        return None
+    updates = {}
+    if status is not None:
+        updates["status"] = status
+    if message is not None:
+        updates["message"] = message
+    if items_created is not None:
+        updates["items_created"] = str(items_created)
+    if items_failed is not None:
+        updates["items_failed"] = str(items_failed)
+    if updates:
+        updates["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        r.hset(key, mapping=updates)
+    return _get_job_redis(job_id)
+
+
+# ----- Public API (config-driven) -----
+def create_job(collection_id: str) -> JobInfo:
+    settings = get_settings()
+    if settings.bulk_queue_type == "redis":
+        return _create_job_redis(collection_id)
+    return _create_job_memory(collection_id)
+
+
+def get_job(job_id: str) -> JobInfo | None:
+    settings = get_settings()
+    if settings.bulk_queue_type == "redis":
+        return _get_job_redis(job_id)
+    return _get_job_memory(job_id)
+
+
+def update_job(
+    job_id: str,
+    *,
+    status: str | None = None,
+    message: str | None = None,
+    items_created: int | None = None,
+    items_failed: int | None = None,
+) -> JobInfo | None:
+    settings = get_settings()
+    if settings.bulk_queue_type == "redis":
+        return _update_job_redis(job_id, status=status, message=message, items_created=items_created, items_failed=items_failed)
+    return _update_job_memory(job_id, status=status, message=message, items_created=items_created, items_failed=items_failed)

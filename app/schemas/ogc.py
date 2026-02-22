@@ -36,6 +36,12 @@ CONFORMANCE_CORE = "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/core"
 CONFORMANCE_GEOJSON = "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/geojson"
 CONFORMANCE_OAS30 = "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/oas30"
 
-# OGC API - Features Part 4: Create, Replace, Update and Delete (draft)
+# OGC API - Features Part 4: Create, Replace, Update and Delete (draft 20-002)
+# Part 4 is still in draft; these are the conformance URIs from the draft spec.
+# Declaring them allows clients to discover that create/replace/update/delete are supported.
 CONFORMANCE_P4_CREATE_REPLACE_DELETE = "http://www.opengis.net/spec/ogcapi-features-4/1.0-draft/conf/create-replace-delete"
 CONFORMANCE_P4_UPDATE = "http://www.opengis.net/spec/ogcapi-features-4/1.0-draft/conf/update"
+
+# OGC API - Tiles 1.0 (vector tiles: TileJSON, PMTiles, and dynamic tiles via Martin)
+CONFORMANCE_TILES_CORE = "http://www.opengis.net/spec/ogcapi-tiles-1/1.0/conf/core"
+CONFORMANCE_TILES_GEODATA = "http://www.opengis.net/spec/ogcapi-tiles-1/1.0/conf/geodata"

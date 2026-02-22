@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: postgis/postgis:16-3.4-alpine
@@ -11,24 +9,81 @@ services:
     ports:
       - "5434:5432"
     volumes:
-      # Persistent DB data: survives `docker compose down`; only removed with `docker compose down -v`
       - geofast_pgdata:/var/lib/postgresql/data
+      # Ensure pg_trgm is available for migration 0002 (properties full-text index)
+      - ./docker/init-pg_trgm.sql:/docker-entrypoint-initdb.d/02-pg_trgm.sql
+
+  redis:
+    image: redis:7-alpine
+    container_name: geofast_redis
+    ports:
+      - "6379:6379"
 
   api:
     build: .
     container_name: geofast_api
     depends_on:
       - db
+      - redis
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
     environment:
-      # Used by app.core.config.Settings.database_url
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofast
+      REDIS_URL: redis://redis:6379/0
+      BULK_QUEUE_TYPE: redis
+      BULK_STORAGE_PATH: /data/bulk-uploads
+      TILES_STORAGE_PATH: /data/tiles
       ENVIRONMENT: docker
     ports:
       - "8000:8000"
+    volumes:
+      - .:/app
+      - geofast_bulk_uploads:/data/bulk-uploads
+      - geofast_tiles:/data/tiles
     command: >
       sh -c "alembic upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  worker:
+    build: .
+    container_name: geofast_worker
+    depends_on:
+      - db
+      - redis
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofast
+      REDIS_URL: redis://redis:6379/0
+      BULK_QUEUE_TYPE: redis
+      BULK_STORAGE_PATH: /data/bulk-uploads
+      ENVIRONMENT: docker
+    volumes:
+      - .:/app
+      - geofast_bulk_uploads:/data/bulk-uploads
+    command: python -m app.worker_main
+
+  tile_worker:
+    build: .
+    container_name: geofast_tile_worker
+    depends_on:
+      - db
+      - redis
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofast
+      REDIS_URL: redis://redis:6379/0
+      BULK_QUEUE_TYPE: redis
+      TILES_STORAGE_PATH: /data/tiles
+      ENVIRONMENT: docker
+    volumes:
+      - .:/app
+      - geofast_tiles:/data/tiles
+    command: python -m app.tile_worker_main
 
 volumes:
-  geofast_pgdata:  # Persistent DB data across compose down/up
+  geofast_pgdata:
+  geofast_bulk_uploads:  # Shared between api and worker for bulk uploads
+  geofast_tiles:         # Static PMTiles (api + tile_worker)
 

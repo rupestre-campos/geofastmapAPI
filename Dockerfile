@@ -6,10 +6,19 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 ENV PYTHONPATH=/app
 
-# System deps (optional: build, psycopg extras if needed)
+# System deps: build-essential for pip; libexpat1 for Fiona; git+libsqlite3 for tippecanoe
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libexpat1 \
+    git \
+    libsqlite3-dev \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Tippecanoe for static PMTiles (tile worker)
+RUN git clone https://github.com/felt/tippecanoe.git /tmp/tippecanoe \
+    && cd /tmp/tippecanoe && make -j$(nproc) && make install \
+    && rm -rf /tmp/tippecanoe
 
 # Install Python dependencies
 COPY requirements.txt .
