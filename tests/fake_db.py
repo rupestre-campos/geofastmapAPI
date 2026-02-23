@@ -185,6 +185,17 @@ class FakeCollectionsCrud:
                 result[cid] = ext
         return result
 
+    async def recompute_and_update_collection_extent(
+        self, db: Any, collection_id: str
+    ) -> Extent | None:
+        c = self._store.collections.get(collection_id)
+        if c is None:
+            return None
+        extent = await self.get_collection_bbox_from_features(db, collection_id)
+        c.extent = extent.model_dump() if extent else None
+        c.updated_at = _now()
+        return extent
+
     async def create_collection(self, db: Any, data: CollectionCreate) -> Collection:
         now = _now()
         collection = Collection(

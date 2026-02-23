@@ -82,8 +82,8 @@ async def test_put_replace_and_patch_collection(client):
 
 
 @pytest.mark.asyncio
-async def test_collection_bbox_dynamic_from_features(client):
-    """Collection extent (bbox) is computed from features, not stored value."""
+async def test_collection_extent_stored_and_recompute(client):
+    """Extent is stored as sent; list/get return it. Recompute updates from features."""
     # Create collection without extent
     resp = await client.post(
         "/collections",
@@ -104,16 +104,43 @@ async def test_collection_bbox_dynamic_from_features(client):
     )
     assert resp.status_code == 201
 
-    # GET collection: extent must be computed from feature (point → bbox is [10.5, 20.25, 10.5, 20.25] or similar)
+    # GET collection: extent still stored (None), not computed on the fly
     resp = await client.get("/collections/dynamic")
+    assert resp.status_code == 200
+    assert resp.json().get("extent") is None
+
+    # Recompute extent from features → updates stored extent
+    resp = await client.post("/collections/dynamic/extent/recompute")
     assert resp.status_code == 200
     data = resp.json()
     assert data["extent"] is not None
     assert data["extent"]["bbox"] == [[10.5, 20.25, 10.5, 20.25]]
 
-    # List collections: same collection must show dynamic extent
+    # GET and list now return the stored (recomputed) extent
+    resp = await client.get("/collections/dynamic")
+    assert resp.status_code == 200
+    assert resp.json()["extent"]["bbox"] == [[10.5, 20.25, 10.5, 20.25]]
     resp = await client.get("/collections")
     assert resp.status_code == 200
     coll = next(c for c in resp.json()["collections"] if c["id"] == "dynamic")
     assert coll["extent"]["bbox"] == [[10.5, 20.25, 10.5, 20.25]]
+
+
+@pytest.mark.asyncio
+async def test_collection_extent_recompute_404_no_collection(client):
+    """Recompute extent returns 404 when collection does not exist."""
+    resp = await client.post("/collections/nonexistent/extent/recompute")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_collection_extent_recompute_empty_returns_null(client):
+    """Recompute extent for collection with no features returns extent null."""
+    await client.post(
+        "/collections",
+        json={"id": "empty", "title": "Empty", "description": ""},
+    )
+    resp = await client.post("/collections/empty/extent/recompute")
+    assert resp.status_code == 200
+    assert resp.json()["extent"] is None
 

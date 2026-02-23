@@ -49,6 +49,23 @@ async def get_collection_bbox_from_features(
     return _row_to_extent(row)
 
 
+async def recompute_and_update_collection_extent(
+    db: AsyncSession, collection_id: str
+) -> Extent | None:
+    """
+    Compute extent from feature geometries, update the collection's stored extent, and return it.
+    Returns None if the collection has no features with geometry (stored extent is set to None).
+    """
+    collection = await get_collection(db, collection_id)
+    if collection is None:
+        return None
+    extent = await get_collection_bbox_from_features(db, collection_id)
+    collection.extent = extent.model_dump() if extent else None
+    await db.commit()
+    await db.refresh(collection)
+    return extent
+
+
 async def get_collections_bboxes(db: AsyncSession) -> dict[str, Extent]:
     result = await db.execute(
         text("""

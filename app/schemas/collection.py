@@ -17,6 +17,15 @@ class Extent(BaseModel):
     )
 
 
+class ExtentRecomputeResponse(BaseModel):
+    """Response for POST /collections/{id}/extent/recompute."""
+
+    extent: Extent | None = Field(
+        default=None,
+        description="Computed extent from feature geometries, or null if no features with geometry.",
+    )
+
+
 class CollectionBase(BaseModel):
     id: str = Field(..., description="Identifier of the collection.")
     title: str | None = None

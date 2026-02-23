@@ -13,6 +13,7 @@ from app.schemas.collection import (
     CollectionRead,
     CollectionReplace,
     CollectionsList,
+    ExtentRecomputeResponse,
 )
 from app.schemas.ogc import Link
 
@@ -41,13 +42,11 @@ async def list_collections(
 ) -> CollectionsList:
     base = _base_url(request)
     items_list: Sequence = await collections_crud.list_collections(db)
-    bboxes = await collections_crud.get_collections_bboxes(db)
     collections_out = []
     for item in items_list:
         out = CollectionRead.model_validate(item)
-        extent = bboxes.get(item.id) or out.extent
         collections_out.append(
-            out.model_copy(update={"links": _collection_links(base, item.id), "extent": extent}),
+            out.model_copy(update={"links": _collection_links(base, item.id)}),
         )
     return CollectionsList(
         collections=collections_out,
@@ -75,9 +74,7 @@ async def get_collection(
         )
     base = _base_url(request)
     out = CollectionRead.model_validate(collection)
-    computed = await collections_crud.get_collection_bbox_from_features(db, collection_id)
-    extent = computed if computed is not None else out.extent
-    return out.model_copy(update={"links": _collection_links(base, collection_id), "extent": extent})
+    return out.model_copy(update={"links": _collection_links(base, collection_id)})
 
 
 @router.put(
@@ -99,9 +96,7 @@ async def replace_collection(
         )
     base = _base_url(request)
     out = CollectionRead.model_validate(collection)
-    computed = await collections_crud.get_collection_bbox_from_features(db, collection_id)
-    extent = computed if computed is not None else out.extent
-    return out.model_copy(update={"links": _collection_links(base, collection_id), "extent": extent})
+    return out.model_copy(update={"links": _collection_links(base, collection_id)})
 
 
 @router.patch(
@@ -123,9 +118,7 @@ async def patch_collection(
         )
     base = _base_url(request)
     out = CollectionRead.model_validate(collection)
-    computed = await collections_crud.get_collection_bbox_from_features(db, collection_id)
-    extent = computed if computed is not None else out.extent
-    return out.model_copy(update={"links": _collection_links(base, collection_id), "extent": extent})
+    return out.model_copy(update={"links": _collection_links(base, collection_id)})
 
 
 @router.post(
@@ -146,6 +139,26 @@ async def create_collection(
         )
     collection = await collections_crud.create_collection(db, payload)
     return CollectionRead.model_validate(collection)
+
+
+@router.post(
+    "/{collection_id}/extent/recompute",
+    response_model=ExtentRecomputeResponse,
+    summary="Recompute extent from features",
+    description="Compute bounding box from feature geometries, update the collection's stored extent, and return it. Use after bulk import or when extent is stale. Returns extent null if the collection has no features with geometry.",
+)
+async def recompute_collection_extent(
+    collection_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ExtentRecomputeResponse:
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found",
+        )
+    extent = await collections_crud.recompute_and_update_collection_extent(db, collection_id)
+    return ExtentRecomputeResponse(extent=extent)
 
 
 @router.delete(
