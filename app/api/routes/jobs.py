@@ -9,8 +9,8 @@ router = APIRouter()
 
 @router.get(
     "/{job_id}",
-    summary="Bulk import job status",
-    description="Returns status of a bulk import job (pending, running, completed, failed).",
+    summary="Job status",
+    description="Returns status of a job: bulk import or static tile build (pending, running, completed, failed, cancelled).",
 )
 async def get_job_status(job_id: str):
     job = get_job(job_id)

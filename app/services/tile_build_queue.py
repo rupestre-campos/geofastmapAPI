@@ -1,40 +1,20 @@
-"""Queue for PMTiles build jobs (Redis list) and job status tracking."""
+"""Queue for PMTiles build jobs (Redis list). Job status is stored in job_store (GET /jobs/{job_id})."""
 
 from __future__ import annotations
 
 import json
-import uuid
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.core.config import get_settings
 
+if TYPE_CHECKING:
+    from app.services.job_store import JobInfo
+
 TILE_BUILD_QUEUE_KEY = "geofast:tile_build_queue"
-TILE_BUILD_JOB_PREFIX = "geofast:tile_build_job:"
 TILE_BUILD_LATEST_PREFIX = "geofast:tile_build_latest:"
 TILE_BUILD_PENDING_PREFIX = "geofast:tile_build_pending:"
 TILE_BUILD_JOB_TTL = 86400 * 7  # 7 days
-
-
-@dataclass
-class TileBuildJobInfo:
-    job_id: str
-    collection_id: str
-    status: str  # queued, building, completed, failed
-    message: str | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "job_id": self.job_id,
-            "collection_id": self.collection_id,
-            "status": self.status,
-            "message": self.message,
-            "created_at": self.created_at.isoformat() + "Z",
-            "updated_at": self.updated_at.isoformat() + "Z",
-        }
 
 
 @dataclass
@@ -56,10 +36,6 @@ def _redis():
     return redis.from_url(get_settings().redis_url, decode_responses=True)
 
 
-def _job_key(job_id: str) -> str:
-    return f"{TILE_BUILD_JOB_PREFIX}{job_id}"
-
-
 def _latest_key(collection_id: str) -> str:
     return f"{TILE_BUILD_LATEST_PREFIX}{collection_id}"
 
@@ -68,41 +44,22 @@ def _pending_key(collection_id: str) -> str:
     return f"{TILE_BUILD_PENDING_PREFIX}{collection_id}"
 
 
-def create_tile_build_job(collection_id: str) -> TileBuildJobInfo:
-    """Create a tile build job (Redis only). Returns job info; caller must enqueue."""
+def create_tile_build_job(collection_id: str) -> "JobInfo":
+    """Create a tile build job in job_store and set as latest for this collection. Caller must enqueue."""
+    from app.services.job_store import create_job
+    job = create_job(collection_id)
     r = _redis()
-    job_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat() + "Z"
-    key = _job_key(job_id)
-    r.hset(key, mapping={
-        "job_id": job_id,
-        "collection_id": collection_id,
-        "status": "queued",
-        "message": "",
-        "created_at": now,
-        "updated_at": now,
-    })
-    r.expire(key, TILE_BUILD_JOB_TTL)
-    r.set(_latest_key(collection_id), job_id, ex=TILE_BUILD_JOB_TTL)
-    return TileBuildJobInfo(
-        job_id=job_id,
-        collection_id=collection_id,
-        status="queued",
-        message=None,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-    )
+    r.set(_latest_key(collection_id), job.job_id, ex=TILE_BUILD_JOB_TTL)
+    return job
 
 
-def get_tile_build_job(job_id: str) -> TileBuildJobInfo | None:
-    r = _redis()
-    raw = r.hgetall(_job_key(job_id))
-    if not raw:
-        return None
-    return _job_from_raw(raw)
+def get_tile_build_job(job_id: str) -> "JobInfo | None":
+    """Return job from job_store (tile build and bulk import share the same store)."""
+    from app.services.job_store import get_job
+    return get_job(job_id)
 
 
-def get_latest_tile_build_job(collection_id: str) -> TileBuildJobInfo | None:
+def get_latest_tile_build_job(collection_id: str) -> "JobInfo | None":
     r = _redis()
     job_id = r.get(_latest_key(collection_id))
     if not job_id:
@@ -115,32 +72,14 @@ def update_tile_build_job(
     *,
     status: str | None = None,
     message: str | None = None,
-) -> TileBuildJobInfo | None:
-    r = _redis()
-    key = _job_key(job_id)
-    if not r.exists(key):
-        return None
-    updates = {}
-    if status is not None:
-        updates["status"] = status
-    if message is not None:
-        updates["message"] = message or ""
-    if updates:
-        updates["updated_at"] = datetime.utcnow().isoformat() + "Z"
-        r.hset(key, mapping=updates)
-    raw = r.hgetall(key)
-    return _job_from_raw(raw) if raw else None
-
-
-def _job_from_raw(raw: dict) -> TileBuildJobInfo:
-    return TileBuildJobInfo(
-        job_id=raw["job_id"],
-        collection_id=raw["collection_id"],
-        status=raw["status"],
-        message=raw.get("message") or None,
-        created_at=datetime.fromisoformat(raw["created_at"].replace("Z", "+00:00")),
-        updated_at=datetime.fromisoformat(raw["updated_at"].replace("Z", "+00:00")),
-    )
+) -> "JobInfo | None":
+    """Update tile build job in job_store. status: building -> running, queued -> pending, completed/failed as-is."""
+    from app.services.job_store import update_job
+    if status == "building":
+        status = "running"
+    elif status == "queued":
+        status = "pending"
+    return update_job(job_id, status=status, message=message)
 
 
 def get_pending_job_id(collection_id: str) -> str | None:

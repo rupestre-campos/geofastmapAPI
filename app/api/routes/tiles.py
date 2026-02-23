@@ -38,6 +38,7 @@ def _base_url(request: Request) -> str:
     description="Enqueue build of PMTiles for this collection. Returns job_id to poll status. One build per collection at a time; duplicate requests return existing job.",
 )
 async def build_tiles(
+    request: Request,
     collection_id: str,
     db: AsyncSession = Depends(get_db),
 ):
@@ -50,13 +51,14 @@ async def build_tiles(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Tile build requires Redis (BULK_QUEUE_TYPE=redis)",
         )
+    base = _base_url(request)
     # Dedup: if a build is already queued or building, return that job_id (unless stuck)
     pending_job_id = get_pending_job_id(collection_id)
     if pending_job_id:
         from datetime import datetime, timezone
         job = get_latest_tile_build_job(collection_id)
-        # If job stuck in "queued" or "building" for >30 min, allow re-queue (worker may have died)
-        if job and job.updated_at and job.status in ("queued", "building"):
+        # If job stuck in "pending" or "running" for >30 min, allow re-queue (worker may have died)
+        if job and job.updated_at and job.status in ("pending", "running"):
             age_seconds = (datetime.now(timezone.utc) - job.updated_at).total_seconds()
             if age_seconds > 30 * 60:  # 30 minutes
                 clear_pending(collection_id)
@@ -67,6 +69,7 @@ async def build_tiles(
                         "message": "Tile build already queued or in progress.",
                         "collection_id": collection_id,
                         "job_id": pending_job_id,
+                        "status_url": f"{base}/jobs/{pending_job_id}",
                     },
                 )
         else:
@@ -76,6 +79,7 @@ async def build_tiles(
                     "message": "Tile build already queued or in progress.",
                     "collection_id": collection_id,
                     "job_id": pending_job_id,
+                    "status_url": f"{base}/jobs/{pending_job_id}",
                 },
             )
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
@@ -105,6 +109,7 @@ async def build_tiles(
                 "message": "Tile build queued.",
                 "collection_id": collection_id,
                 "job_id": existing or job.job_id,
+                "status_url": f"{base}/jobs/{existing or job.job_id}",
             },
         )
     return JSONResponse(
@@ -113,6 +118,7 @@ async def build_tiles(
             "message": "Tile build queued.",
             "collection_id": collection_id,
             "job_id": job.job_id,
+            "status_url": f"{base}/jobs/{job.job_id}",
         },
     )
 
@@ -138,7 +144,7 @@ async def cancel_tile_build(
         )
     job = get_latest_tile_build_job(collection_id)
     clear_pending(collection_id)
-    if job and job.status in ("queued", "building"):
+    if job and job.status in ("pending", "running"):
         update_tile_build_job(job.job_id, status="cancelled", message="Cancelled by user")
     return JSONResponse(
         status_code=status.HTTP_200_OK,
@@ -152,7 +158,7 @@ async def cancel_tile_build(
 @router.get(
     "/{collection_id}/tiles/build/status",
     summary="Tile build job status",
-    description="Returns the latest tile build job for this collection (queued, building, completed, failed, cancelled).",
+    description="Returns the latest tile build job for this collection. Same job is reported at GET /jobs/{job_id}.",
 )
 async def get_tile_build_status(
     collection_id: str,
