@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import os
 import re
 from pathlib import Path
 
@@ -155,28 +156,29 @@ async def cancel_tile_build(
     )
 
 
-@router.get(
-    "/{collection_id}/tiles/build/status",
-    summary="Tile build job status",
-    description="Returns the latest tile build job for this collection. Same job is reported at GET /jobs/{job_id}.",
+@router.delete(
+    "/{collection_id}/tiles/static",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete static PMTiles",
+    description="Remove the built PMTiles file from disk (if it exists) and clear the static tiles record. TileJSON will then only show dynamic tiles until you run POST .../tiles/build again.",
 )
-async def get_tile_build_status(
+async def delete_tiles_static(
     collection_id: str,
     db: AsyncSession = Depends(get_db),
-):
+) -> Response:
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    settings = get_settings()
-    if settings.bulk_queue_type != "redis":
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Tile build status requires Redis (BULK_QUEUE_TYPE=redis)",
-        )
-    job = get_latest_tile_build_job(collection_id)
-    if not job:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No tile build job found for this collection.")
-    return JSONResponse(content=job.to_dict())
+    rec = await tiles_crud.get_collection_tiles(db, collection_id)
+    if rec and rec.pmtiles_path:
+        path = Path(rec.pmtiles_path)
+        if path.is_file():
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    await tiles_crud.clear_static_tiles(db, collection_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(

@@ -35,6 +35,20 @@ async def get_max_feature_updated_at(db: AsyncSession, collection_id: str) -> da
     return row.m if row and row.m else None
 
 
+async def clear_static_tiles(db: AsyncSession, collection_id: str) -> bool:
+    """Clear static tiles record (set pmtiles_path, built_at, features_updated_at to NULL). Returns True if a row was updated."""
+    result = await db.execute(
+        text("""
+            UPDATE collection_tiles
+            SET pmtiles_path = NULL, built_at = NULL, features_updated_at = NULL
+            WHERE collection_id = :cid
+        """),
+        {"cid": collection_id},
+    )
+    await db.commit()
+    return result.rowcount > 0
+
+
 async def upsert_collection_tiles(
     db: AsyncSession,
     collection_id: str,

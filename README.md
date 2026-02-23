@@ -84,26 +84,13 @@ You’ll see messages like:
 
 **2. Job status via API**
 
-For a given collection, the latest build job (queued / building / completed / failed) and any error message:
+The build response includes a `status_url` (e.g. `http://localhost:8000/jobs/<job_id>`). Poll that URL for tile build status (pending, running, completed, failed, cancelled):
 
 ```bash
-curl -s http://localhost:8000/collections/<collection_id>/tiles/build/status | jq
+curl -s http://localhost:8000/jobs/<job_id> | jq
 ```
 
-Example when a build failed:
-
-```json
-{
-  "job_id": "...",
-  "collection_id": "embargos_ibama",
-  "status": "failed",
-  "message": "tippecanoe failed: ...",
-  "created_at": "...",
-  "updated_at": "..."
-}
-```
-
-If a build stops in the middle (e.g. worker OOM or timeout), check the worker logs above; the job may stay in `building` until the process exits, then you can trigger a new build with `POST .../tiles/build` again.
+If a build stops in the middle (e.g. worker OOM or timeout), check the worker logs; then you can trigger a new build with `POST .../tiles/build` again.
 
 ### Running the API locally (without Docker)
 

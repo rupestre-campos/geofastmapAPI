@@ -46,12 +46,6 @@ async def test_tiles_cancel_503_when_memory_queue(client):
 
 
 @pytest.mark.asyncio
-async def test_tiles_build_status_404_for_missing_collection(client):
-    resp = await client.get("/collections/nonexistent/tiles/build/status")
-    assert resp.status_code == 404, resp.text
-
-
-@pytest.mark.asyncio
 async def test_tiles_dynamic_404_for_missing_collection(client):
     resp = await client.get("/collections/nonexistent/tiles/dynamic/0/0/0.pbf")
     assert resp.status_code == 404, resp.text
