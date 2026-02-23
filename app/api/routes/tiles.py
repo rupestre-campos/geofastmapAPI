@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -203,8 +203,6 @@ async def get_tiles_tilejson(
         "tiles": tile_urls,
         "vector_layers": [{"id": collection_id, "description": "", "minzoom": 0, "maxzoom": 14}],
     }
-    if has_static:
-        tilejson["pmtiles_url"] = f"{base}/collections/{collection_id}/tiles/pmtiles"
     return JSONResponse(content=tilejson)
 
 
@@ -384,22 +382,3 @@ async def get_tiles_static_zxy(
     )
 
 
-@router.get(
-    "/{collection_id}/tiles/pmtiles",
-    summary="Serve static PMTiles file",
-    description="Returns the built PMTiles file for this collection, or 404 if not built.",
-)
-async def get_tiles_pmtiles(
-    collection_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    collection = await collections_crud.get_collection(db, collection_id)
-    if not collection:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    rec = await tiles_crud.get_collection_tiles(db, collection_id)
-    if not rec or not rec.pmtiles_path:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tiles not built yet. POST to /tiles/build first.")
-    path = Path(rec.pmtiles_path)
-    if not path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tiles file missing.")
-    return FileResponse(path, media_type="application/vnd.pmtiles", filename=f"{collection_id}.pmtiles")

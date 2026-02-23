@@ -110,9 +110,3 @@ async def test_tiles_static_404_when_no_pmtiles(client):
     assert resp.status_code == 404, resp.text
 
 
-@pytest.mark.asyncio
-async def test_tiles_pmtiles_404_when_no_file(client):
-    """GET .../tiles/pmtiles returns 404 when no PMTiles file."""
-    await client.post("/collections", json={"id": "c1", "title": "C1", "description": ""})
-    resp = await client.get("/collections/c1/tiles/pmtiles")
-    assert resp.status_code == 404, resp.text
