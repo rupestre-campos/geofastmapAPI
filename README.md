@@ -62,6 +62,49 @@ To stop:
 docker compose down
 ```
 
+### Checking tile build logs
+
+When you request a static PMTiles build (`POST /collections/{id}/tiles/build`), a **tile worker** processes the job. To see what it’s doing or why it stopped:
+
+**1. Tile worker container logs (Docker)**
+
+```bash
+# Last 200 lines
+docker compose logs tile_worker --tail=200
+
+# Follow live
+docker compose logs -f tile_worker
+```
+
+You’ll see messages like:
+- `Tile worker started. Waiting for build jobs...`
+- `Building tiles for <collection_id> (job_id=...)...`
+- `[tile_builder] Running tippecanoe for <collection_id> (N features)...`
+- `Build completed for <collection_id>` or `Build FAILED for <collection_id>: <error>`
+
+**2. Job status via API**
+
+For a given collection, the latest build job (queued / building / completed / failed) and any error message:
+
+```bash
+curl -s http://localhost:8000/collections/<collection_id>/tiles/build/status | jq
+```
+
+Example when a build failed:
+
+```json
+{
+  "job_id": "...",
+  "collection_id": "embargos_ibama",
+  "status": "failed",
+  "message": "tippecanoe failed: ...",
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+If a build stops in the middle (e.g. worker OOM or timeout), check the worker logs above; the job may stay in `building` until the process exits, then you can trigger a new build with `POST .../tiles/build` again.
+
 ### Running the API locally (without Docker)
 
 1. Ensure you have a PostgreSQL database and set `DATABASE_URL` (or adjust `database_url` in `app/core/config.py`).
@@ -74,7 +117,7 @@ alembic upgrade head
 3. Start the dev server:
 
 ```bash
-uvicorn app.main:app --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Then open `http://localhost:8000/docs`.

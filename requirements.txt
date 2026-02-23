@@ -13,3 +13,5 @@ fiona==1.10.0
 psycopg2-binary==2.9.10
 redis>=5.0.0
 httpx>=0.27.0
+pmtiles>=3.0.0
+uuid6>=2025.0.0

@@ -44,6 +44,7 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
     except Exception as e:
         update_job(payload.job_id, status="failed", message=str(e))
     finally:
+        # Always remove uploaded file after processing (success or failure)
         try:
             storage.delete(payload.storage_key)
         except Exception:

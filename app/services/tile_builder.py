@@ -1,22 +1,51 @@
-"""Build PMTiles for a collection: export GeoJSONSeq, run tippecanoe, save and register."""
+"""Build PMTiles for a collection: export GeoJSONSeq (streaming), run tippecanoe, save and register."""
 from __future__ import annotations
 
 import json
 import os
 import subprocess
+import sys
 import tempfile
-from pathlib import Path
+import threading
+from queue import Queue
 
 from app.core.config import get_settings
 from app.utils.geo import geometry_to_geojson
 
+# Chunk size for DB streaming and queue between producer/consumer
+_EXPORT_CHUNK_SIZE = 10_000
+_QUEUE_MAX_SIZE = 2  # overlap DB read with file write without buffering too much
+
+
+def _consumer(queue: Queue, file_handle) -> None:
+    """Consume (id, geometry, properties) chunks; convert to GeoJSONSeq lines; write to file."""
+    while True:
+        chunk = queue.get()
+        if chunk is None:
+            queue.task_done()
+            break
+        for fid, geom, props in chunk:
+            geojson_geom = geometry_to_geojson(geom)
+            props_dict = dict(props) if props else {}
+            if "id" not in props_dict:
+                props_dict["id"] = fid
+            feat = {
+                "type": "Feature",
+                "id": fid,
+                "geometry": geojson_geom,
+                "properties": props_dict,
+            }
+            file_handle.write(json.dumps(feat, ensure_ascii=False) + "\n")
+        queue.task_done()
+
 
 def build_pmtiles_sync(collection_id: str) -> str | None:
     """
-    Export collection to GeoJSONSeq, run tippecanoe, save to tiles_storage_path.
+    Export collection to GeoJSONSeq (streaming, producer-consumer), run tippecanoe, save and register.
     Returns error message or None on success.
     Uses sync DB; run in thread/worker process.
     """
+    from datetime import datetime, timezone
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import Session, sessionmaker
 
@@ -31,28 +60,23 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
     maxz = settings.tippecanoe_maxzoom
 
     with SessionLocal() as session:
-        # Get max updated_at for this collection
         row = session.execute(
             text("SELECT MAX(updated_at) AS m FROM features WHERE collection_id = :cid"),
             {"cid": collection_id},
         ).first()
         max_updated = row.m if row and row.m else None
-
-        # Stream features as GeoJSONSeq
-        result = session.execute(
-            text("SELECT id, geometry, properties FROM features WHERE collection_id = :cid"),
+        count_row = session.execute(
+            text("SELECT COUNT(*) AS n FROM features WHERE collection_id = :cid"),
             {"cid": collection_id},
-        )
-        rows = result.fetchall()
+        ).first()
+        feature_count = count_row.n if count_row and count_row.n else 0
 
-    if not rows:
-        # No features: remove old pmtiles if any, clear record
+    if feature_count == 0:
         try:
             if os.path.exists(out_path):
                 os.unlink(out_path)
         except OSError:
             pass
-        from datetime import datetime, timezone
         with SessionLocal() as s:
             s.execute(
                 text("""
@@ -67,31 +91,46 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
         engine.dispose()
         return None
 
+    def row_data(r):
+        return (r.id, r.geometry, dict(r.properties) if r.properties else None)
+
     fd, geojsonl_path = tempfile.mkstemp(suffix=".geojsonl")
     try:
         with os.fdopen(fd, "w") as f:
-            for row in rows:
-                geom = geometry_to_geojson(row.geometry)
-                feat = {
-                    "type": "Feature",
-                    "id": row.id,
-                    "geometry": geom,
-                    "properties": dict(row.properties) if row.properties else {},
-                }
-                f.write(json.dumps(feat, ensure_ascii=False) + "\n")
+            queue: Queue = Queue(maxsize=_QUEUE_MAX_SIZE)
+            consumer_thread = threading.Thread(target=_consumer, args=(queue, f))
+            consumer_thread.start()
 
+            total_features = 0
+            with SessionLocal() as session:
+                result = session.execute(
+                    text("SELECT id, geometry, properties FROM features WHERE collection_id = :cid"),
+                    {"cid": collection_id},
+                    execution_options={"stream_results": True},
+                )
+                for partition in result.partitions(_EXPORT_CHUNK_SIZE):
+                    chunk = [row_data(r) for r in partition]
+                    queue.put(chunk)
+                    total_features += len(chunk)
+            queue.put(None)
+            queue.join()
+            consumer_thread.join()
+
+        # -L requires "layername:file" (single argument per layer)
         cmd = [
             "tippecanoe",
             "-o", out_path,
-            "-L", collection_id,
+            "-L", f"{collection_id}:{geojsonl_path}",
             "-z", str(maxz),
             "-Z", str(minz),
             "--force",
-            geojsonl_path,
         ]
+        print(f"[tile_builder] Running tippecanoe for {collection_id} ({total_features} features)...", file=sys.stderr, flush=True)
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         if proc.returncode != 0:
-            return proc.stderr or proc.stdout or "tippecanoe failed"
+            err = proc.stderr or proc.stdout or "tippecanoe failed"
+            print(f"[tile_builder] tippecanoe failed: {err[:500]}", file=sys.stderr, flush=True)
+            return err
     finally:
         try:
             os.unlink(geojsonl_path)
@@ -99,7 +138,6 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
             pass
 
     # Delete old file if it was at a different path; then upsert new path
-    from datetime import datetime, timezone
     with SessionLocal() as session:
         old = session.execute(
             text("SELECT pmtiles_path FROM collection_tiles WHERE collection_id = :cid"),

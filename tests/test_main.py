@@ -62,3 +62,12 @@ def test_openapi_at_api():
     assert "openapi" in data
     assert "paths" in data
 
+
+def test_health():
+    """GET /health returns 200 and status ok (used by Docker healthcheck)."""
+    app = create_app()
+    client = TestClient(app)
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+

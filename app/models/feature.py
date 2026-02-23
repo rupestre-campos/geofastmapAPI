@@ -1,29 +1,31 @@
 from datetime import datetime
-from uuid import uuid4
 
 from sqlalchemy import Column, DateTime, ForeignKey, String, Text
 from geoalchemy2 import Geometry
 from sqlalchemy.dialects.postgresql import JSONB
+from uuid6 import uuid7
 
 from app.db.base import Base
 
 
 class Feature(Base):
-    """OGC API - Features 'item' (feature) entity."""
+    """OGC API - Features 'item' (feature) entity. Table is partitioned by collection_id (LIST)."""
 
     __tablename__ = "features"
 
+    # UUID v7: time-sortable (timestamp prefix), good for indexing and ordering by creation
     id = Column(
         String,
         primary_key=True,
-        default=lambda: str(uuid4()),
+        default=lambda: str(uuid7()),
     )
 
+    # Partition key; must be part of PK for PostgreSQL partitioned tables
     collection_id = Column(
         String,
         ForeignKey("collections.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
+        primary_key=True,
     )
 
     # Spatial column (PostGIS)

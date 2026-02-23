@@ -32,15 +32,17 @@ def main() -> None:
             print(f"Invalid payload: {e}", file=sys.stderr)
             continue
         cid = payload.collection_id
-        update_tile_build_job(payload.job_id, status="building")
+        job_id = payload.job_id
+        print(f"Building tiles for {cid} (job_id={job_id})...", flush=True)
+        update_tile_build_job(job_id, status="building")
         err = build_pmtiles_sync(cid)
         clear_pending(cid)
         if err:
-            update_tile_build_job(payload.job_id, status="failed", message=err)
-            print(f"Build failed for {cid}: {err}", file=sys.stderr)
+            update_tile_build_job(job_id, status="failed", message=err)
+            print(f"Build FAILED for {cid}: {err}", file=sys.stderr, flush=True)
         else:
-            update_tile_build_job(payload.job_id, status="completed")
-            print(f"Build completed for {cid}", flush=True)
+            update_tile_build_job(job_id, status="completed")
+            print(f"Build completed for {cid} (job_id={job_id})", flush=True)
 
 
 if __name__ == "__main__":

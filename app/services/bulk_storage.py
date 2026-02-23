@@ -49,10 +49,12 @@ class FilesystemStorage(BulkStorageBackend):
         return self._path(key)
 
     def delete(self, key: str) -> None:
+        """Remove uploaded file after processing. Idempotent; ignores missing or permission errors."""
         path = self._path(key)
         try:
-            os.unlink(path)
-        except FileNotFoundError:
+            if os.path.isfile(path):
+                os.unlink(path)
+        except OSError:
             pass
 
 

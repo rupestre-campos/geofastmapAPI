@@ -1,12 +1,17 @@
+"""CRUD for collections."""
+from __future__ import annotations
+
+import os
 from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.crud import collection_tiles as tiles_crud
+from app.db.features_partitions import ensure_features_partition
 from app.models.collection import Collection
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
-from app.crud import collection_tiles as collection_tiles_crud
 
 
 async def list_collections(db: AsyncSession) -> Sequence[Collection]:
@@ -31,7 +36,6 @@ def _row_to_extent(row: Any) -> Extent:
 async def get_collection_bbox_from_features(
     db: AsyncSession, collection_id: str
 ) -> Extent | None:
-    """Compute extent (bbox) from feature geometries in the collection. Returns None if no geometries."""
     result = await db.execute(
         text("""
             SELECT ST_XMin(e) AS minx, ST_YMin(e) AS miny, ST_XMax(e) AS maxx, ST_YMax(e) AS maxy
@@ -46,7 +50,6 @@ async def get_collection_bbox_from_features(
 
 
 async def get_collections_bboxes(db: AsyncSession) -> dict[str, Extent]:
-    """Compute extent (bbox) from features for every collection that has geometries. One query for list endpoint."""
     result = await db.execute(
         text("""
             SELECT collection_id,
@@ -75,13 +78,13 @@ async def create_collection(
     db.add(collection)
     await db.commit()
     await db.refresh(collection)
+    await ensure_features_partition(db, data.id)
     return collection
 
 
 async def replace_collection(
     db: AsyncSession, collection_id: str, data: CollectionReplace
 ) -> Collection | None:
-    """Replace collection metadata (PUT). Returns updated collection or None."""
     collection = await get_collection(db, collection_id)
     if collection is None:
         return None
@@ -96,7 +99,6 @@ async def replace_collection(
 async def patch_collection(
     db: AsyncSession, collection_id: str, data: CollectionPatch
 ) -> Collection | None:
-    """Partial update (PATCH). Only updates provided fields. Returns updated collection or None."""
     collection = await get_collection(db, collection_id)
     if collection is None:
         return None
@@ -112,11 +114,17 @@ async def patch_collection(
 
 
 async def delete_collection(db: AsyncSession, collection_id: str) -> bool:
-    """Delete a collection by id. Returns True if deleted."""
     collection = await get_collection(db, collection_id)
     if collection is None:
         return False
+    # Delete static PMTiles file if present (before collection_tiles row is CASCADE-deleted)
+    rec = await tiles_crud.get_collection_tiles(db, collection_id)
+    if rec and rec.pmtiles_path:
+        try:
+            if os.path.isfile(rec.pmtiles_path):
+                os.unlink(rec.pmtiles_path)
+        except OSError:
+            pass
     await db.delete(collection)
     await db.commit()
     return True
-

@@ -1,3 +1,5 @@
+"""OGC API - Features collections: list, get, create, replace, patch, delete."""
+
 from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -82,7 +84,6 @@ async def get_collection(
     "/{collection_id}",
     response_model=CollectionRead,
     summary="Replace collection metadata",
-    description="Full replace: title, description, extent. id is fixed by path.",
 )
 async def replace_collection(
     request: Request,
@@ -107,7 +108,6 @@ async def replace_collection(
     "/{collection_id}",
     response_model=CollectionRead,
     summary="Partially update collection",
-    description="Merge-patch: send only fields to update. Content-Type: application/merge-patch+json recommended.",
 )
 async def patch_collection(
     request: Request,
@@ -132,7 +132,7 @@ async def patch_collection(
     "",
     response_model=CollectionRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Create collection (non-OGC helper endpoint)",
+    summary="Create collection",
 )
 async def create_collection(
     payload: CollectionCreate,
@@ -163,6 +163,4 @@ async def delete_collection(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
-    # 204 No Content
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-

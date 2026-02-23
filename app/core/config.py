@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # Tiles: static PMTiles storage; dynamic tiles are served by FastAPI from PostGIS.
     tiles_storage_path: str = "/data/tiles"
     # Max features per MVT tile to avoid overloading the database (default 200k).
-    tiles_mvt_max_features: int = 100_000
+    tiles_mvt_max_features: int = 10_000
     tippecanoe_minzoom: int = 0
     tippecanoe_maxzoom: int = 14
 
