@@ -124,7 +124,10 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
             "-z", str(maxz),
             "-Z", str(minz),
             "--force",
-            "--coalesce", "densest-as-needed",
+            "--grid-low-zooms",
+            "--no-simplification-of-shared-nodes",
+            "--coalesce-densest-as-needed",
+            
         ]
         print(f"[tile_builder] Running tippecanoe for {collection_id} ({total_features} features)...", file=sys.stderr, flush=True)
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
