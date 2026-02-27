@@ -28,6 +28,7 @@ def _collection_links(base: str, collection_id: str) -> list[Link]:
     return [
         Link(href=f"{base}/collections/{collection_id}", rel="self", type="application/json"),
         Link(href=f"{base}/collections/{collection_id}/items", rel="items", type="application/geo+json"),
+        Link(href=f"{base}/collections/{collection_id}/tiles", rel="tiles", type="application/json", title="TileJSON for this collection"),
     ]
 
 

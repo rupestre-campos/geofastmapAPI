@@ -36,6 +36,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       BULK_QUEUE_TYPE: redis
       BULK_STORAGE_PATH: /data/bulk-uploads
+      PROCESS_QUEUE_TYPE: redis
       TILES_STORAGE_PATH: /data/tiles
       ENVIRONMENT: docker
     ports:
@@ -81,6 +82,22 @@ services:
       - .:/app
       - geofast_tiles:/data/tiles
     command: python -m app.tile_worker_main
+
+  process_worker:
+    build: .
+    container_name: geofast_process_worker
+    depends_on:
+      - db
+      - redis
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofast
+      REDIS_URL: redis://redis:6379/0
+      PROCESS_QUEUE_TYPE: redis
+      PROCESS_MAX_CONCURRENT: 2
+      ENVIRONMENT: docker
+    volumes:
+      - .:/app
+    command: python -m app.process_worker_main
 
 volumes:
   geofast_pgdata:

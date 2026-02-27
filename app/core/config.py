@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     bulk_queue_type: str = "redis"  # memory | redis
     redis_url: str = "redis://localhost:6379/0"  # used when bulk_queue_type=redis
 
+    # OGC API - Processes: geometric operations (intersection, erase) between collections.
+    process_queue_type: str = "redis"  # redis | memory (memory = no separate worker)
+    process_max_concurrent: int = 1  # max process jobs running at once per worker
+
     # Tiles: static PMTiles storage; dynamic tiles are served by FastAPI from PostGIS.
     tiles_storage_path: str = "/data/tiles"
     # Max features per MVT tile to avoid overloading the database (default 200k).

@@ -49,6 +49,7 @@ async def landing_page(request: Request) -> LandingPage:
             Link(href=base + "/conformance", rel="conformance", type="application/json"),
             Link(href=base + "/collections", rel="data", type="application/json"),
             Link(href=base + "/collections", rel="tiles", type="application/json", title="Collection tiles (TileJSON per collection)"),
+            Link(href=base + "/processes", rel="processes", type="application/json", title="OGC API - Processes (intersection, erase)"),
             Link(
                 href=base + "/openapi.json",
                 rel="service-desc",
