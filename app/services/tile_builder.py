@@ -138,7 +138,7 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
             
         ]
         print(f"[tile_builder] Running tippecanoe for {collection_id} ({total_features} features)...", file=sys.stderr, flush=True)
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             err = proc.stderr or proc.stdout or "tippecanoe failed"
             print(f"[tile_builder] tippecanoe failed: {err[:500]}", file=sys.stderr, flush=True)

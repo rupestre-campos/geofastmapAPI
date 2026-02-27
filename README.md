@@ -78,6 +78,10 @@ docker compose logs -f tile_worker
 
 You’ll see messages like:
 - `Tile worker started. Waiting for build jobs...`
+
+**2. Tile worker CPU and memory (Docker Compose)**
+
+The tile worker runs **tippecanoe** to build PMTiles. By default it is allowed up to **4 CPUs** and **8 GB RAM** so it can use more hardware when building large layers. To change this, edit `docker-compose.yml` under `tile_worker`: adjust `cpus`, `mem_limit`, and (for Swarm) `deploy.resources.limits`. If you run with `docker compose up` (no Swarm), ensure Docker Desktop (or your engine) gives the daemon enough CPUs and memory so the container can use them.
 - `Building tiles for <collection_id> (job_id=...)...`
 - `[tile_builder] Running tippecanoe for <collection_id> (N features)...`
 - `Build completed for <collection_id>` or `Build FAILED for <collection_id>: <error>`
@@ -90,7 +94,7 @@ The build response includes a `status_url` (e.g. `http://localhost:8000/jobs/<jo
 curl -s http://localhost:8000/jobs/<job_id> | jq
 ```
 
-If a build stops in the middle (e.g. worker OOM or timeout), check the worker logs; then you can trigger a new build with `POST .../tiles/build` again.
+If a build stops in the middle (e.g. worker OOM), check the worker logs; then you can trigger a new build with `POST .../tiles/build` again.
 
 ### Running the API locally (without Docker)
 

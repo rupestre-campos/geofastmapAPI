@@ -82,6 +82,18 @@ services:
       - .:/app
       - geofast_tiles:/data/tiles
     command: python -m app.tile_worker_main
+    # Let tippecanoe use more CPU and RAM (increase if you have headroom; with docker compose up these apply)
+    cpus: "4"
+    mem_limit: 8g
+    mem_reservation: 256m
+    # Swarm / stack deploy (optional)
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+        reservations:
+          memory: 256M
 
   process_worker:
     build: .
