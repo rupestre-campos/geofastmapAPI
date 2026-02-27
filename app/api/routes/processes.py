@@ -66,7 +66,7 @@ async def get_process(process_id: str):
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Process not found")
 
 
-def _execute_process(
+async def _execute_process(
     request: Request,
     process_id: str,
     payload: ProcessExecutionInput,
@@ -118,7 +118,7 @@ async def execute_intersection(
     payload: ProcessExecutionInput,
     db: AsyncSession = Depends(get_db),
 ):
-    return _execute_process(request, "intersection", payload, db)
+    return await _execute_process(request, "intersection", payload, db)
 
 
 @router.post(
@@ -132,4 +132,4 @@ async def execute_erase(
     payload: ProcessExecutionInput,
     db: AsyncSession = Depends(get_db),
 ):
-    return _execute_process(request, "erase", payload, db)
+    return await _execute_process(request, "erase", payload, db)
