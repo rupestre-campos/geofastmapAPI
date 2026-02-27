@@ -126,6 +126,7 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
         # -L requires "layername:file" (single argument per layer)
         cmd = [
             "tippecanoe",
+            "--read-parallel",
             "-o", out_path,
             "-L", f"{collection_id}:{geojsonl_path}",
             "-z", str(maxz),
