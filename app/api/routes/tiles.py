@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.crud import collection_tiles as tiles_crud
 from app.crud import collections as collections_crud
 from app.db.session import get_db
+from app.services.dynamic_tile_cache import get_tile as get_cached_tile, set_tile as set_cached_tile
 from app.services.tile_build_queue import (
     clear_pending,
     create_tile_build_job,
@@ -276,6 +277,17 @@ async def get_tiles_dynamic(
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     settings = get_settings()
+    cache_headers = {"Cache-Control": "public, max-age=60"}
+
+    # Short-lived Redis cache for dynamic tiles
+    cached = get_cached_tile(collection_id, z, x, y)
+    if cached is not None:
+        return Response(
+            content=cached,
+            media_type="application/x-protobuf",
+            headers=cache_headers,
+        )
+
     layer_name = _mvt_layer_name(collection_id)
     max_features = settings.tiles_mvt_max_features
 
@@ -321,16 +333,12 @@ async def get_tiles_dynamic(
     )
     row = result.first()
     mvt = row.mvt if row and row.mvt else None
-    if not mvt:
-        return Response(
-            content=b"",
-            media_type="application/x-protobuf",
-            headers={"Cache-Control": "public, max-age=60"},
-        )
+    payload = bytes(mvt) if mvt else b""
+    set_cached_tile(collection_id, z, x, y, payload)
     return Response(
-        content=bytes(mvt),
+        content=payload,
         media_type="application/x-protobuf",
-        headers={"Cache-Control": "public, max-age=60"},
+        headers=cache_headers,
     )
 
 

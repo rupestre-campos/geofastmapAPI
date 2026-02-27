@@ -9,33 +9,37 @@ import tempfile
 import threading
 from queue import Queue
 
+import orjson
+
 from app.core.config import get_settings
-from app.utils.geo import geometry_to_geojson
 
 # Chunk size for DB streaming and queue between producer/consumer
-_EXPORT_CHUNK_SIZE = 10_000
-_QUEUE_MAX_SIZE = 2  # overlap DB read with file write without buffering too much
+_EXPORT_CHUNK_SIZE = 50_000
+_QUEUE_MAX_SIZE = 8  # allow producer to read ahead so file write is not the bottleneck
 
 
 def _consumer(queue: Queue, file_handle) -> None:
-    """Consume (id, geometry, properties) chunks; convert to GeoJSONSeq lines; write to file."""
+    """Consume (id, geometry_geojson_str, properties) chunks; build GeoJSONSeq lines; batch-write to file."""
     while True:
         chunk = queue.get()
         if chunk is None:
             queue.task_done()
             break
-        for fid, geom, props in chunk:
-            geojson_geom = geometry_to_geojson(geom)
+        lines: list[bytes] = []
+        for fid, geom_str, props in chunk:
+            geom_dict = json.loads(geom_str) if geom_str else None
             props_dict = dict(props) if props else {}
             if "id" not in props_dict:
                 props_dict["id"] = fid
             feat = {
                 "type": "Feature",
                 "id": fid,
-                "geometry": geojson_geom,
+                "geometry": geom_dict,
                 "properties": props_dict,
             }
-            file_handle.write(json.dumps(feat, ensure_ascii=False) + "\n")
+            lines.append(orjson.dumps(feat, option=orjson.OPT_APPEND_NEWLINE))
+        if lines:
+            file_handle.write(b"".join(lines))
         queue.task_done()
 
 
@@ -96,7 +100,7 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
 
     fd, geojsonl_path = tempfile.mkstemp(suffix=".geojsonl")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "wb") as f:
             queue: Queue = Queue(maxsize=_QUEUE_MAX_SIZE)
             consumer_thread = threading.Thread(target=_consumer, args=(queue, f))
             consumer_thread.start()
@@ -104,7 +108,10 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
             total_features = 0
             with SessionLocal() as session:
                 result = session.execute(
-                    text("SELECT id, geometry, properties FROM features WHERE collection_id = :cid"),
+                    text(
+                        "SELECT id, ST_AsGeoJSON(geometry)::text AS geometry, properties "
+                        "FROM features WHERE collection_id = :cid"
+                    ),
                     {"cid": collection_id},
                     execution_options={"stream_results": True},
                 )

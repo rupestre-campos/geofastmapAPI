@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     tiles_storage_path: str = "/data/tiles"
     # Max features per MVT tile to avoid overloading the database (default 200k).
     tiles_mvt_max_features: int = 10_000
+    # Redis cache TTL for dynamic tiles (seconds). 0 = no cache.
+    tiles_dynamic_cache_ttl_seconds: int = 60
     tippecanoe_minzoom: int = 0
     tippecanoe_maxzoom: int = 14
 
