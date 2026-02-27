@@ -155,12 +155,15 @@ async def list_items(
     "/{collection_id}/items/bulk",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Bulk import from geospatial file",
-    description="Upload a file (KML, GPKG, GeoJSON, GeoJSONSeq/.geojsonl/.geojsonseq). Import runs asynchronously in the background. Use mode=append or replace. Returns job_id and status_url.",
+    description="Upload a file (KML, GPKG, GeoJSON, GeoJSONSeq/.geojsonl/.geojsonseq, or .zip containing a shapefile). Import runs asynchronously in the background. Use mode=append or replace. Returns job_id and status_url.",
 )
 async def bulk_import_items(
     request: Request,
     collection_id: str,
-    file: UploadFile = File(..., description="Geospatial file: .kml, .gpkg, .geojson, .geojsonl, .geojsonseq, .json"),
+    file: UploadFile = File(
+        ...,
+        description="Geospatial file: .kml, .gpkg, .geojson, .geojsonl, .geojsonseq, .json, or .zip (shapefile inside)",
+    ),
     mode: str = Form("append", description="append = add to collection; replace = delete all then import"),
     batch_size: int | None = Form(None, ge=1, le=100_000, description="Features per DB batch (default from config)."),
     db: AsyncSession = Depends(get_db),
@@ -177,7 +180,7 @@ async def bulk_import_items(
 
     job = create_job(collection_id)
     suffix = PathLib(file.filename or "upload").suffix.lower()
-    if suffix not in (".kml", ".gpkg", ".geojson", ".json", ".geojsonl", ".geojsonseq", ".jsonl"):
+    if suffix not in (".kml", ".gpkg", ".geojson", ".json", ".geojsonl", ".geojsonseq", ".jsonl", ".zip"):
         suffix = ".geojson"
     storage_key = f"{job.job_id}{suffix}"
 

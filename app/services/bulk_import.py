@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import zipfile
 from datetime import datetime
 from typing import Callable
 
@@ -15,6 +16,7 @@ from app.utils.geo import geojson_to_wkt_element
 
 # Driver for fiona by file extension (lowercase). No shapefile (would require sidecar files).
 # .geojsonseq is the same format as .geojsonl (GeoJSON Seq / newline-delimited GeoJSON).
+# Shapefile is supported only inside a .zip via GDAL /vsizip (no extraction).
 _FIONA_DRIVERS: dict[str, str] = {
     ".kml": "KML",
     ".gpkg": "GPKG",
@@ -32,6 +34,26 @@ def _driver_for_path(path: str) -> str | None:
     return _FIONA_DRIVERS.get(ext)
 
 
+def _resolve_zip_shapefile(zip_path: str) -> tuple[str, str]:
+    """
+    Resolve path to open for a .zip that contains a shapefile. Reads without extracting.
+    Returns (path_to_open, driver) for fiona.open(path_to_open, driver=driver).
+    path_to_open uses GDAL /vsizip/ so the .shp is read from the archive.
+    Raises ValueError if no .shp found in the zip.
+    """
+    zip_path = os.path.abspath(zip_path)
+    with zipfile.ZipFile(zip_path, "r") as z:
+        shp_names = [n for n in z.namelist() if n.lower().endswith(".shp")]
+    if not shp_names:
+        raise ValueError("ZIP contains no .shp file")
+    # Prefer root-level .shp (zip namelist uses forward slash)
+    root_shps = [n for n in shp_names if "/" not in n]
+    inner = root_shps[0] if root_shps else shp_names[0]
+    # GDAL /vsizip/ expects path/to/archive.zip/path/inside.zip
+    open_path = f"/vsizip/{zip_path}/{inner}"
+    return open_path, "ESRI Shapefile"
+
+
 def run_bulk_import_sync(
     file_path: str,
     collection_id: str,
@@ -44,7 +66,7 @@ def run_bulk_import_sync(
     Runs in a sync context (e.g. thread). Does not block the async event loop.
 
     Args:
-        file_path: Path to uploaded file (e.g. .kml, .gpkg, .geojson, .geojsonl, .geojsonseq).
+        file_path: Path to uploaded file (e.g. .kml, .gpkg, .geojson, .geojsonl, .geojsonseq, or .zip with shapefile).
         collection_id: Target collection id.
         mode: "append" or "replace". Replace deletes all existing features first.
         batch_size: Number of features per DB commit.
@@ -61,9 +83,20 @@ def run_bulk_import_sync(
     engine = create_engine(sync_url, pool_pre_ping=True, future=True)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
 
-    driver = _driver_for_path(file_path)
-    if not driver:
-        return 0, 0, f"Unsupported file type. Supported: {', '.join(sorted(set(_FIONA_DRIVERS.values())))}"
+    # Resolve path and driver: direct file or .zip containing a shapefile (read via GDAL /vsizip)
+    if file_path.lower().endswith(".zip"):
+        try:
+            open_path, driver = _resolve_zip_shapefile(file_path)
+        except ValueError as e:
+            return 0, 0, str(e)
+    else:
+        driver = _driver_for_path(file_path)
+        if not driver:
+            return 0, 0, (
+                f"Unsupported file type. Supported: "
+                f"{', '.join(sorted(set(_FIONA_DRIVERS.values())))} or .zip (shapefile inside)"
+            )
+        open_path = file_path
 
     try:
         with SessionLocal() as session:
@@ -87,7 +120,7 @@ def run_bulk_import_sync(
             batch: list[Feature] = []
             now = datetime.utcnow()
 
-            with fiona.open(file_path, driver=driver) as src:
+            with fiona.open(open_path, driver=driver) as src:
                 for rec in src:
                     try:
                         geom_dict = rec.get("geometry")
