@@ -114,5 +114,5 @@ services:
 volumes:
   geofast_pgdata:
   geofast_bulk_uploads:  # Shared between api and worker for bulk uploads
-  geofast_tiles:         # Static PMTiles (api + tile_worker)
+  geofast_tiles:         # Static MBTiles (api + tile_worker)
 

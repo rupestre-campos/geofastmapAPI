@@ -1,4 +1,4 @@
-"""Queue for PMTiles build jobs (Redis list). Job status is stored in job_store (GET /jobs/{job_id})."""
+"""Queue for static MBTiles build jobs (Redis list). Job status is stored in job_store (GET /jobs/{job_id})."""
 
 from __future__ import annotations
 

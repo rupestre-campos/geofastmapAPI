@@ -31,14 +31,14 @@ class Settings(BaseSettings):
     process_queue_type: str = "redis"  # redis | memory (memory = no separate worker)
     process_max_concurrent: int = 1  # max process jobs running at once per worker
 
-    # Tiles: static PMTiles storage; dynamic tiles are served by FastAPI from PostGIS.
+    # Tiles: static MBTiles storage; dynamic tiles are served by FastAPI from PostGIS.
     tiles_storage_path: str = "/data/tiles"
     # Max features per MVT tile to avoid overloading the database (default 200k).
     tiles_mvt_max_features: int = 10_000
     # Redis cache TTL for dynamic tiles (seconds). 0 = no cache.
     tiles_dynamic_cache_ttl_seconds: int = 60
     tippecanoe_minzoom: int = 0
-    tippecanoe_maxzoom: int = 14
+    tippecanoe_maxzoom: int = 16
 
     @property
     def database_sync_url(self) -> str:

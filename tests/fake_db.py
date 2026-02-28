@@ -147,7 +147,7 @@ class Store:
 
 
 class FakeCollectionTilesCrud:
-    """No-op tiles CRUD for tests (no PMTiles, no Martin views)."""
+    """No-op tiles CRUD for tests (no static tiles, no Martin views)."""
 
     async def get_collection_tiles(self, db: Any, collection_id: str):
         return None

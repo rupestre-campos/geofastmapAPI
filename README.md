@@ -64,7 +64,7 @@ docker compose down
 
 ### Checking tile build logs
 
-When you request a static PMTiles build (`POST /collections/{id}/tiles/build`), a **tile worker** processes the job. To see what it’s doing or why it stopped:
+When you request a static MBTiles build (`POST /collections/{id}/tiles/build`), a **tile worker** processes the job. To see what it’s doing or why it stopped:
 
 **1. Tile worker container logs (Docker)**
 
@@ -81,7 +81,7 @@ You’ll see messages like:
 
 **2. Tile worker CPU and memory (Docker Compose)**
 
-The tile worker runs **tippecanoe** to build PMTiles. By default it is allowed up to **4 CPUs** and **8 GB RAM** so it can use more hardware when building large layers. To change this, edit `docker-compose.yml` under `tile_worker`: adjust `cpus`, `mem_limit`, and (for Swarm) `deploy.resources.limits`. If you run with `docker compose up` (no Swarm), ensure Docker Desktop (or your engine) gives the daemon enough CPUs and memory so the container can use them.
+The tile worker runs **tippecanoe** to build MBTiles. By default it is allowed up to **4 CPUs** and **8 GB RAM** so it can use more hardware when building large layers. To change this, edit `docker-compose.yml` under `tile_worker`: adjust `cpus`, `mem_limit`, and (for Swarm) `deploy.resources.limits`. If you run with `docker compose up` (no Swarm), ensure Docker Desktop (or your engine) gives the daemon enough CPUs and memory so the container can use them.
 - `Building tiles for <collection_id> (job_id=...)...`
 - `[tile_builder] Running tippecanoe for <collection_id> (N features)...`
 - `Build completed for <collection_id>` or `Build FAILED for <collection_id>: <error>`

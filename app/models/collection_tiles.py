@@ -1,4 +1,4 @@
-"""Track built PMTiles per collection."""
+"""Track built static tiles (MBTiles) per collection."""
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey, String, Text
@@ -7,7 +7,7 @@ from app.db.base import Base
 
 
 class CollectionTiles(Base):
-    """One row per collection: path to PMTiles file and when it was built."""
+    """One row per collection: path to MBTiles file and when it was built."""
 
     __tablename__ = "collection_tiles"
 

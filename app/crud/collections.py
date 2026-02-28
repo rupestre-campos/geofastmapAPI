@@ -134,7 +134,7 @@ async def delete_collection(db: AsyncSession, collection_id: str) -> bool:
     collection = await get_collection(db, collection_id)
     if collection is None:
         return False
-    # Delete static PMTiles file if present (before collection_tiles row is CASCADE-deleted)
+    # Delete static MBTiles file if present (before collection_tiles row is CASCADE-deleted)
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     if rec and rec.pmtiles_path:
         try:

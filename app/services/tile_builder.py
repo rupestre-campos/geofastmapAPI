@@ -1,4 +1,4 @@
-"""Build PMTiles for a collection: export GeoJSONSeq (streaming), run tippecanoe, save and register."""
+"""Build MBTiles for a collection: export GeoJSONSeq (streaming), run tippecanoe, save and register."""
 from __future__ import annotations
 
 import json
@@ -19,7 +19,9 @@ _QUEUE_MAX_SIZE = 8  # allow producer to read ahead so file write is not the bot
 
 
 def _consumer(queue: Queue, file_handle) -> None:
-    """Consume (id, geometry_geojson_str, properties) chunks; build GeoJSONSeq lines; batch-write to file."""
+    """Consume (id, geometry_geojson_str, properties) chunks; build GeoJSONSeq lines; batch-write to file.
+    Uses numeric feature ids (Mapbox tippecanoe requirement); original id kept in properties."""
+    feature_index = 0
     while True:
         chunk = queue.get()
         if chunk is None:
@@ -31,12 +33,14 @@ def _consumer(queue: Queue, file_handle) -> None:
             props_dict = dict(props) if props else {}
             if "id" not in props_dict:
                 props_dict["id"] = fid
+            # Mapbox tippecanoe requires numeric Feature id; keep original id in properties
             feat = {
                 "type": "Feature",
-                "id": fid,
+                "id": feature_index,
                 "geometry": geom_dict,
                 "properties": props_dict,
             }
+            feature_index += 1
             lines.append(orjson.dumps(feat, option=orjson.OPT_APPEND_NEWLINE))
         if lines:
             file_handle.write(b"".join(lines))
@@ -59,7 +63,7 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
 
     tiles_dir = settings.tiles_storage_path
     os.makedirs(tiles_dir, exist_ok=True)
-    out_path = os.path.join(tiles_dir, f"{collection_id}.pmtiles")
+    out_path = os.path.join(tiles_dir, f"{collection_id}.mbtiles")
     minz = settings.tippecanoe_minzoom
     maxz = settings.tippecanoe_maxzoom
 
@@ -129,20 +133,24 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
             "--read-parallel",
             "-o", out_path,
             "-L", f"{collection_id}:{geojsonl_path}",
-            "-z", str(maxz),
-            "-Z", str(minz),
+            f"--layer={collection_id}",
+            f"-z{maxz}",
+            f"-Z{minz}",
             "--force",
             "--grid-low-zooms",
-            "--no-simplification-of-shared-nodes",
-            "--coalesce-densest-as-needed",
-            
+            "--detect-shared-borders",
+            "--drop-densest-as-needed",
+            "--drop-smallest-as-needed",
+            "--full-detail=12",
+            "--low-detail=9",
+            "--minimum-detail=8",
         ]
         print(f"[tile_builder] Running tippecanoe for {collection_id} ({total_features} features)...", file=sys.stderr, flush=True)
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        # Stream stdout/stderr to process FDs so Docker logs show tippecanoe output in real time
+        proc = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, text=True)
         if proc.returncode != 0:
-            err = proc.stderr or proc.stdout or "tippecanoe failed"
-            print(f"[tile_builder] tippecanoe failed: {err[:500]}", file=sys.stderr, flush=True)
-            return err
+            print("[tile_builder] tippecanoe failed (see above for details)", file=sys.stderr, flush=True)
+            return "tippecanoe failed"
     finally:
         try:
             os.unlink(geojsonl_path)

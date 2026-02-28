@@ -97,8 +97,8 @@ async def test_tiles_dynamic_200_empty_tile(client, app):
 
 
 @pytest.mark.asyncio
-async def test_tiles_static_404_when_no_pmtiles(client):
-    """GET .../tiles/static/{z}/{x}/{y}.pbf returns 404 when no PMTiles built."""
+async def test_tiles_static_404_when_no_static_tiles(client):
+    """GET .../tiles/static/{z}/{x}/{y}.pbf returns 404 when no static tiles (MBTiles) built."""
     await client.post("/collections", json={"id": "c1", "title": "C1", "description": ""})
     resp = await client.get("/collections/c1/tiles/static/0/0/0.pbf")
     assert resp.status_code == 404, resp.text

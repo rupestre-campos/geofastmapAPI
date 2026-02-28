@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Worker that builds PMTiles for collections. Consumes from Redis tile_build queue."""
+"""Worker that builds MBTiles for collections. Consumes from Redis tile_build queue."""
 from __future__ import annotations
 
 import sys

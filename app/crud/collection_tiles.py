@@ -1,4 +1,4 @@
-"""CRUD for collection_tiles (PMTiles build tracking)."""
+"""CRUD for collection_tiles (static MBTiles build tracking)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone

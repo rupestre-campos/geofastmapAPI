@@ -1,4 +1,4 @@
-"""OGC API Tiles: static PMTiles build + serve (ZXY and file), TileJSON with dynamic tiles from PostGIS (MVT)."""
+"""OGC API Tiles: static MBTiles build + serve (ZXY and file), TileJSON with dynamic tiles from PostGIS (MVT)."""
 from __future__ import annotations
 
 import asyncio
@@ -36,8 +36,8 @@ def _base_url(request: Request) -> str:
 @router.post(
     "/{collection_id}/tiles/build",
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Request static PMTiles build",
-    description="Enqueue build of PMTiles for this collection. Returns job_id to poll status. One build per collection at a time; duplicate requests return existing job.",
+    summary="Request static MBTiles build",
+    description="Enqueue build of MBTiles for this collection. Returns job_id to poll status. One build per collection at a time; duplicate requests return existing job.",
 )
 async def build_tiles(
     request: Request,
@@ -160,8 +160,8 @@ async def cancel_tile_build(
 @router.delete(
     "/{collection_id}/tiles/static",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete static PMTiles",
-    description="Remove the built PMTiles file from disk (if it exists) and clear the static tiles record. TileJSON will then only show dynamic tiles until you run POST .../tiles/build again.",
+    summary="Delete static tiles",
+    description="Remove the built MBTiles file from disk (if it exists) and clear the static tiles record. TileJSON will then only show dynamic tiles until you run POST .../tiles/build again.",
 )
 async def delete_tiles_static(
     collection_id: str,
@@ -185,7 +185,7 @@ async def delete_tiles_static(
 @router.get(
     "/{collection_id}/tiles",
     summary="TileJSON for this collection",
-    description="Returns TileJSON with links to static PMTiles (if built) and dynamic vector tiles from the database.",
+    description="Returns TileJSON with links to static MBTiles (if built) and dynamic vector tiles from the database.",
 )
 async def get_tiles_tilejson(
     request: Request,
@@ -199,7 +199,7 @@ async def get_tiles_tilejson(
     settings = get_settings()
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     has_static = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
-    # Prefer static ZXY URL when PMTiles exists so clients can use a single tile endpoint
+    # Prefer static ZXY URL when static tiles (MBTiles) exist so clients can use a single tile endpoint
     tile_urls = [f"{base}/collections/{collection_id}/tiles/dynamic/{{z}}/{{x}}/{{y}}.pbf"]
     if has_static:
         tile_urls.insert(0, f"{base}/collections/{collection_id}/tiles/static/{{z}}/{{x}}/{{y}}.pbf")
@@ -342,27 +342,38 @@ async def get_tiles_dynamic(
     )
 
 
-def _read_tile_from_pmtiles(path: Path, z: int, x: int, y: int) -> bytes | None:
-    """Read a single tile from a PMTiles file. Sync, run in thread. Returns decompressed tile bytes or None."""
-    from pmtiles.reader import Reader
-    from pmtiles.reader import MmapSource
-    from pmtiles.tile import Compression
-    with open(path, "rb") as f:
-        get_bytes = MmapSource(f)
-        reader = Reader(get_bytes)
-        header = reader.header()
-        raw = reader.get(z, x, y)
+def _read_tile_from_mbtiles(path: Path, z: int, x: int, y: int) -> bytes | None:
+    """Read a single tile from an MBTiles (SQLite) file. Sync, run in thread. Returns decompressed tile bytes or None.
+    MBTiles uses TMS row order (y=0 at bottom); we convert XYZ y to TMS row."""
+    import sqlite3
+    tms_row = (1 << z) - 1 - y
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        row = conn.execute(
+            "SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?",
+            (z, x, tms_row),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    raw = row[0]
     if raw is None:
         return None
-    if header.get("tile_compression") == Compression.GZIP:
-        raw = gzip.decompress(raw)
+    # MBTiles from tippecanoe typically store gzip-compressed tiles
+    if raw[:2] == b"\x1f\x8b":
+        try:
+            return gzip.decompress(raw)
+        except OSError:
+            return raw
     return raw
 
 
 @router.get(
     "/{collection_id}/tiles/static/{z:int}/{x:int}/{y:int}.pbf",
-    summary="Static vector tile (Z/X/Y from PMTiles)",
-    description="Returns the tile at z/x/y from the built PMTiles file for this collection.",
+    summary="Static vector tile (Z/X/Y from MBTiles)",
+    description="Returns the tile at z/x/y from the built MBTiles file for this collection.",
 )
 async def get_tiles_static_zxy(
     collection_id: str,
@@ -384,7 +395,7 @@ async def get_tiles_static_zxy(
     path = Path(rec.pmtiles_path)
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tiles file missing.")
-    tile_bytes = await asyncio.to_thread(_read_tile_from_pmtiles, path, z, x, y)
+    tile_bytes = await asyncio.to_thread(_read_tile_from_mbtiles, path, z, x, y)
     if tile_bytes is None:
         return Response(
             content=b"",

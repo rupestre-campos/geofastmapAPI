@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Tippecanoe for static PMTiles (tile worker)
-RUN git clone https://github.com/felt/tippecanoe.git /tmp/tippecanoe \
+# Tippecanoe for static MBTiles (tile worker) - Mapbox outputs MBTiles natively
+RUN git clone https://github.com/mapbox/tippecanoe.git /tmp/tippecanoe \
     && cd /tmp/tippecanoe && make -j$(nproc) && make install \
     && rm -rf /tmp/tippecanoe
 
