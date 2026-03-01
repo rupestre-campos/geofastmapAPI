@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.html import html_response, wants_html
+from app.crud import collection_tiles as tiles_crud
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.crud import styles as styles_crud
@@ -174,16 +175,16 @@ async def list_items(
             qs.pop("f", None)
             items_url_json = base_path + ("?" + urlencode(qs, doseq=True) if qs else "")
         # Pagination URLs for HTML (preserve all query params, change offset)
-        q = dict(request.query_params)
-        q["f"] = "html"
-        q["limit"] = str(limit)
+        query_params = dict(request.query_params)
+        query_params["f"] = "html"
+        query_params["limit"] = str(limit)
         prev_page_url = None
         next_page_url = None
         if offset > 0:
-            q_prev = {**q, "offset": str(max(0, offset - limit))}
+            q_prev = {**query_params, "offset": str(max(0, offset - limit))}
             prev_page_url = base_path + "?" + urlencode(sorted(q_prev.items()))
         if offset + len(features) < number_matched:
-            q_next = {**q, "offset": str(offset + limit)}
+            q_next = {**query_params, "offset": str(offset + limit)}
             next_page_url = base_path + "?" + urlencode(sorted(q_next.items()))
         default_style = await styles_crud.get_default_style(db, collection_id)
         default_style_dict = (
@@ -191,6 +192,8 @@ async def list_items(
             if default_style
             else None
         )
+        rec = await tiles_crud.get_collection_tiles(db, collection_id)
+        has_static_tiles = bool(rec and rec.pmtiles_path and PathLib(rec.pmtiles_path).exists())
         return html_response(
             "items.html",
             base=base,
@@ -208,12 +211,13 @@ async def list_items(
             sortby=sortby,
             sortdesc=sortdesc,
             filter_param="\n".join(filter_param) if filter_param else "",
-            q=q,
+            q=q or "",
             properties=properties_include or "",
             items_url_json=items_url_json,
             prev_page_url=prev_page_url,
             next_page_url=next_page_url,
             default_style=default_style_dict,
+            has_static_tiles=has_static_tiles,
             google_maps_api_key=get_settings().google_maps_api_key or "",
         )
     fc = FeatureCollection(
@@ -349,6 +353,8 @@ async def get_item(
             if default_style
             else None
         )
+        rec = await tiles_crud.get_collection_tiles(db, collection_id)
+        has_static_tiles = bool(rec and rec.pmtiles_path and PathLib(rec.pmtiles_path).exists())
         return html_response(
             "item.html",
             base=base,
@@ -357,6 +363,7 @@ async def get_item(
             feature_geojson=feat_geojson.model_dump(),
             properties_json=json.dumps(feat_geojson.properties or {}, indent=2),
             default_style=default_style_dict,
+            has_static_tiles=has_static_tiles,
             google_maps_api_key=get_settings().google_maps_api_key or "",
         )
     return GeoJSONResponse(content=feat_geojson.model_dump(mode="json"))

@@ -9,7 +9,13 @@
     .collection-info-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-secondary); margin-bottom: 2px; }
     .collection-info-value { font-size: 1rem; margin-bottom: var(--space); color: var(--text); }
     .collection-info-value.title { font-size: 1.15rem; font-weight: 700; }
-    .vector-style-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 8px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
+    .layer-style-collapsible { margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); }
+    .layer-style-collapsible summary { padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 0.9rem; color: var(--text-secondary); display: flex; align-items: center; gap: 10px; list-style: none; user-select: none; }
+    .layer-style-collapsible summary::-webkit-details-marker { display: none; }
+    .layer-style-collapsible summary::before { content: '▶'; font-size: 0.7rem; transition: transform 0.15s; }
+    .layer-style-collapsible[open] summary::before { transform: rotate(90deg); }
+    .layer-style-legend { width: 28px; height: 18px; border-radius: 3px; border: 2px solid; flex-shrink: 0; }
+    .vector-style-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 0.85rem; }
     .vector-style-panel .vector-style-label { font-weight: 600; margin-right: 4px; color: var(--text-secondary); }
     .vector-style-panel label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
     .vector-style-panel input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
@@ -22,6 +28,22 @@
     .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
     .save-style-form .vector-style-label { font-weight: 600; margin-right: 4px; }
     .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+    .edit-collection-modal { display: none; position: fixed; inset: 0; z-index: 1000; align-items: center; justify-content: center; padding: var(--space-lg); }
+    .edit-collection-modal[aria-hidden="false"] { display: flex; }
+    .edit-collection-modal .modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.6); cursor: pointer; }
+    .edit-collection-modal .modal-content { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); max-width: 480px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+    .edit-collection-modal .modal-header { display: flex; align-items: center; justify-content: space-between; padding: var(--space) var(--space-lg); border-bottom: 1px solid var(--border); }
+    .edit-collection-modal .modal-title { margin: 0; font-size: 1rem; }
+    .edit-collection-modal .modal-close { background: none; border: none; color: var(--text-secondary); font-size: 1.5rem; cursor: pointer; padding: 0 0.25rem; line-height: 1; }
+    .edit-collection-modal .modal-close:hover { color: var(--text); }
+    .edit-collection-modal .modal-body { padding: var(--space-lg); }
+    .edit-collection-modal .form-row { margin-bottom: var(--space); }
+    .edit-collection-modal .form-row label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 0.9rem; }
+    .edit-collection-modal .form-row input[type="text"], .edit-collection-modal .form-row textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+    .edit-collection-modal .form-row textarea { min-height: 80px; resize: vertical; }
+    .edit-collection-modal .bbox-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .edit-collection-modal .bbox-row input { width: 6em; }
+    .edit-collection-modal .modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: var(--space) var(--space-lg); border-top: 1px solid var(--border); }
   </style>
   <div class="card">
     <h2 class="card-title">Collection info</h2>
@@ -57,7 +79,12 @@
         <label id="map-bbox-toggle-wrap" style="display:none"><input type="checkbox" id="map-toggle-bbox" checked title="Show or hide layer extent bbox"> Bbox</label>
       </div>
     </div>
-    <div id="vector-style-wrap" class="vector-style-panel" style="display:none">
+    <details id="layer-style-details" class="layer-style-collapsible" style="display:none">
+      <summary class="layer-style-summary">
+        <span>Layer style</span>
+        <span id="layer-style-legend" class="layer-style-legend" aria-hidden="true"></span>
+      </summary>
+    <div id="vector-style-wrap" class="vector-style-panel">
       <span class="vector-style-label">Vector tile style</span>
       <label><input type="checkbox" id="vector-fill-enable" checked> Fill</label>
       <label>Fill <input type="color" id="vector-fill-color" value="#58a6ff" title="Fill color"></label>
@@ -71,20 +98,25 @@
         <option value="dotted">Dotted</option>
       </select></label>
       <span class="vector-style-sep">|</span>
-      <label>Saved style <select id="vector-style-select" title="Load a saved style">
+      <label>Load style <select id="vector-style-select" title="Load a saved style">
         <option value="">Current</option>
       </select></label>
       <button type="button" class="btn btn-sm" id="btn-save-style">Save style…</button>
     </div>
     <div id="save-style-form" class="save-style-form" style="display:none">
       <span class="vector-style-label">Save style</span>
+      <label>Save to <select id="save-style-to" title="Where to save the style">
+        <option value="collection">Collection (this layer)</option>
+        <option value="public">Public (reusable)</option>
+      </select></label>
       <label>Id <input type="text" id="save-style-id" placeholder="e.g. blue-outline" pattern="[a-zA-Z0-9_-]+" title="Letters, numbers, hyphen, underscore"></label>
       <label>Title <input type="text" id="save-style-title" placeholder="Optional title"></label>
       <label>Replace <select id="save-style-replace"><option value="">New</option></select></label>
-      <label><input type="checkbox" id="save-style-default"> Set as default</label>
+      <span id="save-style-default-wrap"><label><input type="checkbox" id="save-style-default"> Set as default</label></span>
       <button type="button" class="btn btn-sm btn-primary" id="btn-save-style-submit">Save</button>
       <button type="button" class="btn btn-sm" id="btn-save-style-cancel">Cancel</button>
     </div>
+    </details>
   </div>
 
   <div class="card">
@@ -178,6 +210,40 @@
     <p class="meta" id="tiles-hint" style="display:none">Static tiles not built. Click <strong>Build static tiles</strong> to compute.</p>
   </div>
 
+  <div id="edit-collection-modal" class="edit-collection-modal" role="dialog" aria-hidden="true">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">Edit collection metadata</h3>
+        <button type="button" class="modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <label for="edit-collection-title">Title</label>
+          <input type="text" id="edit-collection-title" placeholder="Optional title">
+        </div>
+        <div class="form-row">
+          <label for="edit-collection-description">Description</label>
+          <textarea id="edit-collection-description" placeholder="Optional description" rows="3"></textarea>
+        </div>
+        <div class="form-row">
+          <label>Bounding box <span class="meta">(minx, miny, maxx, maxy, WGS84)</span></label>
+          <div class="bbox-row">
+            <input type="number" id="edit-collection-minx" placeholder="minx" step="any">
+            <input type="number" id="edit-collection-miny" placeholder="miny" step="any">
+            <input type="number" id="edit-collection-maxx" placeholder="maxx" step="any">
+            <input type="number" id="edit-collection-maxy" placeholder="maxy" step="any">
+          </div>
+          <label class="checkbox-inline" style="margin-top:6px"><input type="checkbox" id="edit-collection-clear-bbox"> Clear extent (no bbox)</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn" id="edit-collection-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="edit-collection-save">Save</button>
+      </div>
+    </div>
+  </div>
+
   <div class="card">
     <h2 class="card-title">API links</h2>
     <ul class="links">
@@ -194,6 +260,8 @@
   <script>
     const base = {{ base | tojson }};
     const collectionId = {{ collection.id | tojson }};
+    const collectionTitle = {{ (collection.title or '') | tojson }};
+    const collectionDescription = {{ (collection.description or '') | tojson }};
     const extent = {{ extent_geojson | tojson if extent_geojson else 'null' }};
     const hasStaticTiles = {{ has_static_tiles | tojson }};
     const tileUrlStatic = hasStaticTiles ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' : null;
@@ -293,7 +361,18 @@
           d.textContent = s;
           return d.innerHTML;
         }
-        document.getElementById('vector-style-wrap').style.display = 'block';
+        document.getElementById('layer-style-details').style.display = 'block';
+        function updateStyleLegend(spec) {
+          var el = document.getElementById('layer-style-legend');
+          if (!el) return;
+          var fill = (spec && spec.fillColor) || '#58a6ff';
+          var line = (spec && spec.lineColor) || '#58a6ff';
+          var fillOp = (spec && spec.fillOpacity != null) ? spec.fillOpacity : 0.6;
+          var fillOn = !spec || spec.fillEnabled !== false;
+          el.style.backgroundColor = fillOn ? fill : 'transparent';
+          el.style.borderColor = line;
+          el.style.opacity = String(fillOp);
+        }
         var fillCheck = document.getElementById('vector-fill-enable');
         var fillColor = document.getElementById('vector-fill-color');
         var fillOpacity = document.getElementById('vector-fill-opacity');
@@ -324,13 +403,13 @@
         linePattern.value = spec.linePattern || 'solid';
         fillCheck.checked = spec.fillEnabled !== false;
         applyVectorStyle();
-        fillCheck.onchange = applyVectorStyle;
-        fillColor.oninput = applyVectorStyle;
-        fillOpacity.oninput = function() { fillOpacityVal.textContent = this.value; applyVectorStyle(); };
-        lineColor.oninput = applyVectorStyle;
-        lineWidth.oninput = applyVectorStyle;
-        lineOpacity.oninput = function() { lineOpacityVal.textContent = this.value; applyVectorStyle(); };
-        linePattern.onchange = applyVectorStyle;
+        fillCheck.onchange = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        fillColor.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        fillOpacity.oninput = function() { fillOpacityVal.textContent = this.value; applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        lineColor.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        lineWidth.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        lineOpacity.oninput = function() { lineOpacityVal.textContent = this.value; applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        linePattern.onchange = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
         function getCurrentSpec() {
           return {
             fillColor: fillColor.value,
@@ -342,6 +421,7 @@
             fillEnabled: fillCheck.checked
           };
         }
+        updateStyleLegend(getCurrentSpec());
         function applySpecToForm(s) {
           fillColor.value = s.fillColor || '#58a6ff';
           lineColor.value = s.lineColor || '#58a6ff';
@@ -353,18 +433,63 @@
           linePattern.value = s.linePattern || 'solid';
           fillCheck.checked = s.fillEnabled !== false;
           applyVectorStyle();
+          updateStyleLegend(getCurrentSpec());
+        }
+        function apiBaseUrl() {
+          var path = window.location.pathname;
+          var i = path.indexOf('/collections/');
+          var rootPath = i >= 0 ? path.substring(0, i) : '';
+          return window.location.origin + rootPath;
+        }
+        function collectionStylesUrlEffective() {
+          return collectionStylesUrl || (base + '/collections/' + encodeURIComponent(collectionId) + '/styles');
+        }
+        function publicStylesUrl() {
+          return base + '/styles';
         }
         function loadStylesList() {
-          if (!collectionStylesUrl) return;
-          fetch(collectionStylesUrl, { headers: { 'Accept': 'application/json' } })
+          var sel = document.getElementById('vector-style-select');
+          if (!sel) return Promise.resolve();
+          while (sel.firstChild) sel.removeChild(sel.firstChild);
+          sel.appendChild(new Option('Current', ''));
+          function addCollectionStyles() {
+            return fetch(collectionStylesUrlEffective(), { headers: { 'Accept': 'application/json' } })
+              .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
+              .then(function(data) {
+                var list = data.styles || [];
+                if (list.length) {
+                  var g = document.createElement('optgroup');
+                  g.label = 'Collection styles';
+                  list.forEach(function(s) { g.appendChild(new Option(s.title || s.id, 'c:' + s.id)); });
+                  sel.appendChild(g);
+                }
+              })
+              .catch(function(err) { console.warn('Load collection styles failed', collectionStylesUrlEffective(), err); });
+          }
+          function addPublicStyles() {
+            return fetch(publicStylesUrl(), { headers: { 'Accept': 'application/json' } })
+              .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
+              .then(function(data) {
+                var list = data.styles || [];
+                if (list.length) {
+                  var g = document.createElement('optgroup');
+                  g.label = 'Public styles';
+                  list.forEach(function(s) { g.appendChild(new Option(s.title || s.id, 'p:' + s.id)); });
+                  sel.appendChild(g);
+                }
+              })
+              .catch(function(err) { console.warn('Load public styles failed', publicStylesUrl(), err); });
+          }
+          return addCollectionStyles().then(addPublicStyles);
+        }
+        function populateReplaceDropdown(saveTo) {
+          var rep = document.getElementById('save-style-replace');
+          rep.options.length = 1;
+          var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrlEffective();
+          fetch(url, { headers: { 'Accept': 'application/json' } })
             .then(function(r) { return r.json(); })
             .then(function(data) {
-              var sel = document.getElementById('vector-style-select');
-              var rep = document.getElementById('save-style-replace');
-              var opts = sel.options; opts.length = 1;
-              var repOpts = rep.options; repOpts.length = 1;
               (data.styles || []).forEach(function(s) {
-                sel.add(new Option(s.title || s.id, s.id));
                 rep.add(new Option(s.title || s.id, s.id));
               });
             })
@@ -372,16 +497,27 @@
         }
         loadStylesList();
         document.getElementById('vector-style-select').onchange = function() {
-          var id = this.value;
-          if (!id) return;
-          fetch(collectionStylesUrl + '/' + encodeURIComponent(id), { headers: { 'Accept': 'application/json' } })
+          var val = this.value;
+          if (!val) return;
+          var isPublic = val.indexOf('p:') === 0;
+          var id = val.slice(2);
+          var url = isPublic ? (publicStylesUrl() + '/' + encodeURIComponent(id)) : (collectionStylesUrlEffective() + '/' + encodeURIComponent(id));
+          fetch(url, { headers: { 'Accept': 'application/json' } })
             .then(function(r) { return r.json(); })
             .then(function(s) { if (s.style_spec) applySpecToForm(s.style_spec); })
             .catch(function() {});
         };
         document.getElementById('btn-save-style').onclick = function() {
           document.getElementById('save-style-form').style.display = 'flex';
-          loadStylesList();
+          document.getElementById('save-style-to').value = 'collection';
+          document.getElementById('save-style-default-wrap').style.display = '';
+          populateReplaceDropdown('collection');
+        };
+        document.getElementById('save-style-to').onchange = function() {
+          var isPublic = this.value === 'public';
+          document.getElementById('save-style-default-wrap').style.display = isPublic ? 'none' : '';
+          document.getElementById('save-style-default').checked = false;
+          populateReplaceDropdown(this.value);
         };
         document.getElementById('btn-save-style-cancel').onclick = function() {
           document.getElementById('save-style-form').style.display = 'none';
@@ -395,11 +531,21 @@
           var id = replaceVal || idInput || null;
           if (!id) { alert('Enter a style id (letters, numbers, hyphen, underscore)'); return; }
           var title = document.getElementById('save-style-title').value.trim() || null;
+          var saveTo = document.getElementById('save-style-to').value;
           var setDefault = document.getElementById('save-style-default').checked;
-          var body = { id: id, style_spec: getCurrentSpec(), set_default: setDefault };
+          var method = 'POST';
+          var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrlEffective();
+          var body = { id: id, style_spec: getCurrentSpec() };
           if (title) body.title = title;
-          fetch(collectionStylesUrl, {
-            method: 'POST',
+          if (saveTo === 'collection') body.set_default = setDefault;
+          if (saveTo === 'public' && replaceVal) {
+            method = 'PUT';
+            url = publicStylesUrl() + '/' + encodeURIComponent(id);
+            body = { style_spec: getCurrentSpec() };
+            if (title) body.title = title;
+          }
+          fetch(url, {
+            method: method,
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
             body: JSON.stringify(body)
           })
@@ -410,8 +556,8 @@
               document.getElementById('save-style-title').value = '';
               document.getElementById('save-style-replace').value = '';
               document.getElementById('save-style-default').checked = false;
-              loadStylesList();
-              document.getElementById('vector-style-select').value = id;
+              var newVal = (saveTo === 'public' ? 'p:' : 'c:') + id;
+              loadStylesList().then(function() { document.getElementById('vector-style-select').value = newVal; });
             })
             .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
         };
@@ -497,20 +643,52 @@
       });
     };
 
-    document.getElementById('btn-patch-collection').onclick = function() {
-      const title = prompt('Title (leave empty to keep):', {{ (collection.title or '') | tojson }});
-      if (title === null) return;
-      const description = prompt('Description (leave empty to keep):', {{ (collection.description or '') | tojson }});
-      if (description === null) return;
-      const body = {};
-      if (title !== '') body.title = title;
-      if (description !== '') body.description = description;
-      if (Object.keys(body).length === 0) return;
+    var editCollectionModal = document.getElementById('edit-collection-modal');
+    function openEditCollectionModal() {
+      document.getElementById('edit-collection-title').value = collectionTitle;
+      document.getElementById('edit-collection-description').value = collectionDescription;
+      var b = extent && extent.bbox && extent.bbox[0] && extent.bbox[0].length >= 4 ? extent.bbox[0] : null;
+      document.getElementById('edit-collection-minx').value = b ? String(b[0]) : '';
+      document.getElementById('edit-collection-miny').value = b ? String(b[1]) : '';
+      document.getElementById('edit-collection-maxx').value = b ? String(b[2]) : '';
+      document.getElementById('edit-collection-maxy').value = b ? String(b[3]) : '';
+      document.getElementById('edit-collection-clear-bbox').checked = false;
+      editCollectionModal.setAttribute('aria-hidden', 'false');
+    }
+    function closeEditCollectionModal() {
+      editCollectionModal.setAttribute('aria-hidden', 'true');
+    }
+    document.getElementById('btn-patch-collection').onclick = openEditCollectionModal;
+    editCollectionModal.querySelector('.modal-backdrop').onclick = closeEditCollectionModal;
+    editCollectionModal.querySelector('.modal-close').onclick = closeEditCollectionModal;
+    document.getElementById('edit-collection-cancel').onclick = closeEditCollectionModal;
+    document.getElementById('edit-collection-save').onclick = function() {
+      var title = document.getElementById('edit-collection-title').value.trim();
+      var description = document.getElementById('edit-collection-description').value.trim();
+      var clearBbox = document.getElementById('edit-collection-clear-bbox').checked;
+      var minx = document.getElementById('edit-collection-minx').value.trim();
+      var miny = document.getElementById('edit-collection-miny').value.trim();
+      var maxx = document.getElementById('edit-collection-maxx').value.trim();
+      var maxy = document.getElementById('edit-collection-maxy').value.trim();
+      var body = { title: title || null, description: description || null };
+      if (clearBbox) {
+        body.extent = null;
+      } else if (minx !== '' && miny !== '' && maxx !== '' && maxy !== '') {
+        var mnx = parseFloat(minx), mny = parseFloat(miny), mxx = parseFloat(maxx), mxy = parseFloat(maxy);
+        if (!isNaN(mnx) && !isNaN(mny) && !isNaN(mxx) && !isNaN(mxy)) {
+          body.extent = { bbox: [[mnx, mny, mxx, mxy]] };
+        }
+      }
       fetch(base + '/collections/' + collectionId, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify(body)
-      }).then(r => r.json()).then(() => location.reload()).catch(e => alert('Error: ' + (e.detail || e.message || JSON.stringify(e))));
+      }).then(function(r) { if (!r.ok) return r.json().then(function(j) { throw j; }); return r.json(); })
+        .then(function() { closeEditCollectionModal(); location.reload(); })
+        .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
     };
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && editCollectionModal.getAttribute('aria-hidden') === 'false') closeEditCollectionModal();
+    });
   </script>
 {% endblock %}

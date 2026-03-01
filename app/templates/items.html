@@ -132,6 +132,18 @@
     .map-popup-id a { color: #1967d2; }
     .map-popup-row { margin-top: 0.25rem; word-break: break-word; color: #000; }
     .map-popup-row strong { font-weight: 700; margin-right: 0.35rem; color: #000; }
+    .layer-style-collapsible { margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); }
+    .layer-style-collapsible summary { padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 0.9rem; color: var(--text-secondary); display: flex; align-items: center; gap: 10px; list-style: none; user-select: none; }
+    .layer-style-collapsible summary::-webkit-details-marker { display: none; }
+    .layer-style-collapsible summary::before { content: '▶'; font-size: 0.7rem; transition: transform 0.15s; }
+    .layer-style-collapsible[open] summary::before { transform: rotate(90deg); }
+    .layer-style-legend { width: 28px; height: 18px; border-radius: 3px; border: 2px solid; flex-shrink: 0; }
+    .vector-style-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 0.85rem; }
+    .vector-style-panel .vector-style-label { font-weight: 600; margin-right: 4px; color: var(--text-secondary); }
+    .vector-style-panel label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+    .vector-style-panel input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+    .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 0.85rem; }
+    .save-style-form .vector-style-label { font-weight: 600; margin-right: 4px; }
   </style>
 {% endblock %}
 {% block content %}
@@ -265,8 +277,49 @@
           <option value="google_satellite">Google Satellite</option>
           <option value="google_hybrid">Google Hybrid</option>
         </select>
+        {% if has_static_tiles %}
+        <label><input type="checkbox" id="show-collection-tiles" title="Show full layer (static tiles)"> Show collection tiles</label>
+        {% endif %}
       </div>
     </div>
+    <details id="layer-style-details" class="layer-style-collapsible" style="display:none">
+      <summary class="layer-style-summary">
+        <span>Layer style</span>
+        <span id="layer-style-legend" class="layer-style-legend" aria-hidden="true"></span>
+      </summary>
+      <div id="vector-style-wrap" class="vector-style-panel">
+        <span class="vector-style-label">Style</span>
+        <label><input type="checkbox" id="vector-fill-enable" checked> Fill</label>
+        <label>Fill <input type="color" id="vector-fill-color" value="#58a6ff" title="Fill color"></label>
+        <label>Fill opacity <input type="range" id="vector-fill-opacity" min="0" max="100" value="60" title="Fill transparency"> <span id="vector-fill-opacity-val">60</span>%</label>
+        <label>Line <input type="color" id="vector-line-color" value="#58a6ff" title="Line color"></label>
+        <label>Line width <input type="number" id="vector-line-width" min="0.5" max="20" step="0.5" value="1" style="width:4em" title="Line size"></label>
+        <label>Line opacity <input type="range" id="vector-line-opacity" min="0" max="100" value="100" title="Line transparency"> <span id="vector-line-opacity-val">100</span>%</label>
+        <label>Line pattern <select id="vector-line-pattern" title="Line pattern">
+          <option value="solid">Solid</option>
+          <option value="dashed">Dashed</option>
+          <option value="dotted">Dotted</option>
+        </select></label>
+        <span class="vector-style-sep" style="color:var(--text-secondary);margin:0 4px">|</span>
+        <label>Load style <select id="vector-style-select" title="Load a saved style">
+          <option value="">Current</option>
+        </select></label>
+        <button type="button" class="btn btn-sm" id="btn-save-style">Save style…</button>
+      </div>
+      <div id="save-style-form" class="save-style-form" style="display:none">
+        <span class="vector-style-label">Save style</span>
+        <label>Save to <select id="save-style-to" title="Where to save the style">
+          <option value="collection">Collection (this layer)</option>
+          <option value="public">Public (reusable)</option>
+        </select></label>
+        <label>Id <input type="text" id="save-style-id" placeholder="e.g. blue-outline" pattern="[a-zA-Z0-9_-]+" title="Letters, numbers, hyphen, underscore"></label>
+        <label>Title <input type="text" id="save-style-title" placeholder="Optional title"></label>
+        <label>Replace <select id="save-style-replace"><option value="">New</option></select></label>
+        <span id="save-style-default-wrap"><label><input type="checkbox" id="save-style-default"> Set as default</label></span>
+        <button type="button" class="btn btn-sm btn-primary" id="btn-save-style-submit">Save</button>
+        <button type="button" class="btn btn-sm" id="btn-save-style-cancel">Cancel</button>
+      </div>
+    </details>
   </div>
 
   <div id="text-modal" class="modal" role="dialog" aria-hidden="true">
@@ -291,6 +344,7 @@
     const base = {{ base | tojson }};
     const collectionId = {{ collection_id | tojson }};
     const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
+    const hasStaticTiles = {{ has_static_tiles | tojson }};
     const extentBbox = {{ extent_bbox | tojson if extent_bbox else 'null' }};
     const copyBtnSvg = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
     function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -389,13 +443,33 @@
         return { type: 'Feature', id: f.id, geometry: f.geometry, properties: props };
       });
     }
+    function apiBaseUrlItems() {
+      var path = window.location.pathname;
+      var i = path.indexOf('/collections/');
+      var rootPath = i >= 0 ? path.substring(0, i) : '';
+      return window.location.origin + rootPath;
+    }
+    function addCollectionTilesLayer() {
+      if (!hasStaticTiles || map.getSource('tiles')) return;
+      var tileUrl = apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf';
+      map.addSource('tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
+      var s = featurePaintFromStyle(defaultStyle && defaultStyle.style_spec);
+      var beforeId = map.getLayer('fill') ? 'fill' : undefined;
+      map.addLayer({ id: 'tiles-fill', type: 'fill', source: 'tiles', 'source-layer': collectionId, paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } }, beforeId);
+      map.addLayer({ id: 'tiles-line', type: 'line', source: 'tiles', 'source-layer': collectionId, paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity } }, beforeId);
+      if (!s.fillEnabled) map.setLayoutProperty('tiles-fill', 'visibility', 'none');
+    }
+    function removeCollectionTilesLayer() {
+      if (map.getLayer('tiles-line')) map.removeLayer('tiles-line');
+      if (map.getLayer('tiles-fill')) map.removeLayer('tiles-fill');
+      if (map.getSource('tiles')) map.removeSource('tiles');
+    }
     function addOverlayLayers() {
       if (features.length > 0) {
         map.addSource('items', { type: 'geojson', data: { type: 'FeatureCollection', features: featuresWithIdInProps() } });
         var s = featurePaintFromStyle(defaultStyle && defaultStyle.style_spec);
         map.addLayer({ id: 'fill', type: 'fill', source: 'items', paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
         map.addLayer({ id: 'line', type: 'line', source: 'items', paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
-        map.addLayer({ id: 'point', type: 'circle', source: 'items', paint: { 'circle-radius': 5, 'circle-color': s.lineColor } });
         if (!s.fillEnabled) map.setLayoutProperty('fill', 'visibility', 'none');
       }
     }
@@ -439,16 +513,182 @@
       addOverlayLayers();
       fitMapToData(extentBbox);
       document.getElementById('map-basemap').onchange = applyBasemapFromSelect;
-      if (map.getLayer('fill') || map.getLayer('line') || map.getLayer('point')) {
+      var showTilesCb = document.getElementById('show-collection-tiles');
+      if (showTilesCb) {
+        showTilesCb.checked = false;
+        showTilesCb.onchange = function() {
+          if (showTilesCb.checked) addCollectionTilesLayer();
+          else removeCollectionTilesLayer();
+        };
+      }
+      if (map.getLayer('fill') || map.getLayer('line')) {
         var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false });
         map.getCanvas().style.cursor = '';
-        map.on('mouseenter', ['fill', 'line', 'point'], function() { map.getCanvas().style.cursor = 'pointer'; });
-        map.on('mouseleave', ['fill', 'line', 'point'], function() { map.getCanvas().style.cursor = ''; });
-        map.on('click', ['fill', 'line', 'point'], function(e) {
+        map.on('mouseenter', ['fill', 'line'], function() { map.getCanvas().style.cursor = 'pointer'; });
+        map.on('mouseleave', ['fill', 'line'], function() { map.getCanvas().style.cursor = ''; });
+        map.on('click', ['fill', 'line'], function(e) {
           var feat = e.features && e.features[0];
           if (!feat) return;
           popup.setLngLat(e.lngLat).setHTML(popupHtmlForFeature(feat)).addTo(map);
         });
+        function apiBaseUrlItems() {
+          var path = window.location.pathname;
+          var i = path.indexOf('/collections/');
+          var rootPath = i >= 0 ? path.substring(0, i) : '';
+          return window.location.origin + rootPath;
+        }
+        function collectionStylesUrlItems() {
+          return base + '/collections/' + encodeURIComponent(collectionId) + '/styles';
+        }
+        function publicStylesUrlItems() {
+          return base + '/styles';
+        }
+        document.getElementById('layer-style-details').style.display = 'block';
+        var fillCheck = document.getElementById('vector-fill-enable');
+        var fillColor = document.getElementById('vector-fill-color');
+        var fillOpacity = document.getElementById('vector-fill-opacity');
+        var fillOpacityVal = document.getElementById('vector-fill-opacity-val');
+        var lineColor = document.getElementById('vector-line-color');
+        var lineWidth = document.getElementById('vector-line-width');
+        var lineOpacity = document.getElementById('vector-line-opacity');
+        var lineOpacityVal = document.getElementById('vector-line-opacity-val');
+        var linePattern = document.getElementById('vector-line-pattern');
+        function applyVectorStyleItems() {
+          map.setLayoutProperty('fill', 'visibility', fillCheck.checked ? 'visible' : 'none');
+          map.setPaintProperty('fill', 'fill-color', fillColor.value);
+          map.setPaintProperty('fill', 'fill-opacity', fillOpacity.value / 100);
+          map.setPaintProperty('line', 'line-color', lineColor.value);
+          map.setPaintProperty('line', 'line-width', Math.max(0.5, parseFloat(lineWidth.value) || 1));
+          map.setPaintProperty('line', 'line-opacity', lineOpacity.value / 100);
+          map.setPaintProperty('line', 'line-dasharray', LINE_DASH[linePattern.value] || LINE_DASH.solid);
+        }
+        function getCurrentSpec() {
+          return { fillColor: fillColor.value, lineColor: lineColor.value, fillOpacity: fillOpacity.value / 100, lineOpacity: lineOpacity.value / 100, lineWidth: Math.max(0.5, parseFloat(lineWidth.value) || 1), linePattern: linePattern.value || 'solid', fillEnabled: fillCheck.checked };
+        }
+        function updateStyleLegend(spec) {
+          var el = document.getElementById('layer-style-legend');
+          if (!el) return;
+          var fill = (spec && spec.fillColor) || '#58a6ff';
+          var line = (spec && spec.lineColor) || '#58a6ff';
+          var fillOp = (spec && spec.fillOpacity != null) ? spec.fillOpacity : 0.6;
+          var fillOn = !spec || spec.fillEnabled !== false;
+          el.style.backgroundColor = fillOn ? fill : 'transparent';
+          el.style.borderColor = line;
+          el.style.opacity = String(fillOp);
+        }
+        function applySpecToForm(s) {
+          fillColor.value = s.fillColor || '#58a6ff';
+          lineColor.value = s.lineColor || '#58a6ff';
+          fillOpacity.value = Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100);
+          lineOpacity.value = Math.round((s.lineOpacity != null ? s.lineOpacity : 1) * 100);
+          fillOpacityVal.textContent = fillOpacity.value;
+          lineOpacityVal.textContent = lineOpacity.value;
+          lineWidth.value = s.lineWidth != null ? s.lineWidth : 1;
+          linePattern.value = s.linePattern || 'solid';
+          fillCheck.checked = s.fillEnabled !== false;
+          applyVectorStyleItems();
+          updateStyleLegend(getCurrentSpec());
+        }
+        var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
+        applySpecToForm(spec);
+        fillCheck.onchange = function() { applyVectorStyleItems(); updateStyleLegend(getCurrentSpec()); };
+        fillColor.oninput = function() { applyVectorStyleItems(); updateStyleLegend(getCurrentSpec()); };
+        fillOpacity.oninput = function() { fillOpacityVal.textContent = this.value; applyVectorStyleItems(); updateStyleLegend(getCurrentSpec()); };
+        lineColor.oninput = function() { applyVectorStyleItems(); updateStyleLegend(getCurrentSpec()); };
+        lineWidth.oninput = function() { applyVectorStyleItems(); updateStyleLegend(getCurrentSpec()); };
+        lineOpacity.oninput = function() { lineOpacityVal.textContent = this.value; applyVectorStyleItems(); updateStyleLegend(getCurrentSpec()); };
+        linePattern.onchange = function() { applyVectorStyleItems(); updateStyleLegend(getCurrentSpec()); };
+        function loadStylesListItems() {
+          var sel = document.getElementById('vector-style-select');
+          if (!sel) return Promise.resolve();
+          while (sel.firstChild) sel.removeChild(sel.firstChild);
+          sel.appendChild(new Option('Current', ''));
+          return fetch(collectionStylesUrlItems(), { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.ok ? r.json() : Promise.reject(r); }).then(function(data) {
+            var list = data.styles || [];
+            if (list.length) {
+              var g = document.createElement('optgroup');
+              g.label = 'Collection styles';
+              list.forEach(function(s) { g.appendChild(new Option(s.title || s.id, 'c:' + s.id)); });
+              sel.appendChild(g);
+            }
+          }).catch(function(err) { console.warn('Load collection styles failed', collectionStylesUrlItems(), err); }).then(function() {
+            return fetch(publicStylesUrlItems(), { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.ok ? r.json() : Promise.reject(r); }).then(function(data) {
+              var list = data.styles || [];
+              if (list.length) {
+                var g = document.createElement('optgroup');
+                g.label = 'Public styles';
+                list.forEach(function(s) { g.appendChild(new Option(s.title || s.id, 'p:' + s.id)); });
+                sel.appendChild(g);
+              }
+            });
+          }).catch(function(err) { console.warn('Load public styles failed', publicStylesUrlItems(), err); });
+        }
+        function populateReplaceDropdownItems(saveTo) {
+          var rep = document.getElementById('save-style-replace');
+          rep.options.length = 1;
+          var url = saveTo === 'public' ? publicStylesUrlItems() : collectionStylesUrlItems();
+          fetch(url, { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.json(); }).then(function(data) {
+            (data.styles || []).forEach(function(s) { rep.add(new Option(s.title || s.id, s.id)); });
+          }).catch(function() {});
+        }
+        loadStylesListItems();
+        document.getElementById('vector-style-select').onchange = function() {
+          var val = this.value;
+          if (!val) return;
+          var id = val.slice(2);
+          var url = val.indexOf('p:') === 0 ? (publicStylesUrlItems() + '/' + encodeURIComponent(id)) : (collectionStylesUrlItems() + '/' + encodeURIComponent(id));
+          fetch(url, { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.json(); }).then(function(s) { if (s.style_spec) applySpecToForm(s.style_spec); }).catch(function() {});
+        };
+        document.getElementById('btn-save-style').onclick = function() {
+          document.getElementById('save-style-form').style.display = 'flex';
+          document.getElementById('save-style-to').value = 'collection';
+          document.getElementById('save-style-default-wrap').style.display = '';
+          populateReplaceDropdownItems('collection');
+        };
+        document.getElementById('save-style-to').onchange = function() {
+          var isPublic = this.value === 'public';
+          document.getElementById('save-style-default-wrap').style.display = isPublic ? 'none' : '';
+          document.getElementById('save-style-default').checked = false;
+          populateReplaceDropdownItems(this.value);
+        };
+        document.getElementById('btn-save-style-cancel').onclick = function() {
+          document.getElementById('save-style-form').style.display = 'none';
+        };
+        document.getElementById('save-style-replace').onchange = function() {
+          if (this.value) document.getElementById('save-style-id').value = this.value;
+        };
+        document.getElementById('btn-save-style-submit').onclick = function() {
+          var replaceVal = document.getElementById('save-style-replace').value;
+          var idInput = document.getElementById('save-style-id').value.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+          var id = replaceVal || idInput || null;
+          if (!id) { alert('Enter a style id (letters, numbers, hyphen, underscore)'); return; }
+          var title = document.getElementById('save-style-title').value.trim() || null;
+          var saveTo = document.getElementById('save-style-to').value;
+          var setDefault = document.getElementById('save-style-default').checked;
+          var method = 'POST';
+          var url = saveTo === 'public' ? publicStylesUrlItems() : collectionStylesUrlItems();
+          var body = { id: id, style_spec: getCurrentSpec() };
+          if (title) body.title = title;
+          if (saveTo === 'collection') body.set_default = setDefault;
+          if (saveTo === 'public' && replaceVal) {
+            method = 'PUT';
+            url = publicStylesUrlItems() + '/' + encodeURIComponent(id);
+            body = { style_spec: getCurrentSpec() };
+            if (title) body.title = title;
+          }
+          fetch(url, { method: method, headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body) })
+            .then(function(r) { if (!r.ok) return r.json().then(function(j) { throw j; }); return r.json(); })
+            .then(function() {
+              document.getElementById('save-style-form').style.display = 'none';
+              document.getElementById('save-style-id').value = '';
+              document.getElementById('save-style-title').value = '';
+              document.getElementById('save-style-replace').value = '';
+              document.getElementById('save-style-default').checked = false;
+              var newVal = (saveTo === 'public' ? 'p:' : 'c:') + id;
+              loadStylesListItems().then(function() { document.getElementById('vector-style-select').value = newVal; });
+            })
+            .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+        };
       }
     });
 

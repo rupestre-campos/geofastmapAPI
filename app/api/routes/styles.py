@@ -79,6 +79,7 @@ def _normalize_spec(spec: dict | None) -> dict:
 
 @router.get(
     "",
+    response_model=StyleList,
     summary="List public styles",
     description="OGC API - Styles: list named styles not tied to any collection (reusable with any layer).",
 )
