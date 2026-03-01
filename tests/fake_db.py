@@ -285,6 +285,7 @@ class FakeFeaturesCrud:
         property_filters: dict[str, str] | None = None,
         structured_filters: Sequence[PropertyFilter] | None = None,
         fulltext_q: str | None = None,
+        collection_feature_count: int | None = None,
     ) -> Tuple[Sequence[Feature], int]:
         items = [
             f for (cid, _), f in self._store.features.items()

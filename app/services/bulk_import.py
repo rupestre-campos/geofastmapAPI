@@ -7,10 +7,11 @@ import zipfile
 from datetime import datetime
 from typing import Callable
 
-from sqlalchemy import create_engine, delete
+from sqlalchemy import create_engine, delete, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
+from app.models.collection import Collection
 from app.models.feature import Feature
 from app.utils.geo import geojson_to_wkt_element
 
@@ -110,6 +111,9 @@ def run_bulk_import_sync(
                 if on_progress:
                     on_progress("replacing", 0, None)
                 session.execute(delete(Feature).where(Feature.collection_id == collection_id))
+                session.execute(
+                    update(Collection).where(Collection.id == collection_id).values(feature_count=0)
+                )
                 session.commit()
 
             if on_progress:
@@ -150,6 +154,19 @@ def run_bulk_import_sync(
                 if batch:
                     session.bulk_save_objects(batch)
                     session.commit()
+
+            # Update collection feature_count (replace: set to created; append: add created)
+            if mode == "replace":
+                session.execute(
+                    update(Collection).where(Collection.id == collection_id).values(feature_count=created)
+                )
+            else:
+                session.execute(
+                    update(Collection)
+                    .where(Collection.id == collection_id)
+                    .values(feature_count=Collection.feature_count + created)
+                )
+            session.commit()
 
             if on_progress:
                 on_progress("completed", created, created)

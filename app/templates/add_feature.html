@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Add feature – {{ collection_id }} – GeoFast API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1><a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> — Add feature</h1>
+    <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> › Add feature</p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Geometry (GeoJSON)</h2>
+    <p class="meta">Paste or edit a GeoJSON geometry (Point, LineString, Polygon, etc.).</p>
+    <textarea id="geom-json" rows="6" placeholder='{"type":"Point","coordinates":[0,0]}'>{"type":"Point","coordinates":[0,0]}</textarea>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Properties</h2>
+    <p class="meta">Add key/value pairs. Use “Load schema” to copy keys from the first existing feature.</p>
+    <div class="btn-group">
+      <button type="button" class="btn" id="btn-load-schema">Load schema from first item</button>
+      <button type="button" class="btn" id="btn-add-row">+ Add property</button>
+    </div>
+    <table id="props-table" style="margin-top: var(--space);">
+      <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="btn-group" style="margin-top: var(--space);">
+      <button type="button" class="btn btn-primary" id="btn-submit">Create feature</button>
+    </div>
+  </div>
+
+  <p><a href="{{ base }}/collections/{{ collection_id }}/items?f=html" class="btn">← Back to items</a></p>
+{% endblock %}
+{% block script %}
+  <script>
+    const base = {{ base | tojson }};
+    const collectionId = {{ collection_id | tojson }};
+
+    function addRow(key = '', value = '') {
+      const tbody = document.getElementById('props-table').querySelector('tbody');
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td><input type="text" class="prop-key" placeholder="key" value="' + key.replace(/"/g, '&quot;') + '"></td><td><input type="text" class="prop-val" placeholder="value" value="' + value.replace(/"/g, '&quot;') + '"></td><td><button type="button" class="btn del-row">Remove</button></td>';
+      tbody.appendChild(tr);
+      tr.querySelector('.del-row').onclick = () => tr.remove();
+    }
+    document.getElementById('btn-add-row').onclick = () => addRow();
+
+    document.getElementById('btn-load-schema').onclick = function() {
+      fetch(base + '/collections/' + collectionId + '/items?limit=1')
+        .then(r => r.json()).then(fc => {
+          const tbody = document.getElementById('props-table').querySelector('tbody');
+          tbody.innerHTML = '';
+          if (fc.features && fc.features[0] && fc.features[0].properties) {
+            Object.entries(fc.features[0].properties).forEach(([k, v]) => addRow(k, typeof v === 'string' ? v : JSON.stringify(v)));
+          }
+        }).catch(e => alert('Could not load: ' + e));
+    };
+
+    document.getElementById('btn-submit').onclick = function() {
+      let geom;
+      try { geom = JSON.parse(document.getElementById('geom-json').value); } catch (e) { alert('Invalid geometry JSON'); return; }
+      const tbody = document.getElementById('props-table').querySelector('tbody');
+      const props = {};
+      tbody.querySelectorAll('tr').forEach(tr => {
+        const k = tr.querySelector('.prop-key').value.trim();
+        const v = tr.querySelector('.prop-val').value.trim();
+        if (k) props[k] = v;
+      });
+      const body = { type: 'Feature', collection_id: collectionId, geometry: geom, properties: props };
+      fetch(base + '/collections/' + collectionId + '/items', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(r => {
+        if (r.ok) return r.json().then(f => { location.href = base + '/collections/' + collectionId + '/items/' + f.id + '?f=html'; });
+        return r.json().then(j => Promise.reject(j));
+      }).catch(e => alert('Error: ' + (e.detail || JSON.stringify(e))));
+    };
+  </script>
+{% endblock %}

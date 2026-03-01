@@ -18,6 +18,36 @@ def geojson_to_wkt_element(geojson: dict[str, Any] | None, srid: int = 4326) -> 
     return WKTElement(geom.wkt, srid=srid)
 
 
+def _flatten_coords(coords: Any, out: list[float]) -> None:
+    """Flatten GeoJSON coordinates to a list of [x, y, ...] values (pairs for 2D)."""
+    if not isinstance(coords, (list, tuple)):
+        return
+    if len(coords) >= 2 and isinstance(coords[0], (int, float)):
+        out.extend(coords[:2])  # x, y
+        return
+    for item in coords:
+        _flatten_coords(item, out)
+
+
+def bbox_from_geometries(geometries: list[dict[str, Any] | None]) -> list[float] | None:
+    """Compute GeoJSON bbox [minx, miny, maxx, maxy] from a list of GeoJSON geometry dicts.
+    Returns None if no valid coordinates. Follows RFC 7946 (GeoJSON) bbox format."""
+    xs: list[float] = []
+    ys: list[float] = []
+    for g in geometries:
+        if not g or "coordinates" not in g:
+            continue
+        flat: list[float] = []
+        _flatten_coords(g.get("coordinates"), flat)
+        for i in range(0, len(flat), 2):
+            if i + 1 < len(flat):
+                xs.append(flat[i])
+                ys.append(flat[i + 1])
+    if not xs or not ys:
+        return None
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
 def geometry_to_geojson(geom: Any) -> dict[str, Any] | None:
     """Convert a GeoAlchemy2 geometry (WKBElement/WKTElement), raw WKB bytes, or hex WKB str to a GeoJSON geometry dict."""
     if geom is None:

@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     tiles_dynamic_cache_ttl_seconds: int = 60
     tippecanoe_minzoom: int = 0
     tippecanoe_maxzoom: int = 16
+    google_maps_api_key: str = ""  # optional; for Google Satellite/Hybrid basemaps in HTML
 
     @property
     def database_sync_url(self) -> str:

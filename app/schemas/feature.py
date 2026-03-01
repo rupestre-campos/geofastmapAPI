@@ -60,6 +60,7 @@ class FeaturePatch(BaseModel):
 class FeatureCollection(BaseModel):
     type: str = "FeatureCollection"
     features: list[FeatureRead]
+    bbox: list[float] | None = Field(default=None, description="GeoJSON bbox [minx, miny, maxx, maxy] of the features.")
     numberMatched: int | None = None
     numberReturned: int | None = None
     links: list[Link] = Field(default_factory=list, description="OGC links (e.g. self).")

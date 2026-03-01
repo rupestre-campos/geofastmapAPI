@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}Collections – GeoFast API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Collections</h1>
+    <p class="meta">Create a collection or open an existing one.</p>
+  </header>
+
+  {% if collections_with_bbox %}
+  <style>
+    .map-popup { padding: 4px 0; min-width: 240px; color: #000; }
+    .map-popup-item { padding: 10px 0; border-bottom: 1px solid #ddd; }
+    .map-popup-item:last-child { border-bottom: none; }
+    .map-popup-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; color: #666; margin-bottom: 2px; }
+    .map-popup-title-value { font-size: 1.15rem; font-weight: 700; margin-bottom: 8px; color: #000; }
+    .map-popup-id-value { font-size: 0.9rem; color: #333; margin-bottom: 6px; }
+    .map-popup-desc-value { font-size: 0.9rem; margin-bottom: 8px; color: #000; line-height: 1.3; }
+    .map-popup-item a { color: #0566c8; text-decoration: none; font-weight: 500; }
+    .map-popup-item a:hover { text-decoration: underline; }
+  </style>
+  <div class="card">
+    <h2 class="card-title">Map of collections</h2>
+    <p class="meta">Click a bbox to see collection info and open it.</p>
+    <div id="map" class="map-container"></div>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2 class="card-title">Create collection</h2>
+    <form id="form-create-collection">
+      <div class="form-row">
+        <label for="create-id">ID <span class="meta">(required, e.g. my_layer)</span></label>
+        <input type="text" id="create-id" name="id" required placeholder="my_layer">
+      </div>
+      <div class="form-row">
+        <label for="create-title">Title</label>
+        <input type="text" id="create-title" name="title" placeholder="Optional display name">
+      </div>
+      <div class="form-row">
+        <label for="create-description">Description</label>
+        <input type="text" id="create-description" name="description" placeholder="Optional">
+      </div>
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary">Create collection</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Your collections</h2>
+    {% if collections %}
+    <ul class="links">
+      {% for c in collections %}
+      <li>
+        <span><a href="{{ base }}/collections/{{ c.id }}?f=html"><strong>{{ c.id }}</strong></a>{% if c.title %} — {{ c.title }}{% endif %}</span>
+        <a href="{{ base }}/collections/{{ c.id }}?f=html" class="btn">Open</a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="meta">No collections yet. Create one above.</p>
+    {% endif %}
+  </div>
+
+  <p class="meta">JSON: <a href="{{ base }}/collections">{{ base }}/collections</a></p>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
+  <script>
+    const base = {{ base | tojson }};
+    const collectionsWithBbox = {{ collections_with_bbox | tojson }};
+
+    if (document.getElementById('map') && collectionsWithBbox.length > 0) {
+      const geojson = {
+        type: 'FeatureCollection',
+        features: collectionsWithBbox.map(function(c) {
+          var b = c.bbox;
+          return {
+            type: 'Feature',
+            id: c.id,
+            properties: { collection_id: c.id, title: c.title || c.id, description: c.description || '' },
+            geometry: {
+              type: 'Polygon',
+              coordinates: [[[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]], [b[0], b[1]]]]
+            }
+          };
+        })
+      };
+      const mapStyle = {
+        version: 8,
+        sources: {
+          basemap: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256 },
+          collections: { type: 'geojson', data: geojson }
+        },
+        layers: [
+          { id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 },
+          { id: 'collections-fill', type: 'fill', source: 'collections', paint: { 'fill-color': '#58a6ff', 'fill-opacity': 0.25 } },
+          { id: 'collections-line', type: 'line', source: 'collections', paint: { 'line-color': '#58a6ff', 'line-width': 2 } }
+        ]
+      };
+      const map = new maplibregl.Map({ container: 'map', style: mapStyle, renderWorldCopies: false });
+      map.on('load', function() {
+        map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+        var bounds = geojson.features.reduce(function(acc, f) {
+          var ring = f.geometry.coordinates[0];
+          ring.forEach(function(p) {
+            acc[0] = Math.min(acc[0], p[0]); acc[1] = Math.min(acc[1], p[1]);
+            acc[2] = Math.max(acc[2], p[0]); acc[3] = Math.max(acc[3], p[1]);
+          });
+          return acc;
+        }, [Infinity, Infinity, -Infinity, -Infinity]);
+        if (bounds[0] !== Infinity) {
+          map.fitBounds([[bounds[0], bounds[1]], [bounds[2], bounds[3]]], { padding: 40, maxZoom: 14 });
+        } else {
+          map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+        }
+      });
+      var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false });
+      map.on('click', 'collections-fill', function(e) {
+        if (!e.features || e.features.length === 0) return;
+        var html = '';
+        e.features.forEach(function(f) {
+          var id = f.properties.collection_id;
+          var title = f.properties.title || id;
+          var description = f.properties.description || '';
+          var href = base + '/collections/' + encodeURIComponent(id) + '?f=html';
+          html += '<div class="map-popup-item">';
+          html += '<div class="map-popup-label">Title</div>';
+          html += '<div class="map-popup-title-value">' + escapeHtml(title) + '</div>';
+          html += '<div class="map-popup-label">Layer id</div>';
+          html += '<div class="map-popup-id-value">' + escapeHtml(id) + '</div>';
+          html += '<div class="map-popup-label">Description</div>';
+          html += '<div class="map-popup-desc-value">' + (description ? escapeHtml(description) : '—') + '</div>';
+          html += '<a href="' + escapeHtml(href) + '">Open collection →</a>';
+          html += '</div>';
+        });
+        popup.setLngLat(e.lngLat).setHTML('<div class="map-popup">' + html + '</div>').addTo(map);
+      });
+      function escapeHtml(s) {
+        var div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+      map.on('mouseenter', 'collections-fill', function() { map.getCanvas().style.cursor = 'pointer'; });
+      map.on('mouseleave', 'collections-fill', function() { map.getCanvas().style.cursor = ''; });
+    }
+
+    document.getElementById('form-create-collection').onsubmit = function(e) {
+      e.preventDefault();
+      const id = document.getElementById('create-id').value.trim();
+      const title = document.getElementById('create-title').value.trim();
+      const description = document.getElementById('create-description').value.trim();
+      const body = { id: id };
+      if (title) body.title = title;
+      if (description) body.description = description;
+      fetch(base + '/collections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(r => {
+        if (r.ok) location.href = base + '/collections/' + encodeURIComponent(id) + '?f=html';
+        else return r.json().then(j => Promise.reject(j));
+      }).catch(e => alert('Error: ' + (e.detail || JSON.stringify(e))));
+    };
+  </script>
+{% endblock %}

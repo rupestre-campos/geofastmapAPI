@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import collection_tiles as tiles_crud
+from app.crud import styles as styles_crud
 from app.db.features_partitions import ensure_features_partition
 from app.models.collection import Collection
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
@@ -142,6 +143,7 @@ async def delete_collection(db: AsyncSession, collection_id: str) -> bool:
                 os.unlink(rec.pmtiles_path)
         except OSError:
             pass
+    await styles_crud.delete_collection_styles(db, collection_id)
     await db.delete(collection)
     await db.commit()
     return True

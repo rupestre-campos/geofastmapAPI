@@ -1,0 +1,567 @@
+{% extends "base.html" %}
+{% block title %}Items – {{ collection_id }} – GeoFast API{% endblock %}
+{% block head %}
+  <style>
+    .items-table-card .table-scroll-wrap {
+      overflow: auto;
+      max-height: min(55vh, 420px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: var(--space);
+    }
+    .items-table-card #items-table thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--card);
+      box-shadow: 0 1px 0 var(--border);
+    }
+    .items-table-card #items-table {
+      margin: 0;
+      min-width: 100%;
+    }
+    .items-table-card #items-table th,
+    .items-table-card #items-table td {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 220px;
+    }
+    .items-table-card #items-table .col-id { min-width: 140px; max-width: 240px; }
+    .items-table-card #items-table .col-actions { min-width: 60px; max-width: 80px; }
+    .items-table-card .expandable-cell {
+      cursor: pointer;
+    }
+    .items-table-card .expandable-cell:hover .cell-content { color: var(--accent-hover); }
+    .items-table-card #items-table td { position: relative; }
+    .items-table-card .cell-wrap { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+    .items-table-card .cell-wrap .cell-content { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .items-table-card .cell-copy-btn {
+      flex-shrink: 0;
+      opacity: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg-elevated);
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .items-table-card #items-table tbody tr:hover .cell-copy-btn,
+    .items-table-card .cell-copy-btn:focus { opacity: 1; }
+    .items-table-card .cell-copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .items-table-card .cell-copy-btn.copied { color: var(--accent); border-color: var(--accent); }
+    .items-table-card .cell-copy-btn.copied svg { color: var(--accent); }
+    .items-table-card .cell-copy-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      padding: var(--space-lg);
+    }
+    .modal[aria-hidden="false"] { display: flex; }
+    .modal-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      cursor: pointer;
+    }
+    .modal-content {
+      position: relative;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      max-width: 90vw;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--space) var(--space-lg);
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-title { margin: 0; font-size: 1rem; }
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 0 0.25rem;
+      line-height: 1;
+    }
+    .modal-close:hover { color: var(--text); }
+    .modal-body {
+      padding: var(--space-lg);
+      overflow: auto;
+      flex: 1;
+      min-height: 0;
+    }
+    .modal-body pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 60vh;
+    }
+    .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+    .pagination {
+      display: flex;
+      align-items: center;
+      gap: var(--space);
+      flex-wrap: wrap;
+      margin-top: var(--space);
+      padding-top: var(--space);
+      border-top: 1px solid var(--border);
+    }
+    .pagination-info { color: var(--text-secondary); font-size: 0.85rem; }
+    .btn-disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
+    .map-popup { min-width: 160px; max-width: 320px; font-size: 0.85rem; color: #000; }
+    .map-popup-id { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
+    .map-popup-id a { color: #1967d2; }
+    .map-popup-row { margin-top: 0.25rem; word-break: break-word; color: #000; }
+    .map-popup-row strong { font-weight: 700; margin-right: 0.35rem; color: #000; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1><a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> — Items</h1>
+    <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> › Items</p>
+    <p class="meta" id="items-summary">{{ number_matched }} matched, {{ number_returned }} shown</p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Search & filters</h2>
+    <form method="get" action="{{ base }}/collections/{{ collection_id }}/items" id="search-form">
+      <input type="hidden" name="f" value="html">
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Limit</label>
+          <input type="number" name="limit" value="{{ limit }}" min="1" max="1000">
+        </div>
+        <div class="form-row">
+          <label>Offset</label>
+          <input type="number" name="offset" value="{{ offset }}" min="0">
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Bbox <span class="meta">(minx, miny, maxx, maxy)</span></label>
+        <input type="text" name="bbox" value="{{ bbox or '' }}" placeholder="-10, 40, 10, 50">
+      </div>
+      <div class="form-row">
+        <label>Datetime <span class="meta">(instant or range)</span></label>
+        <input type="text" name="datetime" value="{{ datetime_param or '' }}" placeholder="2024-01-01 or 2024-01-01/2024-12-31">
+      </div>
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Sort by</label>
+          <select name="sortby">
+            <option value="">—</option>
+            <option value="id" {{ 'selected' if sortby == 'id' else '' }}>id</option>
+            <option value="created_at" {{ 'selected' if sortby == 'created_at' else '' }}>created_at</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>&nbsp;</label>
+          <label class="checkbox-inline"><input type="checkbox" name="sortdesc" value="true" {{ 'checked' if sortdesc else '' }}> Descending</label>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Filter <span class="meta">(key:op:value per line; op: eq, ne, gt, gte, lt, lte, like, ilike)</span></label>
+        <textarea name="filter" rows="2" placeholder="name:eq:Main">{{ filter_param }}</textarea>
+      </div>
+      <div class="form-row">
+        <label>Full-text search (q)</label>
+        <input type="text" name="q" value="{{ q or '' }}" placeholder="Search in properties">
+      </div>
+      <div class="form-row">
+        <label>Properties <span class="meta">(comma-separated; empty = all)</span></label>
+        <input type="text" name="properties" value="{{ properties or '' }}" placeholder="name, area">
+      </div>
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary">Apply filters</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card items-table-card">
+    <h2 class="card-title">Results <span class="meta" id="results-count">({{ number_returned }} rows — click row to focus on map)</span></h2>
+    {% if features %}
+    <div class="table-scroll-wrap">
+      <table id="items-table">
+        <thead>
+          <tr id="items-thead-row">
+            <th></th>
+            <th>ID</th>
+            {% for k in property_keys %}<th>{{ k }}</th>{% endfor %}
+          </tr>
+        </thead>
+        <tbody id="items-tbody">
+          {% for f in features %}
+          <tr class="clickable-row" data-feature-id="{{ f.id }}" title="Click to focus on map">
+            <td class="col-actions"><a href="{{ base }}/collections/{{ collection_id }}/items/{{ f.id }}?f=html" class="btn btn-sm">View</a></td>
+            <td class="col-id" data-copy="{{ f.id | e }}">
+              <span class="cell-wrap">
+                <span class="cell-content"><a href="{{ base }}/collections/{{ collection_id }}/items/{{ f.id }}?f=html">{{ f.id }}</a></span>
+                <button type="button" class="cell-copy-btn" aria-label="Copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              </span>
+            </td>
+            {% for k in property_keys %}
+            {% set v = (f.properties or {}).get(k, '') %}
+            {% set txt = v | tojson if v is mapping or (v is sequence and v is not string) else (v | default('') | string) %}
+            {% set is_long = txt | length > 40 %}
+            <td class="{% if is_long %}expandable-cell{% endif %}" {% if is_long %}data-full="{{ txt | e }}"{% endif %} data-copy="{{ txt | e }}">
+              <span class="cell-wrap">
+                <span class="cell-content">{% if is_long %}{{ txt[:37] }}…{% else %}{{ txt }}{% endif %}</span>
+                <button type="button" class="cell-copy-btn" aria-label="Copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              </span>
+            </td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if prev_page_url or next_page_url %}
+    <div class="pagination" data-offset="{{ offset }}" data-limit="{{ limit }}" data-number-matched="{{ number_matched }}" data-base="{{ base }}" data-collection-id="{{ collection_id }}">
+      {% if prev_page_url %}
+      <a href="{{ prev_page_url }}" class="btn pagination-prev">← Previous</a>
+      {% else %}
+      <span class="btn btn-disabled" aria-disabled="true">← Previous</span>
+      {% endif %}
+      <span class="pagination-info">{% if number_returned %}{{ offset + 1 }}–{{ offset + number_returned }} of {{ number_matched }}{% else %}0 of {{ number_matched }}{% endif %}</span>
+      {% if next_page_url %}
+      <a href="{{ next_page_url }}" class="btn pagination-next">Next →</a>
+      {% else %}
+      <span class="btn btn-disabled" aria-disabled="true">Next →</span>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    <p class="meta">No features in this result set. Adjust filters or add features.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Map</h2>
+    <div id="map" class="map-container">
+      <div class="map-controls">
+        <select id="map-basemap" title="Basemap">
+          <option value="osm">OpenStreetMap</option>
+          <option value="streets">Esri Streets</option>
+          <option value="satellite">Esri Satellite</option>
+          <option value="hybrid">Esri Hybrid</option>
+          <option value="google_satellite">Google Satellite</option>
+          <option value="google_hybrid">Google Hybrid</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div id="text-modal" class="modal" role="dialog" aria-hidden="true">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">Full content</h3>
+        <button type="button" class="modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <pre id="text-modal-body"></pre>
+      </div>
+    </div>
+  </div>
+
+  <p class="meta">GeoJSON: <a href="{{ items_url_json }}" id="items-json-link">{{ items_url_json }}</a></p>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
+  <script>
+    let features = {{ features_geojson | tojson }};
+    const base = {{ base | tojson }};
+    const collectionId = {{ collection_id | tojson }};
+    const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
+    const extentBbox = {{ extent_bbox | tojson if extent_bbox else 'null' }};
+    const copyBtnSvg = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    function valText(v) { if (v === null || v === undefined) return ''; if (typeof v === 'object') return JSON.stringify(v); return String(v); }
+    function renderTable(data) {
+      var keys = [];
+      (data.features || []).forEach(function(f) {
+        var p = f.properties || {}; Object.keys(p).forEach(function(k) { if (keys.indexOf(k) === -1) keys.push(k); });
+      });
+      keys.sort();
+      var theadRow = document.getElementById('items-thead-row');
+      if (theadRow) {
+        var ths = '<th></th><th>ID</th>' + keys.map(function(k) { return '<th>' + esc(k) + '</th>'; }).join('');
+        theadRow.innerHTML = ths;
+      }
+      var tbody = document.getElementById('items-tbody');
+      if (!tbody) return;
+      var rows = (data.features || []).map(function(f) {
+        var id = f.id || '';
+        var props = f.properties || {};
+        var viewTd = '<td class="col-actions"><a href="' + esc(base + '/collections/' + collectionId + '/items/' + id + '?f=html') + '" class="btn btn-sm">View</a></td>';
+        var idTd = '<td class="col-id" data-copy="' + esc(id) + '"><span class="cell-wrap"><span class="cell-content"><a href="' + esc(base + '/collections/' + collectionId + '/items/' + id + '?f=html') + '">' + esc(id) + '</a></span><button type="button" class="cell-copy-btn" aria-label="Copy">' + copyBtnSvg + '</button></span></td>';
+        var propTds = keys.map(function(k) {
+          var v = props[k];
+          var txt = valText(v);
+          var isLong = txt.length > 40;
+          var display = isLong ? esc(txt.substring(0, 37)) + '…' : esc(txt);
+          var cls = isLong ? 'expandable-cell' : '';
+          var dataFull = isLong ? ' data-full="' + esc(txt) + '"' : '';
+          return '<td class="' + cls + '"' + dataFull + ' data-copy="' + esc(txt) + '"><span class="cell-wrap"><span class="cell-content">' + display + '</span><button type="button" class="cell-copy-btn" aria-label="Copy">' + copyBtnSvg + '</button></span></td>';
+        });
+        return '<tr class="clickable-row" data-feature-id="' + esc(id) + '" title="Click to focus on map">' + viewTd + idTd + propTds.join('') + '</tr>';
+      });
+      tbody.innerHTML = rows.join('');
+    }
+    function updatePageState(data, newOffset, newUrl, paginationEl) {
+      var n = data.numberMatched != null ? data.numberMatched : 0;
+      var r = data.numberReturned != null ? data.numberReturned : (data.features ? data.features.length : 0);
+      features = data.features || [];
+      if (document.getElementById('items-summary')) document.getElementById('items-summary').textContent = n + ' matched, ' + r + ' shown';
+      if (document.getElementById('results-count')) document.getElementById('results-count').textContent = '(' + r + ' rows — click row to focus on map)';
+      var limit = parseInt(paginationEl.getAttribute('data-limit'), 10) || 100;
+      paginationEl.setAttribute('data-offset', newOffset);
+      var prevUrl = newOffset > 0 ? (function(){ var u = new URL(newUrl); u.searchParams.set('offset', newOffset - limit); return u.toString(); })() : '';
+      var nextUrl = newOffset + r < n ? (function(){ var u = new URL(newUrl); u.searchParams.set('offset', newOffset + limit); return u.toString(); })() : '';
+      var prevHtml = newOffset > 0 ? '<a href="' + esc(prevUrl) + '" class="btn pagination-prev">← Previous</a>' : '<span class="btn btn-disabled" aria-disabled="true">← Previous</span>';
+      var nextHtml = newOffset + r < n ? '<a href="' + esc(nextUrl) + '" class="btn pagination-next">Next →</a>' : '<span class="btn btn-disabled" aria-disabled="true">Next →</span>';
+      var infoText = r ? (newOffset + 1) + '–' + (newOffset + r) + ' of ' + n : '0 of ' + n;
+      paginationEl.innerHTML = prevHtml + '<span class="pagination-info">' + esc(infoText) + '</span>' + nextHtml;
+      if (features.length > 0 && !map.getSource('items')) addOverlayLayers();
+      else if (map.getSource('items')) map.getSource('items').setData({ type: 'FeatureCollection', features: featuresWithIdInProps() });
+      fitMapToData(data.bbox || null);
+      var jsonLink = document.getElementById('items-json-link');
+      if (jsonLink) { var u = new URL(newUrl); u.searchParams.delete('f'); jsonLink.href = u.toString(); jsonLink.textContent = u.toString(); }
+    }
+
+    const googleKey = {{ google_maps_api_key | tojson }};
+    const BASEMAPS = {
+      osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] },
+      streets: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}'] },
+      satellite: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] },
+      hybrid: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], labels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}' },
+      google_satellite: { tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] },
+      google_hybrid: { tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] }
+    };
+    const mapStyle = {
+      version: 8,
+      sources: { basemap: { type: 'raster', tiles: BASEMAPS.osm.tiles, tileSize: 256 } },
+      layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 }]
+    };
+
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: mapStyle,
+      center: [0, 20],
+      zoom: 2,
+      renderWorldCopies: false
+    });
+
+    var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
+    function featurePaintFromStyle(spec) {
+      spec = spec || {};
+      var fillColor = spec.fillColor || '#58a6ff';
+      var lineColor = spec.lineColor || '#58a6ff';
+      var fillOpacity = spec.fillOpacity != null ? spec.fillOpacity : 0.5;
+      var lineOpacity = spec.lineOpacity != null ? spec.lineOpacity : 1;
+      var lineWidth = spec.lineWidth != null ? spec.lineWidth : 1;
+      var lineDash = LINE_DASH[spec.linePattern] || LINE_DASH.solid;
+      var fillEnabled = spec.fillEnabled !== false;
+      return { fillColor: fillColor, lineColor: lineColor, fillOpacity: fillOpacity, lineOpacity: lineOpacity, lineWidth: lineWidth, lineDash: lineDash, fillEnabled: fillEnabled };
+    }
+    function featuresWithIdInProps() {
+      return features.map(function(f) {
+        var props = f.properties ? Object.assign({}, f.properties) : {};
+        if (f.id != null && !Object.prototype.hasOwnProperty.call(props, 'id')) props.id = f.id;
+        return { type: 'Feature', id: f.id, geometry: f.geometry, properties: props };
+      });
+    }
+    function addOverlayLayers() {
+      if (features.length > 0) {
+        map.addSource('items', { type: 'geojson', data: { type: 'FeatureCollection', features: featuresWithIdInProps() } });
+        var s = featurePaintFromStyle(defaultStyle && defaultStyle.style_spec);
+        map.addLayer({ id: 'fill', type: 'fill', source: 'items', paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
+        map.addLayer({ id: 'line', type: 'line', source: 'items', paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
+        map.addLayer({ id: 'point', type: 'circle', source: 'items', paint: { 'circle-radius': 5, 'circle-color': s.lineColor } });
+        if (!s.fillEnabled) map.setLayoutProperty('fill', 'visibility', 'none');
+      }
+    }
+    function applyBasemapFromSelect() {
+      var v = document.getElementById('map-basemap').value;
+      var cfg = BASEMAPS[v];
+      map.getSource('basemap').setTiles(cfg.tiles);
+      if (cfg.labels) {
+        if (!map.getSource('basemap-labels')) {
+          map.addSource('basemap-labels', { type: 'raster', tiles: [cfg.labels], tileSize: 256 });
+          var beforeId = map.getLayer('fill') ? 'fill' : undefined;
+          map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: 0, maxzoom: 22 }, beforeId);
+        }
+      } else {
+        if (map.getLayer('basemap-labels')) { map.removeLayer('basemap-labels'); map.removeSource('basemap-labels'); }
+      }
+    }
+
+    function escapeHtml(s) {
+      var d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+    function popupHtmlForFeature(feat) {
+      var props = feat.properties || {};
+      var id = props.id != null ? String(props.id) : (feat.id != null ? String(feat.id) : '—');
+      var featureUrl = base + '/collections/' + collectionId + '/items/' + encodeURIComponent(id) + '?f=html';
+      var parts = ['<div class="map-popup">', '<div class="map-popup-id"><strong>ID</strong> <a href="' + escapeHtml(featureUrl) + '">' + escapeHtml(id) + '</a></div>'];
+      Object.keys(props).sort().forEach(function(k) {
+        if (k === 'id') return;
+        var v = props[k];
+        var val = v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+        parts.push('<div class="map-popup-row"><strong>' + escapeHtml(k) + '</strong> ' + escapeHtml(val) + '</div>');
+      });
+      parts.push('</div>');
+      return parts.join('');
+    }
+
+    map.on('load', function() {
+      applyBasemapFromSelect();
+      addOverlayLayers();
+      fitMapToData(extentBbox);
+      document.getElementById('map-basemap').onchange = applyBasemapFromSelect;
+      if (map.getLayer('fill') || map.getLayer('line') || map.getLayer('point')) {
+        var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false });
+        map.getCanvas().style.cursor = '';
+        map.on('mouseenter', ['fill', 'line', 'point'], function() { map.getCanvas().style.cursor = 'pointer'; });
+        map.on('mouseleave', ['fill', 'line', 'point'], function() { map.getCanvas().style.cursor = ''; });
+        map.on('click', ['fill', 'line', 'point'], function(e) {
+          var feat = e.features && e.features[0];
+          if (!feat) return;
+          popup.setLngLat(e.lngLat).setHTML(popupHtmlForFeature(feat)).addTo(map);
+        });
+      }
+    });
+
+    function bboxFromGeom(geom) {
+      if (!geom || !geom.coordinates) return null;
+      const flat = (arr, out) => { if (Array.isArray(arr[0])) arr.forEach(a => flat(a, out)); else out.push(arr[0], arr[1]); };
+      const coords = []; flat(geom.coordinates, coords);
+      const xs = coords.filter((_, i) => i % 2 === 0), ys = coords.filter((_, i) => i % 2 === 1);
+      return xs.length ? [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]] : null;
+    }
+    function bboxFromFeatures(featureList) {
+      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      var found = false;
+      (featureList || []).forEach(function(f) {
+        var b = bboxFromGeom(f.geometry);
+        if (b) {
+          found = true;
+          minX = Math.min(minX, b[0][0]); minY = Math.min(minY, b[0][1]);
+          maxX = Math.max(maxX, b[1][0]); maxY = Math.max(maxY, b[1][1]);
+        }
+      });
+      return found ? [[minX, minY], [maxX, maxY]] : null;
+    }
+    function fitMapToData(geojsonBbox) {
+      var bbox;
+      if (geojsonBbox && Array.isArray(geojsonBbox) && geojsonBbox.length >= 4) {
+        bbox = [[geojsonBbox[0], geojsonBbox[1]], [geojsonBbox[2], geojsonBbox[3]]];
+      } else {
+        bbox = bboxFromFeatures(features);
+      }
+      if (bbox) map.fitBounds(bbox, { padding: 60, duration: 0 });
+      else map.fitBounds([[-180, -90], [180, 90]], { padding: 0, duration: 0 });
+    }
+    var itemsTable = document.getElementById('items-table');
+    if (itemsTable) {
+      itemsTable.addEventListener('click', function(e) {
+        var copyBtn = e.target.closest('.cell-copy-btn');
+        if (copyBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          var td = copyBtn.closest('td');
+          var text = td && td.dataset.copy ? td.dataset.copy : (td ? td.textContent : '');
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function() {
+              copyBtn.classList.add('copied');
+              copyBtn.setAttribute('aria-label', 'Copied');
+              setTimeout(function() { copyBtn.classList.remove('copied'); copyBtn.setAttribute('aria-label', 'Copy'); }, 1500);
+            }).catch(function() { copyBtn.setAttribute('aria-label', 'Copy failed'); });
+          }
+          return;
+        }
+      });
+    }
+    if (itemsTable) {
+      itemsTable.addEventListener('click', function(e) {
+        var row = e.target.closest('.clickable-row');
+        if (!row) return;
+        if (e.target.tagName === 'A') return;
+        if (e.target.closest('.cell-copy-btn')) return;
+        var cell = e.target.closest('.expandable-cell');
+        if (cell && cell.dataset.full) {
+          e.stopPropagation();
+          var modal = document.getElementById('text-modal');
+          document.getElementById('text-modal-body').textContent = cell.dataset.full;
+          modal.setAttribute('aria-hidden', 'false');
+          return;
+        }
+        var id = row.getAttribute('data-feature-id');
+        var feat = features.find(function(f) { return f.id === id; });
+        if (feat && feat.geometry && map.getSource('items')) {
+          var bbox = bboxFromGeom(feat.geometry);
+          if (bbox) {
+            map.fitBounds(bbox, { padding: 60, duration: 500 });
+            document.getElementById('map').scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }
+      });
+    }
+
+    var paginationEl = document.querySelector('.pagination');
+    function loadPageAtUrl(url) {
+      var jsonUrl = new URL(url);
+      jsonUrl.searchParams.delete('f');
+      var newOffset = parseInt(jsonUrl.searchParams.get('offset') || '0', 10);
+      return fetch(jsonUrl.toString(), { headers: { 'Accept': 'application/geo+json' } })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          renderTable(data);
+          if (paginationEl) updatePageState(data, newOffset, url, paginationEl);
+        });
+    }
+    if (paginationEl) {
+      paginationEl.addEventListener('click', function(e) {
+        var link = e.target.closest('a.pagination-prev, a.pagination-next');
+        if (!link || !link.href) return;
+        e.preventDefault();
+        loadPageAtUrl(link.href).then(function() { history.pushState({}, '', link.href); })
+          .catch(function() { window.location.href = link.href; });
+      });
+    }
+    window.addEventListener('popstate', function() {
+      if (!document.querySelector('.pagination') || !window.location.pathname.match(/\/collections\/[^/]+\/items$/)) return;
+      loadPageAtUrl(window.location.href).catch(function() {});
+    });
+
+    var modal = document.getElementById('text-modal');
+    function closeModal() {
+      modal.setAttribute('aria-hidden', 'true');
+    }
+    modal.querySelector('.modal-backdrop').onclick = closeModal;
+    modal.querySelector('.modal-close').onclick = closeModal;
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && modal.getAttribute('aria-hidden') === 'false') closeModal();
+    });
+  </script>
+{% endblock %}

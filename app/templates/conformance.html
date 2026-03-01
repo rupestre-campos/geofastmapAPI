@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Conformance – GeoFast API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Conformance</h1>
+    <p class="meta">OGC API conformance classes implemented by this service.</p>
+  </header>
+  <div class="card">
+    <h2 class="card-title">Conforms to</h2>
+    <ul class="links">
+      {% for uri in conforms_to %}
+      <li><a href="{{ uri }}" target="_blank" rel="noopener">{{ uri }}</a></li>
+      {% endfor %}
+    </ul>
+  </div>
+  <p class="meta">JSON: <a href="{{ base }}/conformance">{{ base }}/conformance</a></p>
+{% endblock %}

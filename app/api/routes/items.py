@@ -6,8 +6,10 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.html import html_response, wants_html
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
+from app.crud import styles as styles_crud
 from app.db.session import get_db
 from app.models.feature import Feature
 from app.services.bulk_queue import BulkJobPayload, enqueue
@@ -24,7 +26,7 @@ from app.schemas.feature import (
 )
 from app.api.responses import GeoJSONResponse
 from app.schemas.ogc import Link
-from app.utils.geo import geometry_to_geojson
+from app.utils.geo import bbox_from_geometries, geometry_to_geojson
 from app.utils.datetime_parse import parse_datetime_param
 from app.utils.property_filters import parse_filter_param
 
@@ -35,8 +37,8 @@ def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
-# Reserved query params for items list (not attribute filters)
-ITEMS_RESERVED_PARAMS = {"limit", "offset", "bbox", "datetime", "sortby", "sortdesc", "properties", "filter", "q"}
+# Reserved query params for items list (not attribute filters). Include "f" for ?f=html (HTML view).
+ITEMS_RESERVED_PARAMS = {"limit", "offset", "bbox", "datetime", "sortby", "sortdesc", "properties", "filter", "q", "f"}
 
 
 def _feature_to_read(
@@ -61,10 +63,8 @@ def _feature_to_read(
 
 @router.get(
     "/{collection_id}/items",
-    response_model=FeatureCollection,
-    response_class=GeoJSONResponse,
     summary="List items (features) for a collection",
-    description="OGC API Features: limit, offset, bbox, datetime, sortby, sortdesc; filter=key:op:value (op: eq, ne, gt, gte, lt, lte, like, ilike); q=full-text search; legacy name=value; properties (attribute selection).",
+    description="OGC API Features: limit, offset, bbox, datetime, sortby, sortdesc; filter=key:op:value; q=full-text; properties. Use ?f=html for HTML (search form, map).",
 )
 async def list_items(
     request: Request,
@@ -79,7 +79,7 @@ async def list_items(
     properties_include: str | None = Query(None, alias="properties", description="Comma-separated property names to return (attribute selection)."),
     filter_param: list[str] | None = Query(None, alias="filter", description="Structured filters: key:op:value (op: eq, ne, gt, gte, lt, lte, like, ilike). Repeat for AND."),
     q: str | None = Query(None, description="Full-text search across all property values."),
-) -> FeatureCollection:
+):
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(
@@ -87,7 +87,11 @@ async def list_items(
             detail="Collection not found",
         )
     settings = get_settings()
-    limit = limit if limit is not None else settings.items_default_limit
+    # HTML view: default to a small page (100) for fast load when limit not specified
+    if wants_html(request) and "limit" not in request.query_params:
+        limit = limit if limit is not None else 100
+    else:
+        limit = limit if limit is not None else settings.items_default_limit
     limit = min(limit, settings.items_max_limit)
     bbox_tuple: tuple[float, float, float, float] | None = None
     if bbox:
@@ -100,7 +104,9 @@ async def list_items(
     dt_start, dt_end = None, None
     if datetime_param:
         dt_start, dt_end = parse_datetime_param(datetime_param)
-    # Structured filters (filter=key:op:value) and full-text (q=)
+    # Structured filters (filter=key:op:value). Allow newline-separated from HTML form.
+    if filter_param:
+        filter_param = [x for s in filter_param for x in s.strip().split("\n") if x.strip()]
     structured_filters = parse_filter_param(filter_param) if filter_param else []
     fulltext_q = q.strip() if q and q.strip() else None
 
@@ -127,6 +133,7 @@ async def list_items(
         property_filters=property_filters or None,
         structured_filters=structured_filters or None,
         fulltext_q=fulltext_q,
+        collection_feature_count=collection.feature_count,
     )
     base = _base_url(request)
     base_path = f"{base}/collections/{collection_id}/items"
@@ -143,12 +150,80 @@ async def list_items(
         links.append(Link(href=_page_href(offset + limit), rel="next", type="application/geo+json"))
     if offset > 0:
         links.append(Link(href=_page_href(max(0, offset - limit)), rel="prev", type="application/geo+json"))
-    return FeatureCollection(
-        features=[_feature_to_read(f, props_include_set) for f in features],
+    read_list = [_feature_to_read(f, props_include_set) for f in features]
+    extent_bbox = bbox_from_geometries(
+        [r.geometry.model_dump() if r.geometry else None for r in read_list]
+    )
+    if wants_html(request):
+        features_geojson = [
+            {
+                "type": "Feature",
+                "id": r.id,
+                "geometry": r.geometry.model_dump() if r.geometry else None,
+                "properties": r.properties or {},
+            }
+            for r in read_list
+        ]
+        property_keys = sorted(
+            set().union(*(set((r.properties or {}).keys()) for r in read_list))
+        )
+        items_url_json = base_path + ("?" + request.url.query if request.url.query else "")
+        if "f=html" in (request.url.query or ""):
+            from urllib.parse import parse_qs
+            qs = parse_qs(request.url.query or "")
+            qs.pop("f", None)
+            items_url_json = base_path + ("?" + urlencode(qs, doseq=True) if qs else "")
+        # Pagination URLs for HTML (preserve all query params, change offset)
+        q = dict(request.query_params)
+        q["f"] = "html"
+        q["limit"] = str(limit)
+        prev_page_url = None
+        next_page_url = None
+        if offset > 0:
+            q_prev = {**q, "offset": str(max(0, offset - limit))}
+            prev_page_url = base_path + "?" + urlencode(sorted(q_prev.items()))
+        if offset + len(features) < number_matched:
+            q_next = {**q, "offset": str(offset + limit)}
+            next_page_url = base_path + "?" + urlencode(sorted(q_next.items()))
+        default_style = await styles_crud.get_default_style(db, collection_id)
+        default_style_dict = (
+            {"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec}
+            if default_style
+            else None
+        )
+        return html_response(
+            "items.html",
+            base=base,
+            collection_id=collection_id,
+            features=read_list,
+            features_geojson=features_geojson,
+            extent_bbox=extent_bbox,
+            property_keys=property_keys,
+            number_matched=number_matched,
+            number_returned=len(features),
+            limit=limit,
+            offset=offset,
+            bbox=bbox,
+            datetime_param=datetime_param,
+            sortby=sortby,
+            sortdesc=sortdesc,
+            filter_param="\n".join(filter_param) if filter_param else "",
+            q=q,
+            properties=properties_include or "",
+            items_url_json=items_url_json,
+            prev_page_url=prev_page_url,
+            next_page_url=next_page_url,
+            default_style=default_style_dict,
+            google_maps_api_key=get_settings().google_maps_api_key or "",
+        )
+    fc = FeatureCollection(
+        features=read_list,
+        bbox=extent_bbox,
         numberMatched=number_matched,
         numberReturned=len(features),
-        links=links,
+        links=links + [Link(href=f"{base_path}?f=html", rel="alternate", type="text/html")],
     )
+    return GeoJSONResponse(content=fc.model_dump(mode="json"))
 
 
 @router.post(
@@ -218,17 +293,37 @@ async def bulk_import_items(
 
 
 @router.get(
+    "/{collection_id}/items/new",
+    summary="Add feature form (HTML only)",
+    description="Use ?f=html to get a form to create a new feature (geometry + properties).",
+)
+async def new_item_form(
+    request: Request,
+    collection_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html for the add-feature form.")
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    return html_response(
+        "add_feature.html",
+        base=_base_url(request),
+        collection_id=collection_id,
+    )
+
+
+@router.get(
     "/{collection_id}/items/{feature_id}",
-    response_model=FeatureGeoJSON,
-    response_class=GeoJSONResponse,
-    summary="Get a feature by id within a collection (GeoJSON Feature)",
+    summary="Get a feature by id (GeoJSON). Use ?f=html for HTML (map, edit, delete).",
 )
 async def get_item(
     request: Request,
     collection_id: str,
     feature_id: str = Path(..., description="Identifier of the feature."),
     db: AsyncSession = Depends(get_db),
-) -> FeatureGeoJSON:
+):
     feature = await features_crud.get_feature(db, collection_id, feature_id)
     if not feature:
         raise HTTPException(
@@ -237,7 +332,7 @@ async def get_item(
         )
     geom_dict = geometry_to_geojson(feature.geometry)
     base = _base_url(request)
-    return FeatureGeoJSON(
+    feat_geojson = FeatureGeoJSON(
         type="Feature",
         id=feature.id,
         geometry=Geometry(**geom_dict) if geom_dict else None,
@@ -247,6 +342,24 @@ async def get_item(
             Link(href=f"{base}/collections/{collection_id}", rel="collection", type="application/json"),
         ],
     )
+    if wants_html(request):
+        default_style = await styles_crud.get_default_style(db, collection_id)
+        default_style_dict = (
+            {"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec}
+            if default_style
+            else None
+        )
+        return html_response(
+            "item.html",
+            base=base,
+            collection_id=collection_id,
+            feature=feat_geojson,
+            feature_geojson=feat_geojson.model_dump(),
+            properties_json=json.dumps(feat_geojson.properties or {}, indent=2),
+            default_style=default_style_dict,
+            google_maps_api_key=get_settings().google_maps_api_key or "",
+        )
+    return GeoJSONResponse(content=feat_geojson.model_dump(mode="json"))
 
 
 @router.put(

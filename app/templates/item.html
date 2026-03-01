@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Item {{ feature.id }} – GeoFast API{% endblock %}
+{% block head %}
+  <style>
+    .map-popup { min-width: 160px; max-width: 320px; font-size: 0.85rem; color: #000; }
+    .map-popup-id { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
+    .map-popup-id a { color: #1967d2; }
+    .map-popup-row { margin-top: 0.25rem; word-break: break-word; color: #000; }
+    .map-popup-row strong { font-weight: 700; margin-right: 0.35rem; color: #000; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Feature <code>{{ feature.id }}</code></h1>
+    <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> › <a href="{{ base }}/collections/{{ collection_id }}/items?f=html">Items</a> › {{ feature.id }}</p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Map</h2>
+    <div id="map" class="map-container">
+      <div class="map-controls">
+        <select id="map-basemap" title="Basemap">
+          <option value="osm">OpenStreetMap</option>
+          <option value="streets">Esri Streets</option>
+          <option value="satellite">Esri Satellite</option>
+          <option value="hybrid">Esri Hybrid</option>
+          <option value="google_satellite">Google Satellite</option>
+          <option value="google_hybrid">Google Hybrid</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Properties <span class="meta">(edit JSON and save)</span></h2>
+    <pre id="props-editor" contenteditable="true">{{ properties_json }}</pre>
+    <div class="btn-group">
+      <button type="button" class="btn btn-primary" id="btn-save-props">Save properties</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Actions</h2>
+    <div class="btn-group">
+      <a href="{{ base }}/collections/{{ collection_id }}/items?f=html" class="btn">Back to items</a>
+      <button type="button" class="btn btn-danger" id="btn-delete">Delete feature</button>
+    </div>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
+  <script>
+    const base = {{ base | tojson }};
+    const collectionId = {{ collection_id | tojson }};
+    const featureId = {{ feature.id | tojson }};
+    const featureGeojson = {{ feature_geojson | tojson }};
+    const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
+
+    const googleKey = {{ google_maps_api_key | tojson }};
+    const BASEMAPS = {
+      osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] },
+      streets: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}'] },
+      satellite: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] },
+      hybrid: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], labels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}' },
+      google_satellite: { tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] },
+      google_hybrid: { tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] }
+    };
+    const mapStyle = {
+      version: 8,
+      sources: { basemap: { type: 'raster', tiles: BASEMAPS.osm.tiles, tileSize: 256 } },
+      layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 }]
+    };
+
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: mapStyle,
+      center: [0, 20],
+      zoom: 2,
+      renderWorldCopies: false
+    });
+    function bboxFromGeom(geom) {
+      if (!geom || !geom.coordinates) return null;
+      const flat = (arr, out) => { if (Array.isArray(arr[0])) arr.forEach(a => flat(a, out)); else out.push(arr[0], arr[1]); };
+      const coords = []; flat(geom.coordinates, coords);
+      const xs = coords.filter((_, i) => i % 2 === 0), ys = coords.filter((_, i) => i % 2 === 1);
+      return xs.length ? [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]] : null;
+    }
+
+    var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
+    function featurePaintFromStyle(spec) {
+      spec = spec || {};
+      return {
+        fillColor: spec.fillColor || '#58a6ff',
+        lineColor: spec.lineColor || '#58a6ff',
+        fillOpacity: spec.fillOpacity != null ? spec.fillOpacity : 0.6,
+        lineOpacity: spec.lineOpacity != null ? spec.lineOpacity : 1,
+        lineWidth: spec.lineWidth != null ? spec.lineWidth : 2,
+        lineDash: LINE_DASH[spec.linePattern] || LINE_DASH.solid,
+        fillEnabled: spec.fillEnabled !== false
+      };
+    }
+    function addOverlayLayers() {
+      if (featureGeojson && featureGeojson.geometry) {
+        var data = { type: 'Feature', id: featureGeojson.id, geometry: featureGeojson.geometry, properties: featureGeojson.properties ? Object.assign({}, featureGeojson.properties) : {} };
+        if (featureId != null && !Object.prototype.hasOwnProperty.call(data.properties, 'id')) data.properties.id = featureId;
+        map.addSource('feature', { type: 'geojson', data: data });
+        var s = featurePaintFromStyle(defaultStyle && defaultStyle.style_spec);
+        map.addLayer({ id: 'fill', type: 'fill', source: 'feature', paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
+        map.addLayer({ id: 'line', type: 'line', source: 'feature', paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
+        map.addLayer({ id: 'point', type: 'circle', source: 'feature', paint: { 'circle-radius': 8, 'circle-color': s.lineColor } });
+        if (!s.fillEnabled) map.setLayoutProperty('fill', 'visibility', 'none');
+        const bbox = bboxFromGeom(featureGeojson.geometry);
+        if (bbox) map.fitBounds(bbox, { padding: 60 });
+      }
+    }
+    function applyBasemapFromSelect() {
+      var v = document.getElementById('map-basemap').value;
+      var cfg = BASEMAPS[v];
+      map.getSource('basemap').setTiles(cfg.tiles);
+      if (cfg.labels) {
+        if (!map.getSource('basemap-labels')) {
+          map.addSource('basemap-labels', { type: 'raster', tiles: [cfg.labels], tileSize: 256 });
+          var beforeId = map.getLayer('fill') ? 'fill' : undefined;
+          map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: 0, maxzoom: 22 }, beforeId);
+        }
+      } else {
+        if (map.getLayer('basemap-labels')) { map.removeLayer('basemap-labels'); map.removeSource('basemap-labels'); }
+      }
+    }
+
+    function escapeHtml(s) {
+      var d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+    function popupHtmlForFeature(feat) {
+      var props = feat.properties || {};
+      var id = props.id != null ? String(props.id) : (feat.id != null ? String(feat.id) : '—');
+      var featureUrl = base + '/collections/' + collectionId + '/items/' + encodeURIComponent(id) + '?f=html';
+      var parts = ['<div class="map-popup">', '<div class="map-popup-id"><strong>ID</strong> <a href="' + escapeHtml(featureUrl) + '">' + escapeHtml(id) + '</a></div>'];
+      Object.keys(props).sort().forEach(function(k) {
+        if (k === 'id') return;
+        var v = props[k];
+        var val = v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+        parts.push('<div class="map-popup-row"><strong>' + escapeHtml(k) + '</strong> ' + escapeHtml(val) + '</div>');
+      });
+      parts.push('</div>');
+      return parts.join('');
+    }
+
+    map.on('load', function() {
+      map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+      applyBasemapFromSelect();
+      addOverlayLayers();
+      document.getElementById('map-basemap').onchange = applyBasemapFromSelect;
+      if (map.getLayer('fill') || map.getLayer('line') || map.getLayer('point')) {
+        var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false });
+        map.getCanvas().style.cursor = '';
+        map.on('mouseenter', ['fill', 'line', 'point'], function() { map.getCanvas().style.cursor = 'pointer'; });
+        map.on('mouseleave', ['fill', 'line', 'point'], function() { map.getCanvas().style.cursor = ''; });
+        map.on('click', ['fill', 'line', 'point'], function(e) {
+          var feat = e.features && e.features[0];
+          if (!feat) return;
+          popup.setLngLat(e.lngLat).setHTML(popupHtmlForFeature(feat)).addTo(map);
+        });
+      }
+    });
+
+    document.getElementById('btn-save-props').onclick = function() {
+      let obj;
+      try { obj = JSON.parse(document.getElementById('props-editor').innerText); } catch (e) { alert('Invalid JSON'); return; }
+      fetch(base + '/collections/' + collectionId + '/items/' + featureId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/merge-patch+json', 'Accept': 'application/json' },
+        body: JSON.stringify({ properties: obj })
+      }).then(r => r.json()).then(() => alert('Saved')).catch(e => alert('Error: ' + (e.detail || e.message || JSON.stringify(e))));
+    };
+    document.getElementById('btn-delete').onclick = function() {
+      if (!confirm('Delete this feature?')) return;
+      fetch(base + '/collections/' + collectionId + '/items/' + featureId, { method: 'DELETE' })
+        .then(r => { if (r.ok) location.href = base + '/collections/' + collectionId + '/items?f=html'; else return r.json().then(j => Promise.reject(j)); })
+        .catch(e => alert('Error: ' + (e.detail || e.message || JSON.stringify(e))));
+    };
+  </script>
+{% endblock %}

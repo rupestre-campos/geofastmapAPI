@@ -1,9 +1,23 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic.config import ConfigDict
 
 from app.schemas.ogc import Link
+
+# Valid geographic range for extent bbox (WGS84): lon [-180, 180], lat [-90, 90]
+LON_MIN, LON_MAX = -180.0, 180.0
+LAT_MIN, LAT_MAX = -90.0, 90.0
+
+
+def clamp_bbox(minx: float, miny: float, maxx: float, maxy: float) -> list[float]:
+    """Clamp bbox to valid WGS84 range so it displays correctly on maps."""
+    return [
+        max(LON_MIN, min(LON_MAX, minx)),
+        max(LAT_MIN, min(LAT_MAX, miny)),
+        max(LON_MIN, min(LON_MAX, maxx)),
+        max(LAT_MIN, min(LAT_MAX, maxy)),
+    ]
 
 
 class Extent(BaseModel):
@@ -15,6 +29,24 @@ class Extent(BaseModel):
         default="http://www.opengis.net/def/crs/OGC/1.3/CRS84",
         description="Coordinate reference system of the extent.",
     )
+
+    @model_validator(mode="after")
+    def clamp_bbox_to_valid_range(self) -> "Extent":
+        """Clamp bbox to valid lon/lat range so extent displays correctly on maps."""
+        clamped = []
+        for box in self.bbox:
+            if len(box) >= 4:
+                clamped.append(
+                    clamp_bbox(
+                        float(box[0]),
+                        float(box[1]),
+                        float(box[2]),
+                        float(box[3]),
+                    )
+                )
+            else:
+                clamped.append(list(box))
+        return self.model_copy(update={"bbox": clamped})
 
 
 class ExtentRecomputeResponse(BaseModel):

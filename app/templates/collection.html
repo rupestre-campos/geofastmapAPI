@@ -1,0 +1,516 @@
+{% extends "base.html" %}
+{% block title %}{{ collection.id }} – GeoFast API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection.id }}?f=html">{{ collection.id }}</a></p>
+  </header>
+
+  <style>
+    .collection-info-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-secondary); margin-bottom: 2px; }
+    .collection-info-value { font-size: 1rem; margin-bottom: var(--space); color: var(--text); }
+    .collection-info-value.title { font-size: 1.15rem; font-weight: 700; }
+    .vector-style-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 8px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
+    .vector-style-panel .vector-style-label { font-weight: 600; margin-right: 4px; color: var(--text-secondary); }
+    .vector-style-panel label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+    .vector-style-panel input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+    .vector-style-sep { color: var(--text-secondary); margin: 0 4px; }
+    .map-popup { min-width: 160px; max-width: 320px; font-size: 0.85rem; color: #000; }
+    .map-popup-id { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
+    .map-popup-id a { color: #1967d2; }
+    .map-popup-row { margin-top: 0.25rem; word-break: break-word; color: #000; }
+    .map-popup-row strong { font-weight: 700; margin-right: 0.35rem; color: #000; }
+    .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
+    .save-style-form .vector-style-label { font-weight: 600; margin-right: 4px; }
+    .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+  </style>
+  <div class="card">
+    <h2 class="card-title">Collection info</h2>
+    <div class="collection-info-label">Title</div>
+    <div class="collection-info-value title">{{ collection.title or collection.id }}</div>
+    <div class="collection-info-label">Layer id</div>
+    <div class="collection-info-value"><code>{{ collection.id }}</code></div>
+    <div class="collection-info-label">Description</div>
+    <div class="collection-info-value">{{ collection.description or '—' }}</div>
+    <div class="collection-info-label">Bbox</div>
+    <div class="collection-info-value">
+      {% if extent_geojson and extent_geojson.bbox and extent_geojson.bbox[0] %}
+      {% set b = extent_geojson.bbox[0] %}
+      <code>{{ "%.6f, %.6f, %.6f, %.6f" | format(b[0], b[1], b[2], b[3]) }}</code> <span class="meta">(minx, miny, maxx, maxy, WGS84)</span>
+      {% else %}
+      <span class="meta">No extent. Use <em>Recompute extent</em> below or add features with geometry.</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Map</h2>
+    <div id="map" class="map-container">
+      <div class="map-controls">
+        <select id="map-basemap" title="Basemap">
+          <option value="osm">OpenStreetMap</option>
+          <option value="streets">Esri Streets</option>
+          <option value="satellite">Esri Satellite</option>
+          <option value="hybrid">Esri Hybrid</option>
+          <option value="google_satellite">Google Satellite</option>
+          <option value="google_hybrid">Google Hybrid</option>
+        </select>
+        <label id="map-bbox-toggle-wrap" style="display:none"><input type="checkbox" id="map-toggle-bbox" checked title="Show or hide layer extent bbox"> Bbox</label>
+      </div>
+    </div>
+    <div id="vector-style-wrap" class="vector-style-panel" style="display:none">
+      <span class="vector-style-label">Vector tile style</span>
+      <label><input type="checkbox" id="vector-fill-enable" checked> Fill</label>
+      <label>Fill <input type="color" id="vector-fill-color" value="#58a6ff" title="Fill color"></label>
+      <label>Fill opacity <input type="range" id="vector-fill-opacity" min="0" max="100" value="60" title="Fill transparency"> <span id="vector-fill-opacity-val">60</span>%</label>
+      <label>Line <input type="color" id="vector-line-color" value="#58a6ff" title="Line color"></label>
+      <label>Line width <input type="number" id="vector-line-width" min="0.5" max="20" step="0.5" value="1" style="width:4em" title="Line size"></label>
+      <label>Line opacity <input type="range" id="vector-line-opacity" min="0" max="100" value="100" title="Line transparency"> <span id="vector-line-opacity-val">100</span>%</label>
+      <label>Line pattern <select id="vector-line-pattern" title="Line pattern">
+        <option value="solid">Solid</option>
+        <option value="dashed">Dashed</option>
+        <option value="dotted">Dotted</option>
+      </select></label>
+      <span class="vector-style-sep">|</span>
+      <label>Saved style <select id="vector-style-select" title="Load a saved style">
+        <option value="">Current</option>
+      </select></label>
+      <button type="button" class="btn btn-sm" id="btn-save-style">Save style…</button>
+    </div>
+    <div id="save-style-form" class="save-style-form" style="display:none">
+      <span class="vector-style-label">Save style</span>
+      <label>Id <input type="text" id="save-style-id" placeholder="e.g. blue-outline" pattern="[a-zA-Z0-9_-]+" title="Letters, numbers, hyphen, underscore"></label>
+      <label>Title <input type="text" id="save-style-title" placeholder="Optional title"></label>
+      <label>Replace <select id="save-style-replace"><option value="">New</option></select></label>
+      <label><input type="checkbox" id="save-style-default"> Set as default</label>
+      <button type="button" class="btn btn-sm btn-primary" id="btn-save-style-submit">Save</button>
+      <button type="button" class="btn btn-sm" id="btn-save-style-cancel">Cancel</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Search & filters</h2>
+    <form method="get" action="{{ base }}/collections/{{ collection.id }}/items" id="form-search-items">
+      <input type="hidden" name="f" value="html">
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Limit</label>
+          <input type="number" name="limit" value="100" min="1" max="1000">
+        </div>
+        <div class="form-row">
+          <label>Offset</label>
+          <input type="number" name="offset" value="0" min="0">
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Bbox <span class="meta">(minx, miny, maxx, maxy)</span></label>
+        <input type="text" name="bbox" placeholder="-10, 40, 10, 50">
+      </div>
+      <div class="form-row">
+        <label>Datetime <span class="meta">(instant or range)</span></label>
+        <input type="text" name="datetime" placeholder="2024-01-01 or 2024-01-01/2024-12-31">
+      </div>
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Sort by</label>
+          <select name="sortby">
+            <option value="">—</option>
+            <option value="id">id</option>
+            <option value="created_at">created_at</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>&nbsp;</label>
+          <label class="checkbox-inline"><input type="checkbox" name="sortdesc" value="true"> Descending</label>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Filter <span class="meta">(key:op:value per line; op: eq, ne, gt, gte, lt, lte, like, ilike)</span></label>
+        <textarea name="filter" rows="2" placeholder="name:eq:Main"></textarea>
+      </div>
+      <div class="form-row">
+        <label>Full-text search (q)</label>
+        <input type="text" name="q" placeholder="Search in properties">
+      </div>
+      <div class="form-row">
+        <label>Properties <span class="meta">(comma-separated; empty = all)</span></label>
+        <input type="text" name="properties" placeholder="name, area">
+      </div>
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary">Apply filters</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Bulk upload</h2>
+    <p class="meta">Import from GeoJSON, GeoJSONSeq, KML, GPKG, or .zip shapefile. Runs in the background.</p>
+    <form id="form-bulk-upload">
+      <div class="form-row">
+        <label for="bulk-file">File</label>
+        <input type="file" id="bulk-file" name="file" accept=".geojson,.json,.geojsonl,.geojsonseq,.jsonl,.kml,.gpkg,.zip" required>
+      </div>
+      <div class="form-row">
+        <label>Import mode</label>
+        <div class="radio-group">
+          <label><input type="radio" name="mode" value="append" checked> Append to existing</label>
+          <label><input type="radio" name="mode" value="replace"> Replace all (delete then import)</label>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary">Upload & import</button>
+      </div>
+      <p id="bulk-result" class="meta"></p>
+      <p id="bulk-result-success" class="alert alert-success" style="display:none;"></p>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Actions</h2>
+    <div class="btn-group">
+      <a href="{{ base }}/collections/{{ collection.id }}/items?f=html" class="btn btn-primary">View items</a>
+      <a href="{{ base }}/collections/{{ collection.id }}/items/new?f=html" class="btn">Add feature</a>
+      <button type="button" class="btn" id="btn-build-tiles">Build static tiles</button>
+      <button type="button" class="btn btn-danger" id="btn-delete-tiles" style="display:none">Delete static tiles</button>
+      <button type="button" class="btn" id="btn-recompute-extent">Recompute extent</button>
+      <button type="button" class="btn" id="btn-patch-collection">Edit metadata</button>
+      <button type="button" class="btn btn-danger" id="btn-delete-collection">Delete collection</button>
+    </div>
+    <p class="meta" id="tiles-hint" style="display:none">Static tiles not built. Click <strong>Build static tiles</strong> to compute.</p>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">API links</h2>
+    <ul class="links">
+      <li><a href="{{ base }}/collections/{{ collection.id }}/items?f=html">Items (HTML)</a></li>
+      <li><a href="{{ base }}/collections/{{ collection.id }}/items">Items (GeoJSON)</a></li>
+      <li><a href="{{ base }}/collections/{{ collection.id }}/tiles">TileJSON</a></li>
+      <li><a href="{{ base }}/collections/{{ collection.id }}/styles">Styles (this collection)</a></li>
+      <li><a href="{{ base }}/styles">Styles (public)</a></li>
+    </ul>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
+  <script>
+    const base = {{ base | tojson }};
+    const collectionId = {{ collection.id | tojson }};
+    const extent = {{ extent_geojson | tojson if extent_geojson else 'null' }};
+    const hasStaticTiles = {{ has_static_tiles | tojson }};
+    const tileUrlStatic = hasStaticTiles ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' : null;
+    const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
+    const collectionStylesUrl = {{ collection_styles_url | tojson if collection_styles_url else 'null' }};
+
+    const googleKey = {{ google_maps_api_key | tojson }};
+    const BASEMAPS = {
+      osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] },
+      streets: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}'] },
+      satellite: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] },
+      hybrid: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], labels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}' },
+      google_satellite: { tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] },
+      google_hybrid: { tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] }
+    };
+
+    const mapStyle = {
+      version: 8,
+      sources: { basemap: { type: 'raster', tiles: BASEMAPS.osm.tiles, tileSize: 256 } },
+      layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 }]
+    };
+
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: mapStyle,
+      center: [0, 20],
+      zoom: 2,
+      renderWorldCopies: false
+    });
+
+    function addOverlayLayers() {
+      if (tileUrlStatic) {
+        map.addSource('tiles', { type: 'vector', tiles: [tileUrlStatic], minzoom: 0, maxzoom: 14 });
+        map.addLayer({ id: 'layer', type: 'fill', source: 'tiles', 'source-layer': collectionId, paint: { 'fill-color': '#58a6ff', 'fill-opacity': 0.6 } });
+        map.addLayer({ id: 'layer-line', type: 'line', source: 'tiles', 'source-layer': collectionId, paint: { 'line-color': '#58a6ff', 'line-width': 1, 'line-opacity': 1 } });
+      }
+      if (extent && extent.bbox && extent.bbox[0]) {
+        var b = extent.bbox[0];
+        var bboxGeojson = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[b[0],b[1]],[b[2],b[1]],[b[2],b[3]],[b[0],b[3]],[b[0],b[1]]]] } };
+        map.addSource('bbox', { type: 'geojson', data: bboxGeojson });
+        map.addLayer({ id: 'bbox-line', type: 'line', source: 'bbox', paint: { 'line-color': '#58a6ff', 'line-width': 2 } });
+      }
+      if (extent && extent.bbox && extent.bbox[0]) {
+        var b = extent.bbox[0];
+        map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40 });
+      }
+    }
+
+    function applyBasemapFromSelect() {
+      const v = document.getElementById('map-basemap').value;
+      const cfg = BASEMAPS[v];
+      map.getSource('basemap').setTiles(cfg.tiles);
+      if (cfg.labels) {
+        if (!map.getSource('basemap-labels')) {
+          map.addSource('basemap-labels', { type: 'raster', tiles: [cfg.labels], tileSize: 256 });
+          var beforeId = map.getLayer('layer') ? 'layer' : (map.getLayer('bbox-line') ? 'bbox-line' : undefined);
+          map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: 0, maxzoom: 22 }, beforeId);
+        }
+      } else {
+        if (map.getLayer('basemap-labels')) { map.removeLayer('basemap-labels'); map.removeSource('basemap-labels'); }
+      }
+    }
+
+    map.on('load', function() {
+      map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+      applyBasemapFromSelect();
+      addOverlayLayers();
+      if (map.getLayer('bbox-line')) {
+        document.getElementById('map-bbox-toggle-wrap').style.display = '';
+        document.getElementById('map-toggle-bbox').onchange = function() {
+          map.setLayoutProperty('bbox-line', 'visibility', this.checked ? 'visible' : 'none');
+        };
+      }
+      if (hasStaticTiles && map.getLayer('layer')) {
+        var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false });
+        map.getCanvas().style.cursor = '';
+        map.on('mouseenter', ['layer', 'layer-line'], function() { map.getCanvas().style.cursor = 'pointer'; });
+        map.on('mouseleave', ['layer', 'layer-line'], function() { map.getCanvas().style.cursor = ''; });
+        map.on('click', ['layer', 'layer-line'], function(e) {
+          var feat = e.features && e.features[0];
+          if (!feat) return;
+          var props = feat.properties || {};
+          var id = props.id != null ? String(props.id) : (feat.id != null ? String(feat.id) : '—');
+          var featureUrl = base + '/collections/' + collectionId + '/items/' + encodeURIComponent(id) + '?f=html';
+          var parts = ['<div class="map-popup">', '<div class="map-popup-id"><strong>ID</strong> <a href="' + featureUrl + '">' + escapeHtml(id) + '</a></div>'];
+          Object.keys(props).sort().forEach(function(k) {
+            if (k === 'id') return;
+            var v = props[k];
+            var val = v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+            parts.push('<div class="map-popup-row"><strong>' + escapeHtml(k) + '</strong> ' + escapeHtml(val) + '</div>');
+          });
+          parts.push('</div>');
+          popup.setLngLat(e.lngLat).setHTML(parts.join('')).addTo(map);
+        });
+        function escapeHtml(s) {
+          var d = document.createElement('div');
+          d.textContent = s;
+          return d.innerHTML;
+        }
+        document.getElementById('vector-style-wrap').style.display = 'block';
+        var fillCheck = document.getElementById('vector-fill-enable');
+        var fillColor = document.getElementById('vector-fill-color');
+        var fillOpacity = document.getElementById('vector-fill-opacity');
+        var fillOpacityVal = document.getElementById('vector-fill-opacity-val');
+        var lineColor = document.getElementById('vector-line-color');
+        var lineWidth = document.getElementById('vector-line-width');
+        var lineOpacity = document.getElementById('vector-line-opacity');
+        var lineOpacityVal = document.getElementById('vector-line-opacity-val');
+        var linePattern = document.getElementById('vector-line-pattern');
+        var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
+        function applyVectorStyle() {
+          map.setLayoutProperty('layer', 'visibility', fillCheck.checked ? 'visible' : 'none');
+          map.setPaintProperty('layer', 'fill-color', fillColor.value);
+          map.setPaintProperty('layer', 'fill-opacity', fillOpacity.value / 100);
+          map.setPaintProperty('layer-line', 'line-color', lineColor.value);
+          map.setPaintProperty('layer-line', 'line-width', Math.max(0.5, parseFloat(lineWidth.value) || 1));
+          map.setPaintProperty('layer-line', 'line-opacity', lineOpacity.value / 100);
+          map.setPaintProperty('layer-line', 'line-dasharray', LINE_DASH[linePattern.value] || LINE_DASH.solid);
+        }
+        var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
+        fillColor.value = spec.fillColor || '#58a6ff';
+        lineColor.value = spec.lineColor || '#58a6ff';
+        fillOpacity.value = Math.round((spec.fillOpacity != null ? spec.fillOpacity : 0.6) * 100);
+        lineOpacity.value = Math.round((spec.lineOpacity != null ? spec.lineOpacity : 1) * 100);
+        fillOpacityVal.textContent = fillOpacity.value;
+        lineOpacityVal.textContent = lineOpacity.value;
+        lineWidth.value = spec.lineWidth != null ? spec.lineWidth : 1;
+        linePattern.value = spec.linePattern || 'solid';
+        fillCheck.checked = spec.fillEnabled !== false;
+        applyVectorStyle();
+        fillCheck.onchange = applyVectorStyle;
+        fillColor.oninput = applyVectorStyle;
+        fillOpacity.oninput = function() { fillOpacityVal.textContent = this.value; applyVectorStyle(); };
+        lineColor.oninput = applyVectorStyle;
+        lineWidth.oninput = applyVectorStyle;
+        lineOpacity.oninput = function() { lineOpacityVal.textContent = this.value; applyVectorStyle(); };
+        linePattern.onchange = applyVectorStyle;
+        function getCurrentSpec() {
+          return {
+            fillColor: fillColor.value,
+            lineColor: lineColor.value,
+            fillOpacity: fillOpacity.value / 100,
+            lineOpacity: lineOpacity.value / 100,
+            lineWidth: Math.max(0.5, parseFloat(lineWidth.value) || 1),
+            linePattern: linePattern.value || 'solid',
+            fillEnabled: fillCheck.checked
+          };
+        }
+        function applySpecToForm(s) {
+          fillColor.value = s.fillColor || '#58a6ff';
+          lineColor.value = s.lineColor || '#58a6ff';
+          fillOpacity.value = Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100);
+          lineOpacity.value = Math.round((s.lineOpacity != null ? s.lineOpacity : 1) * 100);
+          fillOpacityVal.textContent = fillOpacity.value;
+          lineOpacityVal.textContent = lineOpacity.value;
+          lineWidth.value = s.lineWidth != null ? s.lineWidth : 1;
+          linePattern.value = s.linePattern || 'solid';
+          fillCheck.checked = s.fillEnabled !== false;
+          applyVectorStyle();
+        }
+        function loadStylesList() {
+          if (!collectionStylesUrl) return;
+          fetch(collectionStylesUrl, { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+              var sel = document.getElementById('vector-style-select');
+              var rep = document.getElementById('save-style-replace');
+              var opts = sel.options; opts.length = 1;
+              var repOpts = rep.options; repOpts.length = 1;
+              (data.styles || []).forEach(function(s) {
+                sel.add(new Option(s.title || s.id, s.id));
+                rep.add(new Option(s.title || s.id, s.id));
+              });
+            })
+            .catch(function() {});
+        }
+        loadStylesList();
+        document.getElementById('vector-style-select').onchange = function() {
+          var id = this.value;
+          if (!id) return;
+          fetch(collectionStylesUrl + '/' + encodeURIComponent(id), { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.json(); })
+            .then(function(s) { if (s.style_spec) applySpecToForm(s.style_spec); })
+            .catch(function() {});
+        };
+        document.getElementById('btn-save-style').onclick = function() {
+          document.getElementById('save-style-form').style.display = 'flex';
+          loadStylesList();
+        };
+        document.getElementById('btn-save-style-cancel').onclick = function() {
+          document.getElementById('save-style-form').style.display = 'none';
+        };
+        document.getElementById('save-style-replace').onchange = function() {
+          if (this.value) document.getElementById('save-style-id').value = this.value;
+        };
+        document.getElementById('btn-save-style-submit').onclick = function() {
+          var replaceVal = document.getElementById('save-style-replace').value;
+          var idInput = document.getElementById('save-style-id').value.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+          var id = replaceVal || idInput || null;
+          if (!id) { alert('Enter a style id (letters, numbers, hyphen, underscore)'); return; }
+          var title = document.getElementById('save-style-title').value.trim() || null;
+          var setDefault = document.getElementById('save-style-default').checked;
+          var body = { id: id, style_spec: getCurrentSpec(), set_default: setDefault };
+          if (title) body.title = title;
+          fetch(collectionStylesUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify(body)
+          })
+            .then(function(r) { if (!r.ok) return r.json().then(function(j) { throw j; }); return r.json(); })
+            .then(function() {
+              document.getElementById('save-style-form').style.display = 'none';
+              document.getElementById('save-style-id').value = '';
+              document.getElementById('save-style-title').value = '';
+              document.getElementById('save-style-replace').value = '';
+              document.getElementById('save-style-default').checked = false;
+              loadStylesList();
+              document.getElementById('vector-style-select').value = id;
+            })
+            .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+        };
+      }
+      document.getElementById('map-basemap').onchange = function() {
+        const v = this.value;
+        const cfg = BASEMAPS[v];
+        map.getSource('basemap').setTiles(cfg.tiles);
+        if (cfg.labels) {
+          if (!map.getSource('basemap-labels')) {
+            map.addSource('basemap-labels', { type: 'raster', tiles: [cfg.labels], tileSize: 256 });
+            var beforeId = map.getLayer('layer') ? 'layer' : (map.getLayer('bbox-line') ? 'bbox-line' : undefined);
+            map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: 0, maxzoom: 22 }, beforeId);
+          }
+        } else {
+          if (map.getLayer('basemap-labels')) { map.removeLayer('basemap-labels'); map.removeSource('basemap-labels'); }
+        }
+      };
+    });
+
+    document.getElementById('btn-delete-tiles').style.display = hasStaticTiles ? '' : 'none';
+    document.getElementById('tiles-hint').style.display = hasStaticTiles ? 'none' : '';
+
+    document.getElementById('btn-build-tiles').onclick = function() {
+      fetch(base + '/collections/' + collectionId + '/tiles/build', { method: 'POST', headers: { 'Accept': 'application/json' } })
+        .then(r => r.json()).then(d => alert(d.message || JSON.stringify(d))).catch(e => alert('Error: ' + e));
+    };
+    document.getElementById('btn-delete-tiles').onclick = function() {
+      if (!confirm('Delete static tiles for this collection? The map will use no vector layer until you build again.')) return;
+      var btn = this;
+      btn.disabled = true;
+      fetch(base + '/collections/' + collectionId + '/tiles/static', { method: 'DELETE', headers: { 'Accept': 'application/json' } })
+        .then(function(r) { if (r.ok) location.reload(); else return r.json().then(function(j) { return Promise.reject(j); }); })
+        .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); btn.disabled = false; });
+    };
+    document.getElementById('btn-recompute-extent').onclick = function() {
+      var btn = this;
+      btn.disabled = true;
+      fetch(base + '/collections/' + collectionId + '/extent/recompute', { method: 'POST', headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(function(d) {
+          if (d.extent && d.extent.bbox) {
+            location.reload();
+          } else {
+            alert('No extent (collection has no features with geometry).');
+            btn.disabled = false;
+          }
+        })
+        .catch(function(e) {
+          alert('Error: ' + (e.detail || e.message || e));
+          btn.disabled = false;
+        });
+    };
+    document.getElementById('btn-delete-collection').onclick = function() {
+      if (!confirm('Delete this collection and all its features?')) return;
+      fetch(base + '/collections/' + collectionId, { method: 'DELETE' })
+        .then(r => { if (r.ok) location.href = base + '/collections?f=html'; else return r.json().then(j => Promise.reject(j)); })
+        .catch(e => alert('Error: ' + (e.detail || e.message || JSON.stringify(e))));
+    };
+    document.getElementById('form-bulk-upload').onsubmit = function(e) {
+      e.preventDefault();
+      const fileInput = document.getElementById('bulk-file');
+      const file = fileInput.files[0];
+      if (!file) { alert('Select a file'); return; }
+      const mode = document.querySelector('input[name="mode"]:checked').value;
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('mode', mode);
+      const resultEl = document.getElementById('bulk-result');
+      const successEl = document.getElementById('bulk-result-success');
+      successEl.style.display = 'none';
+      resultEl.textContent = 'Uploading…';
+      fetch(base + '/collections/' + collectionId + '/items/bulk', {
+        method: 'POST',
+        body: formData,
+        headers: { 'Accept': 'application/json' }
+      }).then(r => r.json()).then(d => {
+        resultEl.textContent = '';
+        successEl.innerHTML = 'Import queued. <a href="' + base + '/jobs/' + d.job_id + '">Check job status →</a>';
+        successEl.style.display = 'block';
+      }).catch(e => {
+        resultEl.textContent = 'Error: ' + (e.detail || e.message || e);
+      });
+    };
+
+    document.getElementById('btn-patch-collection').onclick = function() {
+      const title = prompt('Title (leave empty to keep):', {{ (collection.title or '') | tojson }});
+      if (title === null) return;
+      const description = prompt('Description (leave empty to keep):', {{ (collection.description or '') | tojson }});
+      if (description === null) return;
+      const body = {};
+      if (title !== '') body.title = title;
+      if (description !== '') body.description = description;
+      if (Object.keys(body).length === 0) return;
+      fetch(base + '/collections/' + collectionId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(r => r.json()).then(() => location.reload()).catch(e => alert('Error: ' + (e.detail || e.message || JSON.stringify(e))));
+    };
+  </script>
+{% endblock %}

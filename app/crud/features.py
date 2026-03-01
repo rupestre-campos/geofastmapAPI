@@ -5,9 +5,10 @@ from datetime import datetime
 from typing import Tuple
 
 from geoalchemy2.functions import ST_Intersects, ST_MakeEnvelope
-from sqlalchemy import Float, cast, func, select
+from sqlalchemy import Float, cast, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.collection import Collection
 from app.models.feature import Feature
 from app.schemas.feature import FeatureCreate, FeaturePatch, FeatureReplace
 from app.utils.geo import geojson_to_wkt_element
@@ -99,12 +100,24 @@ async def list_features_paginated(
     property_filters: dict[str, str] | None = None,
     structured_filters: Sequence[PropertyFilter] | None = None,
     fulltext_q: str | None = None,
+    collection_feature_count: int | None = None,
 ) -> Tuple[Sequence[Feature], int]:
     """
     List features with OGC query params. Returns (features, numberMatched).
     property_filters: legacy name=value (* partial). structured_filters: key:op:value (eq, ne, gt, gte, lt, lte, like, ilike).
     fulltext_q: search term across all properties (uses properties_flat trigram index).
+    When no filters are applied and collection_feature_count is provided, use it as total (no COUNT query).
+    When filters are applied, count matching rows.
     """
+    has_filters = (
+        bbox is not None
+        or datetime_start is not None
+        or datetime_end is not None
+        or bool(property_filters)
+        or bool(structured_filters)
+        or bool(fulltext_q and fulltext_q.strip())
+    )
+
     base = select(Feature).where(Feature.collection_id == collection_id)
     count_base = select(func.count()).select_from(Feature).where(Feature.collection_id == collection_id)
 
@@ -141,8 +154,13 @@ async def list_features_paginated(
         base = base.where(Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\"))
         count_base = count_base.where(Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\"))
 
-    # Count matching rows (one query, no ORDER BY/LIMIT)
-    total = (await db.execute(count_base)).scalar() or 0
+    # Count matching rows only when filters are applied; otherwise use collection's cached feature_count.
+    if has_filters:
+        total = (await db.execute(count_base)).scalar() or 0
+    elif collection_feature_count is not None:
+        total = collection_feature_count
+    else:
+        total = (await db.execute(count_base)).scalar() or 0
 
     base = base.order_by(_order_by_clause(sortby, sortdesc))
     base = base.limit(limit).offset(offset)
@@ -173,6 +191,11 @@ async def create_feature(db: AsyncSession, data: FeatureCreate) -> Feature:
         properties=data.properties,
     )
     db.add(feature)
+    await db.execute(
+        update(Collection)
+        .where(Collection.id == data.collection_id)
+        .values(feature_count=Collection.feature_count + 1)
+    )
     await db.commit()
     await db.refresh(feature)
     return feature
@@ -225,6 +248,11 @@ async def delete_feature(
         return False
 
     await db.delete(feature)
+    await db.execute(
+        update(Collection)
+        .where(Collection.id == collection_id)
+        .values(feature_count=func.greatest(0, Collection.feature_count - 1))
+    )
     await db.commit()
     return True
 

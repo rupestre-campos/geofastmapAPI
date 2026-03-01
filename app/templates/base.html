@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}GeoFast API{% endblock %}</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" crossorigin="">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --bg-elevated: #161b22;
+      --card: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-secondary: #8b949e;
+      --accent: #2f81f7;
+      --accent-hover: #58a6ff;
+      --success: #3fb950;
+      --danger: #f85149;
+      --radius: 8px;
+      --radius-sm: 6px;
+      --space: 1rem;
+      --space-lg: 1.5rem;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      min-height: 100vh;
+      line-height: 1.6;
+      font-size: 14px;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+    .container { max-width: 900px; margin: 0 auto; padding: var(--space-lg); }
+
+    nav {
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+      padding: var(--space) var(--space-lg);
+      display: flex;
+      align-items: center;
+      gap: var(--space-lg);
+    }
+    nav .brand { font-weight: 600; color: var(--text); }
+    nav .brand:hover { text-decoration: none; color: var(--accent-hover); }
+    nav a:not(.brand) { color: var(--text-secondary); font-size: 0.9rem; }
+    nav a:not(.brand):hover { color: var(--text); }
+
+    .page-header { margin-bottom: var(--space-lg); }
+    .page-header h1 { font-size: 1.5rem; font-weight: 600; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
+    .page-header .breadcrumb { font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.25rem; }
+    .page-header .breadcrumb a { color: var(--text-secondary); }
+    .page-header .breadcrumb a:hover { color: var(--accent); }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: var(--space-lg);
+      margin-bottom: var(--space-lg);
+    }
+    .card-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
+      margin: 0 0 var(--space);
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .card:first-of-type .card-title { margin-top: 0; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.4rem 0.85rem;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      color: var(--text);
+      font-size: 0.875rem;
+      cursor: pointer;
+      text-decoration: none;
+      margin-right: 0.5rem;
+      margin-bottom: 0.5rem;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .btn:hover { background: var(--card); border-color: var(--text-secondary); text-decoration: none; }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); filter: none; }
+    .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+    .btn-danger:hover { background: #da3633; border-color: #da3633; text-decoration: none; }
+    .btn-group { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+
+    .form-row { margin-bottom: var(--space); }
+    .form-row:last-of-type { margin-bottom: 0; }
+    form label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); margin-bottom: 0.35rem; }
+    form input[type="text"],
+    form input[type="number"],
+    form input[type="email"],
+    form select,
+    form textarea {
+      width: 100%;
+      max-width: 420px;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    form input:focus, form select:focus, form textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(47, 129, 247, 0.2);
+    }
+    form input[type="file"] { max-width: 100%; }
+    .radio-group { display: flex; gap: 1rem; flex-wrap: wrap; }
+    .radio-group label { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; margin: 0; font-weight: normal; color: var(--text); }
+    .radio-group input { width: auto; margin: 0; }
+    .checkbox-inline { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; margin: 0; font-weight: normal; color: var(--text); }
+    .checkbox-inline input { width: auto; margin: 0; }
+
+    .map-container { position: relative; width: 100%; height: 80vh; min-height: 420px; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--border); background: var(--bg-elevated); }
+    .map-controls { position: absolute; top: 8px; left: 8px; z-index: 10; display: flex; flex-wrap: wrap; gap: 6px; }
+    .map-controls select, .map-controls button { padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 0.8rem; cursor: pointer; }
+    .map-controls select:hover, .map-controls button:hover { background: var(--border); }
+    .map-controls label { display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 0.8rem; cursor: pointer; }
+    .map-controls label:hover { background: var(--border); }
+    tr.clickable-row { cursor: pointer; }
+    tr.clickable-row:hover { background: rgba(47, 129, 247, 0.1); }
+
+    .links { list-style: none; padding: 0; margin: 0; }
+    .links li { padding: 0.4rem 0; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+    .links li:last-child { border-bottom: none; }
+    .links a { flex: 1; min-width: 0; }
+
+    .meta { color: var(--text-secondary); font-size: 0.8rem; margin-top: 0.5rem; }
+    .meta a { color: var(--text-secondary); }
+    .meta a:hover { color: var(--accent); }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { font-weight: 500; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    code, pre { font-family: ui-monospace, monospace; font-size: 0.85em; background: var(--bg); padding: 0.2rem 0.4rem; border-radius: 4px; }
+    pre { padding: var(--space); overflow: auto; max-height: 280px; white-space: pre-wrap; margin: 0 0 var(--space); }
+
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--space); }
+    .alert { padding: 0.75rem 1rem; border-radius: var(--radius-sm); margin-top: 0.5rem; font-size: 0.85rem; }
+    .alert-success { background: rgba(63, 185, 80, 0.15); color: var(--success); border: 1px solid rgba(63, 185, 80, 0.3); }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <nav>
+    <a href="{{ base }}/?f=html" class="brand">GeoFast</a>
+    <a href="{{ base }}/?f=html">Home</a>
+    <a href="{{ base }}/collections?f=html">Collections</a>
+    <a href="{{ base }}/docs">API docs</a>
+  </nav>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  {% block script %}{% endblock %}
+</body>
+</html>
