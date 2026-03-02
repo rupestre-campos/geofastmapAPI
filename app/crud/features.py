@@ -15,6 +15,16 @@ from app.utils.geo import geojson_to_wkt_element
 from app.utils.property_filter import property_value_to_like_pattern
 from app.utils.property_filters import PropertyFilter, PropertyOp
 
+# Properties key that must not be writable via API (feature id is from the resource)
+PROPERTIES_READONLY_KEYS = frozenset({"id"})
+
+
+def _properties_without_readonly(props: dict | None) -> dict | None:
+    """Return a copy of properties with readonly keys (e.g. id) removed. None in -> None out."""
+    if props is None:
+        return None
+    return {k: v for k, v in props.items() if k not in PROPERTIES_READONLY_KEYS}
+
 
 async def list_features_for_collection(
     db: AsyncSession, collection_id: str
@@ -188,7 +198,7 @@ async def create_feature(db: AsyncSession, data: FeatureCreate) -> Feature:
     feature = Feature(
         collection_id=data.collection_id,
         geometry=geometry_wkt,
-        properties=data.properties,
+        properties=_properties_without_readonly(data.properties),
     )
     db.add(feature)
     await db.execute(
@@ -212,7 +222,7 @@ async def replace_feature(
         data.geometry.model_dump() if data.geometry else None
     )
     feature.geometry = geometry_wkt
-    feature.properties = data.properties
+    feature.properties = _properties_without_readonly(data.properties)
     await db.commit()
     await db.refresh(feature)
     return True
@@ -233,7 +243,8 @@ async def update_feature(
         )
     if "properties" in data.model_fields_set:
         existing = feature.properties or {}
-        feature.properties = {**existing, **(data.properties or {})}
+        incoming = _properties_without_readonly(data.properties) or {}
+        feature.properties = {**existing, **incoming}
     await db.commit()
     await db.refresh(feature)
     return feature

@@ -65,7 +65,7 @@
   <p class="meta">JSON: <a href="{{ base }}/collections">{{ base }}/collections</a></p>
 {% endblock %}
 {% block script %}
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script>
     const base = {{ base | tojson }};
     const collectionsWithBbox = {{ collections_with_bbox | tojson }};

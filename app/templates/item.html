@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Item {{ feature.id }} – GeoFast API{% endblock %}
 {% block head %}
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
   <style>
     .map-popup { min-width: 160px; max-width: 320px; font-size: 0.85rem; color: #000; }
     .map-popup-id { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
@@ -12,13 +14,33 @@
     .layer-style-collapsible summary::-webkit-details-marker { display: none; }
     .layer-style-collapsible summary::before { content: '▶'; font-size: 0.7rem; transition: transform 0.15s; }
     .layer-style-collapsible[open] summary::before { transform: rotate(90deg); }
-    .layer-style-legend { width: 28px; height: 18px; border-radius: 3px; border: 2px solid; flex-shrink: 0; }
+    .layer-style-legend { width: 28px; height: 18px; border-radius: 3px; border: 3px solid; flex-shrink: 0; }
     .vector-style-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 0.85rem; }
     .vector-style-panel .vector-style-label { font-weight: 600; margin-right: 4px; color: var(--text-secondary); }
     .vector-style-panel label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
     .vector-style-panel input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
     .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 0.85rem; }
     .save-style-form .vector-style-label { font-weight: 600; margin-right: 4px; }
+    .props-form-table { width: 100%; border-collapse: collapse; }
+    .props-form-table th { text-align: left; padding: 6px 8px; font-weight: 600; font-size: 0.85rem; color: var(--text-secondary); border-bottom: 1px solid var(--border); }
+    .props-form-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .props-form-table input[type="text"] { width: 100%; max-width: 280px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+    .props-form-table .prop-value { min-width: 160px; }
+    .props-form-table .prop-remove { padding: 4px 8px; font-size: 0.8rem; }
+    .geom-edit-bar { margin-top: 10px; padding: 10px 12px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); align-items: center; gap: 12px; flex-wrap: wrap; display: flex; }
+    .geom-edit-bar .geom-edit-label { font-weight: 600; margin-right: 8px; }
+    .vector-style-load-wrap { position: relative; display: inline-flex; vertical-align: middle; }
+    .vector-style-load-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); cursor: pointer; font-size: inherit; min-width: 120px; }
+    .vector-style-load-trigger:hover { border-color: var(--text-secondary); }
+    .vector-style-load-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-load-label-text { flex: 1; text-align: left; }
+    .vector-style-load-list { position: absolute; top: 100%; left: 0; margin-top: 2px; min-width: 180px; max-height: 240px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 50; display: none; }
+    .vector-style-load-list.open { display: block; }
+    .vector-style-load-group-label { padding: 4px 8px; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
+    .vector-style-load-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; font-size: 0.85rem; border: none; background: none; width: 100%; text-align: left; }
+    .vector-style-load-item:hover { background: var(--bg-elevated); }
+    .vector-style-load-item-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-load-item-label { flex: 1; }
   </style>
 {% endblock %}
 {% block content %}
@@ -44,6 +66,14 @@
         {% endif %}
       </div>
     </div>
+    <div class="geom-edit-bar geom-edit-bar-visible" id="geom-edit-bar" role="region" aria-label="Save edits">
+      <span class="geom-edit-label">Save</span>
+      <button type="button" class="btn" id="btn-save-geom-only" title="Save only the geometry to the server">Save geometry</button>
+      <button type="button" class="btn" id="btn-save-props-only" title="Save only the properties (from map panel) to the server">Save properties</button>
+      <button type="button" class="btn btn-primary" id="btn-save-geom-and-props" title="Save both geometry and properties to the server">Save geometry &amp; properties</button>
+      <button type="button" class="btn" id="btn-cancel-geom" title="Discard edits and reload from server">Cancel</button>
+    </div>
+    <p class="meta" id="map-edit-hint" style="margin-top:6px;">Select the feature (Select tool), then use <strong>Change</strong> to edit vertices (drag corners). Edit properties in the right panel when selected. Use the buttons above to save geometry only, properties only, or both. Ctrl+Z / Ctrl+Y to undo/redo.</p>
     <details id="layer-style-details" class="layer-style-collapsible" style="display:none">
       <summary class="layer-style-summary">
         <span>Layer style</span>
@@ -63,9 +93,16 @@
           <option value="dotted">Dotted</option>
         </select></label>
         <span class="vector-style-sep" style="color:var(--text-secondary);margin:0 4px">|</span>
-        <label>Load style <select id="vector-style-select" title="Load a saved style">
-          <option value="">Current</option>
-        </select></label>
+        <label>Load style
+          <span class="vector-style-load-wrap">
+            <button type="button" class="vector-style-load-trigger" id="vector-style-load-trigger" title="Load a saved style" aria-haspopup="listbox" aria-expanded="false">
+              <span class="vector-style-load-legend" id="vector-style-load-legend"></span>
+              <span class="vector-style-load-label-text" id="vector-style-load-label-text">Current</span>
+            </button>
+            <div class="vector-style-load-list" id="vector-style-load-list" role="listbox" aria-hidden="true"></div>
+          </span>
+          <select id="vector-style-select" aria-hidden="true" tabindex="-1" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden"><option value="">Current</option></select>
+        </label>
         <button type="button" class="btn btn-sm" id="btn-save-style">Save style…</button>
       </div>
       <div id="save-style-form" class="save-style-form" style="display:none">
@@ -85,9 +122,19 @@
   </div>
 
   <div class="card">
-    <h2 class="card-title">Properties <span class="meta">(edit JSON and save)</span></h2>
-    <pre id="props-editor" contenteditable="true">{{ properties_json }}</pre>
-    <div class="btn-group">
+    <h2 class="card-title">Properties</h2>
+    <p class="meta">Edit in the table below, or in the map panel when a feature is selected. Save from the map bar (Save to server) to persist geometry and properties.</p>
+    <div id="props-form-wrap">
+      <table class="props-form-table">
+        <thead>
+          <tr><th>Property</th><th>Value</th><th></th></tr>
+        </thead>
+        <tbody id="props-tbody">
+        </tbody>
+      </table>
+    </div>
+    <div class="btn-group" style="margin-top: 8px;">
+      <button type="button" class="btn btn-sm" id="btn-add-prop">Add property</button>
       <button type="button" class="btn btn-primary" id="btn-save-props">Save properties</button>
     </div>
   </div>
@@ -101,12 +148,18 @@
   </div>
 {% endblock %}
 {% block script %}
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script>
     const base = {{ base | tojson }};
     const collectionId = {{ collection_id | tojson }};
     const featureId = {{ feature.id | tojson }};
     const featureGeojson = {{ feature_geojson | tojson }};
+    (function() {
+      var p = featureGeojson.properties || {};
+      featureGeojson.properties = {};
+      Object.keys(p).forEach(function(k) { if (k.indexOf('__gm_') !== 0) featureGeojson.properties[k] = p[k]; });
+      if (featureId != null) featureGeojson.properties.id = featureId;
+    })();
     const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
     const hasStaticTiles = {{ has_static_tiles | tojson }};
 
@@ -121,6 +174,7 @@
     };
     const mapStyle = {
       version: 8,
+      glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
       sources: { basemap: { type: 'raster', tiles: BASEMAPS.osm.tiles, tileSize: 256 } },
       layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 }]
     };
@@ -224,9 +278,9 @@
 
     map.on('load', function() {
       map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+      try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) { document.getElementById('map-basemap').value = s; } } catch(e) {}
       applyBasemapFromSelect();
-      addOverlayLayers();
-      document.getElementById('map-basemap').onchange = applyBasemapFromSelect;
+      document.getElementById('map-basemap').onchange = function() { applyBasemapFromSelect(); try { localStorage.setItem('geofast-basemap', document.getElementById('map-basemap').value); } catch(e) {} };
       var showTilesCb = document.getElementById('show-collection-tiles');
       if (showTilesCb) {
         showTilesCb.checked = false;
@@ -235,186 +289,314 @@
           else removeCollectionTilesLayer();
         };
       }
-      if (map.getLayer('fill') || map.getLayer('line')) {
-        var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false });
-        map.getCanvas().style.cursor = '';
-        map.on('mouseenter', ['fill', 'line'], function() { map.getCanvas().style.cursor = 'pointer'; });
-        map.on('mouseleave', ['fill', 'line'], function() { map.getCanvas().style.cursor = ''; });
-        map.on('click', ['fill', 'line'], function(e) {
-          var feat = e.features && e.features[0];
-          if (!feat) return;
-          popup.setLngLat(e.lngLat).setHTML(popupHtmlForFeature(feat)).addTo(map);
-        });
-        function apiBaseUrlItem() {
-          var path = window.location.pathname;
-          var i = path.indexOf('/collections/');
-          var rootPath = i >= 0 ? path.substring(0, i) : '';
-          return window.location.origin + rootPath;
-        }
-        function collectionStylesUrlItem() {
-          return base + '/collections/' + encodeURIComponent(collectionId) + '/styles';
-        }
-        function publicStylesUrlItem() {
-          return base + '/styles';
-        }
-        var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
-        document.getElementById('layer-style-details').style.display = 'block';
-        var fillCheck = document.getElementById('vector-fill-enable');
-        var fillColor = document.getElementById('vector-fill-color');
-        var fillOpacity = document.getElementById('vector-fill-opacity');
-        var fillOpacityVal = document.getElementById('vector-fill-opacity-val');
-        var lineColor = document.getElementById('vector-line-color');
-        var lineWidth = document.getElementById('vector-line-width');
-        var lineOpacity = document.getElementById('vector-line-opacity');
-        var lineOpacityVal = document.getElementById('vector-line-opacity-val');
-        var linePattern = document.getElementById('vector-line-pattern');
-        function applyVectorStyleItem() {
-          map.setLayoutProperty('fill', 'visibility', fillCheck.checked ? 'visible' : 'none');
-          map.setPaintProperty('fill', 'fill-color', fillColor.value);
-          map.setPaintProperty('fill', 'fill-opacity', fillOpacity.value / 100);
-          map.setPaintProperty('line', 'line-color', lineColor.value);
-          map.setPaintProperty('line', 'line-width', Math.max(0.5, parseFloat(lineWidth.value) || 1));
-          map.setPaintProperty('line', 'line-opacity', lineOpacity.value / 100);
-          map.setPaintProperty('line', 'line-dasharray', LINE_DASH[linePattern.value] || LINE_DASH.solid);
-        }
-        function getCurrentSpec() {
-          return { fillColor: fillColor.value, lineColor: lineColor.value, fillOpacity: fillOpacity.value / 100, lineOpacity: lineOpacity.value / 100, lineWidth: Math.max(0.5, parseFloat(lineWidth.value) || 1), linePattern: linePattern.value || 'solid', fillEnabled: fillCheck.checked };
-        }
-        function updateStyleLegend(spec) {
-          var el = document.getElementById('layer-style-legend');
-          if (!el) return;
-          var fill = (spec && spec.fillColor) || '#58a6ff';
-          var line = (spec && spec.lineColor) || '#58a6ff';
-          var fillOp = (spec && spec.fillOpacity != null) ? spec.fillOpacity : 0.6;
-          var fillOn = !spec || spec.fillEnabled !== false;
-          el.style.backgroundColor = fillOn ? fill : 'transparent';
-          el.style.borderColor = line;
-          el.style.opacity = String(fillOp);
-        }
-        function applySpecToForm(s) {
-          fillColor.value = s.fillColor || '#58a6ff';
-          lineColor.value = s.lineColor || '#58a6ff';
-          fillOpacity.value = Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100);
-          lineOpacity.value = Math.round((s.lineOpacity != null ? s.lineOpacity : 1) * 100);
-          fillOpacityVal.textContent = fillOpacity.value;
-          lineOpacityVal.textContent = lineOpacity.value;
-          lineWidth.value = s.lineWidth != null ? s.lineWidth : 1;
-          linePattern.value = s.linePattern || 'solid';
-          fillCheck.checked = s.fillEnabled !== false;
-          applyVectorStyleItem();
-          updateStyleLegend(getCurrentSpec());
-        }
-        var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
-        applySpecToForm(spec);
-        fillCheck.onchange = function() { applyVectorStyleItem(); updateStyleLegend(getCurrentSpec()); };
-        fillColor.oninput = function() { applyVectorStyleItem(); updateStyleLegend(getCurrentSpec()); };
-        fillOpacity.oninput = function() { fillOpacityVal.textContent = this.value; applyVectorStyleItem(); updateStyleLegend(getCurrentSpec()); };
-        lineColor.oninput = function() { applyVectorStyleItem(); updateStyleLegend(getCurrentSpec()); };
-        lineWidth.oninput = function() { applyVectorStyleItem(); updateStyleLegend(getCurrentSpec()); };
-        lineOpacity.oninput = function() { lineOpacityVal.textContent = this.value; applyVectorStyleItem(); updateStyleLegend(getCurrentSpec()); };
-        linePattern.onchange = function() { applyVectorStyleItem(); updateStyleLegend(getCurrentSpec()); };
-        function loadStylesListItem() {
-          var sel = document.getElementById('vector-style-select');
-          if (!sel) return Promise.resolve();
-          while (sel.firstChild) sel.removeChild(sel.firstChild);
-          sel.appendChild(new Option('Current', ''));
-          return fetch(collectionStylesUrlItem(), { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.ok ? r.json() : Promise.reject(r); }).then(function(data) {
-            var list = data.styles || [];
-            if (list.length) {
-              var g = document.createElement('optgroup');
-              g.label = 'Collection styles';
-              list.forEach(function(s) { g.appendChild(new Option(s.title || s.id, 'c:' + s.id)); });
-              sel.appendChild(g);
+      Promise.all([
+        import('https://esm.sh/@geoman-io/maplibre-geoman-free@0.6.2'),
+        import('https://esm.sh/maplibre-gl-geo-editor@0.7.3')
+      ]).then(function(modules) {
+        var geomanMod = modules[0];
+        var editorMod = modules[1];
+        var GeomanCtor = geomanMod.default || geomanMod.Geoman;
+        var GeoEditor = editorMod.GeoEditor;
+        if (!GeomanCtor || typeof GeomanCtor !== 'function') { addOverlayLayers(); return; }
+        var geoman = new GeomanCtor(map, {});
+        map.once('gm:loaded', function() {
+          var props = featureGeojson.properties || {};
+          var keys = Object.keys(props).filter(function(k) { return k.indexOf('__gm_') !== 0; }).sort();
+          var commonFields = keys.map(function(k) {
+            var field = { name: k, label: k, type: 'string' };
+            if (k === 'id' && featureId != null) field.defaultValue = String(featureId);
+            return field;
+          });
+          if (featureId != null && keys.indexOf('id') === -1) {
+            commonFields.unshift({ name: 'id', label: 'id', type: 'string', defaultValue: String(featureId) });
+          }
+          var schema = { polygon: commonFields, line: commonFields, point: commonFields, common: [] };
+          var lastAttributeEdit = {};
+          var geoEditor = new GeoEditor({
+            position: 'top-left',
+            toolbarOrientation: 'vertical',
+            columns: 2,
+            drawModes: ['polygon', 'line', 'rectangle', 'circle', 'marker', 'freehand'],
+            editModes: ['select', 'drag', 'change', 'rotate', 'cut', 'delete', 'scale', 'copy', 'split', 'union', 'difference', 'simplify', 'lasso'],
+            showFeatureProperties: true,
+            fitBoundsOnLoad: true,
+            enableAttributeEditing: true,
+            attributeSchema: schema,
+            attributePanelPosition: 'right',
+            attributePanelTitle: 'Feature properties',
+            attributePanelWidth: 280,
+            fileModes: [],
+            enableHistory: true,
+            maxHistorySize: 50,
+            onAttributeChange: function(ev) {
+              if (ev && ev.feature && ev.newProperties) {
+                var fid = ev.feature.id != null ? String(ev.feature.id) : (ev.feature.properties && ev.feature.properties.id != null ? String(ev.feature.properties.id) : 'feature-1');
+                var edited = Object.assign({}, ev.newProperties);
+                if (featureId != null) edited.id = featureId;
+                lastAttributeEdit[fid] = edited;
+              }
             }
-          }).catch(function(err) { console.warn('Load collection styles failed', collectionStylesUrlItem(), err); }).then(function() {
-            return fetch(publicStylesUrlItem(), { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.ok ? r.json() : Promise.reject(r); }).then(function(data) {
-              var list = data.styles || [];
-              if (list.length) {
-                var g = document.createElement('optgroup');
-                g.label = 'Public styles';
-                list.forEach(function(s) { g.appendChild(new Option(s.title || s.id, 'p:' + s.id)); });
-                sel.appendChild(g);
+          });
+          geoEditor.setGeoman(geoman);
+          map.addControl(geoEditor, 'top-left');
+          function injectExplodeButton() {
+            var container = map.getContainer();
+            var editGroup = null;
+            var groups = container.querySelectorAll('.geo-editor-tool-group');
+            for (var g = 0; g < groups.length; g++) {
+              var btns = groups[g].querySelectorAll('.geo-editor-tool-button');
+              for (var b = 0; b < btns.length; b++) {
+                var t = (btns[b].getAttribute('title') || '').toLowerCase();
+                if (t.indexOf('union') !== -1 || t.indexOf('split') !== -1) {
+                  editGroup = groups[g];
+                  break;
+                }
+              }
+              if (editGroup) break;
+            }
+            if (!editGroup) return;
+            var toolButtons = editGroup.querySelector('.geo-editor-tool-buttons');
+            if (!toolButtons) return;
+            var explodeBtn = document.createElement('button');
+            explodeBtn.type = 'button';
+            explodeBtn.className = 'geo-editor-tool-button';
+            explodeBtn.title = 'Explode: split MultiPolygon/MultiLineString/MultiPoint into separate features';
+            explodeBtn.setAttribute('aria-label', 'Explode');
+            explodeBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="9" x2="9" y2="15"/><line x1="15" y1="9" x2="15" y2="15"/></svg>';
+            toolButtons.appendChild(explodeBtn);
+            explodeBtn.onclick = function() {
+              var features = getEditorFeatures();
+              if (!features.length) { alert('No feature to explode.'); return; }
+              var hasMulti = features.some(function(f) {
+                var t = f.geometry && f.geometry.type;
+                return t === 'MultiPolygon' || t === 'MultiLineString' || t === 'MultiPoint';
+              });
+              if (!hasMulti) { alert('No multi-part geometry to explode (select a MultiPolygon, MultiLineString, or MultiPoint).'); return; }
+              var exploded = explodeMultiToFeatures(features);
+              geoEditor.loadGeoJson({ type: 'FeatureCollection', features: exploded });
+            };
+          }
+          var editorProps = {};
+          Object.keys(featureGeojson.properties || {}).forEach(function(k) { if (k.indexOf('__gm_') !== 0) editorProps[k] = featureGeojson.properties[k]; });
+          if (featureId != null) editorProps.id = featureId;
+          var featureForEditor = { type: 'Feature', id: featureGeojson.id || featureId || 'feature-1', geometry: featureGeojson.geometry || null, properties: editorProps };
+          var fc = { type: 'FeatureCollection', features: featureForEditor.geometry ? [featureForEditor] : [] };
+          geoEditor.loadGeoJson(fc);
+          window.__geoEditor = geoEditor;
+          window.__geoman = geoman;
+          window.__lastAttributeEdit = lastAttributeEdit;
+          document.getElementById('layer-style-details').style.display = 'none';
+          setTimeout(injectExplodeButton, 100);
+          function editorFeaturesToGeometry(features) {
+            if (!features || !features.length) return null;
+            if (features.length === 1) return features[0].geometry;
+            var types = {};
+            features.forEach(function(f) { if (f.geometry) types[f.geometry.type] = true; });
+            if (types.Polygon && !types.LineString && !types.Point) {
+              var coords = features.map(function(f) { var g = f.geometry; return g.type === 'MultiPolygon' ? g.coordinates : [g.coordinates]; }).flat();
+              return { type: 'MultiPolygon', coordinates: coords };
+            }
+            if (types.LineString && !types.Polygon && !types.Point) {
+              var coords = features.map(function(f) { var g = f.geometry; return g.type === 'MultiLineString' ? g.coordinates : [g.coordinates]; }).flat();
+              return { type: 'MultiLineString', coordinates: coords };
+            }
+            if (types.Point && !types.Polygon && !types.LineString) {
+              var coords = features.map(function(f) { var g = f.geometry; return g.type === 'MultiPoint' ? g.coordinates : [g.coordinates]; }).flat();
+              return { type: 'MultiPoint', coordinates: coords };
+            }
+            return features[0].geometry;
+          }
+          function getEditorFeatures() {
+            var editor = window.__geoEditor;
+            if (!editor) return [];
+            var features = editor.getFeatures && editor.getFeatures();
+            if (features && features.length) return features;
+            var fc = editor.getAllFeatureCollection && editor.getAllFeatureCollection();
+            if (fc && fc.features && fc.features.length) return fc.features;
+            if (window.__geoman && window.__geoman.features && typeof window.__geoman.features.exportGeoJson === 'function') {
+              var exported = window.__geoman.features.exportGeoJson();
+              return (exported && exported.features) ? exported.features : [];
+            }
+            if (editor.features && typeof editor.features.exportGeoJson === 'function') {
+              var exportedFc = editor.features.exportGeoJson();
+              return (exportedFc && exportedFc.features) ? exportedFc.features : [];
+            }
+            return [];
+          }
+          function buildPropsFromFirstFeature(first) {
+            var props = first.properties && typeof first.properties === 'object' ? Object.assign({}, first.properties) : {};
+            Object.keys(props).forEach(function(k) { if (k.indexOf('__gm_') === 0) delete props[k]; });
+            var lastEdit = window.__lastAttributeEdit;
+            if (lastEdit && typeof lastEdit === 'object') {
+              var fid = first.id != null ? String(first.id) : (first.properties && first.properties.id != null ? String(first.properties.id) : 'feature-1');
+              if (lastEdit[fid]) {
+                var edited = lastEdit[fid];
+                Object.keys(edited).forEach(function(k) { if (k.indexOf('__gm_') !== 0) props[k] = edited[k]; });
+              }
+            }
+            if (featureId != null) props.id = featureId;
+            return props;
+          }
+          function explodeMultiToFeatures(features) {
+            var out = [];
+            features.forEach(function(f) {
+              var geom = f.geometry;
+              var props = f.properties && typeof f.properties === 'object' ? Object.assign({}, f.properties) : {};
+              Object.keys(props).forEach(function(k) { if (k.indexOf('__gm_') === 0) delete props[k]; });
+              if (geom && geom.type === 'MultiPolygon' && geom.coordinates && geom.coordinates.length) {
+                geom.coordinates.forEach(function(coord) {
+                  out.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: coord }, properties: Object.assign({}, props) });
+                });
+              } else if (geom && geom.type === 'MultiLineString' && geom.coordinates && geom.coordinates.length) {
+                geom.coordinates.forEach(function(coord) {
+                  out.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: coord }, properties: Object.assign({}, props) });
+                });
+              } else if (geom && geom.type === 'MultiPoint' && geom.coordinates && geom.coordinates.length) {
+                geom.coordinates.forEach(function(coord) {
+                  out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: coord }, properties: Object.assign({}, props) });
+                });
+              } else {
+                out.push({ type: 'Feature', id: f.id, geometry: geom, properties: props });
               }
             });
-          }).catch(function(err) { console.warn('Load public styles failed', publicStylesUrlItem(), err); });
-        }
-        function populateReplaceDropdownItem(saveTo) {
-          var rep = document.getElementById('save-style-replace');
-          rep.options.length = 1;
-          var url = saveTo === 'public' ? publicStylesUrlItem() : collectionStylesUrlItem();
-          fetch(url, { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.json(); }).then(function(data) {
-            (data.styles || []).forEach(function(s) { rep.add(new Option(s.title || s.id, s.id)); });
-          }).catch(function() {});
-        }
-        loadStylesListItem();
-        document.getElementById('vector-style-select').onchange = function() {
-          var val = this.value;
-          if (!val) return;
-          var id = val.slice(2);
-          var url = val.indexOf('p:') === 0 ? (publicStylesUrlItem() + '/' + encodeURIComponent(id)) : (collectionStylesUrlItem() + '/' + encodeURIComponent(id));
-          fetch(url, { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.json(); }).then(function(s) { if (s.style_spec) applySpecToForm(s.style_spec); }).catch(function() {});
-        };
-        document.getElementById('btn-save-style').onclick = function() {
-          document.getElementById('save-style-form').style.display = 'flex';
-          document.getElementById('save-style-to').value = 'collection';
-          document.getElementById('save-style-default-wrap').style.display = '';
-          populateReplaceDropdownItem('collection');
-        };
-        document.getElementById('save-style-to').onchange = function() {
-          var isPublic = this.value === 'public';
-          document.getElementById('save-style-default-wrap').style.display = isPublic ? 'none' : '';
-          document.getElementById('save-style-default').checked = false;
-          populateReplaceDropdownItem(this.value);
-        };
-        document.getElementById('btn-save-style-cancel').onclick = function() {
-          document.getElementById('save-style-form').style.display = 'none';
-        };
-        document.getElementById('save-style-replace').onchange = function() {
-          if (this.value) document.getElementById('save-style-id').value = this.value;
-        };
-        document.getElementById('btn-save-style-submit').onclick = function() {
-          var replaceVal = document.getElementById('save-style-replace').value;
-          var idInput = document.getElementById('save-style-id').value.trim().replace(/[^a-zA-Z0-9_-]/g, '');
-          var id = replaceVal || idInput || null;
-          if (!id) { alert('Enter a style id (letters, numbers, hyphen, underscore)'); return; }
-          var title = document.getElementById('save-style-title').value.trim() || null;
-          var saveTo = document.getElementById('save-style-to').value;
-          var setDefault = document.getElementById('save-style-default').checked;
-          var method = 'POST';
-          var url = saveTo === 'public' ? publicStylesUrlItem() : collectionStylesUrlItem();
-          var body = { id: id, style_spec: getCurrentSpec() };
-          if (title) body.title = title;
-          if (saveTo === 'collection') body.set_default = setDefault;
-          if (saveTo === 'public' && replaceVal) {
-            method = 'PUT';
-            url = publicStylesUrlItem() + '/' + encodeURIComponent(id);
-            body = { style_spec: getCurrentSpec() };
-            if (title) body.title = title;
+            return out;
           }
-          fetch(url, { method: method, headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body) })
-            .then(function(r) { if (!r.ok) return r.json().then(function(j) { throw j; }); return r.json(); })
-            .then(function() {
-              document.getElementById('save-style-form').style.display = 'none';
-              document.getElementById('save-style-id').value = '';
-              document.getElementById('save-style-title').value = '';
-              document.getElementById('save-style-replace').value = '';
-              document.getElementById('save-style-default').checked = false;
-              var newVal = (saveTo === 'public' ? 'p:' : 'c:') + id;
-              loadStylesListItem().then(function() { document.getElementById('vector-style-select').value = newVal; });
-            })
-            .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
-        };
-      }
+          document.getElementById('btn-save-geom-only').onclick = function() {
+            var features = getEditorFeatures();
+            if (!features.length) { alert('No feature to save. Draw a geometry first.'); return; }
+            var geom = editorFeaturesToGeometry(features);
+            fetch(base + '/collections/' + collectionId + '/items/' + featureId, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/merge-patch+json', 'Accept': 'application/json' },
+              body: JSON.stringify({ geometry: geom })
+            }).then(function(r) { return r.json(); }).then(function(updated) {
+              featureGeojson.geometry = updated.geometry;
+              alert('Geometry saved.');
+            }).catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+          };
+          document.getElementById('btn-save-props-only').onclick = function() {
+            var features = getEditorFeatures();
+            if (!features.length) { alert('No feature to save. Draw a geometry first.'); return; }
+            var props = buildPropsFromFirstFeature(features[0]);
+            fetch(base + '/collections/' + collectionId + '/items/' + featureId, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/merge-patch+json', 'Accept': 'application/json' },
+              body: JSON.stringify({ properties: props })
+            }).then(function(r) { return r.json(); }).then(function(updated) {
+              featureGeojson.properties = {};
+              Object.keys(updated.properties || {}).forEach(function(k) { if (k.indexOf('__gm_') !== 0) featureGeojson.properties[k] = updated.properties[k]; });
+              if (typeof renderPropsForm === 'function') renderPropsForm();
+              alert('Properties saved.');
+            }).catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+          };
+          document.getElementById('btn-save-geom-and-props').onclick = function() {
+            var features = getEditorFeatures();
+            if (!features.length) { alert('No feature to save. Draw a geometry first.'); return; }
+            var geom = editorFeaturesToGeometry(features);
+            var props = buildPropsFromFirstFeature(features[0]);
+            fetch(base + '/collections/' + collectionId + '/items/' + featureId, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/merge-patch+json', 'Accept': 'application/json' },
+              body: JSON.stringify({ geometry: geom, properties: props })
+            }).then(function(r) { return r.json(); }).then(function(updated) {
+              featureGeojson.geometry = updated.geometry;
+              featureGeojson.properties = {};
+              Object.keys(updated.properties || {}).forEach(function(k) { if (k.indexOf('__gm_') !== 0) featureGeojson.properties[k] = updated.properties[k]; });
+              if (typeof renderPropsForm === 'function') renderPropsForm();
+              alert('Geometry and properties saved.');
+            }).catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+          };
+          document.getElementById('btn-cancel-geom').onclick = function() {
+            var editor = window.__geoEditor;
+            if (!editor) return;
+            var resetFeature = { type: 'Feature', id: featureGeojson.id || featureId || 'feature-1', geometry: featureGeojson.geometry || null, properties: Object.assign({}, featureGeojson.properties || {}) };
+            if (featureId != null && resetFeature.properties.id === undefined) resetFeature.properties.id = featureId;
+            editor.loadGeoJson({ type: 'FeatureCollection', features: featureGeojson.geometry ? [resetFeature] : [] });
+          };
+        });
+      }).catch(function(err) { console.warn('GeoEditor load failed', err); addOverlayLayers(); });
+      /* GeoEditor handles geometry and attributes; layer-style panel hidden when editor is used. */
     });
 
+    function propValueToJson(val) {
+      var s = (val || '').trim();
+      if (s === '') return null;
+      if (s === 'true') return true;
+      if (s === 'false') return false;
+      if (s === 'null') return null;
+      if (/^-?\d+$/.test(s)) return parseInt(s, 10);
+      if (/^-?\d*\.\d+([eE][+-]?\d+)?$/.test(s)) return parseFloat(s);
+      if ((s.startsWith('{') && s.endsWith('}')) || (s.startsWith('[') && s.endsWith(']'))) {
+        try { return JSON.parse(s); } catch (e) { return s; }
+      }
+      return s;
+    }
+    function renderPropsForm() {
+      var tbody = document.getElementById('props-tbody');
+      tbody.innerHTML = '';
+      var props = featureGeojson.properties || {};
+      var keys = Object.keys(props).filter(function(k) { return k.indexOf('__gm_') !== 0; }).sort();
+      keys.forEach(function(k) {
+        var v = props[k];
+        var valStr = typeof v === 'object' ? JSON.stringify(v) : String(v);
+        addPropRow(tbody, k, valStr);
+      });
+    }
+    function addPropRow(tbody, key, value) {
+      key = key || '';
+      value = value !== undefined ? value : '';
+      var tr = document.createElement('tr');
+      var keyCell = document.createElement('td');
+      var keyInput = document.createElement('input');
+      keyInput.type = 'text';
+      keyInput.placeholder = 'name';
+      keyInput.value = key;
+      keyInput.className = 'prop-key';
+      keyCell.appendChild(keyInput);
+      var valCell = document.createElement('td');
+      var valInput = document.createElement('input');
+      valInput.type = 'text';
+      valInput.placeholder = 'value';
+      valInput.value = value;
+      valInput.className = 'prop-value';
+      valCell.appendChild(valInput);
+      var actCell = document.createElement('td');
+      var rmBtn = document.createElement('button');
+      rmBtn.type = 'button';
+      rmBtn.className = 'btn btn-sm prop-remove';
+      rmBtn.textContent = 'Remove';
+      rmBtn.onclick = function() { tr.remove(); };
+      actCell.appendChild(rmBtn);
+      tr.appendChild(keyCell);
+      tr.appendChild(valCell);
+      tr.appendChild(actCell);
+      tbody.appendChild(tr);
+    }
+    renderPropsForm();
+    document.getElementById('btn-add-prop').onclick = function() {
+      addPropRow(document.getElementById('props-tbody'), '', '');
+    };
     document.getElementById('btn-save-props').onclick = function() {
-      let obj;
-      try { obj = JSON.parse(document.getElementById('props-editor').innerText); } catch (e) { alert('Invalid JSON'); return; }
+      var tbody = document.getElementById('props-tbody');
+      var obj = {};
+      var seen = {};
+      for (var i = 0; i < tbody.rows.length; i++) {
+        var key = (tbody.rows[i].querySelector('.prop-key').value || '').trim();
+        if (!key) continue;
+        if (seen[key]) { alert('Duplicate property key: ' + key); return; }
+        seen[key] = true;
+        var val = tbody.rows[i].querySelector('.prop-value').value;
+        obj[key] = propValueToJson(val);
+      }
       fetch(base + '/collections/' + collectionId + '/items/' + featureId, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/merge-patch+json', 'Accept': 'application/json' },
         body: JSON.stringify({ properties: obj })
-      }).then(r => r.json()).then(() => alert('Saved')).catch(e => alert('Error: ' + (e.detail || e.message || JSON.stringify(e))));
+      }).then(function(r) { return r.json(); }).then(function(updated) {
+        featureGeojson.properties = updated.properties || {};
+        renderPropsForm();
+        alert('Saved');
+      }).catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
     };
     document.getElementById('btn-delete').onclick = function() {
       if (!confirm('Delete this feature?')) return;

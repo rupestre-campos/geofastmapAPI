@@ -8,7 +8,11 @@
 
   <div class="card">
     <h2 class="card-title">Geometry (GeoJSON)</h2>
-    <p class="meta">Paste or edit a GeoJSON geometry (Point, LineString, Polygon, etc.).</p>
+    <p class="meta">Paste or edit a GeoJSON geometry, or upload a GeoJSON file to load the first feature.</p>
+    <div class="btn-group" style="margin-bottom: var(--space);">
+      <button type="button" class="btn" id="btn-upload-geojson" title="Load geometry and properties from a GeoJSON file">Upload GeoJSON</button>
+      <input type="file" id="input-upload-geojson" accept=".geojson,.json,application/geo+json,application/json" style="position:absolute;width:0;height:0;opacity:0;">
+    </div>
     <textarea id="geom-json" rows="6" placeholder='{"type":"Point","coordinates":[0,0]}'>{"type":"Point","coordinates":[0,0]}</textarea>
   </div>
 
@@ -43,6 +47,45 @@
       tr.querySelector('.del-row').onclick = () => tr.remove();
     }
     document.getElementById('btn-add-row').onclick = () => addRow();
+
+    document.getElementById('btn-upload-geojson').onclick = function() {
+      document.getElementById('input-upload-geojson').click();
+    };
+    document.getElementById('input-upload-geojson').onchange = function() {
+      const input = this;
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function() {
+        try {
+          const json = JSON.parse(reader.result);
+          let feature = null;
+          if (json.type === 'FeatureCollection' && json.features && json.features.length) {
+            feature = json.features[0];
+          } else if (json.type === 'Feature') {
+            feature = json;
+          } else if (json.type && json.coordinates) {
+            feature = { type: 'Feature', geometry: json, properties: {} };
+          }
+          if (!feature || !feature.geometry) {
+            alert('No feature or geometry found in file.');
+            return;
+          }
+          document.getElementById('geom-json').value = JSON.stringify(feature.geometry, null, 2);
+          const tbody = document.getElementById('props-table').querySelector('tbody');
+          tbody.innerHTML = '';
+          const props = feature.properties || {};
+          Object.keys(props).filter(k => k.indexOf('__gm_') !== 0).forEach(k => {
+            const v = props[k];
+            addRow(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+          });
+        } catch (e) {
+          alert('Invalid GeoJSON: ' + e.message);
+        }
+        input.value = '';
+      };
+      reader.readAsText(file);
+    };
 
     document.getElementById('btn-load-schema').onclick = function() {
       fetch(base + '/collections/' + collectionId + '/items?limit=1')
