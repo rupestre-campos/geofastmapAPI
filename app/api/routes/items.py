@@ -311,10 +311,22 @@ async def new_item_form(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    base = _base_url(request)
+    default_style = await styles_crud.get_default_style(db, collection_id)
+    default_style_dict = (
+        {"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec}
+        if default_style
+        else None
+    )
+    rec = await tiles_crud.get_collection_tiles(db, collection_id)
+    has_static_tiles = bool(rec and rec.pmtiles_path and PathLib(rec.pmtiles_path).exists())
     return html_response(
         "add_feature.html",
-        base=_base_url(request),
+        base=base,
         collection_id=collection_id,
+        default_style=default_style_dict,
+        has_static_tiles=has_static_tiles,
+        google_maps_api_key=get_settings().google_maps_api_key or "",
     )
 
 
@@ -367,6 +379,58 @@ async def get_item(
             google_maps_api_key=get_settings().google_maps_api_key or "",
         )
     return GeoJSONResponse(content=feat_geojson.model_dump(mode="json"))
+
+
+@router.get(
+    "/{collection_id}/items/{feature_id}/edit",
+    summary="Edit feature (HTML only)",
+    description="Use ?f=html to open the feature edit page (map editor, properties, save).",
+)
+async def get_item_edit(
+    request: Request,
+    collection_id: str,
+    feature_id: str = Path(..., description="Identifier of the feature."),
+    db: AsyncSession = Depends(get_db),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html for the edit page.")
+    feature = await features_crud.get_feature(db, collection_id, feature_id)
+    if not feature:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Feature not found",
+        )
+    geom_dict = geometry_to_geojson(feature.geometry)
+    base = _base_url(request)
+    feat_geojson = FeatureGeoJSON(
+        type="Feature",
+        id=feature.id,
+        geometry=Geometry(**geom_dict) if geom_dict else None,
+        properties=feature.properties,
+        links=[
+            Link(href=f"{base}/collections/{collection_id}/items/{feature_id}", rel="self", type="application/geo+json"),
+            Link(href=f"{base}/collections/{collection_id}", rel="collection", type="application/json"),
+        ],
+    )
+    default_style = await styles_crud.get_default_style(db, collection_id)
+    default_style_dict = (
+        {"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec}
+        if default_style
+        else None
+    )
+    rec = await tiles_crud.get_collection_tiles(db, collection_id)
+    has_static_tiles = bool(rec and rec.pmtiles_path and PathLib(rec.pmtiles_path).exists())
+    return html_response(
+        "item_edit.html",
+        base=base,
+        collection_id=collection_id,
+        feature=feat_geojson,
+        feature_geojson=feat_geojson.model_dump(),
+        properties_json=json.dumps(feat_geojson.properties or {}, indent=2),
+        default_style=default_style_dict,
+        has_static_tiles=has_static_tiles,
+        google_maps_api_key=get_settings().google_maps_api_key or "",
+    )
 
 
 @router.put(

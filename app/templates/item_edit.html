@@ -1,0 +1,665 @@
+{% extends "base.html" %}
+{% block title %}Edit feature {{ feature.id }} – GeoFast API{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
+  <style>
+    .map-popup { min-width: 160px; max-width: 320px; font-size: 0.85rem; color: #000; }
+    .map-popup-id { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
+    .map-popup-id a { color: #1967d2; }
+    .map-popup-row { margin-top: 0.25rem; word-break: break-word; color: #000; }
+    .map-popup-row strong { font-weight: 700; margin-right: 0.35rem; color: #000; }
+    .layer-style-collapsible { margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); }
+    .layer-style-collapsible summary { padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 0.9rem; color: var(--text-secondary); display: flex; align-items: center; gap: 10px; list-style: none; user-select: none; }
+    .layer-style-collapsible summary::-webkit-details-marker { display: none; }
+    .layer-style-collapsible summary::before { content: '▶'; font-size: 0.7rem; transition: transform 0.15s; }
+    .layer-style-collapsible[open] summary::before { transform: rotate(90deg); }
+    .layer-style-legend { width: 28px; height: 18px; border-radius: 3px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 0.85rem; }
+    .vector-style-panel .vector-style-label { font-weight: 600; margin-right: 4px; color: var(--text-secondary); }
+    .vector-style-panel label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+    .vector-style-panel input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+    .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 0.85rem; }
+    .save-style-form .vector-style-label { font-weight: 600; margin-right: 4px; }
+    .vector-style-load-wrap { position: relative; display: inline-flex; vertical-align: middle; }
+    .vector-style-load-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); cursor: pointer; font-size: inherit; min-width: 120px; }
+    .vector-style-load-trigger:hover { border-color: var(--text-secondary); }
+    .vector-style-load-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-load-label-text { flex: 1; text-align: left; }
+    .vector-style-load-list { position: absolute; top: 100%; left: 0; margin-top: 2px; min-width: 180px; max-height: 240px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 50; display: none; }
+    .vector-style-load-list.open { display: block; }
+    .vector-style-load-group-label { padding: 4px 8px; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
+    .vector-style-load-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; font-size: 0.85rem; border: none; background: none; width: 100%; text-align: left; }
+    .vector-style-load-item:hover { background: var(--bg-elevated); }
+    .vector-style-load-item-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-load-item-label { flex: 1; }
+    .geom-edit-bar { margin-top: 10px; padding: 10px 12px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); align-items: center; gap: 12px; flex-wrap: wrap; display: flex; }
+    .geom-edit-bar .geom-edit-label { font-weight: 600; margin-right: 8px; }
+    .geom-edit-bar .btn { margin-bottom: 0; }
+    .map-edit-hint { font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 8px; }
+    .props-form-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .props-form-table th, .props-form-table td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+    .props-form-table th { font-weight: 500; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; }
+    .props-form-table .prop-key, .props-form-table .prop-value { width: 100%; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-size: 0.9rem; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Edit feature <code>{{ feature.id }}</code></h1>
+    <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> › <a href="{{ base }}/collections/{{ collection_id }}/items?f=html">Items</a> › <a href="{{ base }}/collections/{{ collection_id }}/items/{{ feature.id }}?f=html">{{ feature.id }}</a> › Edit</p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Map</h2>
+    <div id="map" class="map-container">
+      <div class="map-controls">
+        <select id="map-basemap" title="Basemap">
+          <option value="osm">OpenStreetMap</option>
+          <option value="streets">Esri Streets</option>
+          <option value="satellite">Esri Satellite</option>
+          <option value="hybrid">Esri Hybrid</option>
+          <option value="google_satellite">Google Satellite</option>
+          <option value="google_hybrid">Google Hybrid</option>
+        </select>
+        {% if has_static_tiles %}
+        <label><input type="checkbox" id="show-collection-tiles" title="Show full layer (static tiles)"> Show collection tiles</label>
+        {% endif %}
+      </div>
+    </div>
+    <div class="geom-edit-bar geom-edit-bar-visible" id="geom-edit-bar" role="region" aria-label="Save edits">
+      <span class="geom-edit-label">Save</span>
+      <button type="button" class="btn btn-primary" id="btn-save-geom-only" title="Save the geometry to the server">Save geometry</button>
+    </div>
+    <p class="meta map-edit-hint" id="map-edit-hint" style="margin-top:6px;">Select the feature (Select tool), then use <strong>Change</strong> to edit vertices (drag corners). Edit properties in the right panel when selected. Use the buttons above to save geometry only, properties only, or both. Ctrl+Z / Ctrl+Y to undo/redo.</p>
+    <details id="layer-style-details" class="layer-style-collapsible" style="display:none">
+        <summary class="layer-style-summary">
+          <span>Layer style</span>
+          <span id="layer-style-legend" class="layer-style-legend" aria-hidden="true"></span>
+        </summary>
+        <div id="vector-style-wrap" class="vector-style-panel">
+          <span class="vector-style-label">Style</span>
+          <label><input type="checkbox" id="vector-fill-enable" checked> Fill</label>
+          <label>Fill <input type="color" id="vector-fill-color" value="#58a6ff" title="Fill color"></label>
+          <label>Fill opacity <input type="range" id="vector-fill-opacity" min="0" max="100" value="60" title="Fill transparency"> <span id="vector-fill-opacity-val">60</span>%</label>
+          <label>Line <input type="color" id="vector-line-color" value="#58a6ff" title="Line color"></label>
+          <label>Line width <input type="number" id="vector-line-width" min="0.5" max="20" step="0.5" value="2" style="width:4em" title="Line size"></label>
+          <label>Line opacity <input type="range" id="vector-line-opacity" min="0" max="100" value="100" title="Line transparency"> <span id="vector-line-opacity-val">100</span>%</label>
+          <label>Line pattern <select id="vector-line-pattern" title="Line pattern">
+            <option value="solid">Solid</option>
+            <option value="dashed">Dashed</option>
+            <option value="dotted">Dotted</option>
+          </select></label>
+          <span class="vector-style-sep" style="color:var(--text-secondary);margin:0 4px">|</span>
+          <label>Load style
+            <span class="vector-style-load-wrap">
+              <button type="button" class="vector-style-load-trigger" id="vector-style-load-trigger" title="Load a saved style" aria-haspopup="listbox" aria-expanded="false">
+                <span class="vector-style-load-legend" id="vector-style-load-legend"></span>
+                <span class="vector-style-load-label-text" id="vector-style-load-label-text">Current</span>
+              </button>
+              <div class="vector-style-load-list" id="vector-style-load-list" role="listbox" aria-hidden="true"></div>
+            </span>
+            <select id="vector-style-select" aria-hidden="true" tabindex="-1" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden"><option value="">Current</option></select>
+          </label>
+          <button type="button" class="btn btn-sm" id="btn-save-style">Save style…</button>
+        </div>
+        <div id="save-style-form" class="save-style-form" style="display:none">
+          <span class="vector-style-label">Save style</span>
+          <label>Save to <select id="save-style-to" title="Where to save the style">
+            <option value="collection">Collection (this layer)</option>
+            <option value="public">Public (reusable)</option>
+          </select></label>
+          <label>Id <input type="text" id="save-style-id" placeholder="e.g. blue-outline" pattern="[a-zA-Z0-9_-]+" title="Letters, numbers, hyphen, underscore"></label>
+          <label>Title <input type="text" id="save-style-title" placeholder="Optional title"></label>
+          <label>Replace <select id="save-style-replace"><option value="">New</option></select></label>
+          <span id="save-style-default-wrap"><label><input type="checkbox" id="save-style-default"> Set as default</label></span>
+          <button type="button" class="btn btn-sm btn-primary" id="btn-save-style-submit">Save</button>
+          <button type="button" class="btn btn-sm" id="btn-save-style-cancel">Cancel</button>
+        </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Properties</h2>
+    <p class="meta">Edit feature attributes below. Use <strong>Save properties</strong> (below) to persist property changes.</p>
+    <table class="props-form-table" id="props-form-table">
+      <thead><tr><th>Property</th><th>Value</th><th></th></tr></thead>
+      <tbody id="props-tbody"></tbody>
+    </table>
+    <div class="btn-group" style="margin-top: var(--space);">
+      <button type="button" class="btn" id="btn-add-prop">+ Add property</button>
+      <button type="button" class="btn btn-primary" id="btn-save-props">Save properties</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Actions</h2>
+    <div class="btn-group">
+      <a href="{{ base }}/collections/{{ collection_id }}/items/{{ feature.id }}?f=html" class="btn">Back to feature</a>
+      <a href="{{ base }}/collections/{{ collection_id }}/items?f=html" class="btn">Back to items</a>
+      <button type="button" class="btn btn-danger" id="btn-delete">Delete feature</button>
+    </div>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script>
+    const base = {{ base | tojson }};
+    const collectionId = {{ collection_id | tojson }};
+    const featureId = {{ feature.id | tojson }};
+    let featureGeojson = {{ feature_geojson | tojson }};
+    (function() {
+      var p = featureGeojson.properties || {};
+      featureGeojson.properties = {};
+      Object.keys(p).forEach(function(k) { if (k.indexOf('__gm_') !== 0) featureGeojson.properties[k] = p[k]; });
+      if (featureId != null) featureGeojson.properties.id = featureId;
+    })();
+    const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
+    const hasStaticTiles = {{ has_static_tiles | tojson }};
+    const googleKey = {{ google_maps_api_key | tojson }};
+    const BASEMAPS = {
+      osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] },
+      streets: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}'] },
+      satellite: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] },
+      hybrid: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], labels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}' },
+      google_satellite: { tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] },
+      google_hybrid: { tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] }
+    };
+    const mapStyle = {
+      version: 8,
+      glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+      sources: { basemap: { type: 'raster', tiles: BASEMAPS.osm.tiles, tileSize: 256 } },
+      layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 }]
+    };
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: mapStyle,
+      center: [0, 20],
+      zoom: 2,
+      renderWorldCopies: false
+    });
+
+    function bboxFromGeom(geom) {
+      if (!geom || !geom.coordinates) return null;
+      const flat = (arr, out) => { if (Array.isArray(arr[0])) arr.forEach(a => flat(a, out)); else out.push(arr[0], arr[1]); };
+      const coords = []; flat(geom.coordinates, coords);
+      const xs = coords.filter((_, i) => i % 2 === 0), ys = coords.filter((_, i) => i % 2 === 1);
+      return xs.length ? [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]] : null;
+    }
+    var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
+    function featurePaintFromStyle(spec) {
+      spec = spec || {};
+      return {
+        fillColor: spec.fillColor || '#58a6ff',
+        lineColor: spec.lineColor || '#58a6ff',
+        fillOpacity: spec.fillOpacity != null ? spec.fillOpacity : 0.6,
+        lineOpacity: spec.lineOpacity != null ? spec.lineOpacity : 1,
+        lineWidth: spec.lineWidth != null ? spec.lineWidth : 2,
+        lineDash: LINE_DASH[spec.linePattern] || LINE_DASH.solid,
+        fillEnabled: spec.fillEnabled !== false
+      };
+    }
+    function apiBaseUrlItem() {
+      var path = window.location.pathname;
+      var i = path.indexOf('/collections/');
+      var rootPath = i >= 0 ? path.substring(0, i) : '';
+      return window.location.origin + rootPath;
+    }
+    function addCollectionTilesLayer() {
+      if (!hasStaticTiles || map.getSource('tiles')) return;
+      var tileUrl = apiBaseUrlItem() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf';
+      map.addSource('tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
+      var s = featurePaintFromStyle(defaultStyle && defaultStyle.style_spec);
+      var beforeId = map.getLayer('fill') ? 'fill' : undefined;
+      map.addLayer({ id: 'tiles-fill', type: 'fill', source: 'tiles', 'source-layer': collectionId, paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } }, beforeId);
+      map.addLayer({ id: 'tiles-line', type: 'line', source: 'tiles', 'source-layer': collectionId, paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity } }, beforeId);
+      if (!s.fillEnabled) map.setLayoutProperty('tiles-fill', 'visibility', 'none');
+    }
+    function removeCollectionTilesLayer() {
+      if (map.getLayer('tiles-line')) map.removeLayer('tiles-line');
+      if (map.getLayer('tiles-fill')) map.removeLayer('tiles-fill');
+      if (map.getSource('tiles')) map.removeSource('tiles');
+    }
+    function addOverlayLayers() {
+      if (featureGeojson && featureGeojson.geometry) {
+        var data = { type: 'Feature', id: featureGeojson.id, geometry: featureGeojson.geometry, properties: featureGeojson.properties ? Object.assign({}, featureGeojson.properties) : {} };
+        if (featureId != null && !Object.prototype.hasOwnProperty.call(data.properties, 'id')) data.properties.id = featureId;
+        map.addSource('feature', { type: 'geojson', data: data });
+        var s = featurePaintFromStyle(defaultStyle && defaultStyle.style_spec);
+        map.addLayer({ id: 'fill', type: 'fill', source: 'feature', paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
+        map.addLayer({ id: 'line', type: 'line', source: 'feature', paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
+        if (!s.fillEnabled) map.setLayoutProperty('fill', 'visibility', 'none');
+        const bbox = bboxFromGeom(featureGeojson.geometry);
+        if (bbox) map.fitBounds(bbox, { padding: 60 });
+      }
+    }
+    function applyBasemapFromSelect() {
+      var v = document.getElementById('map-basemap').value;
+      var cfg = BASEMAPS[v];
+      map.getSource('basemap').setTiles(cfg.tiles);
+      if (cfg.labels) {
+        if (!map.getSource('basemap-labels')) {
+          map.addSource('basemap-labels', { type: 'raster', tiles: [cfg.labels], tileSize: 256 });
+          var beforeId = map.getLayer('fill') ? 'fill' : undefined;
+          map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: 0, maxzoom: 22 }, beforeId);
+        }
+      } else {
+        if (map.getLayer('basemap-labels')) { map.removeLayer('basemap-labels'); map.removeSource('basemap-labels'); }
+      }
+    }
+    function escapeHtml(s) {
+      var d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+    function popupHtmlForFeature(feat) {
+      var props = feat.properties || {};
+      var id = props.id != null ? String(props.id) : (feat.id != null ? String(feat.id) : '—');
+      var featureUrl = base + '/collections/' + collectionId + '/items/' + encodeURIComponent(id) + '?f=html';
+      var parts = ['<div class="map-popup">', '<div class="map-popup-id"><strong>ID</strong> <a href="' + escapeHtml(featureUrl) + '">' + escapeHtml(id) + '</a></div>'];
+      Object.keys(props).sort().forEach(function(k) {
+        if (k === 'id') return;
+        var v = props[k];
+        var val = v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+        parts.push('<div class="map-popup-row"><strong>' + escapeHtml(k) + '</strong> ' + escapeHtml(val) + '</div>');
+      });
+      parts.push('</div>');
+      return parts.join('');
+    }
+
+    var geoEditor = null;
+
+    function getEditorFeatures() {
+      if (!geoEditor) return [];
+      try {
+        var fc = geoEditor.getAllFeatureCollection && geoEditor.getAllFeatureCollection();
+        if (fc && fc.features) return fc.features;
+        var f = geoEditor.getFeatures && geoEditor.getFeatures();
+        return Array.isArray(f) ? f : [];
+      } catch (e) { return []; }
+    }
+
+    function buildPropsFromFirstFeature(features) {
+      var f = features && features[0];
+      return (f && f.properties) ? Object.assign({}, f.properties) : {};
+    }
+
+    function explodeMultiToFeatures(features) {
+      var out = [];
+      (features || []).forEach(function(f) {
+        var geom = f.geometry;
+        var props = f.properties ? Object.assign({}, f.properties) : {};
+        if (!geom || !geom.type) return;
+        if (geom.type === 'MultiPoint' && geom.coordinates) {
+          geom.coordinates.forEach(function(c) {
+            out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: props });
+          });
+        } else if (geom.type === 'MultiLineString' && geom.coordinates) {
+          geom.coordinates.forEach(function(c) {
+            out.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: c }, properties: props });
+          });
+        } else if (geom.type === 'MultiPolygon' && geom.coordinates) {
+          geom.coordinates.forEach(function(c) {
+            out.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: c }, properties: props });
+          });
+        } else {
+          out.push({ type: 'Feature', geometry: geom, properties: props });
+        }
+      });
+      return out;
+    }
+
+    function editorFeaturesToGeometry(features) {
+      var f = features && features[0];
+      return (f && f.geometry) ? f.geometry : null;
+    }
+
+    function injectExplodeButton() {
+      if (!geoEditor || !geoEditor._container) return;
+      var container = geoEditor._container;
+      var editGroup = null;
+      var buttons = container.querySelectorAll('.maplibregl-ctrl-group button, [class*="geo-editor"] button, button');
+      for (var i = 0; i < buttons.length; i++) {
+        var btn = buttons[i];
+        if (btn.textContent && (btn.textContent.indexOf('Union') !== -1 || btn.textContent.indexOf('Split') !== -1)) {
+          editGroup = btn.closest('.maplibregl-ctrl-group') || btn.parentElement;
+          break;
+        }
+      }
+      if (!editGroup) return;
+      if (editGroup.querySelector('.geofast-explode-btn')) return;
+      var explodeBtn = document.createElement('button');
+      explodeBtn.type = 'button';
+      explodeBtn.className = 'geofast-explode-btn maplibregl-ctrl-icon';
+      explodeBtn.title = 'Explode';
+      explodeBtn.setAttribute('aria-label', 'Explode');
+      explodeBtn.textContent = 'Explode';
+      explodeBtn.style.fontSize = '10px';
+      explodeBtn.onclick = function() {
+        var feats = getEditorFeatures();
+        var exploded = explodeMultiToFeatures(feats);
+        if (exploded.length === 0) return;
+        geoEditor.loadGeoJson({ type: 'FeatureCollection', features: exploded });
+      };
+      editGroup.appendChild(explodeBtn);
+    }
+
+    map.on('load', function() {
+      map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+      try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) { document.getElementById('map-basemap').value = s; } } catch(e) {}
+      applyBasemapFromSelect();
+      document.getElementById('map-basemap').onchange = function() { applyBasemapFromSelect(); try { localStorage.setItem('geofast-basemap', document.getElementById('map-basemap').value); } catch(e) {} };
+      var showTilesCb = document.getElementById('show-collection-tiles');
+      if (showTilesCb) {
+        showTilesCb.checked = false;
+        showTilesCb.onchange = function() {
+          if (showTilesCb.checked) addCollectionTilesLayer();
+          else removeCollectionTilesLayer();
+        };
+      }
+
+      var editModes = ['select', 'drag', 'change', 'rotate', 'cut', 'delete', 'scale', 'copy', 'split', 'union', 'difference', 'simplify', 'lasso'];
+      var drawModes = ['polygon', 'line', 'rectangle', 'circle', 'marker', 'freehand'];
+      var props = featureGeojson.properties || {};
+      var keys = Object.keys(props).filter(function(k) { return k.indexOf('__gm_') !== 0; });
+      var attributeSchema = {
+        polygon: keys.map(function(k) { return { name: k, label: k, type: 'string' }; }),
+        line: keys.map(function(k) { return { name: k, label: k, type: 'string' }; }),
+        point: keys.map(function(k) { return { name: k, label: k, type: 'string' }; }),
+        common: keys.map(function(k) { return { name: k, label: k, type: 'string' }; })
+      };
+
+      Promise.all([
+        import('https://esm.sh/@geoman-io/maplibre-geoman-free@0.6.2'),
+        import('https://esm.sh/maplibre-gl-geo-editor@0.7.3')
+      ]).then(function(modules) {
+        var Geoman = modules[0].Geoman || modules[0].default;
+        var GeoEditor = modules[1].GeoEditor;
+        var geoman = new Geoman(map, {});
+        map.once('gm:loaded', function() {
+          geoEditor = new GeoEditor({
+            position: 'top-left',
+            toolbarOrientation: 'vertical',
+            columns: 2,
+            drawModes: drawModes,
+            editModes: editModes,
+            showFeatureProperties: true,
+            fitBoundsOnLoad: true,
+            attributeSchema: attributeSchema
+          });
+          geoEditor.setGeoman(geoman);
+          map.addControl(geoEditor, 'top-left');
+          geoEditor.loadGeoJson(featureGeojson);
+          setTimeout(function() { injectExplodeButton(); }, 100);
+        });
+      }).catch(function(err) {
+        console.warn('GeoEditor load failed', err);
+        addOverlayLayers();
+      });
+
+      document.getElementById('btn-save-geom-only').onclick = function() {
+        var feats = getEditorFeatures();
+        var geom = editorFeaturesToGeometry(feats);
+        if (!geom) { alert('No geometry to save'); return; }
+        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(featureId), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/merge-patch+json', 'Accept': 'application/geo+json' },
+          body: JSON.stringify({ geometry: geom })
+        }).then(function(r) {
+          if (r.ok) return r.json().then(function(updated) { featureGeojson = updated; if (geoEditor && geoEditor.loadGeoJson) geoEditor.loadGeoJson(featureGeojson); });
+          return r.json().then(function(j) { throw j; });
+        }).catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+      };
+    });
+
+    function propValueToJson(val) {
+      if (val === null || val === undefined || val === '') return null;
+      var s = String(val).trim();
+      if (s === '') return null;
+      try { return JSON.parse(s); } catch (e) { return s; }
+    }
+
+    function addPropRow(key, value) {
+      var tbody = document.getElementById('props-tbody');
+      var tr = document.createElement('tr');
+      var keyVal = (key == null ? '' : key);
+      var valVal = (value == null ? '' : (typeof value === 'object' ? JSON.stringify(value) : String(value)));
+      function attrEsc(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+      tr.innerHTML = '<td><input type="text" class="prop-key" placeholder="key" value="' + attrEsc(keyVal) + '"></td><td><input type="text" class="prop-value" placeholder="value" value="' + attrEsc(valVal) + '"></td><td><button type="button" class="btn btn-sm btn-remove-prop">Remove</button></td>';
+      tr.querySelector('.btn-remove-prop').onclick = function() { tr.remove(); };
+      tbody.appendChild(tr);
+    }
+
+    function renderPropsForm() {
+      var tbody = document.getElementById('props-tbody');
+      tbody.innerHTML = '';
+      var props = featureGeojson.properties || {};
+      Object.keys(props).filter(function(k) { return k.indexOf('__gm_') !== 0; }).sort().forEach(function(k) {
+        addPropRow(k, props[k]);
+      });
+    }
+
+    renderPropsForm();
+    document.getElementById('btn-add-prop').onclick = function() { addPropRow('', ''); };
+
+    document.getElementById('btn-save-props').onclick = function() {
+      var tbody = document.getElementById('props-tbody');
+      var propsObj = {};
+      tbody.querySelectorAll('tr').forEach(function(tr) {
+        var kInp = tr.querySelector('.prop-key');
+        var vInp = tr.querySelector('.prop-value');
+        var k = kInp && kInp.value ? kInp.value.trim() : '';
+        if (!k) return;
+        propsObj[k] = propValueToJson(vInp ? vInp.value : '');
+      });
+      fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(featureId), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/merge-patch+json', 'Accept': 'application/geo+json' },
+        body: JSON.stringify({ properties: propsObj })
+      }).then(function(r) {
+        if (r.ok) return r.json().then(function(updated) { featureGeojson = updated; renderPropsForm(); });
+        return r.json().then(function(j) { throw j; });
+      }).catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+    };
+
+    document.getElementById('btn-delete').onclick = function() {
+      if (!confirm('Delete this feature?')) return;
+      fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(featureId), { method: 'DELETE' })
+        .then(function(r) {
+          if (r.ok) location.href = base + '/collections/' + collectionId + '/items?f=html';
+          return r.json().then(function(j) { throw j; });
+        })
+        .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+    };
+
+    (function setupLayerStyle() {
+      var detailsEl = document.getElementById('layer-style-details');
+      if (!detailsEl) return;
+      detailsEl.style.display = 'block';
+      var fillCheck = document.getElementById('vector-fill-enable');
+      var fillColor = document.getElementById('vector-fill-color');
+      var fillOpacity = document.getElementById('vector-fill-opacity');
+      var fillOpacityVal = document.getElementById('vector-fill-opacity-val');
+      var lineColor = document.getElementById('vector-line-color');
+      var lineWidth = document.getElementById('vector-line-width');
+      var lineOpacity = document.getElementById('vector-line-opacity');
+      var lineOpacityVal = document.getElementById('vector-line-opacity-val');
+      var linePattern = document.getElementById('vector-line-pattern');
+
+      function applyVectorStyle() {
+        if (!map.getLayer('fill') || !map.getLayer('line')) return;
+        map.setLayoutProperty('fill', 'visibility', fillCheck.checked ? 'visible' : 'none');
+        map.setPaintProperty('fill', 'fill-color', fillColor.value);
+        map.setPaintProperty('fill', 'fill-opacity', fillOpacity.value / 100);
+        map.setPaintProperty('line', 'line-color', lineColor.value);
+        map.setPaintProperty('line', 'line-width', Math.max(0.5, parseFloat(lineWidth.value) || 2));
+        map.setPaintProperty('line', 'line-opacity', lineOpacity.value / 100);
+        map.setPaintProperty('line', 'line-dasharray', LINE_DASH[linePattern.value] || LINE_DASH.solid);
+      }
+      function getCurrentSpec() {
+        return { fillColor: fillColor.value, lineColor: lineColor.value, fillOpacity: fillOpacity.value / 100, lineOpacity: lineOpacity.value / 100, lineWidth: Math.max(0.5, parseFloat(lineWidth.value) || 2), linePattern: linePattern.value || 'solid', fillEnabled: fillCheck.checked };
+      }
+      function updateStyleLegend(spec) {
+        var el = document.getElementById('layer-style-legend');
+        if (el) {
+          var fill = (spec && spec.fillColor) || '#58a6ff';
+          var line = (spec && spec.lineColor) || '#58a6ff';
+          var fillOn = !spec || spec.fillEnabled !== false;
+          el.style.backgroundColor = fillOn ? fill : 'transparent';
+          el.style.borderColor = line;
+          el.style.opacity = '1';
+        }
+      }
+      function applySpecToForm(s) {
+        fillColor.value = s.fillColor || '#58a6ff';
+        lineColor.value = s.lineColor || '#58a6ff';
+        fillOpacity.value = Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100);
+        lineOpacity.value = Math.round((s.lineOpacity != null ? s.lineOpacity : 1) * 100);
+        fillOpacityVal.textContent = fillOpacity.value;
+        lineOpacityVal.textContent = lineOpacity.value;
+        lineWidth.value = s.lineWidth != null ? s.lineWidth : 2;
+        linePattern.value = s.linePattern || 'solid';
+        fillCheck.checked = s.fillEnabled !== false;
+        applyVectorStyle();
+        updateStyleLegend(getCurrentSpec());
+      }
+      var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
+      applySpecToForm(spec);
+      fillCheck.onchange = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      fillColor.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      fillOpacity.oninput = function() { fillOpacityVal.textContent = this.value; applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      lineColor.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      lineWidth.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      lineOpacity.oninput = function() { lineOpacityVal.textContent = this.value; applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      linePattern.onchange = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+
+      function collectionStylesUrl() { return base + '/collections/' + encodeURIComponent(collectionId) + '/styles'; }
+      function publicStylesUrl() { return base + '/styles'; }
+      var styleListCache = {};
+      function styleSpecToLegendCss(spec) {
+        spec = spec || {};
+        return { fill: spec.fillColor || '#58a6ff', line: spec.lineColor || '#58a6ff', fillOp: spec.fillOpacity != null ? spec.fillOpacity : 0.6, fillOn: spec.fillEnabled !== false };
+      }
+      function updateLoadStyleTrigger() {
+        var sel = document.getElementById('vector-style-select');
+        var val = sel ? sel.value : '';
+        var spec = (val && styleListCache[val]) ? styleListCache[val].style_spec : getCurrentSpec();
+        var leg = styleSpecToLegendCss(spec);
+        var legendEl = document.getElementById('vector-style-load-legend');
+        var labelEl = document.getElementById('vector-style-load-label-text');
+        if (legendEl) { legendEl.style.backgroundColor = leg.fillOn ? leg.fill : 'transparent'; legendEl.style.borderColor = leg.line; legendEl.style.opacity = '1'; }
+        if (labelEl) labelEl.textContent = (val && styleListCache[val]) ? (styleListCache[val].title || styleListCache[val].id) : 'Current';
+      }
+      function loadStylesList() {
+        var sel = document.getElementById('vector-style-select');
+        var listEl = document.getElementById('vector-style-load-list');
+        if (!sel) return Promise.resolve();
+        styleListCache = { '': null };
+        while (sel.firstChild) sel.removeChild(sel.firstChild);
+        if (listEl) listEl.innerHTML = '';
+        function addItem(value, label, spec) {
+          if (value) styleListCache[value] = { id: value.replace(/^[cp]:/, ''), title: label, style_spec: spec || {} };
+          sel.appendChild(new Option(label, value));
+          if (!listEl) return;
+          var leg = styleSpecToLegendCss(spec);
+          var item = document.createElement('div');
+          item.className = 'vector-style-load-item';
+          item.setAttribute('role', 'option');
+          item.dataset.value = value;
+          var legSpan = document.createElement('span');
+          legSpan.className = 'vector-style-load-item-legend';
+          legSpan.style.backgroundColor = leg.fillOn ? leg.fill : 'transparent';
+          legSpan.style.borderColor = leg.line;
+          legSpan.style.opacity = '1';
+          var labSpan = document.createElement('span');
+          labSpan.className = 'vector-style-load-item-label';
+          labSpan.textContent = label;
+          item.appendChild(legSpan);
+          item.appendChild(labSpan);
+          item.onclick = (function(v) { return function() {
+            sel.value = v;
+            sel.dispatchEvent(new Event('change'));
+            listEl.classList.remove('open');
+            document.getElementById('vector-style-load-trigger').setAttribute('aria-expanded', 'false');
+            updateLoadStyleTrigger();
+          }; })(value);
+          listEl.appendChild(item);
+        }
+        addItem('', 'Current', getCurrentSpec());
+        return fetch(collectionStylesUrl(), { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.ok ? r.json() : Promise.reject(r); }).then(function(data) {
+          var list = data.styles || [];
+          if (list.length && listEl) { var gl = document.createElement('div'); gl.className = 'vector-style-load-group-label'; gl.textContent = 'Collection styles'; listEl.appendChild(gl); }
+          list.forEach(function(s) { addItem('c:' + s.id, s.title || s.id, s.style_spec); });
+        }).catch(function() {}).then(function() {
+          return fetch(publicStylesUrl(), { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.ok ? r.json() : Promise.reject(r); }).then(function(data) {
+            var list = data.styles || [];
+            if (list.length && listEl) { var gl = document.createElement('div'); gl.className = 'vector-style-load-group-label'; gl.textContent = 'Public styles'; listEl.appendChild(gl); }
+            list.forEach(function(s) { addItem('p:' + s.id, s.title || s.id, s.style_spec); });
+          });
+        }).catch(function() {}).then(function() { updateLoadStyleTrigger(); });
+      }
+      var loadTrigger = document.getElementById('vector-style-load-trigger');
+      var loadList = document.getElementById('vector-style-load-list');
+      if (loadTrigger && loadList) {
+        loadTrigger.onclick = function(e) { e.stopPropagation(); loadList.classList.toggle('open'); loadTrigger.setAttribute('aria-expanded', loadList.classList.contains('open')); };
+        document.addEventListener('click', function() { loadList.classList.remove('open'); loadTrigger.setAttribute('aria-expanded', 'false'); });
+      }
+      function populateReplaceDropdown(saveTo) {
+        var rep = document.getElementById('save-style-replace');
+        rep.options.length = 1;
+        var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl();
+        fetch(url, { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.json(); }).then(function(data) {
+          (data.styles || []).forEach(function(s) { rep.add(new Option(s.title || s.id, s.id)); });
+        }).catch(function() {});
+      }
+      loadStylesList();
+      document.getElementById('vector-style-select').onchange = function() {
+        var val = this.value;
+        if (!val) return;
+        var id = val.slice(2);
+        var url = val.indexOf('p:') === 0 ? (publicStylesUrl() + '/' + encodeURIComponent(id)) : (collectionStylesUrl() + '/' + encodeURIComponent(id));
+        fetch(url, { headers: { 'Accept': 'application/json' } }).then(function(r) { return r.json(); }).then(function(s) { if (s.style_spec) applySpecToForm(s.style_spec); updateLoadStyleTrigger(); }).catch(function() {});
+      };
+      document.getElementById('btn-save-style').onclick = function() {
+        document.getElementById('save-style-form').style.display = 'flex';
+        document.getElementById('save-style-to').value = 'collection';
+        document.getElementById('save-style-default-wrap').style.display = '';
+        populateReplaceDropdown('collection');
+      };
+      document.getElementById('save-style-to').onchange = function() {
+        var isPublic = this.value === 'public';
+        document.getElementById('save-style-default-wrap').style.display = isPublic ? 'none' : '';
+        document.getElementById('save-style-default').checked = false;
+        populateReplaceDropdown(this.value);
+      };
+      document.getElementById('btn-save-style-cancel').onclick = function() { document.getElementById('save-style-form').style.display = 'none'; };
+      document.getElementById('save-style-replace').onchange = function() { if (this.value) document.getElementById('save-style-id').value = this.value; };
+      document.getElementById('btn-save-style-submit').onclick = function() {
+        var replaceVal = document.getElementById('save-style-replace').value;
+        var idInput = document.getElementById('save-style-id').value.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+        var id = replaceVal || idInput || null;
+        if (!id) { alert('Enter a style id (letters, numbers, hyphen, underscore)'); return; }
+        var title = document.getElementById('save-style-title').value.trim() || null;
+        var saveTo = document.getElementById('save-style-to').value;
+        var setDefault = document.getElementById('save-style-default').checked;
+        var method = 'POST';
+        var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl();
+        var body = { id: id, style_spec: getCurrentSpec() };
+        if (title) body.title = title;
+        if (saveTo === 'collection') body.set_default = setDefault;
+        if (saveTo === 'public' && replaceVal) { method = 'PUT'; url = publicStylesUrl() + '/' + encodeURIComponent(id); body = { style_spec: getCurrentSpec() }; if (title) body.title = title; }
+        fetch(url, { method: method, headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body) })
+          .then(function(r) { if (!r.ok) return r.json().then(function(j) { throw j; }); return r.json(); })
+          .then(function() {
+            document.getElementById('save-style-form').style.display = 'none';
+            document.getElementById('save-style-id').value = '';
+            document.getElementById('save-style-title').value = '';
+            document.getElementById('save-style-replace').value = '';
+            document.getElementById('save-style-default').checked = false;
+            var newVal = (saveTo === 'public' ? 'p:' : 'c:') + id;
+            loadStylesList().then(function() { document.getElementById('vector-style-select').value = newVal; updateLoadStyleTrigger(); });
+          })
+          .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+      };
+    })();
+  </script>
+{% endblock %}

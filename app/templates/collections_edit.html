@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Edit collections – GeoFast API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Edit collections</h1>
+    <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › Edit</p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Create collection</h2>
+    <form id="form-create-collection">
+      <div class="form-row">
+        <label for="create-id">ID <span class="meta">(required, e.g. my_layer)</span></label>
+        <input type="text" id="create-id" name="id" required placeholder="my_layer">
+      </div>
+      <div class="form-row">
+        <label for="create-title">Title</label>
+        <input type="text" id="create-title" name="title" placeholder="Optional display name">
+      </div>
+      <div class="form-row">
+        <label for="create-description">Description</label>
+        <input type="text" id="create-description" name="description" placeholder="Optional">
+      </div>
+      <div class="form-row">
+        <label for="create-bbox">Bounding box <span class="meta">(optional: minx, miny, maxx, maxy WGS84)</span></label>
+        <input type="text" id="create-bbox" name="bbox" placeholder="-180, -90, 180, 90">
+      </div>
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary">Create collection</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Actions</h2>
+    <div class="btn-group">
+      <a href="{{ base }}/collections?f=html" class="btn">Back to collections</a>
+    </div>
+  </div>
+{% endblock %}
+{% block script %}
+  <script>
+    const base = {{ base | tojson }};
+    document.getElementById('form-create-collection').onsubmit = function(e) {
+      e.preventDefault();
+      const id = document.getElementById('create-id').value.trim();
+      const title = document.getElementById('create-title').value.trim();
+      const description = document.getElementById('create-description').value.trim();
+      const bboxStr = document.getElementById('create-bbox').value.trim();
+      const body = { id: id };
+      if (title) body.title = title;
+      if (description) body.description = description;
+      if (bboxStr) {
+        const parts = bboxStr.split(/[\s,]+/).filter(Boolean);
+        if (parts.length === 4) {
+          const minx = parseFloat(parts[0]), miny = parseFloat(parts[1]), maxx = parseFloat(parts[2]), maxy = parseFloat(parts[3]);
+          if (Number.isFinite(minx) && Number.isFinite(miny) && Number.isFinite(maxx) && Number.isFinite(maxy)) {
+            body.extent = { bbox: [[minx, miny, maxx, maxy]], crs: 'http://www.opengis.net/def/crs/OGC/1.3/CRS84' };
+          }
+        }
+      }
+      fetch(base + '/collections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(r => {
+        if (r.ok) location.href = base + '/collections/' + encodeURIComponent(id) + '?f=html';
+        else return r.json().then(j => Promise.reject(j));
+      }).catch(e => alert('Error: ' + (e.detail || JSON.stringify(e))));
+    };
+  </script>
+{% endblock %}

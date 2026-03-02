@@ -1,122 +1,290 @@
 {% extends "base.html" %}
 {% block title %}Add feature – {{ collection_id }} – GeoFast API{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
+  <style>
+    .geom-edit-bar { margin-top: 10px; padding: 10px 12px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); align-items: center; gap: 12px; flex-wrap: wrap; display: flex; }
+    .geom-edit-bar .geom-edit-label { font-weight: 600; margin-right: 8px; }
+    .map-edit-hint { font-size: 0.85rem; color: var(--text-secondary); margin: 6px 0 0; }
+    .props-form-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .props-form-table th, .props-form-table td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+    .props-form-table th { font-weight: 500; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; }
+    .props-form-table .prop-key, .props-form-table .prop-value { width: 100%; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-size: 0.9rem; }
+  </style>
+{% endblock %}
 {% block content %}
   <header class="page-header">
-    <h1><a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> — Add feature</h1>
-    <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> › Add feature</p>
+    <h1>Add feature – <code>{{ collection_id }}</code></h1>
+    <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> › <a href="{{ base }}/collections/{{ collection_id }}/items?f=html">Items</a> › Add feature</p>
   </header>
 
   <div class="card">
-    <h2 class="card-title">Geometry (GeoJSON)</h2>
-    <p class="meta">Paste or edit a GeoJSON geometry, or upload a GeoJSON file to load the first feature.</p>
-    <div class="btn-group" style="margin-bottom: var(--space);">
-      <button type="button" class="btn" id="btn-upload-geojson" title="Load geometry and properties from a GeoJSON file">Upload GeoJSON</button>
-      <input type="file" id="input-upload-geojson" accept=".geojson,.json,application/geo+json,application/json" style="position:absolute;width:0;height:0;opacity:0;">
+    <h2 class="card-title">Map</h2>
+    <p class="meta">Draw a geometry using the toolbar (polygon, line, rectangle, circle, marker, freehand). Then fill properties below and click <strong>Create feature</strong>.</p>
+    <div id="map" class="map-container">
+      <div class="map-controls">
+        <select id="map-basemap" title="Basemap">
+          <option value="osm">OpenStreetMap</option>
+          <option value="streets">Esri Streets</option>
+          <option value="satellite">Esri Satellite</option>
+          <option value="hybrid">Esri Hybrid</option>
+          <option value="google_satellite">Google Satellite</option>
+          <option value="google_hybrid">Google Hybrid</option>
+        </select>
+        {% if has_static_tiles %}
+        <label><input type="checkbox" id="show-collection-tiles" title="Show full layer (static tiles)"> Show collection tiles</label>
+        {% endif %}
+      </div>
     </div>
-    <textarea id="geom-json" rows="6" placeholder='{"type":"Point","coordinates":[0,0]}'>{"type":"Point","coordinates":[0,0]}</textarea>
+    <div class="geom-edit-bar geom-edit-bar-visible" id="geom-edit-bar" role="region" aria-label="Create">
+      <span class="geom-edit-label">Create</span>
+      <button type="button" class="btn btn-primary" id="btn-create-feature" title="Create feature with drawn geometry and properties below">Create feature</button>
+    </div>
+    <p class="meta map-edit-hint" id="map-edit-hint">Draw on the map, then add properties in the table below and click <strong>Create feature</strong>.</p>
   </div>
 
   <div class="card">
     <h2 class="card-title">Properties</h2>
-    <p class="meta">Add key/value pairs. Use “Load schema” to copy keys from the first existing feature.</p>
-    <div class="btn-group">
-      <button type="button" class="btn" id="btn-load-schema">Load schema from first item</button>
-      <button type="button" class="btn" id="btn-add-row">+ Add property</button>
+    <p class="meta">Add key/value pairs for the new feature. Use <strong>Load schema from first item</strong> to copy keys from an existing feature, or <strong>Upload GeoJSON</strong> to load geometry and properties from a file.</p>
+    <div class="btn-group" style="margin-bottom: var(--space);">
+      <button type="button" class="btn" id="btn-load-schema" title="Copy property keys from first feature in collection">Load schema from first item</button>
+      <button type="button" class="btn" id="btn-upload-geojson" title="Load geometry and properties from a GeoJSON file">Upload GeoJSON</button>
+      <input type="file" id="input-upload-geojson" accept=".geojson,.json,application/geo+json,application/json" style="position:absolute;width:0;height:0;opacity:0;">
     </div>
-    <table id="props-table" style="margin-top: var(--space);">
-      <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
-      <tbody></tbody>
+    <table class="props-form-table" id="props-form-table">
+      <thead><tr><th>Property</th><th>Value</th><th></th></tr></thead>
+      <tbody id="props-tbody"></tbody>
     </table>
     <div class="btn-group" style="margin-top: var(--space);">
-      <button type="button" class="btn btn-primary" id="btn-submit">Create feature</button>
+      <button type="button" class="btn" id="btn-add-prop">+ Add property</button>
     </div>
   </div>
 
-  <p><a href="{{ base }}/collections/{{ collection_id }}/items?f=html" class="btn">← Back to items</a></p>
+  <div class="card">
+    <h2 class="card-title">Actions</h2>
+    <div class="btn-group">
+      <a href="{{ base }}/collections/{{ collection_id }}/items?f=html" class="btn">Back to items</a>
+    </div>
+  </div>
 {% endblock %}
 {% block script %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script>
     const base = {{ base | tojson }};
     const collectionId = {{ collection_id | tojson }};
-
-    function addRow(key = '', value = '') {
-      const tbody = document.getElementById('props-table').querySelector('tbody');
-      const tr = document.createElement('tr');
-      tr.innerHTML = '<td><input type="text" class="prop-key" placeholder="key" value="' + key.replace(/"/g, '&quot;') + '"></td><td><input type="text" class="prop-val" placeholder="value" value="' + value.replace(/"/g, '&quot;') + '"></td><td><button type="button" class="btn del-row">Remove</button></td>';
-      tbody.appendChild(tr);
-      tr.querySelector('.del-row').onclick = () => tr.remove();
-    }
-    document.getElementById('btn-add-row').onclick = () => addRow();
-
-    document.getElementById('btn-upload-geojson').onclick = function() {
-      document.getElementById('input-upload-geojson').click();
+    const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
+    const hasStaticTiles = {{ has_static_tiles | tojson }};
+    const googleKey = {{ google_maps_api_key | tojson }};
+    const BASEMAPS = {
+      osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] },
+      streets: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}'] },
+      satellite: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] },
+      hybrid: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], labels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}' },
+      google_satellite: { tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] },
+      google_hybrid: { tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] }
     };
+    const mapStyle = {
+      version: 8,
+      glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+      sources: { basemap: { type: 'raster', tiles: BASEMAPS.osm.tiles, tileSize: 256 } },
+      layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 }]
+    };
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: mapStyle,
+      center: [0, 20],
+      zoom: 2,
+      renderWorldCopies: false
+    });
+    var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
+    function featurePaintFromStyle(spec) {
+      spec = spec || {};
+      return {
+        fillColor: spec.fillColor || '#58a6ff',
+        lineColor: spec.lineColor || '#58a6ff',
+        fillOpacity: spec.fillOpacity != null ? spec.fillOpacity : 0.6,
+        lineOpacity: spec.lineOpacity != null ? spec.lineOpacity : 1,
+        lineWidth: spec.lineWidth != null ? spec.lineWidth : 2,
+        lineDash: LINE_DASH[spec.linePattern] || LINE_DASH.solid,
+        fillEnabled: spec.fillEnabled !== false
+      };
+    }
+    function apiBaseUrlItem() {
+      var path = window.location.pathname;
+      var i = path.indexOf('/collections/');
+      return i >= 0 ? window.location.origin + path.substring(0, i) : window.location.origin;
+    }
+    function addCollectionTilesLayer() {
+      if (!hasStaticTiles || map.getSource('tiles')) return;
+      var tileUrl = apiBaseUrlItem() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf';
+      map.addSource('tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
+      var s = featurePaintFromStyle(defaultStyle && defaultStyle.style_spec);
+      var beforeId = map.getLayer('fill') ? 'fill' : undefined;
+      map.addLayer({ id: 'tiles-fill', type: 'fill', source: 'tiles', 'source-layer': collectionId, paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } }, beforeId);
+      map.addLayer({ id: 'tiles-line', type: 'line', source: 'tiles', 'source-layer': collectionId, paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity } }, beforeId);
+      if (!s.fillEnabled) map.setLayoutProperty('tiles-fill', 'visibility', 'none');
+    }
+    function removeCollectionTilesLayer() {
+      if (map.getLayer('tiles-line')) map.removeLayer('tiles-line');
+      if (map.getLayer('tiles-fill')) map.removeLayer('tiles-fill');
+      if (map.getSource('tiles')) map.removeSource('tiles');
+    }
+    function applyBasemapFromSelect() {
+      var v = document.getElementById('map-basemap').value;
+      var cfg = BASEMAPS[v];
+      map.getSource('basemap').setTiles(cfg.tiles);
+      if (cfg.labels) {
+        if (!map.getSource('basemap-labels')) {
+          map.addSource('basemap-labels', { type: 'raster', tiles: [cfg.labels], tileSize: 256 });
+          var beforeId = map.getLayer('fill') ? 'fill' : undefined;
+          map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: 0, maxzoom: 22 }, beforeId);
+        }
+      } else {
+        if (map.getLayer('basemap-labels')) { map.removeLayer('basemap-labels'); map.removeSource('basemap-labels'); }
+      }
+    }
+    var geoEditor = null;
+    function getEditorFeatures() {
+      if (!geoEditor) return [];
+      try {
+        var fc = geoEditor.getAllFeatureCollection && geoEditor.getAllFeatureCollection();
+        if (fc && fc.features) return fc.features;
+        var f = geoEditor.getFeatures && geoEditor.getFeatures();
+        return Array.isArray(f) ? f : [];
+      } catch (e) { return []; }
+    }
+    function editorFeaturesToGeometry(features) {
+      var f = features && features[0];
+      return (f && f.geometry) ? f.geometry : null;
+    }
+    function collectPropsFromTable() {
+      var obj = {};
+      var tbody = document.getElementById('props-tbody');
+      tbody.querySelectorAll('tr').forEach(function(tr) {
+        var kInp = tr.querySelector('.prop-key');
+        var vInp = tr.querySelector('.prop-value');
+        var k = kInp && kInp.value ? kInp.value.trim() : '';
+        if (!k) return;
+        obj[k] = propValueToJson(vInp ? vInp.value : '');
+      });
+      return obj;
+    }
+    function propValueToJson(val) {
+      if (val === null || val === undefined || val === '') return null;
+      var s = String(val).trim();
+      if (s === '') return null;
+      if (s === 'true') return true;
+      if (s === 'false') return false;
+      if (/^-?\d+$/.test(s)) return parseInt(s, 10);
+      if (/^-?\d*\.\d+([eE][+-]?\d+)?$/.test(s)) return parseFloat(s);
+      try { return JSON.parse(s); } catch (e) { return s; }
+    }
+    function addPropRow(key, value) {
+      var tbody = document.getElementById('props-tbody');
+      var tr = document.createElement('tr');
+      var keyVal = (key == null ? '' : key);
+      var valVal = (value == null ? '' : (typeof value === 'object' ? JSON.stringify(value) : String(value)));
+      function attrEsc(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+      tr.innerHTML = '<td><input type="text" class="prop-key" placeholder="key" value="' + attrEsc(keyVal) + '"></td><td><input type="text" class="prop-value" placeholder="value" value="' + attrEsc(valVal) + '"></td><td><button type="button" class="btn btn-sm btn-remove-prop">Remove</button></td>';
+      tr.querySelector('.btn-remove-prop').onclick = function() { tr.remove(); };
+      tbody.appendChild(tr);
+    }
+    document.getElementById('btn-add-prop').onclick = function() { addPropRow('', ''); };
+    document.getElementById('btn-load-schema').onclick = function() {
+      fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=1')
+        .then(function(r) { return r.json(); })
+        .then(function(fc) {
+          var tbody = document.getElementById('props-tbody');
+          tbody.innerHTML = '';
+          if (fc.features && fc.features[0] && fc.features[0].properties) {
+            Object.entries(fc.features[0].properties).forEach(function(entry) {
+              var k = entry[0];
+              if (k.indexOf('__gm_') === 0) return;
+              addPropRow(k, typeof entry[1] === 'object' ? JSON.stringify(entry[1]) : entry[1]);
+            });
+          }
+        })
+        .catch(function(e) { alert('Could not load: ' + e); });
+    };
+    document.getElementById('btn-upload-geojson').onclick = function() { document.getElementById('input-upload-geojson').click(); };
     document.getElementById('input-upload-geojson').onchange = function() {
-      const input = this;
-      const file = input.files && input.files[0];
+      var input = this;
+      var file = input.files && input.files[0];
       if (!file) return;
-      const reader = new FileReader();
+      var reader = new FileReader();
       reader.onload = function() {
         try {
-          const json = JSON.parse(reader.result);
-          let feature = null;
-          if (json.type === 'FeatureCollection' && json.features && json.features.length) {
-            feature = json.features[0];
-          } else if (json.type === 'Feature') {
-            feature = json;
-          } else if (json.type && json.coordinates) {
-            feature = { type: 'Feature', geometry: json, properties: {} };
-          }
-          if (!feature || !feature.geometry) {
-            alert('No feature or geometry found in file.');
-            return;
-          }
-          document.getElementById('geom-json').value = JSON.stringify(feature.geometry, null, 2);
-          const tbody = document.getElementById('props-table').querySelector('tbody');
+          var json = JSON.parse(reader.result);
+          var feature = null;
+          if (json.type === 'FeatureCollection' && json.features && json.features.length) feature = json.features[0];
+          else if (json.type === 'Feature') feature = json;
+          else if (json.type && json.coordinates) feature = { type: 'Feature', geometry: json, properties: {} };
+          if (!feature || !feature.geometry) { alert('No feature or geometry found in file.'); input.value = ''; return; }
+          if (geoEditor && geoEditor.loadGeoJson) geoEditor.loadGeoJson({ type: 'FeatureCollection', features: [feature] });
+          var tbody = document.getElementById('props-tbody');
           tbody.innerHTML = '';
-          const props = feature.properties || {};
-          Object.keys(props).filter(k => k.indexOf('__gm_') !== 0).forEach(k => {
-            const v = props[k];
-            addRow(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+          var props = feature.properties || {};
+          Object.keys(props).filter(function(k) { return k.indexOf('__gm_') !== 0; }).forEach(function(k) {
+            var v = props[k];
+            addPropRow(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
           });
-        } catch (e) {
-          alert('Invalid GeoJSON: ' + e.message);
-        }
+        } catch (e) { alert('Invalid GeoJSON: ' + e.message); }
         input.value = '';
       };
       reader.readAsText(file);
     };
-
-    document.getElementById('btn-load-schema').onclick = function() {
-      fetch(base + '/collections/' + collectionId + '/items?limit=1')
-        .then(r => r.json()).then(fc => {
-          const tbody = document.getElementById('props-table').querySelector('tbody');
-          tbody.innerHTML = '';
-          if (fc.features && fc.features[0] && fc.features[0].properties) {
-            Object.entries(fc.features[0].properties).forEach(([k, v]) => addRow(k, typeof v === 'string' ? v : JSON.stringify(v)));
-          }
-        }).catch(e => alert('Could not load: ' + e));
-    };
-
-    document.getElementById('btn-submit').onclick = function() {
-      let geom;
-      try { geom = JSON.parse(document.getElementById('geom-json').value); } catch (e) { alert('Invalid geometry JSON'); return; }
-      const tbody = document.getElementById('props-table').querySelector('tbody');
-      const props = {};
-      tbody.querySelectorAll('tr').forEach(tr => {
-        const k = tr.querySelector('.prop-key').value.trim();
-        const v = tr.querySelector('.prop-val').value.trim();
-        if (k) props[k] = v;
-      });
-      const body = { type: 'Feature', collection_id: collectionId, geometry: geom, properties: props };
-      fetch(base + '/collections/' + collectionId + '/items', {
+    map.on('load', function() {
+      map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+      try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) { document.getElementById('map-basemap').value = s; } } catch(e) {}
+      applyBasemapFromSelect();
+      document.getElementById('map-basemap').onchange = function() { applyBasemapFromSelect(); try { localStorage.setItem('geofast-basemap', document.getElementById('map-basemap').value); } catch(e) {} };
+      var showTilesCb = document.getElementById('show-collection-tiles');
+      if (showTilesCb) {
+        showTilesCb.checked = false;
+        showTilesCb.onchange = function() { if (showTilesCb.checked) addCollectionTilesLayer(); else removeCollectionTilesLayer(); };
+      }
+      var editModes = ['select', 'drag', 'change', 'rotate', 'cut', 'delete', 'scale', 'copy', 'split', 'union', 'difference', 'simplify', 'lasso'];
+      var drawModes = ['polygon', 'line', 'rectangle', 'circle', 'marker', 'freehand'];
+      var attributeSchema = { polygon: [], line: [], point: [], common: [] };
+      Promise.all([
+        import('https://esm.sh/@geoman-io/maplibre-geoman-free@0.6.2'),
+        import('https://esm.sh/maplibre-gl-geo-editor@0.7.3')
+      ]).then(function(modules) {
+        var Geoman = modules[0].Geoman || modules[0].default;
+        var GeoEditor = modules[1].GeoEditor;
+        var geoman = new Geoman(map, {});
+        map.once('gm:loaded', function() {
+          geoEditor = new GeoEditor({
+            position: 'top-left',
+            toolbarOrientation: 'vertical',
+            columns: 2,
+            drawModes: drawModes,
+            editModes: editModes,
+            showFeatureProperties: true,
+            fitBoundsOnLoad: false,
+            attributeSchema: attributeSchema
+          });
+          geoEditor.setGeoman(geoman);
+          map.addControl(geoEditor, 'top-left');
+          geoEditor.loadGeoJson({ type: 'FeatureCollection', features: [] });
+        });
+      }).catch(function(err) { console.warn('GeoEditor load failed', err); });
+    });
+    document.getElementById('btn-create-feature').onclick = function() {
+      var feats = getEditorFeatures();
+      var geom = editorFeaturesToGeometry(feats);
+      if (!geom) { alert('Draw a geometry on the map first.'); return; }
+      var props = collectPropsFromTable();
+      var body = { type: 'Feature', collection_id: collectionId, geometry: geom, properties: props };
+      fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify(body)
-      }).then(r => {
-        if (r.ok) return r.json().then(f => { location.href = base + '/collections/' + collectionId + '/items/' + f.id + '?f=html'; });
-        return r.json().then(j => Promise.reject(j));
-      }).catch(e => alert('Error: ' + (e.detail || JSON.stringify(e))));
+      }).then(function(r) {
+        if (r.ok) return r.json().then(function(f) { location.href = base + '/collections/' + collectionId + '/items/' + encodeURIComponent(f.id) + '?f=html'; });
+        return r.json().then(function(j) { throw j; });
+      }).catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
     };
   </script>
 {% endblock %}

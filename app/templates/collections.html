@@ -3,8 +3,105 @@
 {% block content %}
   <header class="page-header">
     <h1>Collections</h1>
-    <p class="meta">Create a collection or open an existing one.</p>
+    <p class="meta">Open a collection or manage from Actions. {% if number_matched is defined %}<span id="collections-summary">{{ number_matched }} matched, {{ number_returned }} shown</span>{% endif %}</p>
   </header>
+
+  <div class="card">
+    <h2 class="card-title">Search & filters</h2>
+    <form method="get" action="{{ base }}/collections" id="search-form">
+      <input type="hidden" name="f" value="html">
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Limit</label>
+          <input type="number" name="limit" value="{{ limit | default(100) }}" min="1" max="1000">
+        </div>
+        <div class="form-row">
+          <label>Offset</label>
+          <input type="number" name="offset" value="{{ offset | default(0) }}" min="0">
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Full-text search (q)</label>
+        <input type="text" name="q" value="{{ q or '' }}" placeholder="Search in id, title, description">
+      </div>
+      <div class="form-row">
+        <label>Bbox <span class="meta">(minx, miny, maxx, maxy — collections whose extent intersects)</span></label>
+        <input type="text" name="bbox" value="{{ bbox or '' }}" placeholder="-10, 40, 10, 50">
+      </div>
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Sort by</label>
+          <select name="sortby">
+            <option value="">—</option>
+            <option value="id" {{ 'selected' if sortby == 'id' else '' }}>id</option>
+            <option value="title" {{ 'selected' if sortby == 'title' else '' }}>title</option>
+            <option value="description" {{ 'selected' if sortby == 'description' else '' }}>description</option>
+            <option value="created_at" {{ 'selected' if sortby == 'created_at' else '' }}>created_at</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>&nbsp;</label>
+          <label class="checkbox-inline"><input type="checkbox" name="sortdesc" value="true" {{ 'checked' if sortdesc else '' }}> Descending</label>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary">Apply filters</button>
+      </div>
+    </form>
+  </div>
+
+  {% set has_active_search = (q or bbox or sortby or ((offset | default(0)) | int > 0)) %}
+  {% if has_active_search %}
+  <div class="card search-result-banner">
+    <p class="meta">Viewing search results. <a href="{{ base }}/collections?f=html" class="btn btn-sm">Clear search and view all</a></p>
+  </div>
+  {% endif %}
+
+  <div class="card collections-table-card">
+    <h2 class="card-title">Collections <span class="meta" id="collections-count">({{ number_returned | default(0) }} rows — click row to focus on map)</span></h2>
+    {% if collections %}
+    <div class="table-scroll-wrap">
+      <table id="collections-table" class="collections-table">
+        <thead>
+          <tr>
+            <th class="col-actions"></th>
+            <th>ID</th>
+            <th>Title</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody id="collections-tbody">
+          {% for c in collections %}
+          {% set cb = collections_with_bbox | selectattr('id', 'eq', c.id) | first | default(none) %}
+          <tr class="clickable-row" data-collection-id="{{ c.id }}" {% if cb and cb.bbox %}data-bbox="{{ cb.bbox | tojson }}"{% endif %} title="Click to focus on map">
+            <td class="col-actions"><a href="{{ base }}/collections/{{ c.id }}?f=html" class="btn btn-sm">Open</a></td>
+            <td class="col-id"><a href="{{ base }}/collections/{{ c.id }}?f=html">{{ c.id }}</a></td>
+            <td>{{ c.title or '—' }}</td>
+            <td>{{ (c.description or '—')[:80] }}{% if (c.description or '')|length > 80 %}…{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if prev_page_url or next_page_url %}
+    <div class="pagination" style="margin-top: 1rem;">
+      {% if prev_page_url %}
+      <a href="{{ prev_page_url }}" class="btn pagination-prev">← Previous</a>
+      {% else %}
+      <span class="btn btn-disabled" aria-disabled="true">← Previous</span>
+      {% endif %}
+      <span class="pagination-info">{% if number_returned %}{{ offset + 1 }}–{{ offset + number_returned }} of {{ number_matched }}{% else %}0 of {{ number_matched }}{% endif %}</span>
+      {% if next_page_url %}
+      <a href="{{ next_page_url }}" class="btn pagination-next">Next →</a>
+      {% else %}
+      <span class="btn btn-disabled" aria-disabled="true">Next →</span>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    <p class="meta">No collections match your filters.{% if not q and not bbox %} <a href="{{ base }}/collections/edit?f=html">Create one</a> from Actions.{% endif %}</p>
+    {% endif %}
+  </div>
 
   {% if collections_with_bbox %}
   <style>
@@ -17,52 +114,29 @@
     .map-popup-desc-value { font-size: 0.9rem; margin-bottom: 8px; color: #000; line-height: 1.3; }
     .map-popup-item a { color: #0566c8; text-decoration: none; font-weight: 500; }
     .map-popup-item a:hover { text-decoration: underline; }
+    .collections-table-card .table-scroll-wrap { overflow-x: auto; }
+    .collections-table { width: 100%; border-collapse: collapse; }
+    .collections-table th { text-align: left; padding: 8px 10px; font-weight: 600; font-size: 0.85rem; color: var(--text-secondary); border-bottom: 1px solid var(--border); }
+    .collections-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    .collections-table .col-actions { width: 6em; }
+    .collections-table .col-id { font-weight: 500; }
+    tr.clickable-row.collection-highlight { background: rgba(47, 129, 247, 0.15); }
   </style>
   <div class="card">
     <h2 class="card-title">Map of collections</h2>
-    <p class="meta">Click a bbox to see collection info and open it.</p>
+    <p class="meta">Click a row above to focus map on that collection, or click a bbox on the map to see details.</p>
     <div id="map" class="map-container"></div>
   </div>
   {% endif %}
 
   <div class="card">
-    <h2 class="card-title">Create collection</h2>
-    <form id="form-create-collection">
-      <div class="form-row">
-        <label for="create-id">ID <span class="meta">(required, e.g. my_layer)</span></label>
-        <input type="text" id="create-id" name="id" required placeholder="my_layer">
-      </div>
-      <div class="form-row">
-        <label for="create-title">Title</label>
-        <input type="text" id="create-title" name="title" placeholder="Optional display name">
-      </div>
-      <div class="form-row">
-        <label for="create-description">Description</label>
-        <input type="text" id="create-description" name="description" placeholder="Optional">
-      </div>
-      <div class="btn-group">
-        <button type="submit" class="btn btn-primary">Create collection</button>
-      </div>
-    </form>
+    <h2 class="card-title">Actions</h2>
+    <div class="btn-group">
+      <a href="{{ base }}/collections/edit?f=html" class="btn btn-primary">Edit collections</a>
+    </div>
   </div>
 
-  <div class="card">
-    <h2 class="card-title">Your collections</h2>
-    {% if collections %}
-    <ul class="links">
-      {% for c in collections %}
-      <li>
-        <span><a href="{{ base }}/collections/{{ c.id }}?f=html"><strong>{{ c.id }}</strong></a>{% if c.title %} — {{ c.title }}{% endif %}</span>
-        <a href="{{ base }}/collections/{{ c.id }}?f=html" class="btn">Open</a>
-      </li>
-      {% endfor %}
-    </ul>
-    {% else %}
-    <p class="meta">No collections yet. Create one above.</p>
-    {% endif %}
-  </div>
-
-  <p class="meta">JSON: <a href="{{ base }}/collections">{{ base }}/collections</a></p>
+  <p class="meta">JSON: <a href="{{ collections_url_json | default(base + '/collections') }}" id="collections-json-link">{{ collections_url_json | default(base + '/collections') }}</a></p>
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
@@ -143,24 +217,29 @@
       }
       map.on('mouseenter', 'collections-fill', function() { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', 'collections-fill', function() { map.getCanvas().style.cursor = ''; });
+
+      window.collectionsMap = map;
     }
 
-    document.getElementById('form-create-collection').onsubmit = function(e) {
-      e.preventDefault();
-      const id = document.getElementById('create-id').value.trim();
-      const title = document.getElementById('create-title').value.trim();
-      const description = document.getElementById('create-description').value.trim();
-      const body = { id: id };
-      if (title) body.title = title;
-      if (description) body.description = description;
-      fetch(base + '/collections', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify(body)
-      }).then(r => {
-        if (r.ok) location.href = base + '/collections/' + encodeURIComponent(id) + '?f=html';
-        else return r.json().then(j => Promise.reject(j));
-      }).catch(e => alert('Error: ' + (e.detail || JSON.stringify(e))));
-    };
+    var table = document.getElementById('collections-table');
+    if (table) {
+      var mapEl = document.getElementById('map');
+      var rows = table.querySelectorAll('tbody tr.clickable-row');
+      rows.forEach(function(row) {
+        row.addEventListener('click', function(e) {
+          if (e.target.tagName === 'A' || e.target.closest('a')) return;
+          var bboxStr = row.getAttribute('data-bbox');
+          if (!bboxStr || !window.collectionsMap) return;
+          try {
+            var bbox = JSON.parse(bboxStr);
+            if (Array.isArray(bbox) && bbox.length >= 4) {
+              window.collectionsMap.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 60, duration: 400 });
+              rows.forEach(function(r) { r.classList.remove('collection-highlight'); });
+              row.classList.add('collection-highlight');
+            }
+          } catch (err) {}
+        });
+      });
+    }
   </script>
 {% endblock %}

@@ -2,6 +2,7 @@
 {% block title %}{{ collection.id }} – GeoFast API{% endblock %}
 {% block content %}
   <header class="page-header">
+    <h1>{{ collection.title or collection.id }}</h1>
     <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection.id }}?f=html">{{ collection.id }}</a></p>
   </header>
 
@@ -40,22 +41,6 @@
     .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
     .save-style-form .vector-style-label { font-weight: 600; margin-right: 4px; }
     .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
-    .edit-collection-modal { display: none; position: fixed; inset: 0; z-index: 1000; align-items: center; justify-content: center; padding: var(--space-lg); }
-    .edit-collection-modal[aria-hidden="false"] { display: flex; }
-    .edit-collection-modal .modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.6); cursor: pointer; }
-    .edit-collection-modal .modal-content { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); max-width: 480px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
-    .edit-collection-modal .modal-header { display: flex; align-items: center; justify-content: space-between; padding: var(--space) var(--space-lg); border-bottom: 1px solid var(--border); }
-    .edit-collection-modal .modal-title { margin: 0; font-size: 1rem; }
-    .edit-collection-modal .modal-close { background: none; border: none; color: var(--text-secondary); font-size: 1.5rem; cursor: pointer; padding: 0 0.25rem; line-height: 1; }
-    .edit-collection-modal .modal-close:hover { color: var(--text); }
-    .edit-collection-modal .modal-body { padding: var(--space-lg); }
-    .edit-collection-modal .form-row { margin-bottom: var(--space); }
-    .edit-collection-modal .form-row label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 0.9rem; }
-    .edit-collection-modal .form-row input[type="text"], .edit-collection-modal .form-row textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
-    .edit-collection-modal .form-row textarea { min-height: 80px; resize: vertical; }
-    .edit-collection-modal .bbox-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    .edit-collection-modal .bbox-row input { width: 6em; }
-    .edit-collection-modal .modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: var(--space) var(--space-lg); border-top: 1px solid var(--border); }
   </style>
   <div class="card">
     <h2 class="card-title">Collection info</h2>
@@ -139,127 +124,10 @@
   </div>
 
   <div class="card">
-    <h2 class="card-title">Search & filters</h2>
-    <form method="get" action="{{ base }}/collections/{{ collection.id }}/items" id="form-search-items">
-      <input type="hidden" name="f" value="html">
-      <div class="grid-2">
-        <div class="form-row">
-          <label>Limit</label>
-          <input type="number" name="limit" value="100" min="1" max="1000">
-        </div>
-        <div class="form-row">
-          <label>Offset</label>
-          <input type="number" name="offset" value="0" min="0">
-        </div>
-      </div>
-      <div class="form-row">
-        <label>Bbox <span class="meta">(minx, miny, maxx, maxy)</span></label>
-        <input type="text" name="bbox" placeholder="-10, 40, 10, 50">
-      </div>
-      <div class="form-row">
-        <label>Datetime <span class="meta">(instant or range)</span></label>
-        <input type="text" name="datetime" placeholder="2024-01-01 or 2024-01-01/2024-12-31">
-      </div>
-      <div class="grid-2">
-        <div class="form-row">
-          <label>Sort by</label>
-          <select name="sortby">
-            <option value="">—</option>
-            <option value="id">id</option>
-            <option value="created_at">created_at</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label>&nbsp;</label>
-          <label class="checkbox-inline"><input type="checkbox" name="sortdesc" value="true"> Descending</label>
-        </div>
-      </div>
-      <div class="form-row">
-        <label>Filter <span class="meta">(key:op:value per line; op: eq, ne, gt, gte, lt, lte, like, ilike)</span></label>
-        <textarea name="filter" rows="2" placeholder="name:eq:Main"></textarea>
-      </div>
-      <div class="form-row">
-        <label>Full-text search (q)</label>
-        <input type="text" name="q" placeholder="Search in properties">
-      </div>
-      <div class="form-row">
-        <label>Properties <span class="meta">(comma-separated; empty = all)</span></label>
-        <input type="text" name="properties" placeholder="name, area">
-      </div>
-      <div class="btn-group">
-        <button type="submit" class="btn btn-primary">Apply filters</button>
-      </div>
-    </form>
-  </div>
-
-  <div class="card">
-    <h2 class="card-title">Bulk upload</h2>
-    <p class="meta">Import from GeoJSON, GeoJSONSeq, KML, GPKG, or .zip shapefile. Runs in the background.</p>
-    <form id="form-bulk-upload">
-      <div class="form-row">
-        <label for="bulk-file">File</label>
-        <input type="file" id="bulk-file" name="file" accept=".geojson,.json,.geojsonl,.geojsonseq,.jsonl,.kml,.gpkg,.zip" required>
-      </div>
-      <div class="form-row">
-        <label>Import mode</label>
-        <div class="radio-group">
-          <label><input type="radio" name="mode" value="append" checked> Append to existing</label>
-          <label><input type="radio" name="mode" value="replace"> Replace all (delete then import)</label>
-        </div>
-      </div>
-      <div class="btn-group">
-        <button type="submit" class="btn btn-primary">Upload & import</button>
-      </div>
-      <p id="bulk-result" class="meta"></p>
-      <p id="bulk-result-success" class="alert alert-success" style="display:none;"></p>
-    </form>
-  </div>
-
-  <div class="card">
     <h2 class="card-title">Actions</h2>
     <div class="btn-group">
-      <a href="{{ base }}/collections/{{ collection.id }}/items?f=html" class="btn btn-primary">View items</a>
-      <a href="{{ base }}/collections/{{ collection.id }}/items/new?f=html" class="btn">Add feature</a>
-      <button type="button" class="btn" id="btn-build-tiles">Build static tiles</button>
-      <button type="button" class="btn btn-danger" id="btn-delete-tiles" style="display:none">Delete static tiles</button>
-      <button type="button" class="btn" id="btn-recompute-extent">Recompute extent</button>
-      <button type="button" class="btn" id="btn-patch-collection">Edit metadata</button>
-      <button type="button" class="btn btn-danger" id="btn-delete-collection">Delete collection</button>
-    </div>
-    <p class="meta" id="tiles-hint" style="display:none">Static tiles not built. Click <strong>Build static tiles</strong> to compute.</p>
-  </div>
-
-  <div id="edit-collection-modal" class="edit-collection-modal" role="dialog" aria-hidden="true">
-    <div class="modal-backdrop"></div>
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3 class="modal-title">Edit collection metadata</h3>
-        <button type="button" class="modal-close" aria-label="Close">&times;</button>
-      </div>
-      <div class="modal-body">
-        <div class="form-row">
-          <label for="edit-collection-title">Title</label>
-          <input type="text" id="edit-collection-title" placeholder="Optional title">
-        </div>
-        <div class="form-row">
-          <label for="edit-collection-description">Description</label>
-          <textarea id="edit-collection-description" placeholder="Optional description" rows="3"></textarea>
-        </div>
-        <div class="form-row">
-          <label>Bounding box <span class="meta">(minx, miny, maxx, maxy, WGS84)</span></label>
-          <div class="bbox-row">
-            <input type="number" id="edit-collection-minx" placeholder="minx" step="any">
-            <input type="number" id="edit-collection-miny" placeholder="miny" step="any">
-            <input type="number" id="edit-collection-maxx" placeholder="maxx" step="any">
-            <input type="number" id="edit-collection-maxy" placeholder="maxy" step="any">
-          </div>
-          <label class="checkbox-inline" style="margin-top:6px"><input type="checkbox" id="edit-collection-clear-bbox"> Clear extent (no bbox)</label>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn" id="edit-collection-cancel">Cancel</button>
-        <button type="button" class="btn btn-primary" id="edit-collection-save">Save</button>
-      </div>
+      <a href="{{ base }}/collections/{{ collection.id }}/edit?f=html" class="btn btn-primary">Edit collection</a>
+      <a href="{{ base }}/collections/{{ collection.id }}/items?f=html" class="btn">View items</a>
     </div>
   </div>
 
@@ -730,117 +598,5 @@
       };
     });
 
-    document.getElementById('btn-delete-tiles').style.display = hasStaticTiles ? '' : 'none';
-    document.getElementById('tiles-hint').style.display = hasStaticTiles ? 'none' : '';
-
-    document.getElementById('btn-build-tiles').onclick = function() {
-      fetch(base + '/collections/' + collectionId + '/tiles/build', { method: 'POST', headers: { 'Accept': 'application/json' } })
-        .then(r => r.json()).then(d => alert(d.message || JSON.stringify(d))).catch(e => alert('Error: ' + e));
-    };
-    document.getElementById('btn-delete-tiles').onclick = function() {
-      if (!confirm('Delete static tiles for this collection? The map will use no vector layer until you build again.')) return;
-      var btn = this;
-      btn.disabled = true;
-      fetch(base + '/collections/' + collectionId + '/tiles/static', { method: 'DELETE', headers: { 'Accept': 'application/json' } })
-        .then(function(r) { if (r.ok) location.reload(); else return r.json().then(function(j) { return Promise.reject(j); }); })
-        .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); btn.disabled = false; });
-    };
-    document.getElementById('btn-recompute-extent').onclick = function() {
-      var btn = this;
-      btn.disabled = true;
-      fetch(base + '/collections/' + collectionId + '/extent/recompute', { method: 'POST', headers: { 'Accept': 'application/json' } })
-        .then(r => r.json())
-        .then(function(d) {
-          if (d.extent && d.extent.bbox) {
-            location.reload();
-          } else {
-            alert('No extent (collection has no features with geometry).');
-            btn.disabled = false;
-          }
-        })
-        .catch(function(e) {
-          alert('Error: ' + (e.detail || e.message || e));
-          btn.disabled = false;
-        });
-    };
-    document.getElementById('btn-delete-collection').onclick = function() {
-      if (!confirm('Delete this collection and all its features?')) return;
-      fetch(base + '/collections/' + collectionId, { method: 'DELETE' })
-        .then(r => { if (r.ok) location.href = base + '/collections?f=html'; else return r.json().then(j => Promise.reject(j)); })
-        .catch(e => alert('Error: ' + (e.detail || e.message || JSON.stringify(e))));
-    };
-    document.getElementById('form-bulk-upload').onsubmit = function(e) {
-      e.preventDefault();
-      const fileInput = document.getElementById('bulk-file');
-      const file = fileInput.files[0];
-      if (!file) { alert('Select a file'); return; }
-      const mode = document.querySelector('input[name="mode"]:checked').value;
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('mode', mode);
-      const resultEl = document.getElementById('bulk-result');
-      const successEl = document.getElementById('bulk-result-success');
-      successEl.style.display = 'none';
-      resultEl.textContent = 'Uploading…';
-      fetch(base + '/collections/' + collectionId + '/items/bulk', {
-        method: 'POST',
-        body: formData,
-        headers: { 'Accept': 'application/json' }
-      }).then(r => r.json()).then(d => {
-        resultEl.textContent = '';
-        successEl.innerHTML = 'Import queued. <a href="' + base + '/jobs/' + d.job_id + '">Check job status →</a>';
-        successEl.style.display = 'block';
-      }).catch(e => {
-        resultEl.textContent = 'Error: ' + (e.detail || e.message || e);
-      });
-    };
-
-    var editCollectionModal = document.getElementById('edit-collection-modal');
-    function openEditCollectionModal() {
-      document.getElementById('edit-collection-title').value = collectionTitle;
-      document.getElementById('edit-collection-description').value = collectionDescription;
-      var b = extent && extent.bbox && extent.bbox[0] && extent.bbox[0].length >= 4 ? extent.bbox[0] : null;
-      document.getElementById('edit-collection-minx').value = b ? String(b[0]) : '';
-      document.getElementById('edit-collection-miny').value = b ? String(b[1]) : '';
-      document.getElementById('edit-collection-maxx').value = b ? String(b[2]) : '';
-      document.getElementById('edit-collection-maxy').value = b ? String(b[3]) : '';
-      document.getElementById('edit-collection-clear-bbox').checked = false;
-      editCollectionModal.setAttribute('aria-hidden', 'false');
-    }
-    function closeEditCollectionModal() {
-      editCollectionModal.setAttribute('aria-hidden', 'true');
-    }
-    document.getElementById('btn-patch-collection').onclick = openEditCollectionModal;
-    editCollectionModal.querySelector('.modal-backdrop').onclick = closeEditCollectionModal;
-    editCollectionModal.querySelector('.modal-close').onclick = closeEditCollectionModal;
-    document.getElementById('edit-collection-cancel').onclick = closeEditCollectionModal;
-    document.getElementById('edit-collection-save').onclick = function() {
-      var title = document.getElementById('edit-collection-title').value.trim();
-      var description = document.getElementById('edit-collection-description').value.trim();
-      var clearBbox = document.getElementById('edit-collection-clear-bbox').checked;
-      var minx = document.getElementById('edit-collection-minx').value.trim();
-      var miny = document.getElementById('edit-collection-miny').value.trim();
-      var maxx = document.getElementById('edit-collection-maxx').value.trim();
-      var maxy = document.getElementById('edit-collection-maxy').value.trim();
-      var body = { title: title || null, description: description || null };
-      if (clearBbox) {
-        body.extent = null;
-      } else if (minx !== '' && miny !== '' && maxx !== '' && maxy !== '') {
-        var mnx = parseFloat(minx), mny = parseFloat(miny), mxx = parseFloat(maxx), mxy = parseFloat(maxy);
-        if (!isNaN(mnx) && !isNaN(mny) && !isNaN(mxx) && !isNaN(mxy)) {
-          body.extent = { bbox: [[mnx, mny, mxx, mxy]] };
-        }
-      }
-      fetch(base + '/collections/' + collectionId, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify(body)
-      }).then(function(r) { if (!r.ok) return r.json().then(function(j) { throw j; }); return r.json(); })
-        .then(function() { closeEditCollectionModal(); location.reload(); })
-        .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
-    };
-    document.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape' && editCollectionModal.getAttribute('aria-hidden') === 'false') closeEditCollectionModal();
-    });
   </script>
 {% endblock %}

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, String, Text
+from sqlalchemy import Column, Computed, DateTime, ForeignKey, String, Text
 from geoalchemy2 import Geometry
 from sqlalchemy.dialects.postgresql import JSONB
 from uuid6 import uuid7
@@ -36,8 +36,9 @@ class Feature(Base):
 
     properties = Column(JSONB, nullable=True)
 
-    # Generated column (see migration 0002): flatten properties to text for full-text/trigram search
-    properties_flat = Column(Text, nullable=True)
+    # Generated column (see migration 0002): flatten properties to text for full-text/trigram search.
+    # Mark as Computed so SQLAlchemy does not include it in INSERT/UPDATE.
+    properties_flat = Column(Text, Computed("jsonb_flat_text(properties)"), nullable=True)
 
     created_at = Column(
         DateTime(timezone=True),

@@ -1,0 +1,387 @@
+{% extends "base.html" %}
+{% block title %}Edit collection {{ collection_id }} – GeoFast API{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
+  <style>
+    .geom-edit-bar { margin-top: 10px; padding: 10px 12px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); align-items: center; gap: 12px; flex-wrap: wrap; display: flex; }
+    .geom-edit-bar .geom-edit-label { font-weight: 600; margin-right: 8px; }
+    .map-edit-hint { font-size: 0.85rem; color: var(--text-secondary); margin: 6px 0 0; }
+    .edit-collection-attributes .form-row { margin-bottom: var(--space); }
+    .edit-collection-attributes .form-row label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 0.9rem; }
+    .edit-collection-attributes .form-row input[type="text"], .edit-collection-attributes .form-row textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+    .edit-collection-attributes .form-row textarea { min-height: 80px; resize: vertical; }
+    .edit-collection-attributes .bbox-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .edit-collection-attributes .bbox-row input { width: 7em; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Edit collection <code>{{ collection_id }}</code></h1>
+    <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> › Edit</p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Map – Bounding box</h2>
+    <p class="meta">Draw or edit the polygon on the map to set the collection extent. The bbox is the extent of this polygon. You can also edit bbox numbers below; map bbox is used on save when both are set.</p>
+    <div id="map" class="map-container">
+      <div class="map-controls">
+        <select id="map-basemap" title="Basemap">
+          <option value="osm">OpenStreetMap</option>
+          <option value="streets">Esri Streets</option>
+          <option value="satellite">Esri Satellite</option>
+          <option value="hybrid">Esri Hybrid</option>
+          <option value="google_satellite">Google Satellite</option>
+          <option value="google_hybrid">Google Hybrid</option>
+        </select>
+      </div>
+    </div>
+    <div class="geom-edit-bar geom-edit-bar-visible" id="geom-edit-bar">
+      <span class="geom-edit-label">Bbox</span>
+      <button type="button" class="btn btn-primary" id="btn-save-bbox" title="Save the current map polygon extent to the collection">Save edited bbox to collection</button>
+    </div>
+    <p class="meta map-edit-hint">Draw or edit the polygon on the map. Click <strong>Save edited bbox to collection</strong> to update the collection extent from the map. You can also edit the bbox numbers in Attributes and use <strong>Save collection</strong> to save everything.</p>
+  </div>
+
+  <div class="card edit-collection-attributes">
+    <h2 class="card-title">Attributes</h2>
+    <p class="meta">Edit title, description, and optional bounding box (minx, miny, maxx, maxy WGS84). If you edit the map polygon, its bbox is used on save; otherwise the values below are used.</p>
+    <div class="form-row">
+      <label for="edit-title">Title</label>
+      <input type="text" id="edit-title" placeholder="Optional title" value="{{ (collection.title or '') | e }}">
+    </div>
+    <div class="form-row">
+      <label for="edit-description">Description</label>
+      <textarea id="edit-description" placeholder="Optional description" rows="3">{{ (collection.description or '') | e }}</textarea>
+    </div>
+    <div class="form-row">
+      <label>Bounding box <span class="meta">(minx, miny, maxx, maxy, WGS84)</span></label>
+      <div class="bbox-row">
+        <input type="number" id="edit-minx" placeholder="minx" step="any">
+        <input type="number" id="edit-miny" placeholder="miny" step="any">
+        <input type="number" id="edit-maxx" placeholder="maxx" step="any">
+        <input type="number" id="edit-maxy" placeholder="maxy" step="any">
+      </div>
+      <label class="checkbox-inline" style="margin-top:6px"><input type="checkbox" id="edit-clear-bbox"> Clear extent (no bbox)</label>
+    </div>
+    <div class="btn-group" style="margin-top: var(--space);">
+      <button type="button" class="btn btn-primary" id="btn-save-collection">Save collection</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Bulk upload</h2>
+    <p class="meta">Import from GeoJSON, GeoJSONSeq, KML, GPKG, or .zip shapefile. Runs in the background.</p>
+    <form id="form-bulk-upload">
+      <div class="form-row">
+        <label for="bulk-file">File</label>
+        <input type="file" id="bulk-file" name="file" accept=".geojson,.json,.geojsonl,.geojsonseq,.jsonl,.kml,.gpkg,.zip" required>
+      </div>
+      <div class="form-row">
+        <label>Import mode</label>
+        <div class="radio-group">
+          <label><input type="radio" name="mode" value="append" checked> Append to existing</label>
+          <label><input type="radio" name="mode" value="replace"> Replace all (delete then import)</label>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary">Upload & import</button>
+      </div>
+      <p id="bulk-result" class="meta"></p>
+      <p id="bulk-result-success" class="alert alert-success" style="display:none;"></p>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Actions</h2>
+    <div class="btn-group">
+      <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn">Back to collection</a>
+      <a href="{{ base }}/collections?f=html" class="btn">Back to collections</a>
+      <a href="{{ base }}/collections/{{ collection_id }}/items/new?f=html" class="btn">Add feature</a>
+      <button type="button" class="btn" id="btn-build-tiles">Build static tiles</button>
+      <button type="button" class="btn btn-danger" id="btn-delete-tiles" style="display:none">Delete static tiles</button>
+      <button type="button" class="btn" id="btn-recompute-extent">Recompute extent</button>
+      <button type="button" class="btn btn-danger" id="btn-delete-collection">Delete collection</button>
+    </div>
+    <p class="meta" id="tiles-hint" style="display:none">Static tiles not built. Click <strong>Build static tiles</strong> to compute.</p>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script>
+    const base = {{ base | tojson }};
+    const collectionId = {{ collection_id | tojson }};
+    const initialExtent = {{ extent_geojson | tojson if extent_geojson else 'null' }};
+    const hasStaticTiles = {{ has_static_tiles | tojson }};
+    const tileUrlStatic = hasStaticTiles ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' : null;
+    const googleKey = {{ google_maps_api_key | tojson }};
+
+    function bboxToPolygonFeature(bbox) {
+      if (!bbox || bbox.length < 4) return null;
+      var minx = bbox[0], miny = bbox[1], maxx = bbox[2], maxy = bbox[3];
+      var coords = [[minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]];
+      return { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [coords] } };
+    }
+
+    function geometryToBbox(geom) {
+      if (!geom || !geom.coordinates) return null;
+      var flat = function(arr, out) { if (Array.isArray(arr[0])) arr.forEach(function(a) { flat(a, out); }); else out.push(arr[0], arr[1]); };
+      var coords = []; flat(geom.coordinates, coords);
+      var xs = coords.filter(function(_, i) { return i % 2 === 0; });
+      var ys = coords.filter(function(_, i) { return i % 2 === 1; });
+      if (xs.length === 0) return null;
+      return [Math.min.apply(null, xs), Math.min.apply(null, ys), Math.max.apply(null, xs), Math.max.apply(null, ys)];
+    }
+
+    var initialBbox = null;
+    if (initialExtent && initialExtent.bbox && initialExtent.bbox[0] && initialExtent.bbox[0].length >= 4) {
+      initialBbox = initialExtent.bbox[0];
+    }
+    var initialFeature = initialBbox ? bboxToPolygonFeature(initialBbox) : null;
+    var initialGeoJson = initialFeature
+      ? { type: 'FeatureCollection', features: [initialFeature] }
+      : { type: 'FeatureCollection', features: [] };
+
+    const BASEMAPS = {
+      osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] },
+      streets: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}'] },
+      satellite: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] },
+      hybrid: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], labels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}' },
+      google_satellite: { tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] },
+      google_hybrid: { tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] }
+    };
+    const mapStyle = {
+      version: 8,
+      glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+      sources: { basemap: { type: 'raster', tiles: BASEMAPS.osm.tiles, tileSize: 256 } },
+      layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 }]
+    };
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: mapStyle,
+      center: [0, 20],
+      zoom: 2,
+      renderWorldCopies: false
+    });
+
+    function applyBasemapFromSelect() {
+      var v = document.getElementById('map-basemap').value;
+      var cfg = BASEMAPS[v];
+      map.getSource('basemap').setTiles(cfg.tiles);
+      if (cfg.labels) {
+        if (!map.getSource('basemap-labels')) {
+          map.addSource('basemap-labels', { type: 'raster', tiles: [cfg.labels], tileSize: 256 });
+          var beforeId = map.getLayer('tiles-fill') ? 'tiles-fill' : undefined;
+          map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: 0, maxzoom: 22 }, beforeId);
+        }
+      } else {
+        if (map.getLayer('basemap-labels')) { map.removeLayer('basemap-labels'); map.removeSource('basemap-labels'); }
+      }
+    }
+
+    var geoEditor = null;
+
+    function getEditorFeatures() {
+      if (!geoEditor) return [];
+      try {
+        var fc = geoEditor.getAllFeatureCollection && geoEditor.getAllFeatureCollection();
+        if (fc && fc.features) return fc.features;
+        var f = geoEditor.getFeatures && geoEditor.getFeatures();
+        return Array.isArray(f) ? f : [];
+      } catch (e) { return []; }
+    }
+
+    function getBboxFromMap() {
+      var feats = getEditorFeatures();
+      var f = feats && feats[0];
+      if (!f || !f.geometry) return null;
+      return geometryToBbox(f.geometry);
+    }
+
+    function syncBboxToForm(bbox) {
+      if (!bbox || bbox.length < 4) return;
+      document.getElementById('edit-minx').value = bbox[0];
+      document.getElementById('edit-miny').value = bbox[1];
+      document.getElementById('edit-maxx').value = bbox[2];
+      document.getElementById('edit-maxy').value = bbox[3];
+    }
+
+    map.on('load', function() {
+      map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+      try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) { document.getElementById('map-basemap').value = s; } } catch(e) {}
+      applyBasemapFromSelect();
+      if (tileUrlStatic) {
+        map.addSource('tiles', { type: 'vector', tiles: [tileUrlStatic], minzoom: 0, maxzoom: 14 });
+        map.addLayer({ id: 'tiles-fill', type: 'fill', source: 'tiles', 'source-layer': collectionId, paint: { 'fill-color': '#58a6ff', 'fill-opacity': 0.6 } });
+        map.addLayer({ id: 'tiles-line', type: 'line', source: 'tiles', 'source-layer': collectionId, paint: { 'line-color': '#58a6ff', 'line-width': 1, 'line-opacity': 1 } });
+      }
+      document.getElementById('map-basemap').onchange = function() { applyBasemapFromSelect(); try { localStorage.setItem('geofast-basemap', document.getElementById('map-basemap').value); } catch(e) {} };
+
+      if (initialBbox) {
+        document.getElementById('edit-minx').value = initialBbox[0];
+        document.getElementById('edit-miny').value = initialBbox[1];
+        document.getElementById('edit-maxx').value = initialBbox[2];
+        document.getElementById('edit-maxy').value = initialBbox[3];
+      }
+      document.getElementById('edit-clear-bbox').checked = false;
+
+      var editModes = ['select', 'drag', 'change', 'rotate', 'delete', 'scale', 'copy', 'split', 'union', 'difference', 'simplify', 'lasso'];
+      var drawModes = ['polygon', 'rectangle', 'circle'];
+      var attributeSchema = { polygon: [], line: [], point: [], common: [] };
+
+      Promise.all([
+        import('https://esm.sh/@geoman-io/maplibre-geoman-free@0.6.2'),
+        import('https://esm.sh/maplibre-gl-geo-editor@0.7.3')
+      ]).then(function(modules) {
+        var Geoman = modules[0].Geoman || modules[0].default;
+        var GeoEditor = modules[1].GeoEditor;
+        var geoman = new Geoman(map, {});
+        map.once('gm:loaded', function() {
+          geoEditor = new GeoEditor({
+            position: 'top-left',
+            toolbarOrientation: 'vertical',
+            columns: 2,
+            drawModes: drawModes,
+            editModes: editModes,
+            showFeatureProperties: false,
+            fitBoundsOnLoad: true,
+            attributeSchema: attributeSchema
+          });
+          geoEditor.setGeoman(geoman);
+          map.addControl(geoEditor, 'top-left');
+          geoEditor.loadGeoJson(initialGeoJson);
+          if (initialBbox && initialBbox.length >= 4) {
+            map.fitBounds([[initialBbox[0], initialBbox[1]], [initialBbox[2], initialBbox[3]]], { padding: 60 });
+          }
+          function onEditorChange() {
+            var b = getBboxFromMap();
+            if (b) syncBboxToForm(b);
+          }
+          if (geoEditor.on) {
+            geoEditor.on('change', onEditorChange);
+            geoEditor.on('update', onEditorChange);
+          }
+          map.on('pm:edit', onEditorChange);
+          map.on('pm:create', onEditorChange);
+          map.on('pm:remove', onEditorChange);
+        });
+      }).catch(function(err) {
+        console.warn('GeoEditor load failed', err);
+      });
+
+      document.getElementById('btn-save-bbox').onclick = function() {
+        var mapBbox = getBboxFromMap();
+        var clearBbox = document.getElementById('edit-clear-bbox').checked;
+        var body = {};
+        if (clearBbox) {
+          body.extent = null;
+        } else if (mapBbox && mapBbox.length === 4) {
+          body.extent = { bbox: [[mapBbox[0], mapBbox[1], mapBbox[2], mapBbox[3]]] };
+        } else {
+          var minx = document.getElementById('edit-minx').value.trim();
+          var miny = document.getElementById('edit-miny').value.trim();
+          var maxx = document.getElementById('edit-maxx').value.trim();
+          var maxy = document.getElementById('edit-maxy').value.trim();
+          if (minx !== '' && miny !== '' && maxx !== '' && maxy !== '') {
+            var mnx = parseFloat(minx), mny = parseFloat(miny), mxx = parseFloat(maxx), mxy = parseFloat(maxy);
+            if (!isNaN(mnx) && !isNaN(mny) && !isNaN(mxx) && !isNaN(mxy)) {
+              body.extent = { bbox: [[mnx, mny, mxx, mxy]] };
+            }
+          }
+        }
+        if (!body.hasOwnProperty('extent')) {
+          alert('Draw a polygon on the map or fill in the bbox fields below.');
+          return;
+        }
+        fetch(base + '/collections/' + encodeURIComponent(collectionId), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(body)
+        }).then(function(r) {
+          if (r.ok) location.reload();
+          return r.json().then(function(j) { throw j; });
+        }).catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+      };
+
+      document.getElementById('btn-save-collection').onclick = function() {
+        var title = document.getElementById('edit-title').value.trim();
+        var description = document.getElementById('edit-description').value.trim();
+        var clearBbox = document.getElementById('edit-clear-bbox').checked;
+        var body = { title: title || null, description: description || null };
+
+        if (clearBbox) {
+          body.extent = null;
+        } else {
+          var mapBbox = getBboxFromMap();
+          var minx = document.getElementById('edit-minx').value.trim();
+          var miny = document.getElementById('edit-miny').value.trim();
+          var maxx = document.getElementById('edit-maxx').value.trim();
+          var maxy = document.getElementById('edit-maxy').value.trim();
+          if (mapBbox && mapBbox.length === 4) {
+            body.extent = { bbox: [[mapBbox[0], mapBbox[1], mapBbox[2], mapBbox[3]]] };
+          } else if (minx !== '' && miny !== '' && maxx !== '' && maxy !== '') {
+            var mnx = parseFloat(minx), mny = parseFloat(miny), mxx = parseFloat(maxx), mxy = parseFloat(maxy);
+            if (!isNaN(mnx) && !isNaN(mny) && !isNaN(mxx) && !isNaN(mxy)) {
+              body.extent = { bbox: [[mnx, mny, mxx, mxy]] };
+            }
+          }
+        }
+
+        fetch(base + '/collections/' + encodeURIComponent(collectionId), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(body)
+        }).then(function(r) {
+          if (r.ok) location.href = base + '/collections/' + encodeURIComponent(collectionId) + '?f=html';
+          return r.json().then(function(j) { throw j; });
+        }).catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+      };
+    });
+
+    document.getElementById('btn-delete-tiles').style.display = hasStaticTiles ? '' : 'none';
+    document.getElementById('tiles-hint').style.display = hasStaticTiles ? 'none' : '';
+    document.getElementById('btn-build-tiles').onclick = function() {
+      fetch(base + '/collections/' + collectionId + '/tiles/build', { method: 'POST', headers: { 'Accept': 'application/json' } })
+        .then(r => r.json()).then(d => alert(d.message || JSON.stringify(d))).catch(e => alert('Error: ' + e));
+    };
+    document.getElementById('btn-delete-tiles').onclick = function() {
+      if (!confirm('Delete static tiles for this collection?')) return;
+      var btn = this;
+      btn.disabled = true;
+      fetch(base + '/collections/' + collectionId + '/tiles/static', { method: 'DELETE', headers: { 'Accept': 'application/json' } })
+        .then(function(r) { if (r.ok) location.reload(); else return r.json().then(j => Promise.reject(j)); })
+        .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); btn.disabled = false; });
+    };
+    document.getElementById('btn-recompute-extent').onclick = function() {
+      var btn = this;
+      btn.disabled = true;
+      fetch(base + '/collections/' + collectionId + '/extent/recompute', { method: 'POST', headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(function(d) { if (d.extent && d.extent.bbox) location.reload(); else { alert('No extent (no features with geometry).'); btn.disabled = false; } })
+        .catch(function(e) { alert('Error: ' + (e.detail || e.message || e)); btn.disabled = false; });
+    };
+    document.getElementById('btn-delete-collection').onclick = function() {
+      if (!confirm('Delete this collection and all its features?')) return;
+      fetch(base + '/collections/' + collectionId, { method: 'DELETE' })
+        .then(r => { if (r.ok) location.href = base + '/collections?f=html'; else return r.json().then(j => Promise.reject(j)); })
+        .catch(e => alert('Error: ' + (e.detail || e.message || JSON.stringify(e))));
+    };
+    document.getElementById('form-bulk-upload').onsubmit = function(e) {
+      e.preventDefault();
+      var file = document.getElementById('bulk-file').files[0];
+      if (!file) { alert('Select a file'); return; }
+      var mode = document.querySelector('input[name="mode"]:checked').value;
+      var formData = new FormData();
+      formData.append('file', file);
+      formData.append('mode', mode);
+      var resultEl = document.getElementById('bulk-result');
+      var successEl = document.getElementById('bulk-result-success');
+      successEl.style.display = 'none';
+      resultEl.textContent = 'Uploading…';
+      fetch(base + '/collections/' + collectionId + '/items/bulk', { method: 'POST', body: formData, headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(function(d) { resultEl.textContent = ''; successEl.innerHTML = 'Import queued. <a href="' + base + '/jobs/' + d.job_id + '">Check job status →</a>'; successEl.style.display = 'block'; })
+        .catch(function(e) { resultEl.textContent = 'Error: ' + (e.detail || e.message || e); });
+    };
+  </script>
+{% endblock %}

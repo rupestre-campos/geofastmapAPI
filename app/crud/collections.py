@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Tuple
 
-from sqlalchemy import select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import collection_tiles as tiles_crud
@@ -15,9 +15,75 @@ from app.models.collection import Collection
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
 
 
-async def list_collections(db: AsyncSession) -> Sequence[Collection]:
-    result = await db.execute(select(Collection).order_by(Collection.id))
-    return result.scalars().all()
+def _like_escape(value: str) -> str:
+    """Escape % and _ for use in LIKE/ILIKE."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _order_by_collection(sortby: str | None, sortdesc: bool):
+    """Return order_by clause for Collection (id, title, description, created_at)."""
+    if not sortby or sortby == "id":
+        return Collection.id.desc() if sortdesc else Collection.id.asc()
+    if sortby == "title":
+        return Collection.title.desc() if sortdesc else Collection.title.asc()
+    if sortby == "description":
+        return Collection.description.desc() if sortdesc else Collection.description.asc()
+    if sortby == "created_at":
+        return Collection.created_at.desc() if sortdesc else Collection.created_at.asc()
+    return Collection.id.asc()
+
+
+async def list_collections(
+    db: AsyncSession,
+    *,
+    q: str | None = None,
+    bbox_tuple: tuple[float, float, float, float] | None = None,
+    sortby: str | None = None,
+    sortdesc: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
+) -> Tuple[Sequence[Collection], int]:
+    """
+    List collections with optional full-text search (id, title, description),
+    bbox filter (collections whose extent intersects bbox), sort, and pagination.
+    Returns (collections, total_count).
+    """
+    base = select(Collection)
+    count_base = select(func.count()).select_from(Collection)
+
+    if q and q.strip():
+        pattern = f"%{_like_escape(q.strip())}%"
+        q_clause = or_(
+            Collection.id.ilike(pattern, escape="\\"),
+            Collection.title.ilike(pattern, escape="\\"),
+            Collection.description.ilike(pattern, escape="\\"),
+        )
+        base = base.where(q_clause)
+        count_base = count_base.where(q_clause)
+
+    bbox_params: dict[str, float] = {}
+    if bbox_tuple is not None:
+        minx, miny, maxx, maxy = bbox_tuple
+        bbox_cond = text(
+            "collections.extent IS NOT NULL AND (collections.extent->'bbox'->0) IS NOT NULL "
+            "AND (collections.extent->'bbox'->0->>0)::float <= :req_maxx "
+            "AND (collections.extent->'bbox'->0->>2)::float >= :req_minx "
+            "AND (collections.extent->'bbox'->0->>1)::float <= :req_maxy "
+            "AND (collections.extent->'bbox'->0->>3)::float >= :req_miny"
+        )
+        bbox_params = {"req_minx": minx, "req_miny": miny, "req_maxx": maxx, "req_maxy": maxy}
+        base = base.where(bbox_cond)
+        count_base = count_base.where(bbox_cond)
+
+    total = (await db.execute(count_base, bbox_params)).scalar() or 0
+    base = base.order_by(_order_by_collection(sortby, sortdesc))
+    if limit is not None:
+        base = base.limit(limit)
+    if offset > 0:
+        base = base.offset(offset)
+    result = await db.execute(base, bbox_params)
+    rows = result.scalars().all()
+    return (rows, int(total))
 
 
 async def get_collection(db: AsyncSession, collection_id: str) -> Collection | None:

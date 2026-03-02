@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://postgres:postgres@localhost:5432/geofast"
     )
+    # Connection pool: increase for heavy concurrent load (e.g. dynamic tiles). Default 5+10 is too low for maps.
+    database_pool_size: int = 20
+    database_pool_max_overflow: int = 20
+    database_pool_timeout: float = 30.0  # seconds to wait for a connection from the pool
 
     # OGC API Features items: pagination limits
     items_default_limit: int = 100
@@ -37,6 +41,12 @@ class Settings(BaseSettings):
     tiles_mvt_max_features: int = 10_000
     # Redis cache TTL for dynamic tiles (seconds). 0 = no cache.
     tiles_dynamic_cache_ttl_seconds: int = 60
+    # Also cache tiles with query params (limit, offset, bbox, etc.) to reduce DB load when panning/zooming.
+    tiles_dynamic_cache_with_params: bool = True
+    # TTL for parametrized tile cache (can be longer since same search = same tiles for a while).
+    tiles_dynamic_cache_params_ttl_seconds: int = 120
+    # Max time (seconds) for a single dynamic tile query; 0 = disabled. Helps avoid holding pool connections.
+    tiles_dynamic_statement_timeout_seconds: int = 15
     tippecanoe_minzoom: int = 0
     tippecanoe_maxzoom: int = 16
     google_maps_api_key: str = ""  # optional; for Google Satellite/Hybrid basemaps in HTML

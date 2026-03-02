@@ -2,8 +2,9 @@
 
 from collections.abc import Sequence
 from pathlib import Path
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -24,6 +25,9 @@ from app.schemas.collection import (
 from app.schemas.ogc import Link
 
 router = APIRouter()
+
+# Reserved path segment: GET /collections/edit is the edit-collections (create form) page.
+COLLECTION_ID_RESERVED = "edit"
 
 
 def _base_url(request: Request) -> str:
@@ -47,14 +51,39 @@ def _collection_links(base: str, collection_id: str, default_style_id: str | Non
 @router.get(
     "",
     summary="List collections",
-    description="Use ?f=html or Accept: text/html for HTML.",
+    description="q=full-text (id/title/description), bbox=minx,miny,maxx,maxy, sortby, sortdesc, limit, offset. Use ?f=html for HTML.",
 )
 async def list_collections(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    q: str | None = Query(None, description="Full-text search in id, title, description."),
+    bbox: str | None = Query(None, description="Bounding box minx,miny,maxx,maxy (WGS84). Collections whose extent intersects this bbox."),
+    sortby: str | None = Query(None, description="Sort by: id, title, description, created_at."),
+    sortdesc: bool = Query(False, description="Sort descending."),
+    limit: int | None = Query(None, ge=1, le=1000, description="Max collections per page."),
+    offset: int = Query(0, ge=0, description="Number of collections to skip."),
 ):
     base = _base_url(request)
-    items_list: Sequence = await collections_crud.list_collections(db)
+    bbox_tuple: tuple[float, float, float, float] | None = None
+    if bbox:
+        parts = [p.strip() for p in bbox.split(",")]
+        if len(parts) == 4:
+            try:
+                bbox_tuple = (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+            except ValueError:
+                pass
+    # HTML: default limit for pagination
+    if wants_html(request) and limit is None:
+        limit = 100
+    items_list, number_matched = await collections_crud.list_collections(
+        db,
+        q=q.strip() if q and q.strip() else None,
+        bbox_tuple=bbox_tuple,
+        sortby=sortby,
+        sortdesc=sortdesc,
+        limit=limit,
+        offset=offset,
+    )
     collections_out = []
     for item in items_list:
         out = CollectionRead.model_validate(item)
@@ -62,7 +91,6 @@ async def list_collections(
             out.model_copy(update={"links": _collection_links(base, item.id)}),
         )
     if wants_html(request):
-        # Use stored extent per collection (no heavy query over features table); clamp to valid range for map
         collections_with_bbox = []
         for item in items_list:
             if not item.extent or not item.extent.get("bbox"):
@@ -76,11 +104,39 @@ async def list_collections(
                     "description": item.description or "",
                     "bbox": [minx, miny, maxx, maxy],
                 })
+        limit_val = limit or 100
+        prev_page_url = None
+        next_page_url = None
+        base_path = f"{base}/collections"
+        query_params = dict(request.query_params)
+        query_params.setdefault("f", "html")
+        if offset > 0:
+            prev_params = {**query_params, "offset": str(max(0, offset - limit_val)), "limit": str(limit_val)}
+            prev_page_url = base_path + "?" + urlencode(sorted(prev_params.items()))
+        if offset + len(items_list) < number_matched:
+            next_params = {**query_params, "offset": str(offset + limit_val), "limit": str(limit_val)}
+            next_page_url = base_path + "?" + urlencode(sorted(next_params.items()))
+        # JSON link: same query params without f=html
+        q_params = dict(request.query_params)
+        q_params.pop("f", None)
+        collections_url_json = base_path + ("?" + urlencode(sorted(q_params.items())) if q_params else "")
+
         return html_response(
             "collections.html",
             base=base,
-            collections=[{"id": c.id, "title": c.title} for c in collections_out],
+            collections=[{"id": c.id, "title": c.title, "description": c.description} for c in collections_out],
             collections_with_bbox=collections_with_bbox,
+            number_matched=number_matched,
+            number_returned=len(collections_out),
+            limit=limit_val,
+            offset=offset,
+            prev_page_url=prev_page_url,
+            next_page_url=next_page_url,
+            q=q or "",
+            bbox=bbox or "",
+            sortby=sortby or "",
+            sortdesc=sortdesc,
+            collections_url_json=collections_url_json,
         )
     return CollectionsList(
         collections=collections_out,
@@ -88,6 +144,54 @@ async def list_collections(
             Link(href=f"{base}/collections", rel="self", type="application/json"),
             Link(href=f"{base}/collections?f=html", rel="alternate", type="text/html"),
         ],
+    )
+
+
+@router.get(
+    "/edit",
+    summary="Edit collections (HTML): create new collection",
+    description="HTML page with form to create a new collection. Use ?f=html. Path is /collections/edit to avoid conflicting with collection id.",
+)
+async def edit_collections_form(request: Request):
+    """Serve the edit-collections page (create collection form)."""
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="HTML only")
+    base = _base_url(request)
+    return html_response("collections_edit.html", base=base)
+
+
+@router.get(
+    "/{collection_id}/edit",
+    summary="Edit collection (HTML form)",
+    description="HTML page to edit collection metadata and bbox (map with polygon editor). Use ?f=html.",
+)
+async def get_collection_edit_form(
+    request: Request,
+    collection_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the collection edit page: map with GeoEditor for bbox, attributes (title, description, bbox inputs)."""
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found",
+        )
+    base = _base_url(request)
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="HTML only")
+    settings = get_settings()
+    rec = await tiles_crud.get_collection_tiles(db, collection_id)
+    has_static_tiles = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
+    out = CollectionRead.model_validate(collection)
+    return html_response(
+        "collection_edit.html",
+        base=base,
+        collection_id=collection_id,
+        collection={"id": out.id, "title": out.title, "description": out.description},
+        extent_geojson=out.extent.model_dump() if out.extent else None,
+        has_static_tiles=has_static_tiles,
+        google_maps_api_key=settings.google_maps_api_key or "",
     )
 
 
@@ -187,6 +291,11 @@ async def create_collection(
     payload: CollectionCreate,
     db: AsyncSession = Depends(get_db),
 ) -> CollectionRead:
+    if payload.id == COLLECTION_ID_RESERVED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Collection id {COLLECTION_ID_RESERVED!r} is reserved (conflicts with /collections/edit route).",
+        )
     existing = await collections_crud.get_collection(db, payload.id)
     if existing:
         raise HTTPException(
