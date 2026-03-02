@@ -184,6 +184,7 @@ async def get_collection_edit_form(
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     has_static_tiles = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
     out = CollectionRead.model_validate(collection)
+    default_style = await styles_crud.get_default_style(db, collection_id)
     return html_response(
         "collection_edit.html",
         base=base,
@@ -192,6 +193,8 @@ async def get_collection_edit_form(
         extent_geojson=out.extent.model_dump() if out.extent else None,
         has_static_tiles=has_static_tiles,
         google_maps_api_key=settings.google_maps_api_key or "",
+        default_style={"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec} if default_style else None,
+        collection_styles_url=f"{base}/collections/{collection_id}/styles",
     )
 
 

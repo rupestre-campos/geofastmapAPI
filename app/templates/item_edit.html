@@ -41,6 +41,8 @@
     .props-form-table th, .props-form-table td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
     .props-form-table th { font-weight: 500; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; }
     .props-form-table .prop-key, .props-form-table .prop-value { width: 100%; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-size: 0.9rem; }
+    /* Push edit toolbox below basemap selector */
+    .item-edit-map .maplibregl-ctrl-top-left { padding-top: 40px; }
   </style>
 {% endblock %}
 {% block content %}
@@ -51,7 +53,7 @@
 
   <div class="card">
     <h2 class="card-title">Map</h2>
-    <div id="map" class="map-container">
+    <div id="map" class="map-container item-edit-map">
       <div class="map-controls">
         <select id="map-basemap" title="Basemap">
           <option value="osm">OpenStreetMap</option>
@@ -390,6 +392,29 @@
           map.addControl(geoEditor, 'top-left');
           geoEditor.loadGeoJson(featureGeojson);
           setTimeout(function() { injectExplodeButton(); }, 100);
+          function applyDefaultStyleToEditorLayers() {
+            if (!defaultStyle || !defaultStyle.style_spec) return;
+            try {
+              var s = featurePaintFromStyle(defaultStyle.style_spec);
+              var layers = map.getStyle() && map.getStyle().layers;
+              if (!layers) return;
+              layers.forEach(function(layer) {
+                if (layer.type === 'fill' && layer.id !== 'tiles-fill') {
+                  map.setPaintProperty(layer.id, 'fill-color', s.fillColor);
+                  map.setPaintProperty(layer.id, 'fill-opacity', s.fillOpacity);
+                  map.setLayoutProperty(layer.id, 'visibility', s.fillEnabled ? 'visible' : 'none');
+                }
+                if (layer.type === 'line' && layer.id !== 'tiles-line') {
+                  map.setPaintProperty(layer.id, 'line-color', s.lineColor);
+                  map.setPaintProperty(layer.id, 'line-width', s.lineWidth);
+                  map.setPaintProperty(layer.id, 'line-opacity', s.lineOpacity);
+                  map.setPaintProperty(layer.id, 'line-dasharray', s.lineDash);
+                }
+              });
+            } catch (e) {}
+          }
+          map.once('idle', applyDefaultStyleToEditorLayers);
+          [100, 350, 700].forEach(function(ms) { setTimeout(applyDefaultStyleToEditorLayers, ms); });
         });
       }).catch(function(err) {
         console.warn('GeoEditor load failed', err);

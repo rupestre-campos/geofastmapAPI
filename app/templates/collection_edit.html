@@ -13,6 +13,34 @@
     .edit-collection-attributes .form-row textarea { min-height: 80px; resize: vertical; }
     .edit-collection-attributes .bbox-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .edit-collection-attributes .bbox-row input { width: 7em; }
+    /* Push edit toolbox below basemap selector so first line is visible */
+    .collection-edit-map .maplibregl-ctrl-top-left { padding-top: 40px; }
+    .layer-style-collapsible { margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); }
+    .layer-style-collapsible summary { padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 0.9rem; color: var(--text-secondary); display: flex; align-items: center; gap: 10px; list-style: none; user-select: none; }
+    .layer-style-collapsible summary::-webkit-details-marker { display: none; }
+    .layer-style-collapsible summary::before { content: '▶'; font-size: 0.7rem; transition: transform 0.15s; }
+    .layer-style-collapsible[open] summary::before { transform: rotate(90deg); }
+    .layer-style-legend { width: 28px; height: 18px; border-radius: 3px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 0.85rem; }
+    .vector-style-panel .vector-style-label { font-weight: 600; margin-right: 4px; color: var(--text-secondary); }
+    .vector-style-panel label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+    .vector-style-panel input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+    .vector-style-sep { color: var(--text-secondary); margin: 0 4px; }
+    .vector-style-load-wrap { position: relative; display: inline-flex; vertical-align: middle; }
+    .vector-style-load-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); cursor: pointer; font-size: inherit; min-width: 120px; }
+    .vector-style-load-trigger:hover { border-color: var(--text-secondary); }
+    .vector-style-load-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-load-label-text { flex: 1; text-align: left; }
+    .vector-style-load-list { position: absolute; top: 100%; left: 0; margin-top: 2px; min-width: 180px; max-height: 240px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 50; display: none; }
+    .vector-style-load-list.open { display: block; }
+    .vector-style-load-group-label { padding: 4px 8px; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
+    .vector-style-load-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; font-size: 0.85rem; border: none; background: none; width: 100%; text-align: left; }
+    .vector-style-load-item:hover { background: var(--bg-elevated); }
+    .vector-style-load-item-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-load-item-label { flex: 1; }
+    .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
+    .save-style-form .vector-style-label { font-weight: 600; margin-right: 4px; }
+    .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
   </style>
 {% endblock %}
 {% block content %}
@@ -24,7 +52,7 @@
   <div class="card">
     <h2 class="card-title">Map – Bounding box</h2>
     <p class="meta">Draw or edit the polygon on the map to set the collection extent. The bbox is the extent of this polygon. You can also edit bbox numbers below; map bbox is used on save when both are set.</p>
-    <div id="map" class="map-container">
+    <div id="map" class="map-container collection-edit-map">
       <div class="map-controls">
         <select id="map-basemap" title="Basemap">
           <option value="osm">OpenStreetMap</option>
@@ -36,6 +64,51 @@
         </select>
       </div>
     </div>
+    <details id="layer-style-details" class="layer-style-collapsible" style="display:none">
+      <summary class="layer-style-summary">
+        <span>Layer style</span>
+        <span id="layer-style-legend" class="layer-style-legend" aria-hidden="true"></span>
+      </summary>
+      <div id="vector-style-wrap" class="vector-style-panel">
+        <span class="vector-style-label">Vector tile style</span>
+        <label><input type="checkbox" id="vector-fill-enable" checked> Fill</label>
+        <label>Fill <input type="color" id="vector-fill-color" value="#58a6ff" title="Fill color"></label>
+        <label>Fill opacity <input type="range" id="vector-fill-opacity" min="0" max="100" value="60" title="Fill transparency"> <span id="vector-fill-opacity-val">60</span>%</label>
+        <label>Line <input type="color" id="vector-line-color" value="#58a6ff" title="Line color"></label>
+        <label>Line width <input type="number" id="vector-line-width" min="0.5" max="20" step="0.5" value="1" style="width:4em" title="Line size"></label>
+        <label>Line opacity <input type="range" id="vector-line-opacity" min="0" max="100" value="100" title="Line transparency"> <span id="vector-line-opacity-val">100</span>%</label>
+        <label>Line pattern <select id="vector-line-pattern" title="Line pattern">
+          <option value="solid">Solid</option>
+          <option value="dashed">Dashed</option>
+          <option value="dotted">Dotted</option>
+        </select></label>
+        <span class="vector-style-sep">|</span>
+        <label>Load style
+          <span class="vector-style-load-wrap">
+            <button type="button" class="vector-style-load-trigger" id="vector-style-load-trigger" title="Load a saved style" aria-haspopup="listbox" aria-expanded="false">
+              <span class="vector-style-load-legend" id="vector-style-load-legend"></span>
+              <span class="vector-style-load-label-text" id="vector-style-load-label-text">Current</span>
+            </button>
+            <div class="vector-style-load-list" id="vector-style-load-list" role="listbox" aria-hidden="true"></div>
+          </span>
+          <select id="vector-style-select" aria-hidden="true" tabindex="-1" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden"><option value="">Current</option></select>
+        </label>
+        <button type="button" class="btn btn-sm" id="btn-save-style">Save style…</button>
+      </div>
+      <div id="save-style-form" class="save-style-form" style="display:none">
+        <span class="vector-style-label">Save style</span>
+        <label>Save to <select id="save-style-to" title="Where to save the style">
+          <option value="collection">Collection (this layer)</option>
+          <option value="public">Public (reusable)</option>
+        </select></label>
+        <label>Id <input type="text" id="save-style-id" placeholder="e.g. blue-outline" pattern="[a-zA-Z0-9_-]+" title="Letters, numbers, hyphen, underscore"></label>
+        <label>Title <input type="text" id="save-style-title" placeholder="Optional title"></label>
+        <label>Replace <select id="save-style-replace"><option value="">New</option></select></label>
+        <span id="save-style-default-wrap"><label><input type="checkbox" id="save-style-default"> Set as default</label></span>
+        <button type="button" class="btn btn-sm btn-primary" id="btn-save-style-submit">Save</button>
+        <button type="button" class="btn btn-sm" id="btn-save-style-cancel">Cancel</button>
+      </div>
+    </details>
     <div class="geom-edit-bar geom-edit-bar-visible" id="geom-edit-bar">
       <span class="geom-edit-label">Bbox</span>
       <button type="button" class="btn btn-primary" id="btn-save-bbox" title="Save the current map polygon extent to the collection">Save edited bbox to collection</button>
@@ -114,6 +187,8 @@
     const initialExtent = {{ extent_geojson | tojson if extent_geojson else 'null' }};
     const hasStaticTiles = {{ has_static_tiles | tojson }};
     const tileUrlStatic = hasStaticTiles ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' : null;
+    const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
+    const collectionStylesUrl = {{ collection_styles_url | tojson if collection_styles_url else 'null' }};
     const googleKey = {{ google_maps_api_key | tojson }};
 
     function bboxToPolygonFeature(bbox) {
@@ -211,9 +286,344 @@
       try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) { document.getElementById('map-basemap').value = s; } } catch(e) {}
       applyBasemapFromSelect();
       if (tileUrlStatic) {
+        var tileSpec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
+        var initFillColor = tileSpec.fillColor || '#58a6ff';
+        var initFillOpacity = tileSpec.fillOpacity != null ? tileSpec.fillOpacity : 0.6;
+        var initLineColor = tileSpec.lineColor || '#58a6ff';
+        var initLineWidth = Math.max(0.5, tileSpec.lineWidth != null ? tileSpec.lineWidth : 1);
+        var initLineOpacity = tileSpec.lineOpacity != null ? tileSpec.lineOpacity : 1;
+        var initFillVisible = tileSpec.fillEnabled !== false;
+        var LINE_DASH_INIT = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
+        var initLineDash = LINE_DASH_INIT[tileSpec.linePattern || 'solid'] || LINE_DASH_INIT.solid;
         map.addSource('tiles', { type: 'vector', tiles: [tileUrlStatic], minzoom: 0, maxzoom: 14 });
-        map.addLayer({ id: 'tiles-fill', type: 'fill', source: 'tiles', 'source-layer': collectionId, paint: { 'fill-color': '#58a6ff', 'fill-opacity': 0.6 } });
-        map.addLayer({ id: 'tiles-line', type: 'line', source: 'tiles', 'source-layer': collectionId, paint: { 'line-color': '#58a6ff', 'line-width': 1, 'line-opacity': 1 } });
+        map.addLayer({ id: 'tiles-fill', type: 'fill', source: 'tiles', 'source-layer': collectionId, layout: { visibility: initFillVisible ? 'visible' : 'none' }, paint: { 'fill-color': initFillColor, 'fill-opacity': initFillOpacity } });
+        map.addLayer({ id: 'tiles-line', type: 'line', source: 'tiles', 'source-layer': collectionId, paint: { 'line-color': initLineColor, 'line-width': initLineWidth, 'line-opacity': initLineOpacity, 'line-dasharray': initLineDash } });
+
+        document.getElementById('layer-style-details').style.display = 'block';
+        function updateStyleLegend(spec) {
+          var el = document.getElementById('layer-style-legend');
+          if (el) {
+            var fill = (spec && spec.fillColor) || '#58a6ff';
+            var line = (spec && spec.lineColor) || '#58a6ff';
+            var fillOn = !spec || spec.fillEnabled !== false;
+            el.style.backgroundColor = fillOn ? fill : 'transparent';
+            el.style.borderColor = line;
+            el.style.opacity = '1';
+          }
+          if (typeof updateLoadStyleTrigger === 'function') updateLoadStyleTrigger();
+        }
+        var fillCheck = document.getElementById('vector-fill-enable');
+        var fillColor = document.getElementById('vector-fill-color');
+        var fillOpacity = document.getElementById('vector-fill-opacity');
+        var fillOpacityVal = document.getElementById('vector-fill-opacity-val');
+        var lineColor = document.getElementById('vector-line-color');
+        var lineWidth = document.getElementById('vector-line-width');
+        var lineOpacity = document.getElementById('vector-line-opacity');
+        var lineOpacityVal = document.getElementById('vector-line-opacity-val');
+        var linePattern = document.getElementById('vector-line-pattern');
+        var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
+        function applyVectorStyle() {
+          map.setLayoutProperty('tiles-fill', 'visibility', fillCheck.checked ? 'visible' : 'none');
+          map.setPaintProperty('tiles-fill', 'fill-color', fillColor.value);
+          map.setPaintProperty('tiles-fill', 'fill-opacity', fillOpacity.value / 100);
+          map.setPaintProperty('tiles-line', 'line-color', lineColor.value);
+          map.setPaintProperty('tiles-line', 'line-width', Math.max(0.5, parseFloat(lineWidth.value) || 1));
+          map.setPaintProperty('tiles-line', 'line-opacity', lineOpacity.value / 100);
+          map.setPaintProperty('tiles-line', 'line-dasharray', LINE_DASH[linePattern.value] || LINE_DASH.solid);
+        }
+        var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
+        fillColor.value = spec.fillColor || '#58a6ff';
+        lineColor.value = spec.lineColor || '#58a6ff';
+        fillOpacity.value = Math.round((spec.fillOpacity != null ? spec.fillOpacity : 0.6) * 100);
+        lineOpacity.value = Math.round((spec.lineOpacity != null ? spec.lineOpacity : 1) * 100);
+        fillOpacityVal.textContent = fillOpacity.value;
+        lineOpacityVal.textContent = lineOpacity.value;
+        lineWidth.value = spec.lineWidth != null ? spec.lineWidth : 1;
+        linePattern.value = spec.linePattern || 'solid';
+        fillCheck.checked = spec.fillEnabled !== false;
+        applyVectorStyle();
+        fillCheck.onchange = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        fillColor.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        fillOpacity.oninput = function() { fillOpacityVal.textContent = this.value; applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        lineColor.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        lineWidth.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        lineOpacity.oninput = function() { lineOpacityVal.textContent = this.value; applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        linePattern.onchange = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        function getCurrentSpec() {
+          return {
+            fillColor: fillColor.value,
+            lineColor: lineColor.value,
+            fillOpacity: fillOpacity.value / 100,
+            lineOpacity: lineOpacity.value / 100,
+            lineWidth: Math.max(0.5, parseFloat(lineWidth.value) || 1),
+            linePattern: linePattern.value || 'solid',
+            fillEnabled: fillCheck.checked
+          };
+        }
+        updateStyleLegend(getCurrentSpec());
+        function applySpecToForm(s) {
+          fillColor.value = s.fillColor || '#58a6ff';
+          lineColor.value = s.lineColor || '#58a6ff';
+          fillOpacity.value = Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100);
+          lineOpacity.value = Math.round((s.lineOpacity != null ? s.lineOpacity : 1) * 100);
+          fillOpacityVal.textContent = fillOpacity.value;
+          lineOpacityVal.textContent = lineOpacity.value;
+          lineWidth.value = s.lineWidth != null ? s.lineWidth : 1;
+          linePattern.value = s.linePattern || 'solid';
+          fillCheck.checked = s.fillEnabled !== false;
+          applyVectorStyle();
+          updateStyleLegend(getCurrentSpec());
+        }
+        function collectionStylesUrlEffective() {
+          return collectionStylesUrl || (base + '/collections/' + encodeURIComponent(collectionId) + '/styles');
+        }
+        function publicStylesUrl() {
+          return base + '/styles';
+        }
+        var styleListCacheCollection = {};
+        function styleSpecToLegendCss(spec) {
+          spec = spec || {};
+          var fill = spec.fillColor || '#58a6ff';
+          var line = spec.lineColor || '#58a6ff';
+          var fillOp = spec.fillOpacity != null ? spec.fillOpacity : 0.6;
+          var fillOn = spec.fillEnabled !== false;
+          return { fill: fill, line: line, fillOp: fillOp, fillOn: fillOn };
+        }
+        function updateLoadStyleTrigger() {
+          var sel = document.getElementById('vector-style-select');
+          var val = sel ? sel.value : '';
+          var spec = (val && styleListCacheCollection[val]) ? styleListCacheCollection[val].style_spec : getCurrentSpec();
+          var leg = styleSpecToLegendCss(spec);
+          var legendEl = document.getElementById('vector-style-load-legend');
+          var labelEl = document.getElementById('vector-style-load-label-text');
+          if (legendEl) {
+            legendEl.style.backgroundColor = leg.fillOn ? leg.fill : 'transparent';
+            legendEl.style.borderColor = leg.line;
+            legendEl.style.opacity = '1';
+          }
+          if (labelEl) labelEl.textContent = (val && styleListCacheCollection[val]) ? (styleListCacheCollection[val].title || styleListCacheCollection[val].id) : 'Current';
+        }
+        function loadStylesList() {
+          var sel = document.getElementById('vector-style-select');
+          var listEl = document.getElementById('vector-style-load-list');
+          if (!sel) return Promise.resolve();
+          styleListCacheCollection = { '': null };
+          while (sel.firstChild) sel.removeChild(sel.firstChild);
+          if (listEl) listEl.innerHTML = '';
+          function addItem(value, label, spec, listEl) {
+            if (value) styleListCacheCollection[value] = { id: value.replace(/^[cp]:/, ''), title: label, style_spec: spec || {} };
+            var opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = label;
+            sel.appendChild(opt);
+            if (!listEl) return;
+            var leg = styleSpecToLegendCss(spec);
+            var item = document.createElement('div');
+            item.className = 'vector-style-load-item';
+            item.setAttribute('role', 'option');
+            item.dataset.value = value;
+            var legSpan = document.createElement('span');
+            legSpan.className = 'vector-style-load-item-legend';
+            legSpan.style.backgroundColor = leg.fillOn ? leg.fill : 'transparent';
+            legSpan.style.borderColor = leg.line;
+            legSpan.style.opacity = '1';
+            var labSpan = document.createElement('span');
+            labSpan.className = 'vector-style-load-item-label';
+            labSpan.textContent = label;
+            item.appendChild(legSpan);
+            item.appendChild(labSpan);
+            item.onclick = function() {
+              sel.value = value;
+              sel.dispatchEvent(new Event('change'));
+              listEl.classList.remove('open');
+              document.getElementById('vector-style-load-trigger').setAttribute('aria-expanded', 'false');
+              updateLoadStyleTrigger();
+            };
+            listEl.appendChild(item);
+          }
+          function addCollectionStyles() {
+            return fetch(collectionStylesUrlEffective(), { headers: { 'Accept': 'application/json' } })
+              .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
+              .then(function(data) {
+                var list = data.styles || [];
+                if (list.length && listEl) {
+                  var gl = document.createElement('div');
+                  gl.className = 'vector-style-load-group-label';
+                  gl.textContent = 'Collection styles';
+                  listEl.appendChild(gl);
+                }
+                list.forEach(function(s) {
+                  var val = 'c:' + s.id;
+                  styleListCacheCollection[val] = { id: s.id, title: s.title || s.id, style_spec: s.style_spec || {} };
+                  sel.appendChild(new Option(s.title || s.id, val));
+                  if (listEl) {
+                    var leg = styleSpecToLegendCss(s.style_spec);
+                    var item = document.createElement('div');
+                    item.className = 'vector-style-load-item';
+                    item.setAttribute('role', 'option');
+                    item.dataset.value = val;
+                    var legSpan = document.createElement('span');
+                    legSpan.className = 'vector-style-load-item-legend';
+                    legSpan.style.backgroundColor = leg.fillOn ? leg.fill : 'transparent';
+                    legSpan.style.borderColor = leg.line;
+                    legSpan.style.opacity = '1';
+                    var labSpan = document.createElement('span');
+                    labSpan.className = 'vector-style-load-item-label';
+                    labSpan.textContent = s.title || s.id;
+                    item.appendChild(legSpan);
+                    item.appendChild(labSpan);
+                    item.onclick = (function(v) { return function() {
+                      sel.value = v;
+                      sel.dispatchEvent(new Event('change'));
+                      listEl.classList.remove('open');
+                      document.getElementById('vector-style-load-trigger').setAttribute('aria-expanded', 'false');
+                      updateLoadStyleTrigger();
+                    }; })(val);
+                    listEl.appendChild(item);
+                  }
+                });
+              })
+              .catch(function(err) { console.warn('Load collection styles failed', collectionStylesUrlEffective(), err); });
+          }
+          function addPublicStyles() {
+            return fetch(publicStylesUrl(), { headers: { 'Accept': 'application/json' } })
+              .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
+              .then(function(data) {
+                var list = data.styles || [];
+                if (list.length && listEl) {
+                  var gl = document.createElement('div');
+                  gl.className = 'vector-style-load-group-label';
+                  gl.textContent = 'Public styles';
+                  listEl.appendChild(gl);
+                }
+                list.forEach(function(s) {
+                  var val = 'p:' + s.id;
+                  styleListCacheCollection[val] = { id: s.id, title: s.title || s.id, style_spec: s.style_spec || {} };
+                  sel.appendChild(new Option(s.title || s.id, val));
+                  if (listEl) {
+                    var leg = styleSpecToLegendCss(s.style_spec);
+                    var item = document.createElement('div');
+                    item.className = 'vector-style-load-item';
+                    item.setAttribute('role', 'option');
+                    item.dataset.value = val;
+                    var legSpan = document.createElement('span');
+                    legSpan.className = 'vector-style-load-item-legend';
+                    legSpan.style.backgroundColor = leg.fillOn ? leg.fill : 'transparent';
+                    legSpan.style.borderColor = leg.line;
+                    legSpan.style.opacity = '1';
+                    var labSpan = document.createElement('span');
+                    labSpan.className = 'vector-style-load-item-label';
+                    labSpan.textContent = s.title || s.id;
+                    item.appendChild(legSpan);
+                    item.appendChild(labSpan);
+                    item.onclick = (function(v) { return function() {
+                      sel.value = v;
+                      sel.dispatchEvent(new Event('change'));
+                      listEl.classList.remove('open');
+                      document.getElementById('vector-style-load-trigger').setAttribute('aria-expanded', 'false');
+                      updateLoadStyleTrigger();
+                    }; })(val);
+                    listEl.appendChild(item);
+                  }
+                });
+              })
+              .catch(function(err) { console.warn('Load public styles failed', publicStylesUrl(), err); });
+          }
+          addItem('', 'Current', getCurrentSpec(), listEl);
+          return addCollectionStyles().then(addPublicStyles).then(function() { updateLoadStyleTrigger(); });
+        }
+        var loadTrigger = document.getElementById('vector-style-load-trigger');
+        var loadList = document.getElementById('vector-style-load-list');
+        if (loadTrigger && loadList) {
+          loadTrigger.onclick = function(e) {
+            e.stopPropagation();
+            var open = loadList.classList.toggle('open');
+            loadTrigger.setAttribute('aria-expanded', open);
+          };
+          document.addEventListener('click', function() {
+            loadList.classList.remove('open');
+            loadTrigger.setAttribute('aria-expanded', 'false');
+          });
+        }
+        function populateReplaceDropdown(saveTo) {
+          var rep = document.getElementById('save-style-replace');
+          rep.options.length = 1;
+          var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrlEffective();
+          fetch(url, { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+              (data.styles || []).forEach(function(s) {
+                rep.add(new Option(s.title || s.id, s.id));
+              });
+            })
+            .catch(function() {});
+        }
+        loadStylesList();
+        document.getElementById('vector-style-select').onchange = function() {
+          var val = this.value;
+          if (!val) return;
+          var isPublic = val.indexOf('p:') === 0;
+          var id = val.slice(2);
+          var url = isPublic ? (publicStylesUrl() + '/' + encodeURIComponent(id)) : (collectionStylesUrlEffective() + '/' + encodeURIComponent(id));
+          fetch(url, { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.json(); })
+            .then(function(s) { if (s.style_spec) applySpecToForm(s.style_spec); updateLoadStyleTrigger(); })
+            .catch(function() {});
+        };
+        document.getElementById('btn-save-style').onclick = function() {
+          document.getElementById('save-style-form').style.display = 'flex';
+          document.getElementById('save-style-to').value = 'collection';
+          document.getElementById('save-style-default-wrap').style.display = '';
+          populateReplaceDropdown('collection');
+        };
+        document.getElementById('save-style-to').onchange = function() {
+          var isPublic = this.value === 'public';
+          document.getElementById('save-style-default-wrap').style.display = isPublic ? 'none' : '';
+          document.getElementById('save-style-default').checked = false;
+          populateReplaceDropdown(this.value);
+        };
+        document.getElementById('btn-save-style-cancel').onclick = function() {
+          document.getElementById('save-style-form').style.display = 'none';
+        };
+        document.getElementById('save-style-replace').onchange = function() {
+          if (this.value) document.getElementById('save-style-id').value = this.value;
+        };
+        document.getElementById('btn-save-style-submit').onclick = function() {
+          var replaceVal = document.getElementById('save-style-replace').value;
+          var idInput = document.getElementById('save-style-id').value.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+          var id = replaceVal || idInput || null;
+          if (!id) { alert('Enter a style id (letters, numbers, hyphen, underscore)'); return; }
+          var title = document.getElementById('save-style-title').value.trim() || null;
+          var saveTo = document.getElementById('save-style-to').value;
+          var setDefault = document.getElementById('save-style-default').checked;
+          var method = 'POST';
+          var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrlEffective();
+          var body = { id: id, style_spec: getCurrentSpec() };
+          if (title) body.title = title;
+          if (saveTo === 'collection') body.set_default = setDefault;
+          if (saveTo === 'public' && replaceVal) {
+            method = 'PUT';
+            url = publicStylesUrl() + '/' + encodeURIComponent(id);
+            body = { style_spec: getCurrentSpec() };
+            if (title) body.title = title;
+          }
+          fetch(url, {
+            method: method,
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify(body)
+          })
+            .then(function(r) { if (!r.ok) return r.json().then(function(j) { throw j; }); return r.json(); })
+            .then(function() {
+              document.getElementById('save-style-form').style.display = 'none';
+              document.getElementById('save-style-id').value = '';
+              document.getElementById('save-style-title').value = '';
+              document.getElementById('save-style-replace').value = '';
+              document.getElementById('save-style-default').checked = false;
+              var newVal = (saveTo === 'public' ? 'p:' : 'c:') + id;
+              loadStylesList().then(function() { document.getElementById('vector-style-select').value = newVal; updateLoadStyleTrigger(); });
+            })
+            .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+        };
       }
       document.getElementById('map-basemap').onchange = function() { applyBasemapFromSelect(); try { localStorage.setItem('geofast-basemap', document.getElementById('map-basemap').value); } catch(e) {} };
 
@@ -253,6 +663,21 @@
           if (initialBbox && initialBbox.length >= 4) {
             map.fitBounds([[initialBbox[0], initialBbox[1]], [initialBbox[2], initialBbox[3]]], { padding: 60 });
           }
+          function hideBboxFill() {
+            try {
+              var layers = map.getStyle() && map.getStyle().layers;
+              if (!layers) return;
+              layers.forEach(function(layer) {
+                if (layer.type === 'fill' && layer.id !== 'tiles-fill') {
+                  map.setPaintProperty(layer.id, 'fill-opacity', 0);
+                }
+              });
+            } catch (e) {}
+          }
+          map.once('idle', hideBboxFill);
+          map.on('pm:create', hideBboxFill);
+          map.on('pm:edit', hideBboxFill);
+          [0, 150, 400, 800].forEach(function(ms) { setTimeout(hideBboxFill, ms); });
           function onEditorChange() {
             var b = getBboxFromMap();
             if (b) syncBboxToForm(b);
