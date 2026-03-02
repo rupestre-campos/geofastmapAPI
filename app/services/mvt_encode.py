@@ -15,6 +15,10 @@ from app.utils.tile_bbox import tile_bbox_mercator
 
 _EARTH_RADIUS = 6378137.0
 _ORIGIN_SHIFT = math.pi * _EARTH_RADIUS
+_MVT_EXTENT = 4096
+# Buffer in "tile pixels" beyond the tile edge. This prevents visible seams/cracks
+# on shared edges due to clipping + quantization rounding.
+_MVT_BUFFER_PX = 256
 
 
 def _wgs84_to_mercator(x: float, y: float, z: float | None = None) -> tuple[float, float]:
@@ -53,7 +57,18 @@ def encode_geojson_to_mvt(
     """
     tile_merc = tile_bbox_mercator(z, x, y)
     tile_minx, tile_miny, tile_maxx, tile_maxy = tile_merc
-    tile_box = shapely_box(tile_minx, tile_miny, tile_maxx, tile_maxy)
+    # Expand *clip* bounds to include a buffer outside the tile.
+    # Important: keep quantize_bounds as the exact tile bounds.
+    # If you expand quantize_bounds, each tile uses a slightly different affine
+    # mapping and adjacent tiles can crack at seams. Tippecanoe/PostGIS buffer by
+    # clipping to a buffered envelope but quantizing to the real tile envelope.
+    tile_w = tile_maxx - tile_minx
+    buf = tile_w * (_MVT_BUFFER_PX / _MVT_EXTENT)
+    clip_minx = tile_minx - buf
+    clip_miny = tile_miny - buf
+    clip_maxx = tile_maxx + buf
+    clip_maxy = tile_maxy + buf
+    clip_box = shapely_box(clip_minx, clip_miny, clip_maxx, clip_maxy)
 
     data = json.loads(geojson_bytes.decode("utf-8"))
     features_in = data.get("features") or []
@@ -71,8 +86,8 @@ def encode_geojson_to_mvt(
             merc = transform(_wgs84_to_mercator, shp)
             if merc.is_empty:
                 continue
-            # Clip to tile
-            clipped = merc.intersection(tile_box)
+            # Clip to buffered tile envelope (MVT buffer)
+            clipped = merc.intersection(clip_box)
             if clipped.is_empty:
                 continue
             props = _sanitize_properties(f.get("properties") or {})
@@ -95,5 +110,8 @@ def encode_geojson_to_mvt(
     layer = {"name": collection_id, "features": mvt_features}
     return mapbox_vector_tile.encode(
         [layer],
-        default_options={"quantize_bounds": (tile_minx, tile_miny, tile_maxx, tile_maxy)},
+        default_options={
+            "extents": _MVT_EXTENT,
+            "quantize_bounds": (tile_minx, tile_miny, tile_maxx, tile_maxy),
+        },
     )
