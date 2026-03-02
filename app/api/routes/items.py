@@ -155,6 +155,37 @@ async def list_items(
     extent_bbox = bbox_from_geometries(
         [r.geometry.model_dump() if r.geometry else None for r in read_list]
     )
+    # Warm search result cache for dynamic tiler (queue mode): workers read from Redis, no DB
+    if get_settings().tiles_dynamic_use_queue:
+        from app.services.dynamic_tile_cache import _params_key_from_query, set_search_result
+        params_key = _params_key_from_query(
+            limit=limit,
+            offset=offset,
+            sortby=sortby,
+            sortdesc=sortdesc,
+            bbox=bbox,
+            datetime_param=datetime_param,
+            filter_param=filter_param,
+            q=q,
+            ids=None,
+            properties=properties_include,
+        )
+        features_geojson = []
+        for r in read_list:
+            props = dict(r.properties) if r.properties else {}
+            if r.id is not None and "id" not in props:
+                props["id"] = r.id
+            features_geojson.append({
+                "type": "Feature",
+                "id": r.id,
+                "geometry": r.geometry.model_dump() if r.geometry else None,
+                "properties": props,
+            })
+        set_search_result(
+            collection_id,
+            params_key,
+            json.dumps({"type": "FeatureCollection", "features": features_geojson}).encode("utf-8"),
+        )
     if wants_html(request):
         features_geojson = [
             {

@@ -421,7 +421,7 @@
       var nextHtml = newOffset + r < n ? '<a href="' + esc(nextUrl) + '" class="btn pagination-next">Next →</a>' : '<span class="btn btn-disabled" aria-disabled="true">Next →</span>';
       var infoText = r ? (newOffset + 1) + '–' + (newOffset + r) + ' of ' + n : '0 of ' + n;
       paginationEl.innerHTML = prevHtml + '<span class="pagination-info">' + esc(infoText) + '</span>' + nextHtml;
-      updateResultsGeoJSON();
+      addOverlayLayers();
       fitMapToData(data.bbox || null);
       var jsonLink = document.getElementById('items-json-link');
       if (jsonLink) { var u = new URL(newUrl); u.searchParams.delete('f'); jsonLink.href = u.toString(); jsonLink.textContent = u.toString(); }
@@ -475,6 +475,32 @@
       var rootPath = i >= 0 ? path.substring(0, i) : '';
       return window.location.origin + rootPath;
     }
+    function getItemsPageParams() {
+      var paginationEl = document.querySelector('.pagination');
+      var limit = paginationEl ? (parseInt(paginationEl.getAttribute('data-limit'), 10) || initialLimit) : (initialLimit || 100);
+      var offset = paginationEl ? (parseInt(paginationEl.getAttribute('data-offset'), 10) || 0) : (initialOffset || 0);
+      return { limit: limit, offset: offset, sortby: initialSortby, sortdesc: initialSortdesc };
+    }
+    function buildDynamicTileQueryString() {
+      var parts = [];
+      var page = getItemsPageParams();
+      parts.push('limit=' + encodeURIComponent(String(page.limit)));
+      parts.push('offset=' + encodeURIComponent(String(page.offset)));
+      if (page.sortby) parts.push('sortby=' + encodeURIComponent(page.sortby));
+      if (page.sortdesc) parts.push('sortdesc=true');
+      if (searchBbox && String(searchBbox).trim()) parts.push('bbox=' + encodeURIComponent(String(searchBbox).trim()));
+      if (searchDatetime && String(searchDatetime).trim()) parts.push('datetime=' + encodeURIComponent(String(searchDatetime).trim()));
+      if (searchFilter && String(searchFilter).trim()) {
+        String(searchFilter).trim().split(/\r?\n/).forEach(function(line) {
+          if (line.trim()) parts.push('filter=' + encodeURIComponent(line.trim()));
+        });
+      }
+      if (searchQ && String(searchQ).trim()) parts.push('q=' + encodeURIComponent(String(searchQ).trim()));
+      return '?' + parts.join('&');
+    }
+    function getDynamicTileUrl() {
+      return apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/dynamic/{z}/{x}/{y}.pbf' + buildDynamicTileQueryString();
+    }
     function addCollectionTilesLayer() {
       if (!hasStaticTiles || map.getSource('tiles-collection')) return;
       var tileUrl = apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf';
@@ -498,17 +524,12 @@
     }
     function addOverlayLayers() {
       removeResultsLayer();
-      var geojson = { type: 'FeatureCollection', features: featuresWithIdInProps() };
-      map.addSource('results-geojson', { type: 'geojson', data: geojson });
+      var tileUrl = getDynamicTileUrl();
+      map.addSource('results-tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
       var s = featurePaintFromStyle(defaultStyle && defaultStyle.style_spec);
-      map.addLayer({ id: 'results-fill', type: 'fill', source: 'results-geojson', paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
-      map.addLayer({ id: 'results-line', type: 'line', source: 'results-geojson', paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
+      map.addLayer({ id: 'results-fill', type: 'fill', source: 'results-tiles', 'source-layer': collectionId, paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
+      map.addLayer({ id: 'results-line', type: 'line', source: 'results-tiles', 'source-layer': collectionId, paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
       if (!s.fillEnabled) map.setLayoutProperty('results-fill', 'visibility', 'none');
-    }
-    function updateResultsGeoJSON() {
-      var src = map.getSource('results-geojson');
-      if (src) src.setData({ type: 'FeatureCollection', features: featuresWithIdInProps() });
-      else addOverlayLayers();
     }
     function applyBasemapFromSelect() {
       var v = document.getElementById('map-basemap').value;

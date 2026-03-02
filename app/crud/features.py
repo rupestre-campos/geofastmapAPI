@@ -110,12 +110,14 @@ async def list_features_paginated(
     property_filters: dict[str, str] | None = None,
     structured_filters: Sequence[PropertyFilter] | None = None,
     fulltext_q: str | None = None,
+    feature_ids: Sequence[str] | None = None,
     collection_feature_count: int | None = None,
 ) -> Tuple[Sequence[Feature], int]:
     """
     List features with OGC query params. Returns (features, numberMatched).
     property_filters: legacy name=value (* partial). structured_filters: key:op:value (eq, ne, gt, gte, lt, lte, like, ilike).
     fulltext_q: search term across all properties (uses properties_flat trigram index).
+    feature_ids: when set, only return features with id in this list (e.g. for single-item tile).
     When no filters are applied and collection_feature_count is provided, use it as total (no COUNT query).
     When filters are applied, count matching rows.
     """
@@ -126,10 +128,15 @@ async def list_features_paginated(
         or bool(property_filters)
         or bool(structured_filters)
         or bool(fulltext_q and fulltext_q.strip())
+        or bool(feature_ids)
     )
 
     base = select(Feature).where(Feature.collection_id == collection_id)
     count_base = select(func.count()).select_from(Feature).where(Feature.collection_id == collection_id)
+
+    if feature_ids:
+        base = base.where(Feature.id.in_(list(feature_ids)))
+        count_base = count_base.where(Feature.id.in_(list(feature_ids)))
 
     if bbox is not None:
         minx, miny, maxx, maxy = bbox
