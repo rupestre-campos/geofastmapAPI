@@ -17,6 +17,7 @@ def default_style_spec() -> dict:
         "linePattern": "solid",
         "fillEnabled": True,
         "pointColor": "#58a6ff",
+        "pointOpacity": 1.0,
         "pointSize": 8.0,
         "pointIcon": "circle",
     }

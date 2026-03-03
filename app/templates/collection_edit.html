@@ -21,11 +21,28 @@
     .layer-style-collapsible summary::before { content: '▶'; font-size: 0.7rem; transition: transform 0.15s; }
     .layer-style-collapsible[open] summary::before { transform: rotate(90deg); }
     .layer-style-legend { width: 28px; height: 18px; border-radius: 3px; border: 3px solid; flex-shrink: 0; }
-    .vector-style-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 0.85rem; }
-    .vector-style-panel .vector-style-label { font-weight: 600; margin-right: 4px; color: var(--text-secondary); }
-    .vector-style-panel label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
-    .vector-style-panel input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
-    .vector-style-sep { color: var(--text-secondary); margin: 0 4px; }
+    .style-toolbox { margin-top: 0; padding: var(--space); display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--space); }
+    .style-toolbox-section { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space); }
+    .style-toolbox-section h3 { margin: 0 0 10px; font-size: 0.9rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+    .style-toolbox-section .form-row { margin-bottom: 10px; }
+    .style-toolbox-section .form-row:last-child { margin-bottom: 0; }
+    .style-toolbox-section label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.85rem; }
+    .style-toolbox-section label .label-text { min-width: 5em; }
+    .style-toolbox-section input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+    .style-toolbox-section input[type="number"], .style-toolbox-section input[type="range"] { min-width: 5em; width: 5em; padding: 4px 6px; box-sizing: border-box; }
+    .style-toolbox-section input[type="range"] { width: 80px; }
+    .style-toolbox-section select { padding: 2px 4px; font-size: inherit; }
+    .style-toolbox-zoom { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 0.8rem; color: var(--text-secondary); }
+    .style-toolbox-zoom label { font-size: 0.8rem; }
+    .style-toolbox-zoom .zoom-stops { margin-top: 4px; }
+    .style-toolbox-zoom .zoom-stops-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+    .style-toolbox-zoom .zoom-stop-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .style-toolbox-zoom .zoom-stop-row .zoom-input { width: 4.5em; min-width: 4.5em; padding: 4px 6px; font-size: inherit; box-sizing: border-box; }
+    .style-toolbox-zoom .zoom-stop-row .value-input { width: 5em; min-width: 5em; padding: 4px 6px; font-size: inherit; box-sizing: border-box; }
+    .style-toolbox-zoom .zoom-stop-row .btn-remove-stop { padding: 2px 8px; font-size: 1rem; line-height: 1; cursor: pointer; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text-secondary); }
+    .style-toolbox-zoom .zoom-stop-row .btn-remove-stop:hover { color: var(--text); background: var(--bg-elevated); }
+    .style-toolbox-zoom .add-zoom-breakpoint { margin-top: 4px; }
+    .layer-style-collapsible .style-toolbox-save-collection-row { display: none; }
     .vector-style-load-wrap { position: relative; display: inline-flex; vertical-align: middle; }
     .vector-style-load-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); cursor: pointer; font-size: inherit; min-width: 120px; }
     .vector-style-load-trigger:hover { border-color: var(--text-secondary); }
@@ -71,45 +88,7 @@
         <span>Layer style</span>
         <span id="layer-style-legend" class="layer-style-legend" aria-hidden="true"></span>
       </summary>
-      <div id="vector-style-wrap" class="vector-style-panel">
-        <span class="vector-style-label">Vector tile style</span>
-        <label><input type="checkbox" id="vector-fill-enable" checked> Fill</label>
-        <label>Fill <input type="color" id="vector-fill-color" value="#58a6ff" title="Fill color"></label>
-        <label>Fill opacity <input type="range" id="vector-fill-opacity" min="0" max="100" value="60" title="Fill transparency"> <span id="vector-fill-opacity-val">60</span>%</label>
-        <label>Line <input type="color" id="vector-line-color" value="#58a6ff" title="Line color"></label>
-        <label>Line width <input type="number" id="vector-line-width" min="0.5" max="20" step="0.5" value="1" style="width:4em" title="Line size"></label>
-        <label>Line opacity <input type="range" id="vector-line-opacity" min="0" max="100" value="100" title="Line transparency"> <span id="vector-line-opacity-val">100</span>%</label>
-        <label>Line pattern <select id="vector-line-pattern" title="Line pattern">
-          <option value="solid">Solid</option>
-          <option value="dashed">Dashed</option>
-          <option value="dotted">Dotted</option>
-        </select></label>
-        <span class="vector-style-sep">|</span>
-        <label>Load style
-          <span class="vector-style-load-wrap">
-            <button type="button" class="vector-style-load-trigger" id="vector-style-load-trigger" title="Load a saved style" aria-haspopup="listbox" aria-expanded="false">
-              <span class="vector-style-load-legend" id="vector-style-load-legend"></span>
-              <span class="vector-style-load-label-text" id="vector-style-load-label-text">Current</span>
-            </button>
-            <div class="vector-style-load-list" id="vector-style-load-list" role="listbox" aria-hidden="true"></div>
-          </span>
-          <select id="vector-style-select" aria-hidden="true" tabindex="-1" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden"><option value="">Current</option></select>
-        </label>
-        <button type="button" class="btn btn-sm" id="btn-save-style">Save style…</button>
-      </div>
-      <div id="save-style-form" class="save-style-form" style="display:none">
-        <span class="vector-style-label">Save style</span>
-        <label>Save to <select id="save-style-to" title="Where to save the style">
-          <option value="collection">Collection (this layer)</option>
-          <option value="public">Public (reusable)</option>
-        </select></label>
-        <label>Id <input type="text" id="save-style-id" placeholder="e.g. blue-outline" pattern="[a-zA-Z0-9_-]+" title="Letters, numbers, hyphen, underscore"></label>
-        <label>Title <input type="text" id="save-style-title" placeholder="Optional title"></label>
-        <label>Replace <select id="save-style-replace"><option value="">New</option></select></label>
-        <span id="save-style-default-wrap"><label><input type="checkbox" id="save-style-default"> Set as default</label></span>
-        <button type="button" class="btn btn-sm btn-primary" id="btn-save-style-submit">Save</button>
-        <button type="button" class="btn btn-sm" id="btn-save-style-cancel">Cancel</button>
-      </div>
+      {% include "_style_toolbox.html" %}
     </details>
     <div class="geom-edit-bar geom-edit-bar-visible" id="geom-edit-bar">
       <span class="geom-edit-label">Bbox</span>
@@ -255,6 +234,90 @@
       ? { type: 'FeatureCollection', features: [initialFeature] }
       : { type: 'FeatureCollection', features: [] };
 
+    function getStopsFromContainer(containerId) {
+      var container = document.getElementById(containerId);
+      if (!container) return [];
+      var list = container.querySelector('.zoom-stops-list');
+      if (!list) return [];
+      var rows = list.querySelectorAll('.zoom-stop-row');
+      var stops = [];
+      var valueType = (container.getAttribute('data-value-type') || 'number') === 'percent';
+      for (var i = 0; i < rows.length; i++) {
+        var zIn = rows[i].querySelector('.zoom-input');
+        var vIn = rows[i].querySelector('.value-input');
+        if (zIn && vIn) {
+          var z = parseFloat(zIn.value);
+          var v = parseFloat(vIn.value);
+          if (isNaN(z)) z = 0;
+          if (valueType && !isNaN(v)) v = v / 100;
+          else if (isNaN(v)) v = 0;
+          stops.push([z, v]);
+        }
+      }
+      stops.sort(function(a, b) { return a[0] - b[0]; });
+      return stops;
+    }
+    function renderZoomStops(containerId, stops, onRefresh) {
+      var container = document.getElementById(containerId);
+      if (!container) return;
+      var list = container.querySelector('.zoom-stops-list');
+      if (!list) return;
+      var valueType = (container.getAttribute('data-value-type') || 'number') === 'percent';
+      var vMin = parseFloat(container.getAttribute('data-value-min')) || 0;
+      var vMax = parseFloat(container.getAttribute('data-value-max')) || 100;
+      var vStep = parseFloat(container.getAttribute('data-value-step')) || 1;
+      var suffix = valueType ? '%' : '';
+      list.innerHTML = '';
+      (stops && stops.length >= 2 ? stops : [[0, valueType ? 0.3 : 1], [14, valueType ? 0.7 : 2]]).forEach(function(s) {
+        var zoom = Number(s[0]);
+        var val = Number(s[1]);
+        if (valueType) val = Math.round(val * 100);
+        var row = document.createElement('div');
+        row.className = 'zoom-stop-row';
+        row.innerHTML = '<label>Zoom <input type="number" class="zoom-input" min="0" max="22" value="' + zoom + '"> → <input type="number" class="value-input" min="' + vMin + '" max="' + vMax + '" step="' + (vStep || 'any') + '" value="' + val + '">' + suffix + '</label> <button type="button" class="btn-remove-stop" title="Remove breakpoint">×</button>';
+        list.appendChild(row);
+      });
+      list.querySelectorAll('.zoom-input, .value-input').forEach(function(inp) {
+        inp.oninput = inp.onchange = function() { if (onRefresh) onRefresh(); };
+      });
+      list.querySelectorAll('.btn-remove-stop').forEach(function(btn) {
+        btn.onclick = function() {
+          var r = btn.closest('.zoom-stop-row');
+          if (list.querySelectorAll('.zoom-stop-row').length <= 2) return;
+          if (r) r.remove();
+          if (onRefresh) onRefresh();
+        };
+      });
+      var addBtn = container.querySelector('.add-zoom-breakpoint');
+      if (addBtn && !addBtn._bound) {
+        addBtn._bound = true;
+        addBtn.onclick = function() {
+          var stopsNow = getStopsFromContainer(containerId);
+          var last = stopsNow[stopsNow.length - 1];
+          var nextZoom = last ? last[0] + 2 : 14;
+          var nextVal = last ? last[1] : (valueType ? 0.7 : 2);
+          if (valueType) nextVal = Math.round(nextVal * 100);
+          var row = document.createElement('div');
+          row.className = 'zoom-stop-row';
+          row.innerHTML = '<label>Zoom <input type="number" class="zoom-input" min="0" max="22" value="' + nextZoom + '"> → <input type="number" class="value-input" min="' + vMin + '" max="' + vMax + '" step="' + (vStep || 'any') + '" value="' + nextVal + '">' + suffix + '</label> <button type="button" class="btn-remove-stop" title="Remove breakpoint">×</button>';
+          list.appendChild(row);
+          row.querySelector('.zoom-input').oninput = row.querySelector('.value-input').oninput = function() { if (onRefresh) onRefresh(); };
+          row.querySelector('.btn-remove-stop').onclick = function() {
+            if (list.querySelectorAll('.zoom-stop-row').length <= 2) return;
+            row.remove();
+            if (onRefresh) onRefresh();
+          };
+          if (onRefresh) onRefresh();
+        };
+      }
+    }
+    function zoomStopsToExpression(stops) {
+      if (!stops || stops.length < 2) return null;
+      var flat = [];
+      stops.forEach(function(s) { flat.push(Number(s[0]), Number(s[1])); });
+      return ['interpolate', ['linear'], ['zoom']].concat(flat);
+    }
+
     const BASEMAPS = {
       osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] },
       streets: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}'] },
@@ -359,27 +422,32 @@
         var lineOpacity = document.getElementById('vector-line-opacity');
         var lineOpacityVal = document.getElementById('vector-line-opacity-val');
         var linePattern = document.getElementById('vector-line-pattern');
+        var pointColor = document.getElementById('vector-point-color');
+        var pointOpacity = document.getElementById('vector-point-opacity');
+        var pointOpacityVal = document.getElementById('vector-point-opacity-val');
+        var pointSize = document.getElementById('vector-point-size');
+        var pointIcon = document.getElementById('vector-point-icon');
         var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
+        function applyPaintValue(layerId, property, valueOrExpression) {
+          try {
+            if (Array.isArray(valueOrExpression)) map.setPaintProperty(layerId, property, valueOrExpression);
+            else map.setPaintProperty(layerId, property, valueOrExpression);
+          } catch (e) {}
+        }
         function applyVectorStyle() {
+          var spec = getCurrentSpec();
+          var fillOpacityVal = spec.fillOpacityZoom ? zoomStopsToExpression(spec.fillOpacityZoom) : (fillOpacity.value / 100);
+          var lineWidthVal = spec.lineWidthZoom ? zoomStopsToExpression(spec.lineWidthZoom) : (Math.max(0.5, parseFloat(lineWidth.value) || 1));
+          var lineOpacityVal = spec.lineOpacityZoom ? zoomStopsToExpression(spec.lineOpacityZoom) : (lineOpacity.value / 100);
           map.setLayoutProperty('tiles-fill', 'visibility', fillCheck.checked ? 'visible' : 'none');
           map.setPaintProperty('tiles-fill', 'fill-color', fillColor.value);
-          map.setPaintProperty('tiles-fill', 'fill-opacity', fillOpacity.value / 100);
+          applyPaintValue('tiles-fill', 'fill-opacity', fillOpacityVal);
           map.setPaintProperty('tiles-line', 'line-color', lineColor.value);
-          map.setPaintProperty('tiles-line', 'line-width', Math.max(0.5, parseFloat(lineWidth.value) || 1));
-          map.setPaintProperty('tiles-line', 'line-opacity', lineOpacity.value / 100);
+          applyPaintValue('tiles-line', 'line-width', lineWidthVal);
+          applyPaintValue('tiles-line', 'line-opacity', lineOpacityVal);
           map.setPaintProperty('tiles-line', 'line-dasharray', LINE_DASH[linePattern.value] || LINE_DASH.solid);
         }
         var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
-        fillColor.value = spec.fillColor || '#58a6ff';
-        lineColor.value = spec.lineColor || '#58a6ff';
-        fillOpacity.value = Math.round((spec.fillOpacity != null ? spec.fillOpacity : 0.6) * 100);
-        lineOpacity.value = Math.round((spec.lineOpacity != null ? spec.lineOpacity : 1) * 100);
-        fillOpacityVal.textContent = fillOpacity.value;
-        lineOpacityVal.textContent = lineOpacity.value;
-        lineWidth.value = spec.lineWidth != null ? spec.lineWidth : 1;
-        linePattern.value = spec.linePattern || 'solid';
-        fillCheck.checked = spec.fillEnabled !== false;
-        applyVectorStyle();
         fillCheck.onchange = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
         fillColor.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
         fillOpacity.oninput = function() { fillOpacityVal.textContent = this.value; applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
@@ -387,19 +455,70 @@
         lineWidth.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
         lineOpacity.oninput = function() { lineOpacityVal.textContent = this.value; applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
         linePattern.onchange = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        if (pointColor) pointColor.oninput = function() { updateStyleLegend(getCurrentSpec()); };
+        if (pointOpacity) pointOpacity.oninput = function() { if (pointOpacityVal) pointOpacityVal.textContent = this.value; updateStyleLegend(getCurrentSpec()); };
+        if (pointSize) pointSize.oninput = function() { updateStyleLegend(getCurrentSpec()); };
+        if (pointIcon) pointIcon.onchange = function() { updateStyleLegend(getCurrentSpec()); };
+        function bindZoomCheckbox(checkboxId, stopsContainerId, refresh) {
+          var cb = document.getElementById(checkboxId);
+          var cont = document.getElementById(stopsContainerId);
+          if (!cb || !cont) return;
+          cb.onchange = function() {
+            cont.style.display = this.checked ? '' : 'none';
+            if (this.checked) renderZoomStops(stopsContainerId, getStopsFromContainer(stopsContainerId).length >= 2 ? getStopsFromContainer(stopsContainerId) : null, refresh);
+            else refresh();
+          };
+        }
+        var styleRefresh = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+        bindZoomCheckbox('fill-opacity-by-zoom', 'fill-opacity-zoom-stops', styleRefresh);
+        bindZoomCheckbox('line-width-by-zoom', 'line-width-zoom-stops', styleRefresh);
+        bindZoomCheckbox('line-opacity-by-zoom', 'line-opacity-zoom-stops', styleRefresh);
+        bindZoomCheckbox('point-size-by-zoom', 'point-size-zoom-stops', styleRefresh);
+        bindZoomCheckbox('point-opacity-by-zoom', 'point-opacity-zoom-stops', styleRefresh);
         function getCurrentSpec() {
-          return {
+          var spec = {
             fillColor: fillColor.value,
             lineColor: lineColor.value,
             fillOpacity: fillOpacity.value / 100,
             lineOpacity: lineOpacity.value / 100,
             lineWidth: Math.max(0.5, parseFloat(lineWidth.value) || 1),
             linePattern: linePattern.value || 'solid',
-            fillEnabled: fillCheck.checked
+            fillEnabled: fillCheck.checked,
+            pointColor: pointColor ? pointColor.value : '#58a6ff',
+            pointOpacity: pointOpacity ? (parseFloat(pointOpacity.value) || 100) / 100 : 1,
+            pointSize: pointSize ? Math.max(1, Math.min(40, parseFloat(pointSize.value) || 8)) : 8,
+            pointIcon: pointIcon ? pointIcon.value : 'circle'
           };
+          var fillOpByZoom = document.getElementById('fill-opacity-by-zoom');
+          if (fillOpByZoom && fillOpByZoom.checked) {
+            var stops = getStopsFromContainer('fill-opacity-zoom-stops');
+            if (stops.length >= 2) spec.fillOpacityZoom = stops;
+          }
+          var lineWByZoom = document.getElementById('line-width-by-zoom');
+          if (lineWByZoom && lineWByZoom.checked) {
+            stops = getStopsFromContainer('line-width-zoom-stops');
+            if (stops.length >= 2) spec.lineWidthZoom = stops;
+          }
+          var lineOpByZoom = document.getElementById('line-opacity-by-zoom');
+          if (lineOpByZoom && lineOpByZoom.checked) {
+            stops = getStopsFromContainer('line-opacity-zoom-stops');
+            if (stops.length >= 2) spec.lineOpacityZoom = stops;
+          }
+          var ptSizeByZoom = document.getElementById('point-size-by-zoom');
+          if (ptSizeByZoom && ptSizeByZoom.checked) {
+            stops = getStopsFromContainer('point-size-zoom-stops');
+            if (stops.length >= 2) spec.pointSizeZoom = stops;
+          }
+          var ptOpByZoom = document.getElementById('point-opacity-by-zoom');
+          if (ptOpByZoom && ptOpByZoom.checked) {
+            stops = getStopsFromContainer('point-opacity-zoom-stops');
+            if (stops.length >= 2) spec.pointOpacityZoom = stops;
+          }
+          return spec;
         }
         updateStyleLegend(getCurrentSpec());
         function applySpecToForm(s) {
+          s = s || {};
           fillColor.value = s.fillColor || '#58a6ff';
           lineColor.value = s.lineColor || '#58a6ff';
           fillOpacity.value = Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100);
@@ -409,9 +528,45 @@
           lineWidth.value = s.lineWidth != null ? s.lineWidth : 1;
           linePattern.value = s.linePattern || 'solid';
           fillCheck.checked = s.fillEnabled !== false;
+          if (pointColor) pointColor.value = s.pointColor || '#58a6ff';
+          if (pointOpacity) { pointOpacity.value = Math.round((s.pointOpacity != null ? s.pointOpacity : 1) * 100); if (pointOpacityVal) pointOpacityVal.textContent = pointOpacity.value; }
+          if (pointSize) pointSize.value = s.pointSize != null ? Math.max(1, Math.min(40, s.pointSize)) : 8;
+          if (pointIcon) pointIcon.value = s.pointIcon || 'circle';
+          var refresh = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+          var fillOpZoom = document.getElementById('fill-opacity-by-zoom');
+          if (fillOpZoom) {
+            fillOpZoom.checked = !!(s.fillOpacityZoom && s.fillOpacityZoom.length >= 2);
+            var zo = document.getElementById('fill-opacity-zoom-stops'); if (zo) zo.style.display = fillOpZoom.checked ? '' : 'none';
+            renderZoomStops('fill-opacity-zoom-stops', s.fillOpacityZoom, refresh);
+          }
+          var lineWZoom = document.getElementById('line-width-by-zoom');
+          if (lineWZoom) {
+            lineWZoom.checked = !!(s.lineWidthZoom && s.lineWidthZoom.length >= 2);
+            zo = document.getElementById('line-width-zoom-stops'); if (zo) zo.style.display = lineWZoom.checked ? '' : 'none';
+            renderZoomStops('line-width-zoom-stops', s.lineWidthZoom, refresh);
+          }
+          var lineOZoom = document.getElementById('line-opacity-by-zoom');
+          if (lineOZoom) {
+            lineOZoom.checked = !!(s.lineOpacityZoom && s.lineOpacityZoom.length >= 2);
+            zo = document.getElementById('line-opacity-zoom-stops'); if (zo) zo.style.display = lineOZoom.checked ? '' : 'none';
+            renderZoomStops('line-opacity-zoom-stops', s.lineOpacityZoom, refresh);
+          }
+          var ptSizeZoom = document.getElementById('point-size-by-zoom');
+          if (ptSizeZoom) {
+            ptSizeZoom.checked = !!(s.pointSizeZoom && s.pointSizeZoom.length >= 2);
+            zo = document.getElementById('point-size-zoom-stops'); if (zo) zo.style.display = ptSizeZoom.checked ? '' : 'none';
+            renderZoomStops('point-size-zoom-stops', s.pointSizeZoom, refresh);
+          }
+          var ptOpZoom = document.getElementById('point-opacity-by-zoom');
+          if (ptOpZoom) {
+            ptOpZoom.checked = !!(s.pointOpacityZoom && s.pointOpacityZoom.length >= 2);
+            zo = document.getElementById('point-opacity-zoom-stops'); if (zo) zo.style.display = ptOpZoom.checked ? '' : 'none';
+            renderZoomStops('point-opacity-zoom-stops', s.pointOpacityZoom, refresh);
+          }
           applyVectorStyle();
           updateStyleLegend(getCurrentSpec());
         }
+        applySpecToForm(spec);
         function collectionStylesUrlEffective() {
           return collectionStylesUrl || (base + '/collections/' + encodeURIComponent(collectionId) + '/styles');
         }

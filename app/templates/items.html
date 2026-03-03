@@ -245,7 +245,7 @@
             {% set v = (f.properties or {}).get(k, '') %}
             {% set txt = v | tojson if v is mapping or (v is sequence and v is not string) else (v | default('') | string) %}
             {% set is_long = txt | length > 40 %}
-            <td class="{% if is_long %}expandable-cell{% endif %}" {% if is_long %}data-full="{{ txt | e }}"{% endif %} data-copy="{{ txt | e }}">
+            <td class="expandable-cell" data-full="{{ txt | e }}" data-copy="{{ txt | e }}">
               <span class="cell-wrap">
                 <span class="cell-content">{% if is_long %}{{ txt[:37] }}…{% else %}{{ txt }}{% endif %}</span>
                 <button type="button" class="cell-copy-btn" aria-label="Copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
@@ -431,9 +431,7 @@
           var txt = valText(v);
           var isLong = txt.length > 40;
           var display = isLong ? esc(txt.substring(0, 37)) + '…' : esc(txt);
-          var cls = isLong ? 'expandable-cell' : '';
-          var dataFull = isLong ? ' data-full="' + esc(txt) + '"' : '';
-          return '<td class="' + cls + '"' + dataFull + ' data-copy="' + esc(txt) + '"><span class="cell-wrap"><span class="cell-content">' + display + '</span><button type="button" class="cell-copy-btn" aria-label="Copy">' + copyBtnSvg + '</button></span></td>';
+          return '<td class="expandable-cell" data-full="' + esc(txt) + '" data-copy="' + esc(txt) + '"><span class="cell-wrap"><span class="cell-content">' + display + '</span><button type="button" class="cell-copy-btn" aria-label="Copy">' + copyBtnSvg + '</button></span></td>';
         });
         return '<tr class="clickable-row" data-feature-id="' + esc(id) + '" title="Click to focus on map">' + viewTd + idTd + propTds.join('') + '</tr>';
       });

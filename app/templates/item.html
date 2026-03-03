@@ -145,14 +145,23 @@
       return xs.length ? [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]] : null;
     }
     var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
+    function zoomStopsToExpression(stops) {
+      if (!stops || stops.length < 2) return null;
+      var flat = [];
+      stops.forEach(function(s) { flat.push(Number(s[0]), Number(s[1])); });
+      return ['interpolate', ['linear'], ['zoom']].concat(flat);
+    }
     function featurePaintFromStyle(spec) {
       spec = spec || {};
+      var fillOpacity = (spec.fillOpacityZoom && spec.fillOpacityZoom.length >= 2) ? zoomStopsToExpression(spec.fillOpacityZoom) : (spec.fillOpacity != null ? spec.fillOpacity : 0.6);
+      var lineWidth = (spec.lineWidthZoom && spec.lineWidthZoom.length >= 2) ? zoomStopsToExpression(spec.lineWidthZoom) : (spec.lineWidth != null ? spec.lineWidth : 2);
+      var lineOpacity = (spec.lineOpacityZoom && spec.lineOpacityZoom.length >= 2) ? zoomStopsToExpression(spec.lineOpacityZoom) : (spec.lineOpacity != null ? spec.lineOpacity : 1);
       return {
         fillColor: spec.fillColor || '#58a6ff',
         lineColor: spec.lineColor || '#58a6ff',
-        fillOpacity: spec.fillOpacity != null ? spec.fillOpacity : 0.6,
-        lineOpacity: spec.lineOpacity != null ? spec.lineOpacity : 1,
-        lineWidth: spec.lineWidth != null ? spec.lineWidth : 2,
+        fillOpacity: fillOpacity,
+        lineOpacity: lineOpacity,
+        lineWidth: lineWidth,
         lineDash: LINE_DASH[spec.linePattern] || LINE_DASH.solid,
         fillEnabled: spec.fillEnabled !== false
       };

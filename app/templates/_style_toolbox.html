@@ -1,0 +1,94 @@
+{# Shared style toolbox: Fill, Line, Point, Load & save. Include inside a collapsible or card. #}
+<div class="style-toolbox" id="style-toolbox">
+  <div class="style-toolbox-section">
+    <h3>Fill (polygon)</h3>
+    <div class="form-row"><label><input type="checkbox" id="vector-fill-enable" checked> <span class="label-text">Enabled</span></label></div>
+    <div class="form-row"><label><span class="label-text">Color</span> <input type="color" id="vector-fill-color" value="#58a6ff" title="Fill color"></label></div>
+    <div class="form-row"><label><span class="label-text">Opacity</span> <input type="range" id="vector-fill-opacity" min="0" max="100" value="60"> <span id="vector-fill-opacity-val">60</span>%</label></div>
+    <div class="style-toolbox-zoom">
+      <label><input type="checkbox" id="fill-opacity-by-zoom"> Vary opacity by zoom (linear)</label>
+      <div class="zoom-stops" id="fill-opacity-zoom-stops" style="display:none;" data-value-type="percent" data-value-min="0" data-value-max="100" data-value-step="1">
+        <div class="zoom-stops-list"></div>
+        <button type="button" class="btn-sm add-zoom-breakpoint">Add breakpoint</button>
+      </div>
+    </div>
+  </div>
+  <div class="style-toolbox-section">
+    <h3>Line</h3>
+    <div class="form-row"><label><span class="label-text">Color</span> <input type="color" id="vector-line-color" value="#58a6ff" title="Line color"></label></div>
+    <div class="form-row"><label><span class="label-text">Width</span> <input type="number" id="vector-line-width" min="0.5" max="20" step="0.5" value="1"></label></div>
+    <div class="form-row"><label><span class="label-text">Opacity</span> <input type="range" id="vector-line-opacity" min="0" max="100" value="100"> <span id="vector-line-opacity-val">100</span>%</label></div>
+    <div class="form-row"><label><span class="label-text">Pattern</span> <select id="vector-line-pattern">
+      <option value="solid">Solid</option>
+      <option value="dashed">Dashed</option>
+      <option value="dotted">Dotted</option>
+    </select></label></div>
+    <div class="style-toolbox-zoom">
+      <label><input type="checkbox" id="line-width-by-zoom"> Line width by zoom (linear)</label>
+      <div class="zoom-stops" id="line-width-zoom-stops" style="display:none;" data-value-type="number" data-value-min="0.5" data-value-max="20" data-value-step="0.5">
+        <div class="zoom-stops-list"></div>
+        <button type="button" class="btn-sm add-zoom-breakpoint">Add breakpoint</button>
+      </div>
+    </div>
+    <div class="style-toolbox-zoom">
+      <label><input type="checkbox" id="line-opacity-by-zoom"> Line opacity by zoom (linear)</label>
+      <div class="zoom-stops" id="line-opacity-zoom-stops" style="display:none;" data-value-type="percent" data-value-min="0" data-value-max="100" data-value-step="1">
+        <div class="zoom-stops-list"></div>
+        <button type="button" class="btn-sm add-zoom-breakpoint">Add breakpoint</button>
+      </div>
+    </div>
+  </div>
+  <div class="style-toolbox-section">
+    <h3>Point</h3>
+    <div class="form-row"><label><span class="label-text">Color</span> <input type="color" id="vector-point-color" value="#58a6ff" title="Point color"></label></div>
+    <div class="form-row"><label><span class="label-text">Opacity</span> <input type="range" id="vector-point-opacity" min="0" max="100" value="100"> <span id="vector-point-opacity-val">100</span>%</label></div>
+    <div class="form-row"><label><span class="label-text">Size</span> <input type="number" id="vector-point-size" min="1" max="40" step="1" value="8"> px</label></div>
+    <div class="form-row"><label><span class="label-text">Icon</span> <select id="vector-point-icon">
+      <option value="circle">Circle</option>
+      <option value="pin">Pin</option>
+      <option value="marker">Marker</option>
+    </select></label></div>
+    <div class="style-toolbox-zoom">
+      <label><input type="checkbox" id="point-size-by-zoom"> Size by zoom (linear)</label>
+      <div class="zoom-stops" id="point-size-zoom-stops" style="display:none;" data-value-type="number" data-value-min="1" data-value-max="40" data-value-step="1">
+        <div class="zoom-stops-list"></div>
+        <button type="button" class="btn-sm add-zoom-breakpoint">Add breakpoint</button>
+      </div>
+    </div>
+    <div class="style-toolbox-zoom">
+      <label><input type="checkbox" id="point-opacity-by-zoom"> Opacity by zoom (linear)</label>
+      <div class="zoom-stops" id="point-opacity-zoom-stops" style="display:none;" data-value-type="percent" data-value-min="0" data-value-max="100" data-value-step="1">
+        <div class="zoom-stops-list"></div>
+        <button type="button" class="btn-sm add-zoom-breakpoint">Add breakpoint</button>
+      </div>
+    </div>
+  </div>
+  <div class="style-toolbox-section">
+    <h3>Load &amp; save</h3>
+    <div class="form-row style-toolbox-save-collection-row"><label><span class="label-text">Collection</span> <select id="load-style-collection" title="Optional: show styles from this collection"><option value="">— None —</option></select></label></div>
+    <div class="form-row">
+      <label><span class="label-text">Load</span>
+      <span class="vector-style-load-wrap">
+        <button type="button" class="vector-style-load-trigger" id="vector-style-load-trigger" title="Load a saved style" aria-haspopup="listbox" aria-expanded="false">
+          <span class="vector-style-load-legend" id="vector-style-load-legend"></span>
+          <span class="vector-style-load-label-text" id="vector-style-load-label-text">Current</span>
+        </button>
+        <div class="vector-style-load-list" id="vector-style-load-list" role="listbox" aria-hidden="true"></div>
+      </span>
+      <select id="vector-style-select" aria-hidden="true" tabindex="-1" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden"><option value="">Current</option></select>
+      </label>
+    </div>
+    <div class="form-row"><button type="button" class="btn btn-sm" id="btn-save-style">Save style…</button></div>
+    <div id="save-style-form" class="save-style-form" style="display:none; flex-wrap: wrap; gap: 10px; margin-top: 10px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); font-size: 0.85rem;">
+      <span class="vector-style-label">Save style</span>
+      <label>To <select id="save-style-to"><option value="public">Public</option><option value="collection">Collection</option></select></label>
+      <label class="style-toolbox-save-collection-row">Collection <select id="save-style-collection"><option value="">— Select —</option></select></label>
+      <label>Id <input type="text" id="save-style-id" placeholder="e.g. blue-outline" pattern="[a-zA-Z0-9_-]+"></label>
+      <label>Title <input type="text" id="save-style-title" placeholder="Optional"></label>
+      <label>Replace <select id="save-style-replace"><option value="">New</option></select></label>
+      <span id="save-style-default-wrap"><label><input type="checkbox" id="save-style-default"> Set as default</label></span>
+      <button type="button" class="btn btn-sm btn-primary" id="btn-save-style-submit">Save</button>
+      <button type="button" class="btn btn-sm" id="btn-save-style-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
