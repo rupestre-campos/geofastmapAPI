@@ -125,7 +125,7 @@
 
   <div class="card">
     <h2 class="card-title">Bulk upload</h2>
-    <p class="meta">Import from GeoJSON, GeoJSONSeq, KML, GPKG, or .zip shapefile. Runs in the background.</p>
+    <p class="meta">Import from GeoJSON, GeoJSONSeq, KML, GPKG, or .zip (single or multiple shapefiles; all .shp inside the zip, including in subfolders, are imported into this collection). Runs in the background.</p>
     <form id="form-bulk-upload">
       <div class="form-row">
         <label for="bulk-file">File</label>
@@ -137,6 +137,10 @@
           <label><input type="radio" name="mode" value="append" checked> Append to existing</label>
           <label><input type="radio" name="mode" value="replace"> Replace all (delete then import)</label>
         </div>
+      </div>
+      <div class="form-row">
+        <label><input type="checkbox" id="bulk-queue-compute-tiles" name="queue_compute_tiles" value="true" checked> Queue compute tiles after import</label>
+        <p class="meta" style="margin-top:4px;">When checked, a static tile build is queued for this collection as soon as the bulk import finishes (requires Redis).</p>
       </div>
       <div class="btn-group">
         <button type="submit" class="btn btn-primary">Upload & import</button>
@@ -154,6 +158,7 @@
       <a href="{{ base }}/collections/{{ collection_id }}/items/new?f=html" class="btn">Add feature</a>
       <button type="button" class="btn" id="btn-build-tiles">Build static tiles</button>
       <button type="button" class="btn btn-danger" id="btn-delete-tiles" style="display:none">Delete static tiles</button>
+      <button type="button" class="btn" id="btn-invalidate-cache" title="Clear Redis cache for this collection (dynamic tiles / search cache) so map shows fresh data">Invalidate tile cache</button>
       <button type="button" class="btn" id="btn-recompute-extent">Recompute extent</button>
       <button type="button" class="btn btn-danger" id="btn-delete-collection">Delete collection</button>
     </div>
@@ -1000,6 +1005,26 @@
             .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); btn.disabled = false; });
         });
       };
+      document.getElementById('btn-invalidate-cache').onclick = function() {
+        var btn = this;
+        var resultEl = document.getElementById('tile-build-result');
+        resultEl.style.display = 'none';
+        resultEl.innerHTML = '';
+        btn.disabled = true;
+        fetch(base + '/collections/' + collectionId + '/tiles/cache/invalidate', { method: 'POST', headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json().then(function(j) { if (!r.ok) return Promise.reject(j); return j; }); })
+          .then(function(d) {
+            resultEl.textContent = d.message || 'Tile cache invalidated.';
+            resultEl.style.display = 'block';
+            resultEl.className = 'meta';
+          })
+          .catch(function(e) {
+            resultEl.textContent = 'Error: ' + (e.detail || e.message || JSON.stringify(e));
+            resultEl.style.display = 'block';
+            resultEl.className = 'meta err';
+          })
+          .finally(function() { btn.disabled = false; });
+      };
       document.getElementById('btn-delete-collection').onclick = function() {
         openModal('Delete this collection and all its features? This cannot be undone.', function() {
           fetch(base + '/collections/' + collectionId, { method: 'DELETE' })
@@ -1091,6 +1116,7 @@
       var formData = new FormData();
       formData.append('file', file);
       formData.append('mode', mode);
+      formData.append('queue_compute_tiles', document.getElementById('bulk-queue-compute-tiles').checked ? 'true' : 'false');
       var resultEl = document.getElementById('bulk-result');
       var successEl = document.getElementById('bulk-result-success');
       successEl.style.display = 'none';

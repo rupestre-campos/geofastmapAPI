@@ -13,6 +13,7 @@ from app.crud import features as features_crud
 from app.crud import styles as styles_crud
 from app.db.session import get_db
 from app.models.feature import Feature
+from app.services.bulk_import import list_shp_in_zip
 from app.services.bulk_queue import BulkJobPayload, enqueue
 from app.services.bulk_storage import get_bulk_storage
 from app.services.job_store import create_job
@@ -271,7 +272,7 @@ async def list_items(
     "/{collection_id}/items/bulk",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Bulk import from geospatial file",
-    description="Upload a file (KML, GPKG, GeoJSON, GeoJSONSeq/.geojsonl/.geojsonseq, .zip or .shp.zip containing a shapefile). Import runs asynchronously in the background. Use mode=append or replace. Returns job_id and status_url.",
+    description="Upload a file (KML, GPKG, GeoJSON, GeoJSONSeq/.geojsonl/.geojsonseq, or .zip). A .zip may contain one or more shapefiles (.shp and sidecars); all .shp found inside the zip (including in subfolders) are imported into the collection. Import runs asynchronously. Use mode=append or replace. Returns job_id and status_url.",
 )
 async def bulk_import_items(
     request: Request,
@@ -282,6 +283,10 @@ async def bulk_import_items(
     ),
     mode: str = Form("append", description="append = add to collection; replace = delete all then import"),
     batch_size: int | None = Form(None, ge=1, le=100_000, description="Features per DB batch (default from config)."),
+    queue_compute_tiles: str | None = Form(
+        "true",
+        description="If true (default), queue a static tile build for this collection after the bulk import completes.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     collection = await collections_crud.get_collection(db, collection_id)
@@ -313,12 +318,24 @@ async def bulk_import_items(
             pass
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to save upload")
 
+    zip_inner_shp_paths: list[str] | None = None
+    if suffix == ".zip":
+        try:
+            shp_list = list_shp_in_zip(write_path)
+            if shp_list:
+                zip_inner_shp_paths = shp_list
+        except Exception:
+            pass
+
+    qt = queue_compute_tiles is None or str(queue_compute_tiles).lower() not in ("false", "0", "no", "")
     enqueue(BulkJobPayload(
         job_id=job.job_id,
         collection_id=collection_id,
         storage_key=storage_key,
         mode=mode,
         batch_size=batch,
+        queue_compute_tiles=qt,
+        zip_inner_shp_paths=zip_inner_shp_paths,
     ))
 
     base = _base_url(request)

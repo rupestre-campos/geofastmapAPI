@@ -22,6 +22,7 @@ from app.crud import collections as collections_crud
 from app.db.session import get_db
 from app.services.dynamic_tile_cache import (
     get_tile as get_cached_tile,
+    invalidate_collection_cache,
     set_tile as set_cached_tile,
     get_tile_with_params,
     set_tile_with_params,
@@ -194,6 +195,29 @@ async def delete_tiles_static(
                 pass
     await tiles_crud.clear_static_tiles(db, collection_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{collection_id}/tiles/cache/invalidate",
+    status_code=status.HTTP_200_OK,
+    summary="Invalidate tile cache",
+    description="Clear Redis cache for this collection (dynamic tile and search-result cache). Use after rebuilding static tiles to avoid serving stale cached tiles. No-op if Redis is not used or cache is empty.",
+)
+async def invalidate_tiles_cache(
+    collection_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    invalidate_collection_cache(collection_id)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "message": "Tile cache invalidated for this collection.",
+            "collection_id": collection_id,
+        },
+    )
 
 
 @router.get(
@@ -409,6 +433,7 @@ async def get_tiles_dynamic(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     settings = get_settings()
     cache_headers = {"Cache-Control": "public, max-age=60"}
+    cache_hit_headers = {**cache_headers, "X-From-Cache": "true"}
 
     feature_ids: list[str] | None = None
     if ids:
@@ -436,7 +461,7 @@ async def get_tiles_dynamic(
             return Response(
                 content=cached,
                 media_type="application/x-protobuf",
-                headers=cache_headers,
+                headers=cache_hit_headers,
             )
 
     # Compute params_key whenever we have query params (needed for queue mode + param tile cache)
@@ -460,7 +485,7 @@ async def get_tiles_dynamic(
                 return Response(
                     content=cached,
                     media_type="application/x-protobuf",
-                    headers=cache_headers,
+                    headers=cache_hit_headers,
                 )
 
     # Query-once path: ensure search result in Redis (single-flight), build tiles from cache. No repeated DB.
@@ -498,7 +523,7 @@ async def get_tiles_dynamic(
             return Response(
                 content=payload,
                 media_type="application/x-protobuf",
-                headers=cache_headers,
+                headers=cache_hit_headers,
             )
         # Build requested tile inline so we don't wait for queue (major latency win)
         geojson_bytes = get_search_result(collection_id, params_key)

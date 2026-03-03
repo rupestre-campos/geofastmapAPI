@@ -180,3 +180,23 @@ def pop_tile_job(timeout: int = 5) -> dict | None:
         return json.loads(payload)
     except Exception:
         return None
+
+
+def invalidate_collection_cache(collection_id: str) -> None:
+    """
+    Delete all dynamic tile and search-result cache entries for this collection.
+    Call after static tile build completes so clients do not see stale dynamic tiles.
+    """
+    try:
+        r = _redis_bytes()
+        # Redis client with decode_responses=False returns bytes keys; use string pattern for scan
+        patterns = [
+            f"{DYNAMIC_TILE_CACHE_PREFIX}{collection_id}:*",
+            f"{DYNAMIC_TILE_CACHE_PARAMS_PREFIX}{collection_id}:*",
+            f"{SEARCH_RESULT_PREFIX}{collection_id}:*",
+        ]
+        for pattern in patterns:
+            for key in r.scan_iter(match=pattern):
+                r.delete(key)
+    except Exception:
+        pass

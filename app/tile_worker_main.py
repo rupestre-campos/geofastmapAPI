@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from app.core.config import get_settings
+from app.services.dynamic_tile_cache import invalidate_collection_cache
 from app.services.tile_build_queue import (
     TILE_BUILD_QUEUE_KEY,
     TileBuildPayload,
@@ -42,6 +43,7 @@ def main() -> None:
             print(f"Build FAILED for {cid}: {err}", file=sys.stderr, flush=True)
         else:
             update_tile_build_job(job_id, status="completed")
+            invalidate_collection_cache(cid)
             print(f"Build completed for {cid} (job_id={job_id})", flush=True)
 
 

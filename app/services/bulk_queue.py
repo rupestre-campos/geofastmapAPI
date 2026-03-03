@@ -20,25 +20,41 @@ class BulkJobPayload:
     storage_key: str
     mode: str
     batch_size: int
+    queue_compute_tiles: bool = True
+    zip_inner_shp_paths: list[str] | None = None
 
     def to_json(self) -> str:
-        return json.dumps({
+        out = {
             "job_id": self.job_id,
             "collection_id": self.collection_id,
             "storage_key": self.storage_key,
             "mode": self.mode,
             "batch_size": self.batch_size,
-        })
+            "queue_compute_tiles": self.queue_compute_tiles,
+        }
+        if self.zip_inner_shp_paths:
+            out["zip_inner_shp_paths"] = self.zip_inner_shp_paths
+        return json.dumps(out)
 
     @classmethod
     def from_json(cls, s: str) -> "BulkJobPayload":
         d = json.loads(s)
+        qt = d.get("queue_compute_tiles", True)
+        if isinstance(qt, bool):
+            queue_compute_tiles = qt
+        else:
+            queue_compute_tiles = str(qt).lower() not in ("false", "0", "no", "")
+        zip_inner = d.get("zip_inner_shp_paths")
+        if zip_inner is not None and not isinstance(zip_inner, list):
+            zip_inner = None
         return cls(
             job_id=d["job_id"],
             collection_id=d["collection_id"],
             storage_key=d["storage_key"],
             mode=d["mode"],
             batch_size=int(d["batch_size"]),
+            queue_compute_tiles=queue_compute_tiles,
+            zip_inner_shp_paths=zip_inner,
         )
 
 
