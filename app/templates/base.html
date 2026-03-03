@@ -207,6 +207,14 @@
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--space); }
     .alert { padding: 0.75rem 1rem; border-radius: var(--radius-sm); margin-top: 0.5rem; font-size: 0.85rem; }
     .alert-success { background: rgba(63, 185, 80, 0.15); color: var(--success); border: 1px solid rgba(63, 185, 80, 0.3); }
+
+    .confirm-modal { display: none; position: fixed; inset: 0; z-index: 1000; align-items: center; justify-content: center; padding: 1.5rem; }
+    .confirm-modal[aria-hidden="false"] { display: flex; }
+    .confirm-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.6); cursor: pointer; }
+    .confirm-modal-content { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); max-width: 400px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+    .confirm-modal-header { padding: var(--space) var(--space-lg); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 1rem; }
+    .confirm-modal-body { padding: var(--space-lg); color: var(--text); }
+    .confirm-modal-actions { padding: var(--space) var(--space-lg); border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 0.5rem; }
   </style>
   {% block head %}{% endblock %}
 </head>

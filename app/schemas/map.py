@@ -15,6 +15,8 @@ class MapLayer(BaseModel):
     order: int = Field(0, description="Display order (0 = bottom)")
     style_spec: dict | None = Field(None, description="Same as /styles: fillColor, lineColor, fillOpacity, lineOpacity, lineWidth, linePattern, fillEnabled, pointColor, pointSize, pointIcon")
     popup: bool = Field(False, description="Show popup on click for this layer")
+    tiles_url: str | None = Field(None, description="When set, use this vector tile URL (dynamic tiles) instead of TileJSON")
+    layer_id: str | None = Field(None, description="Optional unique id for this layer when using tiles_url (e.g. items-{coll}, item-{id})")
 
 
 class MapDefinition(BaseModel):

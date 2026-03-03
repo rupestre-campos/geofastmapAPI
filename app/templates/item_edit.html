@@ -141,6 +141,18 @@
       <button type="button" class="btn btn-danger" id="btn-delete">Delete feature</button>
     </div>
   </div>
+
+  <div id="confirm-delete-modal" class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-delete-title" aria-hidden="true">
+    <div class="confirm-modal-backdrop" id="confirm-delete-backdrop"></div>
+    <div class="confirm-modal-content">
+      <div class="confirm-modal-header" id="confirm-delete-title">Confirm delete</div>
+      <div class="confirm-modal-body" id="confirm-delete-message">Delete this feature? This cannot be undone.</div>
+      <div class="confirm-modal-actions">
+        <button type="button" class="btn" id="confirm-delete-cancel">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirm-delete-confirm">Delete</button>
+      </div>
+    </div>
+  </div>
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
@@ -486,15 +498,25 @@
       }).catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
     };
 
-    document.getElementById('btn-delete').onclick = function() {
-      if (!confirm('Delete this feature?')) return;
-      fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(featureId), { method: 'DELETE' })
-        .then(function(r) {
-          if (r.ok) location.href = base + '/collections/' + collectionId + '/items?f=html';
-          return r.json().then(function(j) { throw j; });
-        })
-        .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
-    };
+    (function confirmDeleteModal() {
+      var modal = document.getElementById('confirm-delete-modal');
+      var backdrop = document.getElementById('confirm-delete-backdrop');
+      var cancelBtn = document.getElementById('confirm-delete-cancel');
+      var confirmBtn = document.getElementById('confirm-delete-confirm');
+      function closeModal() { modal.setAttribute('aria-hidden', 'true'); }
+      document.getElementById('btn-delete').onclick = function() { modal.setAttribute('aria-hidden', 'false'); };
+      if (backdrop) backdrop.onclick = closeModal;
+      if (cancelBtn) cancelBtn.onclick = closeModal;
+      if (confirmBtn) confirmBtn.onclick = function() {
+        closeModal();
+        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(featureId), { method: 'DELETE' })
+          .then(function(r) {
+            if (r.ok) location.href = base + '/collections/' + collectionId + '/items?f=html';
+            return r.json().then(function(j) { throw j; });
+          })
+          .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+      };
+    })();
 
     (function setupLayerStyle() {
       var detailsEl = document.getElementById('layer-style-details');

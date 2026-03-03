@@ -278,7 +278,7 @@
   </div>
 
   <div class="card">
-    <h2 class="card-title">Map</h2>
+    <h2 class="card-title">Map <button type="button" class="btn btn-sm" id="btn-add-to-map" style="margin-left:8px;">Add to map</button></h2>
     <div id="map" class="map-container">
       <div class="map-controls">
         <select id="map-basemap" title="Basemap">
@@ -339,6 +339,38 @@
         <button type="button" class="btn btn-sm" id="btn-save-style-cancel">Cancel</button>
       </div>
     </details>
+  </div>
+
+  <div id="add-to-map-modal" class="modal" role="dialog" aria-hidden="true">
+    <div class="modal-backdrop" id="add-to-map-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">Add this layer to a map</h3>
+        <button type="button" class="modal-close" id="add-to-map-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="meta">Add the current dynamic tile layer (with current filters) to a new map or an existing one.</p>
+        <div class="form-row" style="margin-top:12px;">
+          <label><input type="radio" name="add-to-map-choice" value="new" checked> Create new map</label>
+        </div>
+        <div class="form-row">
+          <label><input type="radio" name="add-to-map-choice" value="existing"> Add to existing map</label>
+        </div>
+        <div class="form-row" id="add-to-map-new-wrap">
+          <label>Map name</label>
+          <input type="text" id="add-to-map-name" placeholder="e.g. Items: my_collection" style="width:100%;max-width:320px;">
+        </div>
+        <div class="form-row" id="add-to-map-existing-wrap" style="display:none;">
+          <label>Existing map</label>
+          <select id="add-to-map-select" style="min-width:200px;"></select>
+        </div>
+        <div class="btn-group" style="margin-top:16px;">
+          <button type="button" class="btn btn-primary" id="add-to-map-submit">Add</button>
+          <button type="button" class="btn" id="add-to-map-cancel">Cancel</button>
+        </div>
+        <p id="add-to-map-message" class="meta" style="margin-top:8px;"></p>
+      </div>
+    </div>
   </div>
 
   <div id="text-modal" class="modal" role="dialog" aria-hidden="true">
@@ -911,5 +943,122 @@
     document.addEventListener('keydown', function(e) {
       if (e.key === 'Escape' && modal.getAttribute('aria-hidden') === 'false') closeModal();
     });
+
+    (function() {
+      var addModal = document.getElementById('add-to-map-modal');
+      var addBackdrop = document.getElementById('add-to-map-backdrop');
+      var addClose = document.getElementById('add-to-map-close');
+      var addCancel = document.getElementById('add-to-map-cancel');
+      var addName = document.getElementById('add-to-map-name');
+      var addSelect = document.getElementById('add-to-map-select');
+      var addNewWrap = document.getElementById('add-to-map-new-wrap');
+      var addExistingWrap = document.getElementById('add-to-map-existing-wrap');
+      var addSubmit = document.getElementById('add-to-map-submit');
+      var addMessage = document.getElementById('add-to-map-message');
+      function closeAddModal() {
+        addModal.setAttribute('aria-hidden', 'true');
+      }
+      function layerStyleSpec() {
+        var s = defaultStyle && defaultStyle.style_spec;
+        if (s && typeof s === 'object') {
+          return { fillColor: s.fillColor || '#58a6ff', lineColor: s.lineColor || '#58a6ff', fillOpacity: s.fillOpacity != null ? s.fillOpacity : 0.6, lineOpacity: s.lineOpacity != null ? s.lineOpacity : 1, lineWidth: s.lineWidth != null ? s.lineWidth : 1, linePattern: s.linePattern || 'solid', fillEnabled: s.fillEnabled !== false, pointColor: s.pointColor || '#58a6ff', pointSize: s.pointSize != null ? s.pointSize : 8, pointIcon: s.pointIcon || 'circle' };
+        }
+        return { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, pointColor: '#58a6ff', pointSize: 8, pointIcon: 'circle' };
+      }
+      function newLayerPayload() {
+        var spec = layerStyleSpec();
+        return { collection_id: collectionId, order: 0, style_spec: spec, popup: true, tiles_url: getDynamicTileUrl(), layer_id: 'items-' + collectionId };
+      }
+      document.getElementById('btn-add-to-map').onclick = function() {
+        addMessage.textContent = '';
+        addName.value = 'Items: ' + collectionId;
+        addName.placeholder = 'Items: ' + collectionId;
+        document.querySelector('input[name="add-to-map-choice"][value="new"]').checked = true;
+        addNewWrap.style.display = '';
+        addExistingWrap.style.display = 'none';
+        addModal.setAttribute('aria-hidden', 'false');
+        addSelect.innerHTML = '<option value="">Loading…</option>';
+        fetch(base + '/maps', { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var list = data.maps || [];
+            addSelect.innerHTML = list.length ? '' : '<option value="">No maps yet</option>';
+            list.forEach(function(m) {
+              var opt = document.createElement('option');
+              opt.value = m.id;
+              opt.textContent = m.name || m.id;
+              addSelect.appendChild(opt);
+            });
+          })
+          .catch(function() { addSelect.innerHTML = '<option value="">Load failed</option>'; });
+      };
+      addBackdrop.onclick = closeAddModal;
+      addClose.onclick = closeAddModal;
+      addCancel.onclick = closeAddModal;
+      document.querySelectorAll('input[name="add-to-map-choice"]').forEach(function(radio) {
+        radio.onchange = function() {
+          addNewWrap.style.display = this.value === 'new' ? '' : 'none';
+          addExistingWrap.style.display = this.value === 'existing' ? '' : 'none';
+        };
+      });
+      addSubmit.onclick = function() {
+        var choice = document.querySelector('input[name="add-to-map-choice"]:checked');
+        if (!choice) return;
+        addMessage.textContent = '';
+        if (choice.value === 'new') {
+          var name = addName.value.trim() || ('Items: ' + collectionId);
+          addSubmit.disabled = true;
+          addMessage.textContent = 'Creating map…';
+          fetch(base + '/maps', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ name: name, description: null, thumbnail: null, definition: { layers: [newLayerPayload()], bbox: null, basemap: null } })
+          })
+            .then(function(r) {
+              if (!r.ok) return r.json().then(function(j) { throw j; });
+              return r.json();
+            })
+            .then(function(data) {
+              window.location.href = base + '/maps/' + data.id + '/edit?f=html';
+            })
+            .catch(function(e) {
+              addMessage.textContent = 'Error: ' + (e.detail || (e.message || JSON.stringify(e)));
+              addMessage.style.color = 'var(--danger)';
+              addSubmit.disabled = false;
+            });
+        } else {
+          var mapId = addSelect.value;
+          if (!mapId) { addMessage.textContent = 'Select a map.'; addMessage.style.color = 'var(--danger)'; return; }
+          addSubmit.disabled = true;
+          addMessage.textContent = 'Adding layer…';
+          fetch(base + '/maps/' + mapId, { headers: { 'Accept': 'application/json' } })
+            .then(function(r) {
+              if (!r.ok) throw new Error('Map not found');
+              return r.json();
+            })
+            .then(function(mapData) {
+              var def = mapData.definition || {};
+              var layers = Array.isArray(def.layers) ? def.layers.slice() : [];
+              var layer = newLayerPayload();
+              layer.order = layers.length;
+              layers.push(layer);
+              return fetch(base + '/maps/' + mapId, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ definition: { layers: layers, bbox: def.bbox || null, basemap: def.basemap || null } })
+              });
+            })
+            .then(function(r) {
+              if (!r.ok) return r.json().then(function(j) { throw j; });
+              window.location.href = base + '/maps/' + mapId + '/edit?f=html';
+            })
+            .catch(function(e) {
+              addMessage.textContent = 'Error: ' + (e.detail || e.message || 'Failed');
+              addMessage.style.color = 'var(--danger)';
+              addSubmit.disabled = false;
+            });
+        }
+      };
+    })();
   </script>
 {% endblock %}

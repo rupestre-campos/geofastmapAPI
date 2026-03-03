@@ -52,8 +52,24 @@ async def update_map(db: AsyncSession, map_id: uuid.UUID, data: MapUpdate) -> Ma
         row.description = data.description
     if data.thumbnail is not None:
         row.thumbnail = data.thumbnail
+        # If setting an external URL, clear uploaded thumbnail
+        if data.thumbnail:
+            row.thumbnail_data = None
     if data.definition is not None:
         row.definition = data.definition.model_dump()
+    row.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def set_map_thumbnail_data(db: AsyncSession, map_id: uuid.UUID, data: bytes) -> Map | None:
+    """Store uploaded thumbnail bytes and clear external thumbnail URL."""
+    row = await get_map(db, map_id)
+    if row is None:
+        return None
+    row.thumbnail_data = data
+    row.thumbnail = None
     row.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(row)

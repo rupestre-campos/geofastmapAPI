@@ -182,6 +182,18 @@
     <p id="tile-build-result" class="meta" style="display:none; margin-top: 0.5rem;"></p>
   </div>
 
+  <div id="confirm-delete-modal" class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-delete-title" aria-hidden="true">
+    <div class="confirm-modal-backdrop" id="confirm-delete-backdrop"></div>
+    <div class="confirm-modal-content">
+      <div class="confirm-modal-header" id="confirm-delete-title">Confirm delete</div>
+      <div class="confirm-modal-body" id="confirm-delete-message"></div>
+      <div class="confirm-modal-actions">
+        <button type="button" class="btn" id="confirm-delete-cancel">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirm-delete-confirm">Delete</button>
+      </div>
+    </div>
+  </div>
+
   <div class="card">
     <h2 class="card-title">Jobs for this collection</h2>
     <p class="meta">Recent and ongoing jobs (bulk import, static tile build). Links stay for a while after completion.</p>
@@ -808,14 +820,39 @@
         })
         .catch(function(e) { resultEl.textContent = 'Error: ' + (e.detail || e.message || e); resultEl.style.display = 'block'; });
     };
-    document.getElementById('btn-delete-tiles').onclick = function() {
-      if (!confirm('Delete static tiles for this collection?')) return;
-      var btn = this;
-      btn.disabled = true;
-      fetch(base + '/collections/' + collectionId + '/tiles/static', { method: 'DELETE', headers: { 'Accept': 'application/json' } })
-        .then(function(r) { if (r.ok) location.reload(); else return r.json().then(j => Promise.reject(j)); })
-        .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); btn.disabled = false; });
-    };
+    (function confirmDeleteModal() {
+      var modal = document.getElementById('confirm-delete-modal');
+      var msgEl = document.getElementById('confirm-delete-message');
+      var backdrop = document.getElementById('confirm-delete-backdrop');
+      var cancelBtn = document.getElementById('confirm-delete-cancel');
+      var confirmBtn = document.getElementById('confirm-delete-confirm');
+      var onConfirm = null;
+      function closeModal() { modal.setAttribute('aria-hidden', 'true'); }
+      function openModal(message, callback) {
+        onConfirm = callback;
+        if (msgEl) msgEl.textContent = message;
+        modal.setAttribute('aria-hidden', 'false');
+      }
+      if (confirmBtn) confirmBtn.onclick = function() { if (onConfirm) { onConfirm(); closeModal(); } };
+      if (backdrop) backdrop.onclick = closeModal;
+      if (cancelBtn) cancelBtn.onclick = closeModal;
+      document.getElementById('btn-delete-tiles').onclick = function() {
+        openModal('Delete static tiles for this collection?', function() {
+          var btn = document.getElementById('btn-delete-tiles');
+          btn.disabled = true;
+          fetch(base + '/collections/' + collectionId + '/tiles/static', { method: 'DELETE', headers: { 'Accept': 'application/json' } })
+            .then(function(r) { if (r.ok) location.reload(); else return r.json().then(j => Promise.reject(j)); })
+            .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); btn.disabled = false; });
+        });
+      };
+      document.getElementById('btn-delete-collection').onclick = function() {
+        openModal('Delete this collection and all its features? This cannot be undone.', function() {
+          fetch(base + '/collections/' + collectionId, { method: 'DELETE' })
+            .then(r => { if (r.ok) location.href = base + '/collections?f=html'; else return r.json().then(j => Promise.reject(j)); })
+            .catch(e => alert('Error: ' + (e.detail || e.message || JSON.stringify(e))));
+        });
+      };
+    })();
     document.getElementById('btn-recompute-extent').onclick = function() {
       var btn = this;
       btn.disabled = true;
@@ -824,13 +861,6 @@
         .then(function(d) { if (d.extent && d.extent.bbox) location.reload(); else { alert('No extent (no features with geometry).'); btn.disabled = false; } })
         .catch(function(e) { alert('Error: ' + (e.detail || e.message || e)); btn.disabled = false; });
     };
-    document.getElementById('btn-delete-collection').onclick = function() {
-      if (!confirm('Delete this collection and all its features?')) return;
-      fetch(base + '/collections/' + collectionId, { method: 'DELETE' })
-        .then(r => { if (r.ok) location.href = base + '/collections?f=html'; else return r.json().then(j => Promise.reject(j)); })
-        .catch(e => alert('Error: ' + (e.detail || e.message || JSON.stringify(e))));
-    };
-
     (function jobsTable() {
       var loadingEl = document.getElementById('jobs-loading');
       var tableEl = document.getElementById('jobs-table');

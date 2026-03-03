@@ -39,7 +39,7 @@ def _base_url(request: Request) -> str:
 
 
 # Reserved query params for items list (not attribute filters). Include "f" for ?f=html (HTML view).
-ITEMS_RESERVED_PARAMS = {"limit", "offset", "bbox", "datetime", "sortby", "sortdesc", "properties", "filter", "q", "f"}
+ITEMS_RESERVED_PARAMS = {"limit", "offset", "bbox", "datetime", "sortby", "sortdesc", "properties", "filter", "q", "f", "bbox_only"}
 
 
 def _feature_to_read(
@@ -80,6 +80,7 @@ async def list_items(
     properties_include: str | None = Query(None, alias="properties", description="Comma-separated property names to return (attribute selection)."),
     filter_param: list[str] | None = Query(None, alias="filter", description="Structured filters: key:op:value (op: eq, ne, gt, gte, lt, lte, like, ilike). Repeat for AND."),
     q: str | None = Query(None, description="Full-text search across all property values."),
+    bbox_only: bool = Query(False, description="If true, return only { bbox, numberMatched } for the same query (no features)."),
 ):
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
@@ -155,6 +156,11 @@ async def list_items(
     extent_bbox = bbox_from_geometries(
         [r.geometry.model_dump() if r.geometry else None for r in read_list]
     )
+    if bbox_only:
+        return Response(
+            content=json.dumps({"bbox": extent_bbox, "numberMatched": number_matched}),
+            media_type="application/json",
+        )
     # Warm search result cache for dynamic tiler (queue mode): workers read from Redis, no DB
     if get_settings().tiles_dynamic_use_queue:
         from app.services.dynamic_tile_cache import _params_key_from_query, set_search_result
@@ -369,6 +375,7 @@ async def get_item(
     request: Request,
     collection_id: str,
     feature_id: str = Path(..., description="Identifier of the feature."),
+    bbox_only: bool = Query(False, description="If true, return only { bbox } for this feature's geometry."),
     db: AsyncSession = Depends(get_db),
 ):
     feature = await features_crud.get_feature(db, collection_id, feature_id)
@@ -378,6 +385,12 @@ async def get_item(
             detail="Feature not found",
         )
     geom_dict = geometry_to_geojson(feature.geometry)
+    if bbox_only:
+        bbox = bbox_from_geometries([geom_dict])
+        return Response(
+            content=json.dumps({"bbox": bbox}),
+            media_type="application/json",
+        )
     base = _base_url(request)
     feat_geojson = FeatureGeoJSON(
         type="Feature",

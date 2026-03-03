@@ -13,9 +13,12 @@
     .map-view-container .map-legend-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
     .map-view-container .map-legend-row input[type="checkbox"] { cursor: pointer; }
     .map-view-meta { margin-top: var(--space); font-size: 0.9rem; color: var(--text-secondary); }
+    .maplibregl-popup { z-index: 1000; }
+    .maplibregl-popup-content { padding: 10px 12px; min-width: 120px; min-height: 1.5em; background: #fff !important; color: #000 !important; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); }
     .map-popup { min-width: 160px; max-width: 320px; font-size: 0.85rem; color: #000; }
     .map-popup-id { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
-    .map-popup-id a { color: #1967d2; }
+    .map-popup-id a { color: #1967d2; text-decoration: none; }
+    .map-popup-id a:hover { text-decoration: underline; }
     .map-popup-row { margin-top: 0.25rem; word-break: break-word; color: #000; }
     .map-popup-row strong { font-weight: 700; margin-right: 0.35rem; color: #000; }
   </style>
@@ -98,9 +101,10 @@
       }
       document.getElementById('map-basemap').onchange = function() { applyBasemap(this.value); };
 
-      function sourceId(collectionId) { return 'layer-' + collectionId.replace(/[^a-zA-Z0-9_-]/g, '_'); }
-      function setLayerVisibility(collectionId, visible) {
-        var sid = sourceId(collectionId);
+      function layerKey(layer) { return (layer && (layer.layer_id || layer.collectionId)) || (layer && layer.collection_id) || ''; }
+      function sourceId(collectionIdOrKey) { return 'layer-' + String(collectionIdOrKey).replace(/[^a-zA-Z0-9_-]/g, '_'); }
+      function setLayerVisibility(layerKeyVal, visible) {
+        var sid = sourceId(layerKeyVal);
         var v = visible ? 'visible' : 'none';
         ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {
           if (map.getLayer(sid + suf)) map.setLayoutProperty(sid + suf, 'visibility', v);
@@ -112,13 +116,14 @@
         if (!container || !list || layers.length === 0) return;
         list.innerHTML = '';
         layers.forEach(function(layer, idx) {
+          var lk = layerKey(layer);
           var cid = layer.collection_id || layer.collectionId;
           var style = specFromLayer(layer);
           var fillColor = style.fillColor || defaultColor;
           var lineColor = style.lineColor || defaultColor;
           var row = document.createElement('div');
           row.className = 'map-legend-row';
-          row.dataset.collectionId = cid;
+          row.dataset.collectionId = lk;
           var icon = document.createElement('span');
           icon.className = 'map-legend-icon';
           icon.style.backgroundColor = (style.fillVisible !== false) ? fillColor : 'transparent';
@@ -126,12 +131,12 @@
           var label = document.createElement('span');
           label.className = 'map-legend-label';
           label.title = cid;
-          label.textContent = cid;
+          label.textContent = layer.tiles_url ? (cid + ' (dynamic)') : cid;
           var cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.checked = true;
           cb.title = 'Toggle layer visibility';
-          cb.onchange = function() { setLayerVisibility(cid, cb.checked); };
+          cb.onchange = function() { setLayerVisibility(lk, cb.checked); };
           row.appendChild(icon);
           row.appendChild(label);
           row.appendChild(cb);
@@ -143,7 +148,7 @@
         var ids = [];
         layers.forEach(function(layer) {
           if (!layer.popup) return;
-          var sid = sourceId(layer.collection_id || layer.collectionId);
+          var sid = sourceId(layerKey(layer));
           ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {
             ids.push(sid + suf);
           });
@@ -160,7 +165,7 @@
         var props = feat.properties || {};
         var id = props.id != null ? String(props.id) : (feat.id != null ? String(feat.id) : '—');
         var featureUrl = base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(id) + '?f=html';
-        var parts = ['<div class="map-popup">', '<div class="map-popup-id"><strong>ID</strong> <a href="' + featureUrl + '">' + escapeHtml(id) + '</a></div>'];
+        var parts = ['<div class="map-popup">', '<div class="map-popup-id"><strong>ID</strong> <a href="' + escapeHtml(featureUrl) + '">' + escapeHtml(id) + '</a></div>'];
         Object.keys(props).sort().forEach(function(k) {
           if (k === 'id') return;
           var v = props[k];
@@ -173,8 +178,8 @@
       function collectionIdFromLayerId(mapLayerId) {
         var sid = mapLayerId.replace(/-fill$|-line$|-circle$|-symbol$/, '');
         for (var i = 0; i < layers.length; i++) {
-          var cid = layers[i].collection_id || layers[i].collectionId;
-          if (sourceId(cid) === sid && layers[i].popup) return cid;
+          var lk = layerKey(layers[i]);
+          if (sourceId(lk) === sid && layers[i].popup) return layers[i].collection_id || layers[i].collectionId;
         }
         return null;
       }
@@ -222,10 +227,12 @@
         }
       }
 
-      function addCollectionLayer(collectionId, style, beforeId) {
+      function addCollectionLayer(layer, style, beforeId) {
         return new Promise(function(resolve) {
-          var sourceId = 'layer-' + collectionId.replace(/[^a-zA-Z0-9_-]/g, '_');
-          if (map.getSource(sourceId)) { resolve(beforeId); return; }
+          var cid = layer.collection_id || layer.collectionId;
+          var lk = layerKey(layer);
+          var sid = sourceId(lk);
+          if (map.getSource(sid)) { resolve(sid + '-line'); return; }
           var fillColor = style.fillColor;
           var lineColor = style.lineColor;
           var fillOpacity = style.fillOpacity;
@@ -233,42 +240,48 @@
           var lineWidth = style.lineWidth;
           var lineDash = style.lineDash;
           var fillVisible = style.fillVisible;
-          function addFillLinePoint(layerId) {
+          function addFillLinePoint(vlId) {
             var fillPaint = { 'fill-color': fillColor, 'fill-opacity': fillOpacity };
             var linePaint = { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash };
             var fillLayout = { visibility: fillVisible ? 'visible' : 'none' };
-            if (layerId) {
-              map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: fillLayout, paint: fillPaint }, beforeId);
-              map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, 'source-layer': layerId, filter: notPointFilter, paint: linePaint }, beforeId);
+            if (vlId) {
+              map.addLayer({ id: sid + '-fill', type: 'fill', source: sid, 'source-layer': vlId, filter: notPointFilter, layout: fillLayout, paint: fillPaint }, beforeId);
+              map.addLayer({ id: sid + '-line', type: 'line', source: sid, 'source-layer': vlId, filter: notPointFilter, paint: linePaint }, beforeId);
             } else {
-              map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, filter: notPointFilter, layout: fillLayout, paint: fillPaint }, beforeId);
-              map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, filter: notPointFilter, paint: linePaint }, beforeId);
+              map.addLayer({ id: sid + '-fill', type: 'fill', source: sid, filter: notPointFilter, layout: fillLayout, paint: fillPaint }, beforeId);
+              map.addLayer({ id: sid + '-line', type: 'line', source: sid, filter: notPointFilter, paint: linePaint }, beforeId);
             }
-            addPointLayers(sourceId, layerId, style);
-            var cb = document.getElementById('map-legend-list') && document.querySelector('.map-legend-row[data-collection-id="' + collectionId + '"] input[type="checkbox"]');
-            if (cb && !cb.checked) setLayerVisibility(collectionId, false);
-            resolve(sourceId + '-line');
+            addPointLayers(sid, vlId, style);
+            var sel = lk.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            var cb = document.getElementById('map-legend-list') && document.querySelector('.map-legend-row[data-collection-id="' + sel + '"] input[type="checkbox"]');
+            if (cb && !cb.checked) setLayerVisibility(lk, false);
+            resolve(sid + '-line');
+          }
+          if (layer.tiles_url) {
+            map.addSource(sid, { type: 'vector', tiles: [layer.tiles_url], minzoom: 0, maxzoom: 14 });
+            addFillLinePoint(cid);
+            return;
           }
           function loadGeoJson() {
-            fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=500', { headers: { 'Accept': 'application/geo+json' } })
+            fetch(base + '/collections/' + encodeURIComponent(cid) + '/items?limit=500', { headers: { 'Accept': 'application/geo+json' } })
               .then(function(r) { return r.json(); })
               .then(function(fc) {
                 if (!fc.features || fc.features.length === 0) { resolve(beforeId); return; }
-                if (map.getSource(sourceId)) return;
-                map.addSource(sourceId, { type: 'geojson', data: fc });
+                if (map.getSource(sid)) return;
+                map.addSource(sid, { type: 'geojson', data: fc });
                 addFillLinePoint(null);
               })
               .catch(function() { resolve(beforeId); });
           }
-          fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles', { headers: { 'Accept': 'application/json' } })
+          fetch(base + '/collections/' + encodeURIComponent(cid) + '/tiles', { headers: { 'Accept': 'application/json' } })
             .then(function(r) { return r.json(); })
             .then(function(tilejson) {
               var tiles = tilejson.tiles || [];
               var hasStatic = tiles.length > 0 && tiles[0].indexOf('static') !== -1;
               if (hasStatic) {
-                var tileUrl = tiles[0].indexOf('{z}') !== -1 ? tiles[0] : (base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf');
-                var vl = tilejson.vector_layers && tilejson.vector_layers[0] ? tilejson.vector_layers[0].id : collectionId;
-                map.addSource(sourceId, { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
+                var tileUrl = tiles[0].indexOf('{z}') !== -1 ? tiles[0] : (base + '/collections/' + encodeURIComponent(cid) + '/tiles/static/{z}/{x}/{y}.pbf');
+                var vl = tilejson.vector_layers && tilejson.vector_layers[0] ? tilejson.vector_layers[0].id : cid;
+                map.addSource(sid, { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
                 addFillLinePoint(vl);
               } else {
                 loadGeoJson();
@@ -283,15 +296,29 @@
         if (mapBbox && mapBbox.length === 4) {
           map.fitBounds([[mapBbox[0], mapBbox[1]], [mapBbox[2], mapBbox[3]]], { padding: 60 });
         }
-        var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false });
+        function getPopupLayerIdsFiltered() {
+          var ids = getPopupLayerIds();
+          return ids.filter(function(id) { return map.getLayer(id); });
+        }
+        map.on('mousemove', function(e) {
+          var layerIds = getPopupLayerIdsFiltered();
+          var hit = layerIds.length > 0 && (function() { try { return map.queryRenderedFeatures(e.point, { layers: layerIds }).length > 0; } catch (err) { return false; } })();
+          map.getCanvas().style.cursor = hit ? 'pointer' : '';
+        });
         map.on('click', function(e) {
-          var layerIds = getPopupLayerIds();
+          var layerIds = getPopupLayerIdsFiltered();
           if (layerIds.length === 0) return;
-          var features = map.queryRenderedFeatures(e.point, { layers: layerIds });
+          var features;
+          try { features = map.queryRenderedFeatures(e.point, { layers: layerIds }); } catch (err) { return; }
           var feat = features && features[0];
           if (!feat) return;
           var cid = collectionIdFromLayerId(feat.layer.id);
-          if (cid) popup.setLngLat(e.lngLat).setHTML(popupHtmlForFeature(feat, cid)).addTo(map);
+          if (cid) {
+            if (window._geofastMapPopup) { try { window._geofastMapPopup.remove(); } catch (err) {} }
+            var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false });
+            popup.setLngLat(e.lngLat).setHTML(popupHtmlForFeature(feat, cid)).addTo(map);
+            window._geofastMapPopup = popup;
+          }
         });
         var pinSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="36" viewBox="0 0 24 36"><path fill="%2358a6ff" stroke="%23111" stroke-width="1" d="M12 0C5.4 0 0 5.4 0 12c0 9 12 24 12 24s12-15 12-24C24 5.4 18.6 0 12 0z"/></svg>';
         map.loadImage('data:image/svg+xml,' + encodeURIComponent(pinSvg), function(err, img) {
@@ -302,9 +329,8 @@
         function next() {
           if (i >= layers.length) return;
           var layer = layers[i++];
-          var cid = layer.collection_id || layer.collectionId;
           var style = specFromLayer(layer);
-          addCollectionLayer(cid, style, beforeId).then(function(id) {
+          addCollectionLayer(layer, style, beforeId).then(function(id) {
             beforeId = id;
             next();
           });

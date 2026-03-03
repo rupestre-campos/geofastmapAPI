@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, String, Text
+from sqlalchemy import Column, DateTime, LargeBinary, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 
@@ -19,6 +19,7 @@ class Map(Base):
     name = Column(String(500), nullable=False)
     description = Column(Text, nullable=True)
     thumbnail = Column(Text, nullable=True)
+    thumbnail_data = Column(LargeBinary, nullable=True)
     definition = Column(JSONB, nullable=False, server_default="{}")
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
