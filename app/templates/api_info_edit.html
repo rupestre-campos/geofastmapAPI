@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Edit API info – GeoFast API{% endblock %}
+{% block head %}
+  <style>
+    .api-info-form .form-row { margin-bottom: var(--space); }
+    .api-info-form label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 0.9rem; }
+    .api-info-form input[type="text"], .api-info-form textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); color: var(--text); font-size: 0.95rem; }
+    .api-info-form textarea { min-height: 120px; resize: vertical; }
+    .api-info-form .meta { font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Edit API info</h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › Edit API info</p>
+    <p class="meta">Changes are stored in the database and appear on the landing page. No redeploy needed.</p>
+  </header>
+
+  <div class="card api-info-form">
+    <form id="form-api-info">
+      <div class="form-row">
+        <label for="api-title">Title</label>
+        <input type="text" id="api-title" name="title" value="{{ api_title | e }}" required maxlength="500" placeholder="e.g. GeoFast API">
+      </div>
+      <div class="form-row">
+        <label for="api-description">Description</label>
+        <textarea id="api-description" name="description" rows="4" placeholder="Short description of the API and what it offers.">{{ api_description | e }}</textarea>
+        <p class="meta">Shown on the landing page below the title.</p>
+      </div>
+      <div class="form-row">
+        <label for="api-contact">Contact &amp; owner</label>
+        <textarea id="api-contact" name="contact" rows="5" placeholder="API owner, email, support link, or other contact information.">{{ api_contact | e }}</textarea>
+        <p class="meta">Plain text; newlines are preserved.</p>
+      </div>
+      <div class="btn-group" style="margin-top: var(--space);">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <a href="{{ base }}/?f=html" class="btn">Cancel</a>
+      </div>
+      <p id="api-info-message" class="meta" style="margin-top:0.5rem;"></p>
+    </form>
+  </div>
+{% endblock %}
+{% block script %}
+  <script>
+    (function() {
+      var base = {{ base | tojson }};
+      var form = document.getElementById('form-api-info');
+      var message = document.getElementById('api-info-message');
+      form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        message.textContent = '';
+        var body = {
+          title: document.getElementById('api-title').value.trim() || null,
+          description: document.getElementById('api-description').value.trim() || null,
+          contact: document.getElementById('api-contact').value.trim() || null
+        };
+        if (!body.title) { message.textContent = 'Title is required.'; message.style.color = 'var(--danger)'; return; }
+        fetch(base + '/api-info', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(body)
+        })
+          .then(function(r) {
+            if (r.ok) { window.location.href = base + '/?f=html'; return; }
+            return r.json().then(function(j) { throw j; });
+          })
+          .catch(function(err) {
+            message.textContent = 'Error: ' + (err.detail || err.message || JSON.stringify(err));
+            message.style.color = 'var(--danger)';
+          });
+      });
+    })();
+  </script>
+{% endblock %}

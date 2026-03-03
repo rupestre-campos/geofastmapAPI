@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Job {{ job_id }} – GeoFast API{% endblock %}
+{% block head %}
+  <style>
+    .job-status-badge {
+      display: inline-block;
+      padding: 0.35rem 0.75rem;
+      border-radius: var(--radius-sm);
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-transform: capitalize;
+    }
+    .job-status-pending { background: rgba(174, 124, 0, 0.2); color: #9e6a03; border: 1px solid rgba(174, 124, 0, 0.4); }
+    .job-status-running { background: rgba(47, 129, 247, 0.2); color: var(--accent); border: 1px solid rgba(47, 129, 247, 0.4); }
+    .job-status-replacing { background: rgba(47, 129, 247, 0.2); color: var(--accent); border: 1px solid rgba(47, 129, 247, 0.4); }
+    [data-theme="dark"] .job-status-pending { background: rgba(210, 153, 34, 0.2); color: #d4a72c; border-color: rgba(210, 153, 34, 0.4); }
+    [data-theme="dark"] .job-status-running,
+    [data-theme="dark"] .job-status-replacing { background: rgba(88, 166, 255, 0.2); color: #58a6ff; border-color: rgba(88, 166, 255, 0.4); }
+    .job-status-completed { background: rgba(63, 185, 80, 0.2); color: var(--success); border: 1px solid rgba(63, 185, 80, 0.3); }
+    .job-status-failed,
+    .job-status-cancelled { background: rgba(248, 81, 73, 0.15); color: var(--danger); border: 1px solid rgba(248, 81, 73, 0.3); }
+    .job-meta-table { width: 100%; max-width: 480px; border-collapse: collapse; font-size: 0.9rem; }
+    .job-meta-table th { text-align: left; padding: 0.5rem 0.75rem 0.5rem 0; font-weight: 500; color: var(--text-secondary); width: 10rem; }
+    .job-meta-table td { padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+    .job-message { padding: 0.75rem 1rem; border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.5rem; }
+    .job-message:empty { display: none; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Job status</h1>
+    <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> › Job <code>{{ job_id }}</code></p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Status</h2>
+    <p style="margin: 0 0 var(--space);">
+      <span class="job-status-badge job-status-{{ status }}">{{ status }}</span>
+    </p>
+    {% if message %}
+    <div class="job-message">{{ message }}</div>
+    {% endif %}
+    <table class="job-meta-table">
+      <tr>
+        <th>Collection</th>
+        <td><a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a></td>
+      </tr>
+      <tr>
+        <th>Job ID</th>
+        <td><code>{{ job_id }}</code></td>
+      </tr>
+      <tr>
+        <th>Items created</th>
+        <td>{{ items_created }}</td>
+      </tr>
+      <tr>
+        <th>Items failed</th>
+        <td>{{ items_failed }}</td>
+      </tr>
+      <tr>
+        <th>Created</th>
+        <td>{{ created_at }}</td>
+      </tr>
+      <tr>
+        <th>Updated</th>
+        <td>{{ updated_at }}</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Actions</h2>
+    <div class="btn-group">
+      <a href="{{ base }}/collections?f=html" class="btn">Return to collections</a>
+      <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn btn-primary">Back to collection</a>
+    </div>
+  </div>
+{% endblock %}
+{% block script %}
+  <script>
+    (function() {
+      var base = {{ base | tojson }};
+      var jobId = {{ job_id | tojson }};
+      var status = {{ status | tojson }};
+      var pollInterval = 3000;
+      if (status === 'pending' || status === 'running' || status === 'replacing') {
+        var t = setInterval(function() {
+          fetch(base + '/jobs/' + jobId, { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.json(); })
+            .then(function(job) {
+              if (job.status !== status) {
+                clearInterval(t);
+                window.location.reload();
+              }
+            })
+            .catch(function() {});
+        }, pollInterval);
+      }
+    })();
+  </script>
+{% endblock %}

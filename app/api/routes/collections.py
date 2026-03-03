@@ -62,6 +62,7 @@ async def list_collections(
     sortdesc: bool = Query(False, description="Sort descending."),
     limit: int | None = Query(None, ge=1, le=1000, description="Max collections per page."),
     offset: int = Query(0, ge=0, description="Number of collections to skip."),
+    has_static_tiles: bool = Query(False, description="If true, only list collections that have static tiles built (for map layer picker)."),
 ):
     base = _base_url(request)
     bbox_tuple: tuple[float, float, float, float] | None = None
@@ -83,6 +84,7 @@ async def list_collections(
         sortdesc=sortdesc,
         limit=limit,
         offset=offset,
+        has_static_tiles=has_static_tiles,
     )
     collections_out = []
     for item in items_list:

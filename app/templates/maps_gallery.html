@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Maps – GeoFast API{% endblock %}
+{% block head %}
+  <style>
+    .maps-gallery-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space); margin-bottom: var(--space-lg); }
+    .maps-gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-lg); }
+    .map-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; transition: border-color 0.15s; }
+    .map-card:hover { border-color: var(--text-secondary); }
+    .map-card-thumb { width: 100%; height: 140px; background: var(--bg-elevated); object-fit: cover; }
+    .map-card-body { padding: var(--space); flex: 1; display: flex; flex-direction: column; }
+    .map-card-title { font-weight: 600; margin: 0 0 0.35rem; font-size: 1rem; }
+    .map-card-desc { font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 var(--space); flex: 1; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .map-card-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .map-card-actions .btn { font-size: 0.85rem; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Maps</h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › Maps</p>
+  </header>
+
+  <div class="maps-gallery-header">
+    <p class="meta" style="margin:0;">User-created maps. Create a map to combine collections with custom colors and order.</p>
+    <a href="{{ base }}/maps/new?f=html" class="btn btn-primary">Create map</a>
+  </div>
+
+  {% if maps %}
+  <div class="maps-gallery-grid">
+    {% for m in maps %}
+    <article class="map-card">
+      {% if m.thumbnail %}
+      <img src="{{ m.thumbnail }}" alt="" class="map-card-thumb">
+      {% else %}
+      <div class="map-card-thumb" style="display:flex;align-items:center;justify-content:center;color:var(--text-secondary);font-size:0.9rem;">No thumbnail</div>
+      {% endif %}
+      <div class="map-card-body">
+        <h2 class="map-card-title">{{ m.name }}</h2>
+        {% if m.description %}
+        <p class="map-card-desc">{{ m.description[:120] }}{% if m.description|length > 120 %}…{% endif %}</p>
+        {% else %}
+        <p class="map-card-desc meta">No description</p>
+        {% endif %}
+        <div class="map-card-actions">
+          <a href="{{ base }}/maps/{{ m.id }}?f=html" class="btn btn-primary">View</a>
+          <a href="{{ base }}/maps/{{ m.id }}/edit?f=html" class="btn">Edit</a>
+        </div>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="card">
+    <p class="meta">No maps yet. <a href="{{ base }}/maps/new?f=html">Create your first map</a> to add collections, set colors and order, and save.</p>
+  </div>
+  {% endif %}
+{% endblock %}

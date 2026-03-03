@@ -83,6 +83,10 @@ def _redis_key(job_id: str) -> str:
     return f"geofast:job:{job_id}"
 
 
+def _jobs_by_collection_key(collection_id: str) -> str:
+    return f"geofast:jobs_by_collection:{collection_id}"
+
+
 def _create_job_redis(collection_id: str) -> JobInfo:
     import redis
     settings = get_settings()
@@ -101,6 +105,10 @@ def _create_job_redis(collection_id: str) -> JobInfo:
         "updated_at": job.updated_at.isoformat() + "Z",
     })
     r.expire(key, 86400 * 7)  # 7 days
+    coll_key = _jobs_by_collection_key(collection_id)
+    r.lpush(coll_key, job_id)
+    r.ltrim(coll_key, 0, 49)
+    r.expire(coll_key, 86400 * 7)
     return job
 
 
@@ -180,3 +188,33 @@ def update_job(
     if settings.bulk_queue_type == "redis":
         return _update_job_redis(job_id, status=status, message=message, items_created=items_created, items_failed=items_failed)
     return _update_job_memory(job_id, status=status, message=message, items_created=items_created, items_failed=items_failed)
+
+
+def list_jobs_for_collection(collection_id: str, limit: int = 20) -> list[JobInfo]:
+    """Return recent jobs for a collection (ongoing and recently completed), newest first."""
+    settings = get_settings()
+    if settings.bulk_queue_type == "redis":
+        return _list_jobs_for_collection_redis(collection_id, limit=limit)
+    return _list_jobs_for_collection_memory(collection_id, limit=limit)
+
+
+def _list_jobs_for_collection_memory(collection_id: str, limit: int) -> list[JobInfo]:
+    with _mem_lock:
+        jobs = [j for j in _mem_jobs.values() if j.collection_id == collection_id]
+    jobs.sort(key=lambda j: j.updated_at, reverse=True)
+    return jobs[:limit]
+
+
+def _list_jobs_for_collection_redis(collection_id: str, limit: int) -> list[JobInfo]:
+    import redis
+    settings = get_settings()
+    r = redis.from_url(settings.redis_url, decode_responses=True)
+    coll_key = _jobs_by_collection_key(collection_id)
+    job_ids = r.lrange(coll_key, 0, limit - 1)
+    jobs: list[JobInfo] = []
+    for jid in job_ids:
+        job = _get_job_redis(jid)
+        if job:
+            jobs.append(job)
+    jobs.sort(key=lambda j: j.updated_at, reverse=True)
+    return jobs[:limit]

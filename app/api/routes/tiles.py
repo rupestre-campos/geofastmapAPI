@@ -76,6 +76,7 @@ async def build_tiles(
             if age_seconds > 30 * 60:  # 30 minutes
                 clear_pending(collection_id)
             else:
+                update_tile_build_job(pending_job_id, message="Tile build")
                 return JSONResponse(
                     status_code=status.HTTP_202_ACCEPTED,
                     content={
@@ -86,6 +87,7 @@ async def build_tiles(
                     },
                 )
         else:
+            update_tile_build_job(pending_job_id, message="Tile build")
             return JSONResponse(
                 status_code=status.HTTP_202_ACCEPTED,
                 content={
@@ -112,6 +114,7 @@ async def build_tiles(
             },
         )
     job = create_tile_build_job(collection_id)
+    update_tile_build_job(job.job_id, message="Tile build")
     enqueued = enqueue_tile_build(collection_id, job.job_id)
     if not enqueued:
         # Race: another request set pending; return that job
@@ -571,8 +574,8 @@ async def get_tiles_dynamic(
             headers=cache_headers,
         )
 
-    # In-process PostGIS MVT (ids/properties only when worker not set)
-    layer_name = _mvt_layer_name(collection_id)
+    # In-process PostGIS MVT (ids/properties only when worker not set). Use collection_id so TileJSON vector_layers.id and static (tippecanoe) layer name match.
+    layer_name = collection_id
     max_features = settings.tiles_mvt_max_features
 
     if props_include:

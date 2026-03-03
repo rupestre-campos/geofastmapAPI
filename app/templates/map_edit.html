@@ -1,0 +1,614 @@
+{% extends "base.html" %}
+{% block title %}{% if map_id %}Edit map{% else %}Create map{% endif %} – GeoFast API{% endblock %}
+{% block head %}
+  <style>
+    #map.map-edit-map { min-height: 70vh; height: 70vh; width: 100%; box-sizing: border-box; }
+    .collection-search-wrap { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+    .collection-search-wrap input { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-size: 0.95rem; width: 100%; }
+    .collection-search-results { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); }
+    .collection-search-results:empty { display: none; }
+    .collection-search-item { display: block; width: 100%; padding: 8px 12px; text-align: left; border: none; background: none; color: var(--text); font-size: 0.9rem; cursor: pointer; border-bottom: 1px solid var(--border); }
+    .collection-search-item:last-child { border-bottom: none; }
+    .collection-search-item:hover { background: var(--bg-elevated); }
+    .layers-table-wrap { margin-top: var(--space); overflow-x: auto; }
+    .layers-table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .layers-table-wrap th, .layers-table-wrap td { padding: 6px 8px; text-align: left; border: 1px solid var(--border); background: var(--card); }
+    .layers-table-wrap th { font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+    .layers-table-wrap .drag-handle { cursor: grab; color: var(--text-secondary); padding: 0 4px; user-select: none; }
+    .layers-table-wrap .drag-handle:active { cursor: grabbing; }
+    .layers-table-wrap input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+    .layers-table-wrap input[type="number"], .layers-table-wrap input[type="range"] { width: 4em; padding: 2px 4px; }
+    .layers-table-wrap select { padding: 2px 4px; font-size: inherit; }
+    .layers-table-wrap .btn-remove-layer { padding: 2px 8px; font-size: 0.8rem; }
+    .map-popup { min-width: 160px; max-width: 320px; font-size: 0.85rem; color: #000; }
+    .map-popup-id { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
+    .map-popup-id a { color: #1967d2; }
+    .map-popup-row { margin-top: 0.25rem; word-break: break-word; color: #000; }
+    .map-popup-row strong { font-weight: 700; margin-right: 0.35rem; color: #000; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>{% if map_id %}Edit map{% else %}Create map{% endif %}</h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › <a href="{{ base }}/maps?f=html">Maps</a> › {% if map_id %}Edit{% else %}Create{% endif %}</p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Map details</h2>
+    <div class="form-row">
+      <label for="map-name">Name</label>
+      <input type="text" id="map-name" value="{{ map_name | e }}" placeholder="My map" maxlength="500" required>
+    </div>
+    <div class="form-row">
+      <label for="map-description">Description</label>
+      <textarea id="map-description" rows="3" placeholder="Optional description">{{ map_description | e }}</textarea>
+    </div>
+    <div class="form-row">
+      <label for="map-thumbnail">Thumbnail URL</label>
+      <input type="url" id="map-thumbnail" value="{{ map_thumbnail | e }}" placeholder="https://… (optional)">
+      <p class="meta">Optional image URL for the gallery card.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Map</h2>
+    <p class="meta">Only collections with static tiles built are listed. Click the search bar to list them; type to search. Add a collection to see it on the map. Edit style below.</p>
+    <div class="collection-search-wrap">
+      <input type="text" id="collection-search" placeholder="Search collections with static tiles… (click to list)" autocomplete="off">
+      <div id="collection-search-results" class="collection-search-results" aria-live="polite"></div>
+    </div>
+    <div id="map" class="map-container map-edit-map">
+      <div class="map-controls" style="position:absolute;top:8px;left:8px;z-index:10;">
+        <select id="map-basemap" title="Basemap">
+          <option value="osm">OpenStreetMap</option>
+          <option value="streets">Esri Streets</option>
+          <option value="satellite">Esri Satellite</option>
+          <option value="hybrid">Esri Hybrid</option>
+          <option value="google_satellite">Google Satellite</option>
+          <option value="google_hybrid">Google Hybrid</option>
+        </select>
+        <button type="button" class="btn btn-sm" id="btn-set-extent" title="Use current map view as default extent when opening this map">Set extent from current view</button>
+      </div>
+    </div>
+    <h2 class="card-title" style="margin-top:var(--space-lg);">Layer style</h2>
+    <p class="meta">Style each layer (loaded from collection default when added). Changes apply live and are saved with the map.</p>
+    <div class="layers-table-wrap" id="layers-table-wrap" style="display:none;">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Collection</th>
+            <th>Fill</th>
+            <th>Line</th>
+            <th>Fill op.</th>
+            <th>Line width</th>
+            <th>Pattern</th>
+            <th>Fill</th>
+            <th>Point</th>
+            <th>Pt size</th>
+            <th>Pt icon</th>
+            <th>Popup</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="layers-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="btn-group">
+      <button type="button" class="btn btn-primary" id="btn-save-map">Save map</button>
+      <a href="{{ base }}/maps?f=html" class="btn">Cancel</a>
+      {% if map_id %}
+      <a href="{{ base }}/maps/{{ map_id }}?f=html" class="btn">View map</a>
+      {% endif %}
+    </div>
+    <p id="map-save-message" class="meta" style="margin-top:0.5rem;"></p>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script>
+    (function() {
+      var base = {{ base | tojson }};
+      var mapId = {{ map_id | tojson }};
+      var googleKey = {{ google_maps_api_key | tojson }};
+      var initialLayers = {{ map_definition.layers | tojson if map_definition and map_definition.layers is defined else '[]' }};
+      if (!Array.isArray(initialLayers)) initialLayers = [];
+      var initialBbox = {{ map_definition.bbox | tojson if map_definition and map_definition.bbox is defined else 'null' }};
+      var initialBasemap = {{ map_definition.basemap | tojson if map_definition and map_definition.basemap is defined else 'null' }};
+
+      var DEFAULT_SPEC = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, pointColor: '#58a6ff', pointSize: 8, pointIcon: 'circle' };
+      var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
+      var pointFilter = ['==', ['geometry-type'], 'Point'];
+      var notPointFilter = ['!=', ['geometry-type'], 'Point'];
+
+      var state = { layers: [], bbox: initialBbox && initialBbox.length === 4 ? initialBbox.slice() : null, basemap: initialBasemap || null };
+      initialLayers.forEach(function(l) {
+        var spec = l.style_spec && typeof l.style_spec === 'object' ? Object.assign({}, DEFAULT_SPEC, l.style_spec) : (l.color ? { fillColor: l.color, lineColor: l.color, fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true } : Object.assign({}, DEFAULT_SPEC));
+        state.layers.push({
+          collection_id: l.collection_id || l.collectionId,
+          order: l.order != null ? l.order : state.layers.length,
+          style_spec: spec,
+          popup: l.popup === true
+        });
+      });
+
+      var map = null;
+      var BASEMAPS = {
+        osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] },
+        streets: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}'] },
+        satellite: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] },
+        hybrid: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], labels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}' },
+        google_satellite: { tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] },
+        google_hybrid: { tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] }
+      };
+      var mapStyle = {
+        version: 8,
+        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+        sources: { basemap: { type: 'raster', tiles: BASEMAPS.osm.tiles, tileSize: 256 } },
+        layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 }]
+      };
+      map = new maplibregl.Map({ container: 'map', style: mapStyle, center: [0, 20], zoom: 2, renderWorldCopies: false });
+      document.getElementById('map-basemap').onchange = function() {
+        state.basemap = this.value;
+        var b = BASEMAPS[this.value] || BASEMAPS.osm;
+        if (map.getSource('basemap')) map.getSource('basemap').setTiles(b.tiles);
+      };
+      document.getElementById('btn-set-extent').onclick = function() {
+        var b = map.getBounds();
+        if (b) state.bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      };
+
+      function sourceId(collectionId) { return 'layer-' + collectionId.replace(/[^a-zA-Z0-9_-]/g, '_'); }
+
+      function addPointLayers(sid, layerId, s) {
+        var ptColor = s.pointColor || DEFAULT_SPEC.pointColor;
+        var ptSize = Math.max(1, Math.min(40, s.pointSize != null ? s.pointSize : 8));
+        var ptIcon = s.pointIcon || 'circle';
+        var circleVisible = ptIcon === 'circle';
+        var symbolVisible = ptIcon === 'pin' || ptIcon === 'marker';
+        var circleOpt = { id: sid + '-circle', type: 'circle', source: sid, filter: pointFilter, paint: { 'circle-color': ptColor, 'circle-radius': ptSize, 'circle-stroke-width': 0 } };
+        if (layerId) circleOpt['source-layer'] = layerId;
+        map.addLayer(circleOpt);
+        map.setLayoutProperty(sid + '-circle', 'visibility', circleVisible ? 'visible' : 'none');
+        if (window._mapEditPinImageLoaded) {
+          var symOpt = { id: sid + '-symbol', type: 'symbol', source: sid, filter: pointFilter, layout: { 'icon-image': 'geofast-pin', 'icon-size': ptSize / 12, 'icon-allow-overlap': true }, paint: { 'icon-color': ptColor } };
+          if (layerId) symOpt['source-layer'] = layerId;
+          map.addLayer(symOpt);
+          map.setLayoutProperty(sid + '-symbol', 'visibility', symbolVisible ? 'visible' : 'none');
+        }
+      }
+
+      function addLayerToMap(collectionId, styleSpec, index) {
+        if (!map.getSource) return;
+        var sid = sourceId(collectionId);
+        if (map.getSource(sid)) { applyLayerStyleToMap(index); return; }
+        var s = styleSpec || DEFAULT_SPEC;
+        var fillColor = s.fillColor || DEFAULT_SPEC.fillColor;
+        var fillOpacity = s.fillOpacity != null ? s.fillOpacity : DEFAULT_SPEC.fillOpacity;
+        var lineColor = s.lineColor || DEFAULT_SPEC.lineColor;
+        var lineWidth = Math.max(0.5, s.lineWidth != null ? s.lineWidth : 1);
+        var lineOpacity = s.lineOpacity != null ? s.lineOpacity : 1;
+        var fillVisible = s.fillEnabled !== false;
+        var lineDash = LINE_DASH[s.linePattern] || LINE_DASH.solid;
+        function loadGeoJson() {
+          fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=300', { headers: { 'Accept': 'application/geo+json' } })
+            .then(function(r) { return r.json(); })
+            .then(function(fc) {
+              if (!fc.features || fc.features.length === 0) return;
+              if (map.getSource(sid)) return;
+              map.addSource(sid, { type: 'geojson', data: fc });
+              map.addLayer({ id: sid + '-fill', type: 'fill', source: sid, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } });
+              map.addLayer({ id: sid + '-line', type: 'line', source: sid, filter: notPointFilter, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } });
+              addPointLayers(sid, null, s);
+            })
+            .catch(function() {});
+        }
+        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles', { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(tilejson) {
+            var tiles = tilejson.tiles || [];
+            var hasStatic = tiles.length > 0 && tiles[0].indexOf('static') !== -1;
+            if (hasStatic) {
+              var tileUrl = tiles[0].indexOf('{z}') !== -1 ? tiles[0] : (base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf');
+              var layerId = tilejson.vector_layers && tilejson.vector_layers[0] ? tilejson.vector_layers[0].id : collectionId;
+              map.addSource(sid, { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
+              map.addLayer({ id: sid + '-fill', type: 'fill', source: sid, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } });
+              map.addLayer({ id: sid + '-line', type: 'line', source: sid, 'source-layer': layerId, filter: notPointFilter, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } });
+              addPointLayers(sid, layerId, s);
+            } else {
+              loadGeoJson();
+            }
+          })
+          .catch(function() { loadGeoJson(); });
+      }
+
+      function applyLayerStyleToMap(index) {
+        var layer = state.layers[index];
+        if (!layer || !map.getSource) return;
+        var sid = sourceId(layer.collection_id);
+        var s = layer.style_spec || DEFAULT_SPEC;
+        var fillColor = s.fillColor || DEFAULT_SPEC.fillColor;
+        var fillOpacity = s.fillOpacity != null ? s.fillOpacity : DEFAULT_SPEC.fillOpacity;
+        var lineColor = s.lineColor || DEFAULT_SPEC.lineColor;
+        var lineWidth = Math.max(0.5, s.lineWidth != null ? s.lineWidth : 1);
+        var lineOpacity = s.lineOpacity != null ? s.lineOpacity : 1;
+        var fillVisible = s.fillEnabled !== false;
+        var lineDash = LINE_DASH[s.linePattern] || LINE_DASH.solid;
+        var fillId = sid + '-fill', lineId = sid + '-line';
+        if (map.getLayer(fillId)) {
+          map.setLayoutProperty(fillId, 'visibility', fillVisible ? 'visible' : 'none');
+          map.setPaintProperty(fillId, 'fill-color', fillColor);
+          map.setPaintProperty(fillId, 'fill-opacity', fillOpacity);
+        }
+        if (map.getLayer(lineId)) {
+          map.setPaintProperty(lineId, 'line-color', lineColor);
+          map.setPaintProperty(lineId, 'line-width', lineWidth);
+          map.setPaintProperty(lineId, 'line-opacity', lineOpacity);
+          map.setPaintProperty(lineId, 'line-dasharray', lineDash);
+        }
+        var ptColor = s.pointColor || DEFAULT_SPEC.pointColor;
+        var ptSize = Math.max(1, Math.min(40, s.pointSize != null ? s.pointSize : 8));
+        var ptIcon = s.pointIcon || 'circle';
+        if (map.getLayer(sid + '-circle')) {
+          map.setPaintProperty(sid + '-circle', 'circle-color', ptColor);
+          map.setPaintProperty(sid + '-circle', 'circle-radius', ptSize);
+          map.setLayoutProperty(sid + '-circle', 'visibility', ptIcon === 'circle' ? 'visible' : 'none');
+        }
+        if (map.getLayer(sid + '-symbol')) {
+          map.setPaintProperty(sid + '-symbol', 'icon-color', ptColor);
+          map.setLayoutProperty(sid + '-symbol', 'icon-size', ptSize / 12);
+          map.setLayoutProperty(sid + '-symbol', 'visibility', (ptIcon === 'pin' || ptIcon === 'marker') ? 'visible' : 'none');
+        }
+      }
+
+      function syncMapFromState() {
+        state.layers.forEach(function(layer, idx) {
+          addLayerToMap(layer.collection_id, layer.style_spec, idx);
+        });
+      }
+
+      function escapeHtml(s) {
+        if (s == null) return '';
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+      }
+
+      function renderLayers() {
+        var wrap = document.getElementById('layers-table-wrap');
+        var tbody = document.getElementById('layers-tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        if (state.layers.length === 0) {
+          wrap.style.display = 'none';
+          return;
+        }
+        wrap.style.display = 'block';
+        state.layers.forEach(function(layer, idx) {
+          var s = layer.style_spec || DEFAULT_SPEC;
+          var tr = document.createElement('tr');
+          tr.dataset.index = idx;
+          tr.innerHTML =
+            '<td class="drag-handle" title="Drag to reorder">⋮⋮</td>' +
+            '<td><code>' + escapeHtml(layer.collection_id) + '</code></td>' +
+            '<td><input type="color" value="' + (s.fillColor || '#58a6ff') + '" data-index="' + idx + '" data-prop="fillColor" title="Fill color"></td>' +
+            '<td><input type="color" value="' + (s.lineColor || '#58a6ff') + '" data-index="' + idx + '" data-prop="lineColor" title="Line color"></td>' +
+            '<td><input type="range" min="0" max="100" value="' + Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100) + '" data-index="' + idx + '" data-prop="fillOpacity" title="Fill opacity"><span data-opacity-val="' + idx + '">' + Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100) + '%</span></td>' +
+            '<td><input type="number" min="0.5" max="20" step="0.5" value="' + (s.lineWidth != null ? s.lineWidth : 1) + '" data-index="' + idx + '" data-prop="lineWidth" style="width:3.5em"></td>' +
+            '<td><select data-index="' + idx + '" data-prop="linePattern"><option value="solid"' + (s.linePattern === 'solid' ? ' selected' : '') + '>Solid</option><option value="dashed"' + (s.linePattern === 'dashed' ? ' selected' : '') + '>Dashed</option><option value="dotted"' + (s.linePattern === 'dotted' ? ' selected' : '') + '>Dotted</option></select></td>' +
+            '<td><label><input type="checkbox" data-index="' + idx + '" data-prop="fillEnabled"' + (s.fillEnabled !== false ? ' checked' : '') + '> Fill</label></td>' +
+            '<td><input type="color" value="' + (s.pointColor || '#58a6ff') + '" data-index="' + idx + '" data-prop="pointColor" title="Point color"></td>' +
+            '<td><input type="number" min="1" max="40" step="1" value="' + (s.pointSize != null ? s.pointSize : 8) + '" data-index="' + idx + '" data-prop="pointSize" style="width:3em" title="Point size"></td>' +
+            '<td><select data-index="' + idx + '" data-prop="pointIcon"><option value="circle"' + (s.pointIcon === 'circle' ? ' selected' : '') + '>Circle</option><option value="pin"' + (s.pointIcon === 'pin' ? ' selected' : '') + '>Pin</option><option value="marker"' + (s.pointIcon === 'marker' ? ' selected' : '') + '>Marker</option></select></td>' +
+            '<td><label><input type="checkbox" data-index="' + idx + '" data-prop="popup"' + (layer.popup ? ' checked' : '') + ' title="Show popup on click"> Popup</label></td>' +
+            '<td><button type="button" class="btn btn-danger btn-sm btn-remove-layer" data-index="' + idx + '">Remove</button></td>';
+          tbody.appendChild(tr);
+        });
+        tbody.querySelectorAll('.btn-remove-layer').forEach(function(btn) {
+          btn.onclick = function() {
+            var i = parseInt(this.dataset.index, 10);
+            var sid = sourceId(state.layers[i].collection_id);
+            state.layers.splice(i, 1);
+            if (map.getSource(sid)) {
+              if (map.getLayer(sid + '-symbol')) map.removeLayer(sid + '-symbol');
+              if (map.getLayer(sid + '-circle')) map.removeLayer(sid + '-circle');
+              if (map.getLayer(sid + '-line')) map.removeLayer(sid + '-line');
+              if (map.getLayer(sid + '-fill')) map.removeLayer(sid + '-fill');
+              map.removeSource(sid);
+            }
+            renderLayers();
+          };
+        });
+        tbody.querySelectorAll('input[type="color"]').forEach(function(inp) {
+          inp.oninput = function() {
+            var i = parseInt(this.dataset.index, 10);
+            var prop = this.dataset.prop;
+            if (!state.layers[i].style_spec) state.layers[i].style_spec = Object.assign({}, DEFAULT_SPEC);
+            state.layers[i].style_spec[prop] = this.value;
+            applyLayerStyleToMap(i);
+          };
+        });
+        tbody.querySelectorAll('input[type="range"]').forEach(function(inp) {
+          inp.oninput = function() {
+            var i = parseInt(this.dataset.index, 10);
+            var val = parseInt(this.value, 10) / 100;
+            if (!state.layers[i].style_spec) state.layers[i].style_spec = Object.assign({}, DEFAULT_SPEC);
+            state.layers[i].style_spec.fillOpacity = val;
+            var span = tbody.querySelector('[data-opacity-val="' + i + '"]');
+            if (span) span.textContent = Math.round(val * 100) + '%';
+            applyLayerStyleToMap(i);
+          };
+        });
+        tbody.querySelectorAll('input[type="number"]').forEach(function(inp) {
+          inp.oninput = function() {
+            var i = parseInt(this.dataset.index, 10);
+            var val = parseFloat(this.value);
+            if (!state.layers[i].style_spec) state.layers[i].style_spec = Object.assign({}, DEFAULT_SPEC);
+            if (this.dataset.prop === 'lineWidth') state.layers[i].style_spec.lineWidth = isNaN(val) ? 1 : Math.max(0.5, Math.min(20, val));
+            if (this.dataset.prop === 'pointSize') state.layers[i].style_spec.pointSize = isNaN(val) ? 8 : Math.max(1, Math.min(40, val));
+            applyLayerStyleToMap(i);
+          };
+        });
+        tbody.querySelectorAll('select[data-prop="linePattern"]').forEach(function(sel) {
+          sel.onchange = function() {
+            var i = parseInt(this.dataset.index, 10);
+            if (!state.layers[i].style_spec) state.layers[i].style_spec = Object.assign({}, DEFAULT_SPEC);
+            state.layers[i].style_spec.linePattern = this.value;
+            applyLayerStyleToMap(i);
+          };
+        });
+        tbody.querySelectorAll('input[type="checkbox"][data-prop="fillEnabled"]').forEach(function(cb) {
+          cb.onchange = function() {
+            var i = parseInt(this.dataset.index, 10);
+            if (!state.layers[i].style_spec) state.layers[i].style_spec = Object.assign({}, DEFAULT_SPEC);
+            state.layers[i].style_spec.fillEnabled = this.checked;
+            applyLayerStyleToMap(i);
+          };
+        });
+        tbody.querySelectorAll('select[data-prop="pointIcon"]').forEach(function(sel) {
+          sel.onchange = function() {
+            var i = parseInt(this.dataset.index, 10);
+            if (!state.layers[i].style_spec) state.layers[i].style_spec = Object.assign({}, DEFAULT_SPEC);
+            state.layers[i].style_spec.pointIcon = this.value;
+            applyLayerStyleToMap(i);
+          };
+        });
+        tbody.querySelectorAll('input[type="checkbox"][data-prop="popup"]').forEach(function(cb) {
+          cb.onchange = function() {
+            var i = parseInt(this.dataset.index, 10);
+            state.layers[i].popup = this.checked;
+          };
+        });
+        setupDragAndDrop();
+      }
+
+      function setupDragAndDrop() {
+        var tbody = document.getElementById('layers-tbody');
+        if (!tbody) return;
+        var dragged = null;
+        tbody.querySelectorAll('.drag-handle').forEach(function(handle) {
+          handle.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            dragged = handle.closest('tr');
+            if (dragged) dragged.classList.add('dragging');
+          });
+        });
+        document.addEventListener('mouseup', function() {
+          if (dragged) { dragged.classList.remove('dragging'); dragged = null; }
+        });
+        document.addEventListener('mousemove', function(e) {
+          if (!dragged) return;
+          var target = e.target.closest('tbody tr');
+          if (target && target.parentNode === tbody && target !== dragged) {
+            var idx = Array.prototype.indexOf.call(tbody.children, target);
+            var dragIdx = Array.prototype.indexOf.call(tbody.children, dragged);
+            if (idx >= 0 && dragIdx >= 0) {
+              var item = state.layers.splice(dragIdx, 1)[0];
+              state.layers.splice(idx, 0, item);
+              state.layers.forEach(function(layer) {
+                var sid = sourceId(layer.collection_id);
+                if (map.getSource(sid)) {
+                  if (map.getLayer(sid + '-symbol')) map.removeLayer(sid + '-symbol');
+                  if (map.getLayer(sid + '-circle')) map.removeLayer(sid + '-circle');
+                  if (map.getLayer(sid + '-line')) map.removeLayer(sid + '-line');
+                  if (map.getLayer(sid + '-fill')) map.removeLayer(sid + '-fill');
+                  map.removeSource(sid);
+                }
+              });
+              syncMapFromState();
+              renderLayers();
+              dragged = null;
+            }
+          }
+        });
+      }
+
+      function fetchFirst10Collections() {
+        var resultsEl = document.getElementById('collection-search-results');
+        resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">Loading…</div>';
+        fetch(base + '/collections?limit=10&has_static_tiles=true', { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var list = data.collections || [];
+            var existing = state.layers.map(function(l) { return l.collection_id; });
+            list = list.filter(function(c) { return existing.indexOf(c.id) === -1; });
+            resultsEl.innerHTML = '';
+            list.forEach(function(c) {
+              var btn = document.createElement('button');
+              btn.type = 'button';
+              btn.className = 'collection-search-item';
+              btn.textContent = (c.title || c.id) + (c.id !== (c.title || c.id) ? ' (' + c.id + ')' : '');
+              btn.onclick = function() { addCollection(c.id); resultsEl.innerHTML = ''; document.getElementById('collection-search').value = ''; };
+              resultsEl.appendChild(btn);
+            });
+            if (list.length === 0) resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">No collections with static tiles (or already added). Build static tiles on a collection edit page first.</div>';
+          })
+          .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Load failed.</div>'; });
+      }
+
+      function addCollection(collectionId) {
+        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/styles', { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var list = data.styles || [];
+            var defaultStyle = list.filter(function(s) { return s.is_default; })[0] || list[0];
+            var spec = defaultStyle && defaultStyle.style_spec ? Object.assign({}, DEFAULT_SPEC, defaultStyle.style_spec) : Object.assign({}, DEFAULT_SPEC);
+            state.layers.push({ collection_id: collectionId, order: state.layers.length, style_spec: spec });
+            addLayerToMap(collectionId, spec, state.layers.length - 1);
+            renderLayers();
+          })
+          .catch(function() {
+            state.layers.push({ collection_id: collectionId, order: state.layers.length, style_spec: Object.assign({}, DEFAULT_SPEC) });
+            addLayerToMap(collectionId, null, state.layers.length - 1);
+            renderLayers();
+          });
+      }
+
+      var searchTimeout = null;
+      document.getElementById('collection-search').onfocus = function() {
+        var resultsEl = document.getElementById('collection-search-results');
+        if (resultsEl.children.length === 0) fetchFirst10Collections();
+      };
+      document.getElementById('collection-search').oninput = function() {
+        var q = this.value.trim();
+        var resultsEl = document.getElementById('collection-search-results');
+        clearTimeout(searchTimeout);
+        if (!q) { fetchFirst10Collections(); return; }
+        searchTimeout = setTimeout(function() {
+          resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">Searching…</div>';
+          fetch(base + '/collections?limit=20&has_static_tiles=true&q=' + encodeURIComponent(q), { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+              var list = data.collections || [];
+              var existing = state.layers.map(function(l) { return l.collection_id; });
+              list = list.filter(function(c) { return existing.indexOf(c.id) === -1; });
+              resultsEl.innerHTML = '';
+              list.forEach(function(c) {
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'collection-search-item';
+                btn.textContent = (c.title || c.id) + (c.id !== (c.title || c.id) ? ' (' + c.id + ')' : '');
+                btn.onclick = function() { addCollection(c.id); resultsEl.innerHTML = ''; document.getElementById('collection-search').value = ''; };
+                resultsEl.appendChild(btn);
+              });
+              if (list.length === 0) resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">No collections with static tiles match, or already added.</div>';
+            })
+            .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Search failed.</div>'; });
+        }, 220);
+      };
+
+      document.getElementById('btn-save-map').onclick = function() {
+        var name = document.getElementById('map-name').value.trim();
+        if (!name) { document.getElementById('map-save-message').textContent = 'Enter a name.'; return; }
+        var msgEl = document.getElementById('map-save-message');
+        msgEl.textContent = 'Saving…';
+        var payload = {
+          name: name,
+          description: document.getElementById('map-description').value.trim() || null,
+          thumbnail: document.getElementById('map-thumbnail').value.trim() || null,
+          definition: {
+            layers: state.layers.map(function(l, i) {
+              var spec = l.style_spec ? {
+                fillColor: l.style_spec.fillColor,
+                lineColor: l.style_spec.lineColor,
+                fillOpacity: l.style_spec.fillOpacity,
+                lineOpacity: l.style_spec.lineOpacity,
+                lineWidth: l.style_spec.lineWidth,
+                linePattern: l.style_spec.linePattern || 'solid',
+                fillEnabled: l.style_spec.fillEnabled !== false,
+                pointColor: l.style_spec.pointColor,
+                pointSize: l.style_spec.pointSize,
+                pointIcon: l.style_spec.pointIcon || 'circle'
+              } : null;
+              return { collection_id: l.collection_id, order: i, style_spec: spec, popup: l.popup === true };
+            }),
+            bbox: state.bbox,
+            basemap: state.basemap || null
+          }
+        };
+        var method = mapId ? 'PUT' : 'POST';
+        var url = mapId ? base + '/maps/' + mapId : base + '/maps';
+        fetch(url, { method: method, headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(payload) })
+          .then(function(r) {
+            if (!r.ok) return r.json().then(function(j) { throw j; });
+            return r.json();
+          })
+          .then(function(data) {
+            msgEl.textContent = 'Saved.';
+            msgEl.style.color = 'var(--success)';
+            if (!mapId) window.location.href = base + '/maps/' + data.id + '/edit?f=html';
+          })
+          .catch(function(e) {
+            msgEl.textContent = 'Error: ' + (e.detail || e.message || JSON.stringify(e));
+            msgEl.style.color = 'var(--danger)';
+          });
+      };
+
+      function getPopupLayerIds() {
+        var ids = [];
+        state.layers.forEach(function(layer) {
+          if (!layer.popup) return;
+          var sid = sourceId(layer.collection_id);
+          ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {
+            if (map.getLayer(sid + suf)) ids.push(sid + suf);
+          });
+        });
+        return ids;
+      }
+
+      function popupHtmlForFeature(feat, collectionId) {
+        var props = feat.properties || {};
+        var id = props.id != null ? String(props.id) : (feat.id != null ? String(feat.id) : '—');
+        var featureUrl = base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(id) + '?f=html';
+        var parts = ['<div class="map-popup">', '<div class="map-popup-id"><strong>ID</strong> <a href="' + featureUrl + '">' + escapeHtml(id) + '</a></div>'];
+        Object.keys(props).sort().forEach(function(k) {
+          if (k === 'id') return;
+          var v = props[k];
+          var val = v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+          parts.push('<div class="map-popup-row"><strong>' + escapeHtml(k) + '</strong> ' + escapeHtml(val) + '</div>');
+        });
+        parts.push('</div>');
+        return parts.join('');
+      }
+
+      function collectionIdFromLayerId(mapLayerId) {
+        var sid = mapLayerId.replace(/-fill$|-line$|-circle$|-symbol$/, '');
+        for (var i = 0; i < state.layers.length; i++) {
+          if (sourceId(state.layers[i].collection_id) === sid && state.layers[i].popup) return state.layers[i].collection_id;
+        }
+        return null;
+      }
+
+      map.on('load', function() {
+        map.resize();
+        if (state.bbox && state.bbox.length === 4) {
+          map.fitBounds([[state.bbox[0], state.bbox[1]], [state.bbox[2], state.bbox[3]]], { padding: 60 });
+        }
+        if (state.basemap && BASEMAPS[state.basemap]) {
+          document.getElementById('map-basemap').value = state.basemap;
+          var b = BASEMAPS[state.basemap];
+          if (map.getSource('basemap')) map.getSource('basemap').setTiles(b.tiles);
+        }
+        var pinSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="36" viewBox="0 0 24 36"><path fill="%2358a6ff" stroke="%23111" stroke-width="1" d="M12 0C5.4 0 0 5.4 0 12c0 9 12 24 12 24s12-15 12-24C24 5.4 18.6 0 12 0z"/></svg>';
+        map.loadImage('data:image/svg+xml,' + encodeURIComponent(pinSvg), function(err, img) {
+          if (!err && img) { map.addImage('geofast-pin', img); window._mapEditPinImageLoaded = true; }
+        });
+        syncMapFromState();
+        var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false });
+        map.on('click', function(e) {
+          var layerIds = getPopupLayerIds();
+          if (layerIds.length === 0) return;
+          var features = map.queryRenderedFeatures(e.point, { layers: layerIds });
+          var feat = features && features[0];
+          if (!feat) return;
+          var cid = collectionIdFromLayerId(feat.layer.id);
+          if (cid) popup.setLngLat(e.lngLat).setHTML(popupHtmlForFeature(feat, cid)).addTo(map);
+        });
+      });
+      renderLayers();
+    })();
+  </script>
+{% endblock %}

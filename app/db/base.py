@@ -8,5 +8,5 @@ class Base(DeclarativeBase):
 
 
 # Import models here so Alembic can discover them via Base.metadata
-from app.models import collection, collection_tiles, feature, style  # noqa: E402,F401
+from app.models import api_landing, collection, collection_tiles, feature, map as map_model, style  # noqa: E402,F401
 

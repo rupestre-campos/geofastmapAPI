@@ -44,9 +44,10 @@ async def ensure_features_partition(db: AsyncSession, collection_id: str) -> Non
     exists = await _partition_exists_for(db, collection_id)
     if not exists:
         name = _safe_partition_name(collection_id)
+        # PostgreSQL does not allow bound parameters in DDL; escape collection_id for literal.
+        cid_escaped = collection_id.replace("'", "''")
         await db.execute(
-            text(f'CREATE TABLE "{name}" PARTITION OF features FOR VALUES IN (:cid)'),
-            {"cid": collection_id},
+            text(f'CREATE TABLE "{name}" PARTITION OF features FOR VALUES IN (\'{cid_escaped}\')'),
         )
 
     await db.execute(

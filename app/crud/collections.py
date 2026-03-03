@@ -12,6 +12,7 @@ from app.crud import collection_tiles as tiles_crud
 from app.crud import styles as styles_crud
 from app.db.features_partitions import ensure_features_partition
 from app.models.collection import Collection
+from app.models.collection_tiles import CollectionTiles
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
 
 
@@ -42,14 +43,23 @@ async def list_collections(
     sortdesc: bool = False,
     limit: int | None = None,
     offset: int = 0,
+    has_static_tiles: bool = False,
 ) -> Tuple[Sequence[Collection], int]:
     """
     List collections with optional full-text search (id, title, description),
     bbox filter (collections whose extent intersects bbox), sort, and pagination.
+    When has_static_tiles=True, only collections that have static tiles built are returned.
     Returns (collections, total_count).
     """
     base = select(Collection)
     count_base = select(func.count()).select_from(Collection)
+
+    if has_static_tiles:
+        static_ids = select(CollectionTiles.collection_id).where(
+            CollectionTiles.pmtiles_path.isnot(None)
+        )
+        base = base.where(Collection.id.in_(static_ids))
+        count_base = count_base.where(Collection.id.in_(static_ids))
 
     if q and q.strip():
         pattern = f"%{_like_escape(q.strip())}%"

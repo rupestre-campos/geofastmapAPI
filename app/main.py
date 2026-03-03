@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.routes import collection_styles, collections, items, jobs, processes, root, styles, tiles
+from app.api.routes import collection_styles, collections, items, jobs, maps, processes, root, styles, tiles
 from app.core.config import get_settings
 from app.services.bulk_queue import start_memory_consumer
 from app.services.bulk_worker import process_bulk_job
@@ -44,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(styles.router, prefix="/styles", tags=["styles"])
     app.include_router(processes.router, prefix="/processes", tags=["processes"])
     app.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
+    app.include_router(maps.router, prefix="/maps", tags=["maps"])
 
     return app
 

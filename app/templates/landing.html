@@ -1,12 +1,37 @@
 {% extends "base.html" %}
-{% block title %}{{ title }} – GeoFast API{% endblock %}
+{% block title %}{{ api_title }} – GeoFast API{% endblock %}
+{% block head %}
+  <style>
+    .landing-hero { text-align: center; padding: var(--space-lg) 0; margin-bottom: var(--space-lg); }
+    .landing-hero h1 { font-size: 2rem; margin: 0 0 0.5rem; font-weight: 700; }
+    .landing-hero .lead { font-size: 1.1rem; color: var(--text-secondary); max-width: 560px; margin: 0 auto 1.5rem; line-height: 1.6; }
+    .landing-cta { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.75rem 1.5rem; font-size: 1rem; font-weight: 600; border-radius: var(--radius); background: var(--accent); color: #fff; border: none; cursor: pointer; text-decoration: none; margin-bottom: 0.5rem; }
+    .landing-cta:hover { background: var(--accent-hover); color: #fff; text-decoration: none; }
+    .landing-section { margin-top: var(--space-lg); padding-top: var(--space-lg); border-top: 1px solid var(--border); }
+    .landing-section h2 { font-size: 1.15rem; margin-bottom: 0.5rem; color: var(--text-secondary); font-weight: 600; }
+    .landing-section .content { color: var(--text); white-space: pre-wrap; line-height: 1.6; }
+    .landing-links-card .links { list-style: none; padding: 0; margin: 0; }
+    .landing-links-card .links li { padding: 0.4rem 0; border-bottom: 1px solid var(--border); }
+    .landing-links-card .links li:last-child { border-bottom: none; }
+    .landing-edit-wrap { margin-top: var(--space-lg); }
+    .landing-edit-wrap .btn { font-size: 0.9rem; }
+  </style>
+{% endblock %}
 {% block content %}
-  <header class="page-header">
-    <h1>{{ title }}</h1>
-    <p class="meta">{{ description }}</p>
-  </header>
-  <div class="card">
-    <h2 class="card-title">Explore the API</h2>
+  <div class="landing-hero">
+    <h1>{{ api_title }}</h1>
+    {% if api_description %}
+    <p class="lead">{{ api_description }}</p>
+    {% endif %}
+    <div style="display:flex; flex-wrap:wrap; gap:0.5rem; justify-content:center;">
+      <a href="{{ base }}/collections?f=html" class="landing-cta">Browse collections</a>
+      <a href="{{ base }}/maps?f=html" class="landing-cta" style="background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">Maps</a>
+      <a href="{{ base }}/style-editor?f=html" class="landing-cta" style="background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">Style editor</a>
+    </div>
+  </div>
+
+  <div class="card landing-links-card">
+    <h2 class="card-title">API links</h2>
     <ul class="links">
       {% for link in links %}
       <li>
@@ -15,5 +40,17 @@
       </li>
       {% endfor %}
     </ul>
+  </div>
+
+  {% if api_contact %}
+  <div class="card landing-section">
+    <h2>Contact &amp; owner</h2>
+    <div class="content">{{ api_contact }}</div>
+  </div>
+  {% endif %}
+
+  <div class="landing-edit-wrap">
+    <a href="{{ base }}/api-info/edit?f=html" class="btn">Edit API info</a>
+    <span class="meta" style="margin-left:0.5rem;">Change title, description, and contact without redeploying.</span>
   </div>
 {% endblock %}

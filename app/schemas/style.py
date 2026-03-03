@@ -16,6 +16,9 @@ def default_style_spec() -> dict:
         "lineWidth": 1.0,
         "linePattern": "solid",
         "fillEnabled": True,
+        "pointColor": "#58a6ff",
+        "pointSize": 8.0,
+        "pointIcon": "circle",
     }
 
 
@@ -29,6 +32,9 @@ class StyleSpec(BaseModel):
     lineWidth: float = Field(default=1.0, ge=0.5, le=20)
     linePattern: str = Field(default="solid", description="solid | dashed | dotted")
     fillEnabled: bool = Field(default=True)
+    pointColor: str = Field(default="#58a6ff", description="Point/circle color hex")
+    pointSize: float = Field(default=8.0, ge=1, le=40, description="Point radius in pixels")
+    pointIcon: str = Field(default="circle", description="circle | pin | marker")
 
 
 class StyleBase(BaseModel):

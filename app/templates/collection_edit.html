@@ -41,6 +41,8 @@
     .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
     .save-style-form .vector-style-label { font-weight: 600; margin-right: 4px; }
     .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+    #jobs-table-wrap { max-height: 320px; overflow: auto; -webkit-overflow-scrolling: touch; }
+    #jobs-table-wrap table { margin: 0; }
   </style>
 {% endblock %}
 {% block content %}
@@ -177,6 +179,30 @@
       <button type="button" class="btn btn-danger" id="btn-delete-collection">Delete collection</button>
     </div>
     <p class="meta" id="tiles-hint" style="display:none">Static tiles not built. Click <strong>Build static tiles</strong> to compute.</p>
+    <p id="tile-build-result" class="meta" style="display:none; margin-top: 0.5rem;"></p>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Jobs for this collection</h2>
+    <p class="meta">Recent and ongoing jobs (bulk import, static tile build). Links stay for a while after completion.</p>
+    <div id="jobs-table-wrap">
+      <p id="jobs-loading" class="meta">Loading…</p>
+      <table id="jobs-table" style="display:none">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Job</th>
+            <th>Status</th>
+            <th>Message</th>
+            <th>Items</th>
+            <th>Created</th>
+            <th>Updated</th>
+          </tr>
+        </thead>
+        <tbody id="jobs-tbody"></tbody>
+      </table>
+      <p id="jobs-empty" class="meta" style="display:none">No jobs for this collection yet.</p>
+    </div>
   </div>
 {% endblock %}
 {% block script %}
@@ -766,8 +792,21 @@
     document.getElementById('btn-delete-tiles').style.display = hasStaticTiles ? '' : 'none';
     document.getElementById('tiles-hint').style.display = hasStaticTiles ? 'none' : '';
     document.getElementById('btn-build-tiles').onclick = function() {
+      var resultEl = document.getElementById('tile-build-result');
+      resultEl.style.display = 'none';
+      resultEl.innerHTML = '';
       fetch(base + '/collections/' + collectionId + '/tiles/build', { method: 'POST', headers: { 'Accept': 'application/json' } })
-        .then(r => r.json()).then(d => alert(d.message || JSON.stringify(d))).catch(e => alert('Error: ' + e));
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.job_id) {
+            resultEl.innerHTML = (d.message || 'Tile build queued.') + ' <a href="' + base + '/jobs/' + d.job_id + '?f=html">Check job status →</a>';
+            resultEl.style.display = 'block';
+            if (window.refreshCollectionJobs) window.refreshCollectionJobs();
+          } else {
+            alert(d.message || JSON.stringify(d));
+          }
+        })
+        .catch(function(e) { resultEl.textContent = 'Error: ' + (e.detail || e.message || e); resultEl.style.display = 'block'; });
     };
     document.getElementById('btn-delete-tiles').onclick = function() {
       if (!confirm('Delete static tiles for this collection?')) return;
@@ -791,6 +830,74 @@
         .then(r => { if (r.ok) location.href = base + '/collections?f=html'; else return r.json().then(j => Promise.reject(j)); })
         .catch(e => alert('Error: ' + (e.detail || e.message || JSON.stringify(e))));
     };
+
+    (function jobsTable() {
+      var loadingEl = document.getElementById('jobs-loading');
+      var tableEl = document.getElementById('jobs-table');
+      var tbodyEl = document.getElementById('jobs-tbody');
+      var emptyEl = document.getElementById('jobs-empty');
+      var refreshTimer = null;
+      var REFRESH_MS = 4000;
+
+      function esc(s) {
+          if (s == null || s === undefined) return '';
+          var d = document.createElement('div');
+          d.textContent = s;
+          return d.innerHTML;
+        }
+      function jobType(j) {
+        var status = (j.status || '').toLowerCase();
+        var msg = (j.message || '').toLowerCase();
+        var hasItems = (j.items_created || 0) > 0 || (j.items_failed || 0) > 0;
+        if (status === 'replacing' || hasItems) return 'Bulk import';
+        if (status === 'building' || status === 'running' && !hasItems || msg.indexOf('tile') !== -1 || msg.indexOf('build') !== -1) return 'Tile build';
+        return 'Bulk import';
+      }
+      function renderJobs(jobs) {
+        if (!jobs || jobs.length === 0) {
+          loadingEl.style.display = 'none';
+          tableEl.style.display = 'none';
+          emptyEl.style.display = 'block';
+          return false;
+        }
+        loadingEl.style.display = 'none';
+        emptyEl.style.display = 'none';
+        tableEl.style.display = 'table';
+        tbodyEl.innerHTML = jobs.map(function(j) {
+          var typeLabel = jobType(j);
+          var itemsText = (j.items_created || j.items_failed) ? (j.items_created || 0) + ' created, ' + (j.items_failed || 0) + ' failed' : '—';
+          var msg = (j.message || '').substring(0, 60);
+          if ((j.message || '').length > 60) msg += '…';
+          return '<tr><td>' + esc(typeLabel) + '</td><td><a href="' + base + '/jobs/' + encodeURIComponent(j.job_id) + '?f=html">' + esc(j.job_id) + '</a></td><td>' + esc(j.status) + '</td><td>' + esc(msg || '—') + '</td><td>' + esc(itemsText) + '</td><td>' + esc(j.created_at || '—') + '</td><td>' + esc(j.updated_at || '—') + '</td></tr>';
+        }).join('');
+        var hasActive = jobs.some(function(j) { return j.status === 'pending' || j.status === 'running' || j.status === 'replacing'; });
+        return hasActive;
+      }
+
+      function load() {
+        fetch(base + '/jobs?collection_id=' + encodeURIComponent(collectionId), { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            var hasActive = renderJobs(d.jobs || []);
+            if (hasActive && !refreshTimer) {
+              refreshTimer = setInterval(load, REFRESH_MS);
+            } else if (!hasActive && refreshTimer) {
+              clearInterval(refreshTimer);
+              refreshTimer = null;
+            }
+          })
+          .catch(function() {
+            loadingEl.style.display = 'none';
+            tableEl.style.display = 'none';
+            emptyEl.textContent = 'Could not load jobs.';
+            emptyEl.style.display = 'block';
+          });
+      }
+
+      load();
+      window.refreshCollectionJobs = load;
+    })();
+
     document.getElementById('form-bulk-upload').onsubmit = function(e) {
       e.preventDefault();
       var file = document.getElementById('bulk-file').files[0];
@@ -805,7 +912,7 @@
       resultEl.textContent = 'Uploading…';
       fetch(base + '/collections/' + collectionId + '/items/bulk', { method: 'POST', body: formData, headers: { 'Accept': 'application/json' } })
         .then(r => r.json())
-        .then(function(d) { resultEl.textContent = ''; successEl.innerHTML = 'Import queued. <a href="' + base + '/jobs/' + d.job_id + '">Check job status →</a>'; successEl.style.display = 'block'; })
+        .then(function(d) { resultEl.textContent = ''; successEl.innerHTML = 'Import queued. <a href="' + base + '/jobs/' + d.job_id + '?f=html">Check job status →</a>'; successEl.style.display = 'block'; if (window.refreshCollectionJobs) window.refreshCollectionJobs(); })
         .catch(function(e) { resultEl.textContent = 'Error: ' + (e.detail || e.message || e); });
     };
   </script>

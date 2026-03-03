@@ -1,0 +1,859 @@
+{% extends "base.html" %}
+{% block title %}Style editor – GeoFast API{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
+  <style>
+    .style-editor-map .maplibregl-ctrl-top-left { padding-top: 40px; }
+    .layer-style-collapsible { margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); }
+    .layer-style-collapsible summary { padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 0.9rem; color: var(--text-secondary); display: flex; align-items: center; gap: 10px; list-style: none; user-select: none; }
+    .layer-style-collapsible summary::-webkit-details-marker { display: none; }
+    .layer-style-collapsible summary::before { content: '▶'; font-size: 0.7rem; transition: transform 0.15s; }
+    .layer-style-collapsible[open] summary::before { transform: rotate(90deg); }
+    .layer-style-legend { width: 28px; height: 18px; border-radius: 3px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 0.85rem; }
+    .vector-style-panel .vector-style-label { font-weight: 600; margin-right: 4px; color: var(--text-secondary); }
+    .vector-style-panel label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+    .vector-style-panel input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+    .vector-style-sep { color: var(--text-secondary); margin: 0 4px; }
+    .vector-style-load-wrap { position: relative; display: inline-flex; vertical-align: middle; }
+    .vector-style-load-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); cursor: pointer; font-size: inherit; min-width: 120px; }
+    .vector-style-load-trigger:hover { border-color: var(--text-secondary); }
+    .vector-style-load-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-load-label-text { flex: 1; text-align: left; }
+    .vector-style-load-list { position: absolute; top: 100%; left: 0; margin-top: 2px; min-width: 180px; max-height: 240px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 50; display: none; }
+    .vector-style-load-list.open { display: block; }
+    .vector-style-load-group-label { padding: 4px 8px; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
+    .vector-style-load-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; font-size: 0.85rem; border: none; background: none; width: 100%; text-align: left; }
+    .vector-style-load-item:hover { background: var(--bg-elevated); }
+    .vector-style-load-item-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-load-item-label { flex: 1; }
+    .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
+    .save-style-form .vector-style-label { font-weight: 600; margin-right: 4px; }
+    .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+    .collection-search-wrap { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+    .collection-search-wrap input { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-size: 0.95rem; }
+    .collection-search-results { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); }
+    .collection-search-results:empty { display: none; }
+    .collection-search-item { display: block; width: 100%; padding: 8px 12px; text-align: left; border: none; background: none; color: var(--text); font-size: 0.9rem; cursor: pointer; border-bottom: 1px solid var(--border); }
+    .collection-search-item:last-child { border-bottom: none; }
+    .collection-search-item:hover { background: var(--bg-elevated); }
+    .collection-search-item strong { display: block; }
+    .collection-search-item .meta { font-size: 0.8rem; color: var(--text-secondary); }
+    .layers-table-wrap { margin-bottom: 10px; overflow-x: auto; }
+    .layers-table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .layers-table-wrap th, .layers-table-wrap td { padding: 8px 10px; text-align: left; border: 1px solid var(--border); background: var(--card); }
+    .layers-table-wrap th { font-weight: 600; color: var(--text-secondary); }
+    .layers-table-wrap tr.selected td { background: var(--bg-elevated); }
+    .layers-table-wrap tr:hover td { background: var(--bg-elevated); }
+    .layers-table-wrap tr { cursor: pointer; }
+    .layers-table-wrap tr.dragging { opacity: 0.6; }
+    .layers-table-wrap tr.drag-over { border-top: 2px solid var(--accent); }
+    .layers-table-wrap .drag-handle { cursor: grab; color: var(--text-secondary); padding: 0 6px; user-select: none; }
+    .layers-table-wrap .drag-handle:active { cursor: grabbing; }
+    .layers-table-legend { width: 28px; height: 18px; border-radius: 3px; border: 3px solid; flex-shrink: 0; display: inline-block; vertical-align: middle; }
+    .layers-table-wrap .btn-remove-layer { padding: 4px 8px; font-size: 0.8rem; cursor: pointer; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Style editor</h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › Style editor</p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Map</h2>
+    <p class="meta">Draw shapes on the map to preview the current style. Search for a collection and click to add it as a layer (static tiles if available, otherwise 100 features). Use the style panel below to edit, load, or save styles.</p>
+    <div class="collection-search-wrap">
+      <input type="text" id="collection-search" placeholder="Search collections (id, title, description)…" autocomplete="off">
+      <div id="collection-search-results" class="collection-search-results" aria-live="polite"></div>
+    </div>
+    <div class="layers-table-wrap" id="layers-table-wrap" style="display:none;">
+      <table>
+        <thead>
+          <tr><th></th><th>Name</th><th>Style</th><th></th></tr>
+        </thead>
+        <tbody id="layers-table-body"></tbody>
+      </table>
+    </div>
+    <div id="map" class="map-container style-editor-map">
+      <div class="map-controls">
+        <select id="map-basemap" title="Basemap">
+          <option value="osm">OpenStreetMap</option>
+          <option value="streets">Esri Streets</option>
+          <option value="satellite">Esri Satellite</option>
+          <option value="hybrid">Esri Hybrid</option>
+          <option value="google_satellite">Google Satellite</option>
+          <option value="google_hybrid">Google Hybrid</option>
+        </select>
+      </div>
+    </div>
+    <details id="layer-style-details" class="layer-style-collapsible" open>
+      <summary class="layer-style-summary">
+        <span>Style editor</span>
+        <span id="layer-style-legend" class="layer-style-legend" aria-hidden="true"></span>
+      </summary>
+      <div id="vector-style-wrap" class="vector-style-panel">
+        <span class="vector-style-label">Style</span>
+        <label><input type="checkbox" id="vector-fill-enable" checked> Fill</label>
+        <label>Fill <input type="color" id="vector-fill-color" value="#58a6ff" title="Fill color"></label>
+        <label>Fill opacity <input type="range" id="vector-fill-opacity" min="0" max="100" value="60" title="Fill transparency"> <span id="vector-fill-opacity-val">60</span>%</label>
+        <label>Line <input type="color" id="vector-line-color" value="#58a6ff" title="Line color"></label>
+        <label>Line width <input type="number" id="vector-line-width" min="0.5" max="20" step="0.5" value="1" style="width:4em" title="Line size"></label>
+        <label>Line opacity <input type="range" id="vector-line-opacity" min="0" max="100" value="100" title="Line transparency"> <span id="vector-line-opacity-val">100</span>%</label>
+        <label>Line pattern <select id="vector-line-pattern" title="Line pattern">
+          <option value="solid">Solid</option>
+          <option value="dashed">Dashed</option>
+          <option value="dotted">Dotted</option>
+        </select></label>
+        <span class="vector-style-sep">|</span>
+        <span class="vector-style-label">Point</span>
+        <label>Color <input type="color" id="vector-point-color" value="#58a6ff" title="Point color"></label>
+        <label>Size <input type="number" id="vector-point-size" min="1" max="40" step="1" value="8" style="width:3.5em" title="Point radius (px)"></label>
+        <label>Icon <select id="vector-point-icon" title="Point icon">
+          <option value="circle">Circle</option>
+          <option value="pin">Pin</option>
+          <option value="marker">Marker</option>
+        </select></label>
+        <span class="vector-style-sep">|</span>
+        <label>Collection <select id="load-style-collection" title="Optional: show styles from this collection"><option value="">— None —</option></select></label>
+        <label>Load style
+          <span class="vector-style-load-wrap">
+            <button type="button" class="vector-style-load-trigger" id="vector-style-load-trigger" title="Load a saved style" aria-haspopup="listbox" aria-expanded="false">
+              <span class="vector-style-load-legend" id="vector-style-load-legend"></span>
+              <span class="vector-style-load-label-text" id="vector-style-load-label-text">Current</span>
+            </button>
+            <div class="vector-style-load-list" id="vector-style-load-list" role="listbox" aria-hidden="true"></div>
+          </span>
+          <select id="vector-style-select" aria-hidden="true" tabindex="-1" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden"><option value="">Current</option></select>
+        </label>
+        <button type="button" class="btn btn-sm" id="btn-save-style">Save style…</button>
+      </div>
+      <div id="save-style-form" class="save-style-form" style="display:none">
+        <span class="vector-style-label">Save style</span>
+        <label>Save to <select id="save-style-to" title="Where to save the style">
+          <option value="public">Public</option>
+          <option value="collection">Collection</option>
+        </select></label>
+        <label>Collection <select id="save-style-collection" title="Collection (when saving to collection)"><option value="">— Select —</option></select></label>
+        <label>Id <input type="text" id="save-style-id" placeholder="e.g. blue-outline" pattern="[a-zA-Z0-9_-]+" title="Letters, numbers, hyphen, underscore"></label>
+        <label>Title <input type="text" id="save-style-title" placeholder="Optional title"></label>
+        <label>Replace <select id="save-style-replace"><option value="">New</option></select></label>
+        <span id="save-style-default-wrap"><label><input type="checkbox" id="save-style-default"> Set as default</label></span>
+        <button type="button" class="btn btn-sm btn-primary" id="btn-save-style-submit">Save</button>
+        <button type="button" class="btn btn-sm" id="btn-save-style-cancel">Cancel</button>
+      </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <div class="btn-group">
+      <a href="{{ base }}/?f=html" class="btn">Back to home</a>
+      <a href="{{ base }}/collections?f=html" class="btn">Browse collections</a>
+    </div>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script>
+    const base = {{ base | tojson }};
+    const googleKey = {{ google_maps_api_key | tojson }};
+
+    const BASEMAPS = {
+      osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] },
+      streets: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}'] },
+      satellite: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] },
+      hybrid: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], labels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}' },
+      google_satellite: { tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] },
+      google_hybrid: { tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] }
+    };
+    const mapStyle = {
+      version: 8,
+      glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+      sources: { basemap: { type: 'raster', tiles: BASEMAPS.osm.tiles, tileSize: 256 } },
+      layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 }]
+    };
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: mapStyle,
+      center: [0, 20],
+      zoom: 2,
+      renderWorldCopies: false
+    });
+
+    var geoEditor = null;
+    var editorSource = null;
+
+    function getEditorFeatures() {
+      if (!geoEditor) return [];
+      try {
+        var fc = geoEditor.getAllFeatureCollection && geoEditor.getAllFeatureCollection();
+        if (fc && fc.features) return fc.features;
+        var f = geoEditor.getFeatures && geoEditor.getFeatures();
+        return Array.isArray(f) ? f : [];
+      } catch (e) { return []; }
+    }
+
+    function syncEditorFeaturesToMap() {
+      if (!editorSource) return;
+      var feats = getEditorFeatures();
+      editorSource.setData({ type: 'FeatureCollection', features: feats });
+    }
+
+    function applyBasemapFromSelect() {
+      var v = document.getElementById('map-basemap').value;
+      var cfg = BASEMAPS[v];
+      map.getSource('basemap').setTiles(cfg.tiles);
+      if (cfg.labels) {
+        if (!map.getSource('basemap-labels')) {
+          map.addSource('basemap-labels', { type: 'raster', tiles: [cfg.labels], tileSize: 256 });
+          map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: 0, maxzoom: 22 }, 'editor-fill');
+        }
+      } else {
+        if (map.getLayer('basemap-labels')) { map.removeLayer('basemap-labels'); map.removeSource('basemap-labels'); }
+      }
+    }
+
+    const LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
+    const defaultSpec = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, pointColor: '#58a6ff', pointSize: 8, pointIcon: 'circle' };
+
+    var styleEditorState = { activeEditTarget: 'editor', layersOnMap: [] };
+
+    map.on('load', function() {
+      map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+      try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) { document.getElementById('map-basemap').value = s; } } catch(e) {}
+      applyBasemapFromSelect();
+
+      map.addSource('editor-features', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      editorSource = map.getSource('editor-features');
+      map.addLayer({ id: 'editor-fill', type: 'fill', source: 'editor-features', filter: ['!=', ['geometry-type'], 'Point'], paint: { 'fill-color': defaultSpec.fillColor, 'fill-opacity': defaultSpec.fillOpacity } });
+      map.addLayer({ id: 'editor-line', type: 'line', source: 'editor-features', filter: ['!=', ['geometry-type'], 'Point'], paint: { 'line-color': defaultSpec.lineColor, 'line-width': defaultSpec.lineWidth, 'line-opacity': defaultSpec.lineOpacity, 'line-dasharray': LINE_DASH.solid } });
+      map.addLayer({ id: 'editor-circle', type: 'circle', source: 'editor-features', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-color': defaultSpec.pointColor, 'circle-radius': defaultSpec.pointSize, 'circle-stroke-width': 0 } });
+      var pinSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="36" viewBox="0 0 24 36"><path fill="%2358a6ff" stroke="%23111" stroke-width="1" d="M12 0C5.4 0 0 5.4 0 12c0 9 12 24 12 24s12-15 12-24C24 5.4 18.6 0 12 0z"/></svg>';
+      var pinUrl = 'data:image/svg+xml,' + encodeURIComponent(pinSvg);
+      map.loadImage(pinUrl, function(err, img) {
+        if (!err && img) {
+          map.addImage('geofast-pin', img);
+          if (!map.getLayer('editor-symbol')) {
+            map.addLayer({ id: 'editor-symbol', type: 'symbol', source: 'editor-features', filter: ['==', ['geometry-type'], 'Point'], layout: { 'icon-image': 'geofast-pin', 'icon-size': defaultSpec.pointSize / 12, 'icon-allow-overlap': true }, paint: { 'icon-color': defaultSpec.pointColor }, minzoom: 0 });
+            map.setLayoutProperty('editor-symbol', 'visibility', 'none');
+          }
+        }
+      });
+
+      function updateStyleLegend(spec) {
+        var el = document.getElementById('layer-style-legend');
+        if (el) {
+          var fill = (spec && spec.fillColor) || '#58a6ff';
+          var line = (spec && spec.lineColor) || '#58a6ff';
+          var fillOn = !spec || spec.fillEnabled !== false;
+          el.style.backgroundColor = fillOn ? fill : 'transparent';
+          el.style.borderColor = line;
+          el.style.opacity = '1';
+        }
+        if (typeof updateLoadStyleTrigger === 'function') updateLoadStyleTrigger();
+      }
+
+      var fillCheck = document.getElementById('vector-fill-enable');
+      var fillColor = document.getElementById('vector-fill-color');
+      var fillOpacity = document.getElementById('vector-fill-opacity');
+      var fillOpacityVal = document.getElementById('vector-fill-opacity-val');
+      var lineColor = document.getElementById('vector-line-color');
+      var lineWidth = document.getElementById('vector-line-width');
+      var lineOpacity = document.getElementById('vector-line-opacity');
+      var lineOpacityVal = document.getElementById('vector-line-opacity-val');
+      var linePattern = document.getElementById('vector-line-pattern');
+      var pointColor = document.getElementById('vector-point-color');
+      var pointSize = document.getElementById('vector-point-size');
+      var pointIcon = document.getElementById('vector-point-icon');
+
+      function applyVectorStyle() {
+        var spec = getCurrentSpec();
+        if (styleEditorState.activeEditTarget === 'editor') {
+          map.setLayoutProperty('editor-fill', 'visibility', fillCheck.checked ? 'visible' : 'none');
+          map.setPaintProperty('editor-fill', 'fill-color', spec.fillColor);
+          map.setPaintProperty('editor-fill', 'fill-opacity', spec.fillOpacity);
+          map.setPaintProperty('editor-line', 'line-color', spec.lineColor);
+          map.setPaintProperty('editor-line', 'line-width', spec.lineWidth);
+          map.setPaintProperty('editor-line', 'line-opacity', spec.lineOpacity);
+          map.setPaintProperty('editor-line', 'line-dasharray', LINE_DASH[spec.linePattern] || LINE_DASH.solid);
+          var ptSize = Math.max(1, Math.min(40, parseFloat(pointSize.value) || 8));
+          map.setPaintProperty('editor-circle', 'circle-color', spec.pointColor);
+          map.setPaintProperty('editor-circle', 'circle-radius', ptSize);
+          map.setLayoutProperty('editor-circle', 'visibility', spec.pointIcon === 'circle' ? 'visible' : 'none');
+          try {
+            if (map.getLayer('editor-symbol')) {
+              map.setLayoutProperty('editor-symbol', 'visibility', (spec.pointIcon === 'pin' || spec.pointIcon === 'marker') ? 'visible' : 'none');
+              map.setLayoutProperty('editor-symbol', 'icon-size', ptSize / 12);
+              map.setPaintProperty('editor-symbol', 'icon-color', spec.pointColor);
+            }
+          } catch (e) {}
+        } else {
+          var srcId = styleEditorState.activeEditTarget;
+          var fillLayerId = srcId + '-fill';
+          var lineLayerId = srcId + '-line';
+          if (map.getLayer(fillLayerId)) {
+            map.setLayoutProperty(fillLayerId, 'visibility', fillCheck.checked ? 'visible' : 'none');
+            map.setPaintProperty(fillLayerId, 'fill-color', spec.fillColor);
+            map.setPaintProperty(fillLayerId, 'fill-opacity', spec.fillOpacity);
+          }
+          if (map.getLayer(lineLayerId)) {
+            map.setPaintProperty(lineLayerId, 'line-color', spec.lineColor);
+            map.setPaintProperty(lineLayerId, 'line-width', spec.lineWidth);
+            map.setPaintProperty(lineLayerId, 'line-opacity', spec.lineOpacity);
+            map.setPaintProperty(lineLayerId, 'line-dasharray', LINE_DASH[spec.linePattern] || LINE_DASH.solid);
+          }
+          var entry = styleEditorState.layersOnMap.filter(function(l) { return l.sourceId === srcId; })[0];
+          if (entry) entry.styleSpec = spec;
+          if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
+        }
+        updateStyleLegend(spec);
+      }
+
+      function syncMapLayerOrder() {
+        var list = styleEditorState.layersOnMap;
+        for (var i = list.length - 1; i >= 0; i--) {
+          var e = list[i];
+          var fillId = e.sourceId + '-fill';
+          var lineId = e.sourceId + '-line';
+          if (map.getLayer(lineId)) map.moveLayer(lineId);
+          if (map.getLayer(fillId)) map.moveLayer(fillId);
+        }
+      }
+
+      function renderLayersTable() {
+        var wrap = document.getElementById('layers-table-wrap');
+        var tbody = document.getElementById('layers-table-body');
+        if (!wrap || !tbody) return;
+        var list = styleEditorState.layersOnMap;
+        if (list.length === 0) { wrap.style.display = 'none'; return; }
+        wrap.style.display = 'block';
+        tbody.innerHTML = '';
+        list.forEach(function(entry, index) {
+          var tr = document.createElement('tr');
+          tr.draggable = true;
+          tr.dataset.sourceId = entry.sourceId;
+          tr.dataset.index = String(index);
+          if (styleEditorState.activeEditTarget === entry.sourceId) tr.classList.add('selected');
+          var leg = entry.styleSpec || defaultSpec;
+          var fillOn = leg.fillEnabled !== false;
+          var fill = leg.fillColor || '#58a6ff';
+          var line = leg.lineColor || '#58a6ff';
+          var handleCell = document.createElement('td');
+          handleCell.className = 'drag-handle';
+          handleCell.textContent = '\u22ee';
+          handleCell.title = 'Drag to reorder';
+          handleCell.onclick = function(e) { e.stopPropagation(); };
+          var nameCell = document.createElement('td');
+          var nameStrong = document.createElement('strong');
+          nameStrong.textContent = entry.name || entry.collectionId;
+          nameCell.appendChild(nameStrong);
+          var legendCell = document.createElement('td');
+          var legendSpan = document.createElement('span');
+          legendSpan.className = 'layers-table-legend';
+          legendSpan.style.backgroundColor = fillOn ? fill : 'transparent';
+          legendSpan.style.borderColor = line;
+          legendCell.appendChild(legendSpan);
+          var actionCell = document.createElement('td');
+          var removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'btn btn-sm btn-remove-layer';
+          removeBtn.dataset.sourceId = entry.sourceId;
+          removeBtn.textContent = 'Remove from map';
+          actionCell.appendChild(removeBtn);
+          tr.appendChild(handleCell);
+          tr.appendChild(nameCell);
+          tr.appendChild(legendCell);
+          tr.appendChild(actionCell);
+          tr.ondragstart = function(e) {
+            e.dataTransfer.setData('text/plain', index);
+            e.dataTransfer.effectAllowed = 'move';
+            tr.classList.add('dragging');
+          };
+          tr.ondragend = function() {
+            tr.classList.remove('dragging');
+            tbody.querySelectorAll('tr').forEach(function(r) { r.classList.remove('drag-over'); });
+          };
+          tr.ondragover = function(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            if (!tr.classList.contains('dragging')) tr.classList.add('drag-over');
+          };
+          tr.ondragleave = function() { tr.classList.remove('drag-over'); };
+          tr.ondrop = function(e) {
+            e.preventDefault();
+            tr.classList.remove('drag-over');
+            var fromIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
+            var toIndex = index;
+            if (fromIndex === toIndex) return;
+            var arr = styleEditorState.layersOnMap;
+            var item = arr.splice(fromIndex, 1)[0];
+            arr.splice(toIndex, 0, item);
+            syncMapLayerOrder();
+            renderLayersTable();
+          };
+          tr.onclick = function(e) {
+            if (e.target.classList.contains('btn-remove-layer')) return;
+            styleEditorState.activeEditTarget = entry.sourceId;
+            applySpecToForm(entry.styleSpec || defaultSpec);
+            applyVectorStyle();
+            renderLayersTable();
+          };
+          removeBtn.onclick = function(e) {
+            e.stopPropagation();
+            var sid = this.dataset.sourceId;
+            if (map.getSource(sid)) {
+              if (map.getLayer(sid + '-fill')) map.removeLayer(sid + '-fill');
+              if (map.getLayer(sid + '-line')) map.removeLayer(sid + '-line');
+              map.removeSource(sid);
+            }
+            styleEditorState.layersOnMap = styleEditorState.layersOnMap.filter(function(l) { return l.sourceId !== sid; });
+            if (styleEditorState.activeEditTarget === sid) {
+              styleEditorState.activeEditTarget = 'editor';
+              applySpecToForm(defaultSpec);
+              applyVectorStyle();
+            }
+            renderLayersTable();
+          };
+          tbody.appendChild(tr);
+        });
+      }
+      fillColor.value = defaultSpec.fillColor;
+      lineColor.value = defaultSpec.lineColor;
+      fillOpacity.value = 60;
+      lineOpacity.value = 100;
+      fillOpacityVal.textContent = 60;
+      lineOpacityVal.textContent = 100;
+      lineWidth.value = defaultSpec.lineWidth;
+      linePattern.value = defaultSpec.linePattern;
+      fillCheck.checked = true;
+      pointColor.value = defaultSpec.pointColor;
+      pointSize.value = defaultSpec.pointSize;
+      pointIcon.value = defaultSpec.pointIcon;
+      applyVectorStyle();
+
+      function getCurrentSpec() {
+        return {
+          fillColor: fillColor.value,
+          lineColor: lineColor.value,
+          fillOpacity: fillOpacity.value / 100,
+          lineOpacity: lineOpacity.value / 100,
+          lineWidth: Math.max(0.5, parseFloat(lineWidth.value) || 1),
+          linePattern: linePattern.value || 'solid',
+          fillEnabled: fillCheck.checked,
+          pointColor: pointColor.value,
+          pointSize: Math.max(1, Math.min(40, parseFloat(pointSize.value) || 8)),
+          pointIcon: pointIcon.value || 'circle'
+        };
+      }
+      updateStyleLegend(getCurrentSpec());
+
+      function applySpecToForm(s) {
+        s = s || {};
+        fillColor.value = s.fillColor || '#58a6ff';
+        lineColor.value = s.lineColor || '#58a6ff';
+        fillOpacity.value = Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100);
+        lineOpacity.value = Math.round((s.lineOpacity != null ? s.lineOpacity : 1) * 100);
+        fillOpacityVal.textContent = fillOpacity.value;
+        lineOpacityVal.textContent = lineOpacity.value;
+        lineWidth.value = s.lineWidth != null ? s.lineWidth : 1;
+        linePattern.value = s.linePattern || 'solid';
+        fillCheck.checked = s.fillEnabled !== false;
+        pointColor.value = s.pointColor || '#58a6ff';
+        pointSize.value = s.pointSize != null ? Math.max(1, Math.min(40, s.pointSize)) : 8;
+        pointIcon.value = s.pointIcon || 'circle';
+        applyVectorStyle();
+        updateStyleLegend(getCurrentSpec());
+      }
+
+      styleEditorState.renderLayersTable = renderLayersTable;
+      styleEditorState.applyVectorStyle = applyVectorStyle;
+      styleEditorState.applySpecToForm = applySpecToForm;
+      styleEditorState.getCurrentSpec = getCurrentSpec;
+
+      function publicStylesUrl() { return base + '/styles'; }
+      function collectionStylesUrl(cid) { return base + '/collections/' + encodeURIComponent(cid) + '/styles'; }
+
+      var styleListCache = {};
+      function styleSpecToLegendCss(spec) {
+        spec = spec || {};
+        return { fill: spec.fillColor || '#58a6ff', line: spec.lineColor || '#58a6ff', fillOn: spec.fillEnabled !== false };
+      }
+      function updateLoadStyleTrigger() {
+        var sel = document.getElementById('vector-style-select');
+        var val = sel ? sel.value : '';
+        var spec = (val && styleListCache[val]) ? styleListCache[val].style_spec : getCurrentSpec();
+        var leg = styleSpecToLegendCss(spec);
+        var legendEl = document.getElementById('vector-style-load-legend');
+        var labelEl = document.getElementById('vector-style-load-label-text');
+        if (legendEl) { legendEl.style.backgroundColor = leg.fillOn ? leg.fill : 'transparent'; legendEl.style.borderColor = leg.line; legendEl.style.opacity = '1'; }
+        if (labelEl) labelEl.textContent = (val && styleListCache[val]) ? (styleListCache[val].title || styleListCache[val].id) : 'Current';
+      }
+      function addItemToList(sel, listEl, value, label, spec) {
+        if (value) styleListCache[value] = { id: value.replace(/^[cp]:/, ''), title: label, style_spec: spec || {} };
+        sel.appendChild(new Option(label, value));
+        if (!listEl) return;
+        var leg = styleSpecToLegendCss(spec);
+        var item = document.createElement('div');
+        item.className = 'vector-style-load-item';
+        item.setAttribute('role', 'option');
+        item.dataset.value = value;
+        var legSpan = document.createElement('span');
+        legSpan.className = 'vector-style-load-item-legend';
+        legSpan.style.backgroundColor = leg.fillOn ? leg.fill : 'transparent';
+        legSpan.style.borderColor = leg.line;
+        legSpan.style.opacity = '1';
+        var labSpan = document.createElement('span');
+        labSpan.className = 'vector-style-load-item-label';
+        labSpan.textContent = label;
+        item.appendChild(legSpan);
+        item.appendChild(labSpan);
+        item.onclick = (function(v) {
+          return function() {
+            sel.value = v;
+            sel.dispatchEvent(new Event('change'));
+            listEl.classList.remove('open');
+            document.getElementById('vector-style-load-trigger').setAttribute('aria-expanded', 'false');
+            updateLoadStyleTrigger();
+          };
+        })(value);
+        listEl.appendChild(item);
+      }
+      function loadStylesList() {
+        var sel = document.getElementById('vector-style-select');
+        var listEl = document.getElementById('vector-style-load-list');
+        if (!sel) return Promise.resolve();
+        styleListCache = { '': null };
+        while (sel.firstChild) sel.removeChild(sel.firstChild);
+        if (listEl) listEl.innerHTML = '';
+
+        addItemToList(sel, listEl, '', 'Current', getCurrentSpec());
+
+        return fetch(publicStylesUrl(), { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
+          .then(function(data) {
+            var list = data.styles || [];
+            if (list.length && listEl) {
+              var gl = document.createElement('div');
+              gl.className = 'vector-style-load-group-label';
+              gl.textContent = 'Public styles';
+              listEl.appendChild(gl);
+            }
+            list.forEach(function(s) {
+              var val = 'p:' + s.id;
+              addItemToList(sel, listEl, val, s.title || s.id, s.style_spec);
+            });
+            return fetch(base + '/collections', { headers: { 'Accept': 'application/json' } });
+          })
+          .then(function(r) { return r.ok ? r.json() : { collections: [] }; })
+          .then(function(data) {
+            var colls = data.collections || [];
+            var loadCollSelect = document.getElementById('load-style-collection');
+            if (loadCollSelect) {
+              while (loadCollSelect.options.length > 1) loadCollSelect.remove(1);
+              colls.forEach(function(c) {
+                loadCollSelect.add(new Option(c.id || c.title || c.id, c.id));
+              });
+            }
+            var saveCollSelect = document.getElementById('save-style-collection');
+            if (saveCollSelect) {
+              while (saveCollSelect.options.length > 1) saveCollSelect.remove(1);
+              colls.forEach(function(c) {
+                saveCollSelect.add(new Option(c.id || c.title || c.id, c.id));
+              });
+            }
+            var cid = loadCollSelect ? loadCollSelect.value : '';
+            if (!cid) { updateLoadStyleTrigger(); return; }
+            return fetch(collectionStylesUrl(cid), { headers: { 'Accept': 'application/json' } })
+              .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
+              .then(function(data) {
+                var list = data.styles || [];
+                if (list.length && listEl) {
+                  var gl = document.createElement('div');
+                  gl.className = 'vector-style-load-group-label';
+                  gl.textContent = 'Collection: ' + cid;
+                  listEl.appendChild(gl);
+                }
+                list.forEach(function(s) {
+                  var val = 'c:' + s.id;
+                  addItemToList(sel, listEl, val, s.title || s.id, s.style_spec);
+                });
+                updateLoadStyleTrigger();
+              });
+          })
+          .catch(function() { updateLoadStyleTrigger(); });
+      }
+
+      var loadCollSelect = document.getElementById('load-style-collection');
+      if (loadCollSelect) loadCollSelect.onchange = function() { loadStylesList(); };
+
+      var loadTrigger = document.getElementById('vector-style-load-trigger');
+      var loadList = document.getElementById('vector-style-load-list');
+      if (loadTrigger && loadList) {
+        loadTrigger.onclick = function(e) {
+          e.stopPropagation();
+          loadList.classList.toggle('open');
+          loadTrigger.setAttribute('aria-expanded', loadList.classList.contains('open'));
+        };
+        document.addEventListener('click', function() {
+          loadList.classList.remove('open');
+          loadTrigger.setAttribute('aria-expanded', 'false');
+        });
+      }
+
+      function getSaveCollectionId() { var el = document.getElementById('save-style-collection'); return el ? el.value : ''; }
+      function populateReplaceDropdown() {
+        var rep = document.getElementById('save-style-replace');
+        rep.options.length = 1;
+        var saveTo = document.getElementById('save-style-to').value;
+        var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl(getSaveCollectionId());
+        fetch(url, { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            (data.styles || []).forEach(function(s) { rep.add(new Option(s.title || s.id, s.id)); });
+          })
+          .catch(function() {});
+      }
+
+      document.getElementById('save-style-to').onchange = function() {
+        var isColl = this.value === 'collection';
+        document.getElementById('save-style-default-wrap').style.display = isColl ? '' : 'none';
+        document.getElementById('save-style-collection').closest('label').style.display = isColl ? '' : 'none';
+        if (isColl) populateReplaceDropdown();
+        else document.getElementById('save-style-replace').options.length = 1;
+      };
+      document.getElementById('save-style-collection').onchange = function() { populateReplaceDropdown(); };
+      document.getElementById('save-style-collection').closest('label').style.display = 'none';
+
+      loadStylesList();
+
+      document.getElementById('vector-style-select').onchange = function() {
+        var val = this.value;
+        if (!val) return;
+        var isPublic = val.indexOf('p:') === 0;
+        var id = val.slice(2);
+        var url;
+        if (isPublic) {
+          url = publicStylesUrl() + '/' + encodeURIComponent(id);
+        } else {
+          var cid = document.getElementById('load-style-collection').value;
+          url = collectionStylesUrl(cid) + '/' + encodeURIComponent(id);
+        }
+        fetch(url, { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(s) { if (s.style_spec) applySpecToForm(s.style_spec); updateLoadStyleTrigger(); })
+          .catch(function() {});
+      };
+
+      document.getElementById('btn-save-style').onclick = function() {
+        document.getElementById('save-style-form').style.display = 'flex';
+        document.getElementById('save-style-to').value = 'public';
+        document.getElementById('save-style-default-wrap').style.display = 'none';
+        document.getElementById('save-style-collection').closest('label').style.display = 'none';
+        populateReplaceDropdown();
+      };
+      document.getElementById('btn-save-style-cancel').onclick = function() {
+        document.getElementById('save-style-form').style.display = 'none';
+      };
+      document.getElementById('save-style-replace').onchange = function() {
+        if (this.value) document.getElementById('save-style-id').value = this.value;
+      };
+      document.getElementById('btn-save-style-submit').onclick = function() {
+        var replaceVal = document.getElementById('save-style-replace').value;
+        var idInput = document.getElementById('save-style-id').value.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+        var id = replaceVal || idInput || null;
+        if (!id) { alert('Enter a style id (letters, numbers, hyphen, underscore)'); return; }
+        var title = document.getElementById('save-style-title').value.trim() || null;
+        var saveTo = document.getElementById('save-style-to').value;
+        var setDefault = document.getElementById('save-style-default').checked;
+        var cid = getSaveCollectionId();
+        if (saveTo === 'collection' && !cid) { alert('Select a collection'); return; }
+        var method = 'POST';
+        var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl(cid);
+        var body = { id: id, style_spec: getCurrentSpec() };
+        if (title) body.title = title;
+        if (saveTo === 'collection') body.set_default = setDefault;
+        if (replaceVal) {
+          method = 'PUT';
+          url = (saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl(cid)) + '/' + encodeURIComponent(id);
+          body = saveTo === 'public' ? { style_spec: getCurrentSpec(), title: title } : { style_spec: getCurrentSpec(), title: title, set_default: setDefault };
+        }
+        fetch(url, { method: method, headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body) })
+          .then(function(r) { if (!r.ok) return r.json().then(function(j) { throw j; }); return r.json(); })
+          .then(function() {
+            document.getElementById('save-style-form').style.display = 'none';
+            document.getElementById('save-style-id').value = '';
+            document.getElementById('save-style-title').value = '';
+            document.getElementById('save-style-replace').value = '';
+            document.getElementById('save-style-default').checked = false;
+            loadStylesList();
+          })
+          .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+      };
+
+      fillCheck.onchange = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      fillColor.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      fillOpacity.oninput = function() { fillOpacityVal.textContent = this.value; applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      lineColor.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      lineWidth.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      lineOpacity.oninput = function() { lineOpacityVal.textContent = this.value; applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      linePattern.onchange = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      pointColor.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      pointSize.oninput = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+      pointIcon.onchange = function() { applyVectorStyle(); updateStyleLegend(getCurrentSpec()); };
+    });
+
+    document.getElementById('map-basemap').onchange = function() {
+      applyBasemapFromSelect();
+      try { localStorage.setItem('geofast-basemap', document.getElementById('map-basemap').value); } catch(e) {}
+    };
+
+    var collectionSearchTimeout = null;
+
+    function renderCollectionResults(list, resultsEl) {
+      resultsEl.innerHTML = '';
+      list.forEach(function(c) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'collection-search-item';
+        btn.dataset.collectionId = c.id;
+        btn.innerHTML = '<strong>' + (c.title || c.id) + '</strong><span class="meta">' + (c.id !== (c.title || c.id) ? c.id : '') + (c.description ? ' — ' + String(c.description).slice(0, 60) + (c.description.length > 60 ? '…' : '') : '') + '</span>';
+        btn.onclick = function() {
+          var cid = this.dataset.collectionId;
+          var name = (c.title || c.id);
+          resultsEl.innerHTML = '';
+          document.getElementById('collection-search').value = '';
+          addCollectionLayerToMap(cid, name);
+        };
+        resultsEl.appendChild(btn);
+      });
+      if (list.length === 0) resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">No collections found.</div>';
+    }
+
+    function fetchFirst10Collections() {
+      var resultsEl = document.getElementById('collection-search-results');
+      resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">Loading…</div>';
+      fetch(base + '/collections?limit=10', { headers: { 'Accept': 'application/json' } })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var list = data.collections || [];
+          renderCollectionResults(list, resultsEl);
+        })
+        .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Load failed.</div>'; });
+    }
+
+    document.getElementById('collection-search').onfocus = function() {
+      var resultsEl = document.getElementById('collection-search-results');
+      if (resultsEl.children.length === 0) fetchFirst10Collections();
+    };
+
+    document.getElementById('collection-search').oninput = function() {
+      var q = this.value.trim();
+      clearTimeout(collectionSearchTimeout);
+      var resultsEl = document.getElementById('collection-search-results');
+      if (!q) {
+        fetchFirst10Collections();
+        return;
+      }
+      collectionSearchTimeout = setTimeout(function() {
+        resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">Searching…</div>';
+        fetch(base + '/collections?limit=20&q=' + encodeURIComponent(q), { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var list = data.collections || [];
+            renderCollectionResults(list, resultsEl);
+          })
+          .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Search failed.</div>'; });
+      }, 220);
+    };
+    document.getElementById('collection-search').onblur = function() {
+      setTimeout(function() {
+        var el = document.getElementById('collection-search-results');
+        if (el) el.innerHTML = '';
+      }, 200);
+    };
+
+    function addCollectionLayerToMap(collectionId, collectionName) {
+      if (!map.getSource) return;
+      var sourceId = 'collection-' + collectionId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      if (map.getSource(sourceId)) return;
+      var name = collectionName || collectionId;
+      function addLayerWithSpec(styleSpec) {
+        var s = styleSpec || defaultSpec;
+        var fillColor = s.fillColor || '#58a6ff';
+        var fillOpacity = s.fillOpacity != null ? s.fillOpacity : 0.6;
+        var lineColor = s.lineColor || '#58a6ff';
+        var lineWidth = Math.max(0.5, s.lineWidth != null ? s.lineWidth : 1);
+        var lineOpacity = s.lineOpacity != null ? s.lineOpacity : 1;
+        var fillVisible = s.fillEnabled !== false;
+        var lineDash = LINE_DASH[s.linePattern || 'solid'] || LINE_DASH.solid;
+        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles', { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(tilejson) {
+            var tiles = tilejson.tiles || [];
+            var hasStatic = tiles.length > 0 && tiles[0].indexOf('static') !== -1;
+            if (hasStatic) {
+              var tileUrl = tiles[0].indexOf('{z}') !== -1 ? tiles[0] : (base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf');
+              map.addSource(sourceId, { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
+              var layerId = tilejson.vector_layers && tilejson.vector_layers[0] ? tilejson.vector_layers[0].id : collectionId;
+              map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, 'source-layer': layerId, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } }, 'editor-fill');
+              map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, 'source-layer': layerId, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } }, 'editor-line');
+            } else {
+              fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=100', { headers: { 'Accept': 'application/geo+json' } })
+                .then(function(r) { return r.json(); })
+                .then(function(fc) {
+                  if (!fc.features || fc.features.length === 0) return;
+                  map.addSource(sourceId, { type: 'geojson', data: fc });
+                  map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } }, 'editor-fill');
+                  map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } }, 'editor-line');
+                })
+                .catch(function(e) { console.warn('Load items failed', e); });
+            }
+            styleEditorState.layersOnMap.push({ sourceId: sourceId, collectionId: collectionId, name: name, styleSpec: s });
+            if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
+          })
+          .catch(function(e) { console.warn('TileJSON failed', e); });
+      }
+      fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/styles', { headers: { 'Accept': 'application/json' } })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var list = data.styles || [];
+          var defaultStyle = list.filter(function(s) { return s.is_default; })[0] || list[0];
+          addLayerWithSpec(defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : null);
+        })
+        .catch(function() { addLayerWithSpec(null); });
+    }
+
+    Promise.all([
+      import('https://esm.sh/@geoman-io/maplibre-geoman-free@0.6.2'),
+      import('https://esm.sh/maplibre-gl-geo-editor@0.7.3')
+    ]).then(function(modules) {
+      var Geoman = modules[0].Geoman || modules[0].default;
+      var GeoEditor = modules[1].GeoEditor;
+      var geoman = new Geoman(map, {});
+      map.once('gm:loaded', function() {
+        geoEditor = new GeoEditor({
+          position: 'top-left',
+          toolbarOrientation: 'vertical',
+          columns: 2,
+          drawModes: ['polygon', 'rectangle', 'circle', 'marker'],
+          editModes: ['select', 'drag', 'change', 'rotate', 'delete', 'scale'],
+          showFeatureProperties: false,
+          fitBoundsOnLoad: true,
+          attributeSchema: { polygon: [], line: [], point: [], common: [] }
+        });
+        geoEditor.setGeoman(geoman);
+        map.addControl(geoEditor, 'top-left');
+        geoEditor.loadGeoJson({ type: 'FeatureCollection', features: [] });
+        function onEditorChange() { syncEditorFeaturesToMap(); }
+        if (geoEditor.on) {
+          geoEditor.on('change', onEditorChange);
+          geoEditor.on('update', onEditorChange);
+        }
+        map.on('pm:create', onEditorChange);
+        map.on('pm:edit', onEditorChange);
+        map.on('pm:remove', onEditorChange);
+      });
+    }).catch(function(err) { console.warn('GeoEditor load failed', err); });
+  </script>
+{% endblock %}
