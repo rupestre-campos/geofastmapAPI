@@ -20,19 +20,28 @@ from app.utils.tile_bbox import tile_bbox_wgs84
 
 
 def _feature_intersects_bbox(feature, minx: float, miny: float, maxx: float, maxy: float) -> bool:
-    """Return True if feature.geometry intersects the given WGS84 bbox."""
+    """Return True if feature geometry intersects the given WGS84 bbox.
+    Uses geometry_geojson when set (list path), else feature.geometry (WKTElement)."""
+    geom_geojson = getattr(feature, "geometry_geojson", None)
+    if geom_geojson is not None:
+        try:
+            shp = shape(geom_geojson)
+            return shp.intersects(box(minx, miny, maxx, maxy))
+        except Exception:
+            return False
     if feature.geometry is None:
         return False
     try:
-        shape = to_shape(feature.geometry)
-        return shape.intersects(box(minx, miny, maxx, maxy))
+        shp = to_shape(feature.geometry)
+        return shp.intersects(box(minx, miny, maxx, maxy))
     except Exception:
         return False
 
 
 def _feature_to_geojson_feature(feature) -> dict:
-    """Convert ORM Feature to GeoJSON Feature dict."""
-    geom = geometry_to_geojson(feature.geometry)
+    """Convert ORM Feature to GeoJSON Feature dict.
+    Uses geometry_geojson when set (list path) to avoid WKT→GeoJSON conversion."""
+    geom = getattr(feature, "geometry_geojson", None) or geometry_to_geojson(feature.geometry)
     props = dict(feature.properties) if feature.properties else {}
     if feature.id is not None and "id" not in props:
         props["id"] = feature.id

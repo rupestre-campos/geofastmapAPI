@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path as PathLib
 from urllib.parse import urlencode
@@ -47,11 +48,16 @@ def _feature_to_read(
     feature: Feature,
     properties_include: set[str] | None = None,
 ) -> FeatureRead:
-    """Build FeatureRead from ORM Feature. properties_include: if set, only these keys in properties."""
-    geom_dict = geometry_to_geojson(feature.geometry)
+    """Build FeatureRead from ORM Feature. properties_include: if set, only these keys in properties.
+    Uses feature.geometry_geojson when set (list path) to avoid WKT→GeoJSON conversion per feature.
+    When feature.bbox is set (fast list path), geometry is omitted."""
+    geom_dict = None
+    if getattr(feature, "bbox", None) is None:
+        geom_dict = getattr(feature, "geometry_geojson", None) or geometry_to_geojson(feature.geometry)
     props = feature.properties
     if properties_include is not None and props:
         props = {k: v for k, v in props.items() if k in properties_include}
+    bbox = getattr(feature, "bbox", None)
     return FeatureRead(
         id=feature.id,
         collection_id=feature.collection_id,
@@ -60,6 +66,7 @@ def _feature_to_read(
         properties=props,
         created_at=feature.created_at,
         updated_at=feature.updated_at,
+        bbox=bbox,
     )
 
 
@@ -72,7 +79,7 @@ async def list_items(
     request: Request,
     collection_id: str,
     db: AsyncSession = Depends(get_db),
-    limit: int | None = Query(None, ge=1, le=1000, description="Max features per page (OGC limit)."),
+    limit: int | None = Query(None, ge=1, le=get_settings().items_max_limit, description="Max features per page (OGC limit)."),
     offset: int = Query(0, ge=0, description="Number of features to skip (OGC offset)."),
     bbox: str | None = Query(None, description="Bounding box: minx,miny,maxx,maxy (WGS84)."),
     datetime_param: str | None = Query(None, alias="datetime", description="Instant or range (e.g. 2024-01-01 or 2024-01-01/2024-12-31). Filters by feature created_at."),
@@ -92,7 +99,7 @@ async def list_items(
     settings = get_settings()
     # HTML view: default to a small page (100) for fast load when limit not specified
     if wants_html(request) and "limit" not in request.query_params:
-        limit = limit if limit is not None else 100
+        limit = limit if limit is not None else int(get_settings().items_max_limit/10)
     else:
         limit = limit if limit is not None else settings.items_default_limit
     limit = min(limit, settings.items_max_limit)
@@ -123,6 +130,9 @@ async def list_items(
     props_include_set: set[str] | None = None
     if properties_include:
         props_include_set = {p.strip() for p in properties_include.split(",") if p.strip()}
+    # HTML view: skip full geometry (bbox only) and skip COUNT query when no filters — faster load, fewer DB round-trips
+    include_geometry = not wants_html(request)
+    skip_count = wants_html(request)
     features, number_matched = await features_crud.list_features_paginated(
         db,
         collection_id,
@@ -137,6 +147,8 @@ async def list_items(
         structured_filters=structured_filters or None,
         fulltext_q=fulltext_q,
         collection_feature_count=collection.feature_count,
+        include_geometry=include_geometry,
+        skip_count=skip_count,
     )
     base = _base_url(request)
     base_path = f"{base}/collections/{collection_id}/items"
@@ -154,16 +166,39 @@ async def list_items(
     if offset > 0:
         links.append(Link(href=_page_href(max(0, offset - limit)), rel="prev", type="application/geo+json"))
     read_list = [_feature_to_read(f, props_include_set) for f in features]
-    extent_bbox = bbox_from_geometries(
-        [r.geometry.model_dump() if r.geometry else None for r in read_list]
-    )
+    # Build GeoJSON features once (used for extent, cache, HTML, and JSON response)
+    features_geojson = []
+    bboxes_only: list[list[float]] = []
+    for r in read_list:
+        props = dict(r.properties) if r.properties else {}
+        if r.id is not None and "id" not in props:
+            props["id"] = r.id
+        feat = {
+            "type": "Feature",
+            "id": r.id,
+            "geometry": r.geometry.model_dump() if r.geometry else None,
+            "properties": props,
+        }
+        if getattr(r, "bbox", None) is not None:
+            feat["bbox"] = r.bbox
+            bboxes_only.append(r.bbox)
+        features_geojson.append(feat)
+    if bboxes_only:
+        extent_bbox = [
+            min(b[0] for b in bboxes_only),
+            min(b[1] for b in bboxes_only),
+            max(b[2] for b in bboxes_only),
+            max(b[3] for b in bboxes_only),
+        ]
+    else:
+        extent_bbox = bbox_from_geometries([f["geometry"] for f in features_geojson])
     if bbox_only:
         return Response(
             content=json.dumps({"bbox": extent_bbox, "numberMatched": number_matched}),
             media_type="application/json",
         )
-    # Warm search result cache for dynamic tiler (queue mode): workers read from Redis, no DB
-    if get_settings().tiles_dynamic_use_queue:
+    # Warm search result cache for dynamic tiler (queue mode); only when we have geometry (not bbox-only)
+    if get_settings().tiles_dynamic_use_queue and include_geometry:
         from app.services.dynamic_tile_cache import _params_key_from_query, set_search_result
         params_key = _params_key_from_query(
             limit=limit,
@@ -177,32 +212,12 @@ async def list_items(
             ids=None,
             properties=properties_include,
         )
-        features_geojson = []
-        for r in read_list:
-            props = dict(r.properties) if r.properties else {}
-            if r.id is not None and "id" not in props:
-                props["id"] = r.id
-            features_geojson.append({
-                "type": "Feature",
-                "id": r.id,
-                "geometry": r.geometry.model_dump() if r.geometry else None,
-                "properties": props,
-            })
         set_search_result(
             collection_id,
             params_key,
             json.dumps({"type": "FeatureCollection", "features": features_geojson}).encode("utf-8"),
         )
     if wants_html(request):
-        features_geojson = [
-            {
-                "type": "Feature",
-                "id": r.id,
-                "geometry": r.geometry.model_dump() if r.geometry else None,
-                "properties": r.properties or {},
-            }
-            for r in read_list
-        ]
         property_keys = sorted(
             set().union(*(set((r.properties or {}).keys()) for r in read_list))
         )
@@ -224,13 +239,16 @@ async def list_items(
         if offset + len(features) < number_matched:
             q_next = {**query_params, "offset": str(offset + limit)}
             next_page_url = base_path + "?" + urlencode(sorted(q_next.items()))
-        default_style = await styles_crud.get_default_style(db, collection_id)
+        # Fetch style and tiles in parallel (no dependency on features)
+        default_style, rec = await asyncio.gather(
+            styles_crud.get_default_style(db, collection_id),
+            tiles_crud.get_collection_tiles(db, collection_id),
+        )
         default_style_dict = (
             {"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec}
             if default_style
             else None
         )
-        rec = await tiles_crud.get_collection_tiles(db, collection_id)
         has_static_tiles = bool(rec and rec.pmtiles_path and PathLib(rec.pmtiles_path).exists())
         return html_response(
             "items.html",
@@ -243,6 +261,7 @@ async def list_items(
             number_matched=number_matched,
             number_returned=len(features),
             limit=limit,
+            limit_max_value=get_settings().items_max_limit,
             offset=offset,
             bbox=bbox,
             datetime_param=datetime_param,

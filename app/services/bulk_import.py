@@ -7,13 +7,15 @@ import zipfile
 from datetime import datetime
 from typing import Callable
 
-from sqlalchemy import create_engine, delete, update
+from sqlalchemy import create_engine, delete, text, update
 from sqlalchemy.orm import Session, sessionmaker
+from shapely.geometry import shape
+from uuid6 import uuid7
 
 from app.core.config import get_settings
 from app.models.collection import Collection
 from app.models.feature import Feature
-from app.utils.geo import geojson_to_wkt_element
+from app.utils.feature_subdivide import insert_feature_subdivided_sql
 
 # Driver for fiona by file extension (lowercase). No shapefile (would require sidecar files).
 # .geojsonseq is the same format as .geojsonl (GeoJSON Seq / newline-delimited GeoJSON).
@@ -78,42 +80,36 @@ def _import_one_source(
     created_so_far: int,
     now: datetime,
 ) -> tuple[int, int]:
-    """Read one fiona source and insert features. Returns (created, failed)."""
+    """Read one fiona source and insert features with ST_Subdivide (≤256 vertices/row). Returns (created, failed)."""
     import fiona
 
     created = 0
     failed = 0
-    batch: list[Feature] = []
+    max_vertices = get_settings().features_subdivide_max_vertices
 
     with fiona.open(open_path, driver=driver) as src:
         for rec in src:
             try:
                 geom_dict = rec.get("geometry")
                 props = dict(rec.get("properties") or {})
-                wkt = geojson_to_wkt_element(geom_dict, srid=4326)
-                feat = Feature(
-                    collection_id=collection_id,
-                    geometry=wkt,
-                    properties=props if props else None,
-                    created_at=now,
-                    updated_at=now,
+                wkt = shape(geom_dict).wkt if geom_dict else None
+                fid = str(uuid7())
+                sql, params = insert_feature_subdivided_sql(
+                    fid, collection_id, wkt, props if props else None, now, max_vertices
                 )
-                batch.append(feat)
+                session.execute(text(sql), params)
                 created += 1
             except Exception:
                 failed += 1
                 continue
 
-            if len(batch) >= batch_size:
-                session.bulk_save_objects(batch)
+            if created > 0 and created % batch_size == 0:
                 session.commit()
                 if on_progress:
                     on_progress("running", created_so_far + created, None)
-                batch = []
 
-    if batch:
-        session.bulk_save_objects(batch)
-        session.commit()
+        if created > 0 and created % batch_size != 0:
+            session.commit()
     return created, failed
 
 

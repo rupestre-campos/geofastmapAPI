@@ -74,7 +74,7 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
         ).first()
         max_updated = row.m if row and row.m else None
         count_row = session.execute(
-            text("SELECT COUNT(*) AS n FROM features WHERE collection_id = :cid"),
+            text("SELECT COUNT(DISTINCT id) AS n FROM features WHERE collection_id = :cid"),
             {"cid": collection_id},
         ).first()
         feature_count = count_row.n if count_row and count_row.n else 0
@@ -113,8 +113,9 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
             with SessionLocal() as session:
                 result = session.execute(
                     text(
-                        "SELECT id, ST_AsGeoJSON(geometry)::text AS geometry, properties "
-                        "FROM features WHERE collection_id = :cid"
+                        "SELECT id, ST_AsGeoJSON(ST_Union(geometry))::text AS geometry, "
+                        "(array_agg(properties ORDER BY part_index))[1] AS properties "
+                        "FROM features WHERE collection_id = :cid GROUP BY id ORDER BY id"
                     ),
                     {"cid": collection_id},
                     execution_options={"stream_results": True},

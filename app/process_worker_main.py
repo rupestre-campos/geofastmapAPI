@@ -4,10 +4,59 @@ from __future__ import annotations
 
 import sys
 
+from sqlalchemy import create_engine
+
 from app.core.config import get_settings
-from app.services.process_queue import PROCESS_QUEUE_KEY, ProcessJobPayload
-from app.services.process_worker import process_process_job_sync
-from app.services.job_store import update_job
+from app.services.job_store import get_job, update_job
+from app.services.process_queue import (
+    PROCESS_QUEUE_KEY,
+    ProcessJobPayload,
+    get_process_job_meta,
+    list_process_job_ids,
+    set_process_job_result,
+)
+from app.services.process_worker import (
+    _cleanup_result_collection_sync,
+    _safe_result_collection_id,
+    process_process_job_sync,
+)
+from app.services.tile_build_queue import create_tile_build_job, enqueue_tile_build
+
+
+def _recover_orphaned_running_jobs(settings) -> None:
+    """Mark any process jobs still 'running' as failed and remove partial result data."""
+    engine = create_engine(
+        settings.database_sync_url,
+        pool_pre_ping=True,
+        future=True,
+        pool_size=2,
+        max_overflow=0,
+    )
+    try:
+        for job_id in list_process_job_ids(100):
+            job = get_job(job_id)
+            if not job or job.status != "running":
+                continue
+            meta = get_process_job_meta(job_id)
+            if not meta:
+                update_job(job_id, status="failed", message="Job interrupted (worker restarted).")
+                continue
+            result_id = _safe_result_collection_id(
+                meta.get("process_id", ""),
+                meta.get("collection_id_a", ""),
+                meta.get("collection_id_b", ""),
+            )
+            try:
+                _cleanup_result_collection_sync(engine, result_id)
+            except Exception:
+                pass
+            update_job(
+                job_id,
+                status="failed",
+                message="Job interrupted (worker restarted). Partial data removed.",
+            )
+    finally:
+        engine.dispose()
 
 
 def main() -> None:
@@ -15,6 +64,7 @@ def main() -> None:
     if settings.process_queue_type != "redis":
         print("Set PROCESS_QUEUE_TYPE=redis for process worker.", file=sys.stderr)
         sys.exit(1)
+    _recover_orphaned_running_jobs(settings)
     import redis
     r = redis.from_url(settings.redis_url, decode_responses=True)
     print("Process worker started. Waiting for jobs...", flush=True)
@@ -29,23 +79,30 @@ def main() -> None:
             print(f"Invalid payload: {e}", file=sys.stderr)
             continue
         job_id = payload.job_id
+        job = get_job(job_id)
+        if job and job.status == "cancelled":
+            print(f"Skipping cancelled job {job_id}", flush=True)
+            continue
         print(f"Running {payload.process_id} ({payload.collection_id_a}, {payload.collection_id_b}) job_id={job_id}...", flush=True)
         update_job(job_id, status="running", message=f"Computing {payload.process_id}...")
-        err, count = process_process_job_sync(payload)
+        err, count, items_in = process_process_job_sync(payload)
         if err:
             update_job(job_id, status="failed", message=err)
             print(f"Process FAILED: {err}", file=sys.stderr, flush=True)
         else:
-            from app.services.process_worker import _safe_result_collection_id
             result_id = _safe_result_collection_id(
                 payload.process_id, payload.collection_id_a, payload.collection_id_b
             )
+            set_process_job_result(job_id, result_id)
             update_job(
                 job_id,
                 status="completed",
-                message=f"Result collection: {result_id}. {count} features.",
+                message=f"Result collection: {result_id}. Input: {items_in}. Output: {count}.",
+                items_in=items_in,
                 items_created=count,
             )
+            tile_job = create_tile_build_job(result_id)
+            enqueue_tile_build(result_id, tile_job.job_id)
             print(f"Process completed. Result: {result_id} ({count} features)", flush=True)
 
 

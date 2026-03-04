@@ -27,6 +27,7 @@ class FeatureRead(FeatureBase):
     collection_id: str
     created_at: datetime
     updated_at: datetime
+    bbox: list[float] | None = Field(default=None, description="GeoJSON bbox [minx, miny, maxx, maxy] when geometry omitted for performance.")
 
     model_config = ConfigDict(from_attributes=True)
 

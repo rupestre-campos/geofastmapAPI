@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, Computed, DateTime, ForeignKey, String, Text
+from sqlalchemy import Column, Computed, DateTime, ForeignKey, Integer, String, Text
 from geoalchemy2 import Geometry
 from sqlalchemy.dialects.postgresql import JSONB
 from uuid6 import uuid7
@@ -27,6 +27,9 @@ class Feature(Base):
         nullable=False,
         primary_key=True,
     )
+
+    # Subdivision part index (0, 1, 2, ...). Same id + collection_id = one logical feature; geometry stored in parts with ≤256 vertices via ST_Subdivide.
+    part_index = Column(Integer, nullable=False, primary_key=True, default=0, server_default="0")
 
     # Spatial column (PostGIS)
     geometry = Column(

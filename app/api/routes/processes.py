@@ -1,15 +1,21 @@
 """OGC API - Processes: geometric operations (intersection, erase) between two collections."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.html import html_response, wants_html
 from app.crud import collections as collections_crud
 from app.db.session import get_db
-from app.services.job_store import create_job
-from app.services.process_queue import ProcessJobPayload, enqueue_process_job
+from app.services.job_store import create_job, get_job
+from app.services.process_queue import (
+    ProcessJobPayload,
+    enqueue_process_job,
+    get_process_job_meta,
+    list_process_job_ids,
+)
 
 router = APIRouter()
 
@@ -39,10 +45,21 @@ class ProcessExecutionInput(BaseModel):
 @router.get(
     "",
     summary="List processes",
-    description="OGC API - Processes: list available process identifiers (intersection, erase).",
+    description="OGC API - Processes: list available process identifiers (intersection, erase). Use ?f=html for the processing page.",
 )
-async def list_processes(request: Request):
+async def list_processes(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     base = _base_url(request)
+    if wants_html(request):
+        collections, _ = await collections_crud.list_collections(db, limit=500)
+        collection_items = [{"id": c.id, "title": c.title or c.id} for c in collections]
+        return html_response(
+            "processing.html",
+            base=base,
+            collections=collection_items,
+        )
     items = []
     for p in PROCESSES:
         items.append({
@@ -53,6 +70,34 @@ async def list_processes(request: Request):
             ],
         })
     return JSONResponse(content={"processes": items, "links": [{"href": f"{base}/processes", "rel": "self", "type": "application/json"}]})
+
+
+@router.get(
+    "/jobs",
+    summary="List process jobs",
+    description="Returns recent process jobs (intersection/erase) with status, layers, and result collection.",
+)
+async def list_process_jobs(
+    request: Request,
+    limit: int = Query(30, ge=1, le=100),
+):
+    base = _base_url(request)
+    job_ids = list_process_job_ids(limit=limit)
+    jobs = []
+    for jid in job_ids:
+        job = get_job(jid)
+        meta = get_process_job_meta(jid)
+        if not job:
+            continue
+        d = job.to_dict()
+        d["status_url"] = f"{base}/jobs/{jid}"
+        if meta:
+            d["process_id"] = meta.get("process_id")
+            d["collection_id_a"] = meta.get("collection_id_a")
+            d["collection_id_b"] = meta.get("collection_id_b")
+            d["result_collection_id"] = meta.get("result_collection_id")
+        jobs.append(d)
+    return {"jobs": jobs}
 
 
 @router.get(

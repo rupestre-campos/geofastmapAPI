@@ -86,5 +86,9 @@ async def ensure_search_result_cached(
             )
             set_search_result(collection_id, params_key, geojson_bytes)
             return True
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception(
+                "ensure_search_result_cached failed: %s", e, extra={"collection_id": collection_id, "params_key": params_key}
+            )
             return False

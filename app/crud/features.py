@@ -1,19 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
-from datetime import datetime
-from typing import Tuple
+from datetime import datetime, timezone
+from typing import Any, Tuple
 
+from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_Intersects, ST_MakeEnvelope
-from sqlalchemy import Float, cast, func, select, update
+from shapely.geometry import mapping, shape
+from shapely.ops import unary_union
+from sqlalchemy import Float, cast, func, literal_column, select, text, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
+from uuid6 import uuid7
 
+from app.core.config import get_settings
 from app.models.collection import Collection
 from app.models.feature import Feature
 from app.schemas.feature import FeatureCreate, FeaturePatch, FeatureReplace
 from app.utils.geo import geojson_to_wkt_element
+from app.utils.feature_subdivide import insert_feature_subdivided_sql
 from app.utils.property_filter import property_value_to_like_pattern
-from app.utils.property_filters import PropertyFilter, PropertyOp
+from app.utils.property_filters import PropertyFilter, PropertyOp, safe_json_key
 
 # Properties key that must not be writable via API (feature id is from the resource)
 PROPERTIES_READONLY_KEYS = frozenset({"id"})
@@ -26,13 +34,81 @@ def _properties_without_readonly(props: dict | None) -> dict | None:
     return {k: v for k, v in props.items() if k not in PROPERTIES_READONLY_KEYS}
 
 
+def _parts_to_logical_feature(parts: list[Any]) -> Feature:
+    """Aggregate part-rows (id, collection_id, part_index, geometry_geojson, properties, created_at, updated_at)
+    into one logical Feature. Geometry = unary_union of parts in Python (no DB union)."""
+    if not parts:
+        raise ValueError("parts must be non-empty")
+    sorted_parts = sorted(parts, key=lambda p: getattr(p, "part_index", 0))
+    first = sorted_parts[0]
+    geoms = []
+    for p in sorted_parts:
+        g = getattr(p, "geometry_geojson", None)
+        if g:
+            try:
+                geoms.append(shape(g))
+            except Exception:
+                pass
+    if geoms:
+        union_geom = unary_union(geoms)
+        geometry_geojson = mapping(union_geom) if union_geom and not union_geom.is_empty else None
+    else:
+        geometry_geojson = None
+    created_at = min(getattr(p, "created_at", None) for p in sorted_parts)
+    updated_at = max(getattr(p, "updated_at", None) for p in sorted_parts)
+    f = Feature(
+        id=first.id,
+        collection_id=first.collection_id,
+        part_index=0,
+        geometry=None,
+        properties=first.properties,
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+    f.geometry_geojson = geometry_geojson  # type: ignore[attr-defined]
+    return f
+
+
+def _row_to_logical_feature(row, geometry_geojson: bool = False) -> Feature:
+    """Build a Feature (logical view, part_index=0) from a grouped query row.
+    When geometry_geojson is True, row has geometry_geojson (dict) and we set it on the
+    instance to avoid WKT→GeoJSON conversion in the route (list path)."""
+    geom_wkt = getattr(row, "geometry_wkt", None)
+    geom_geojson = getattr(row, "geometry_geojson", None)
+    if geometry_geojson and geom_geojson is not None:
+        geom = None  # Route will use feature.geometry_geojson
+    else:
+        geom = WKTElement(geom_wkt, srid=4326) if geom_wkt else None
+    f = Feature(
+        id=row.id,
+        collection_id=row.collection_id,
+        part_index=0,
+        geometry=geom,
+        properties=row.properties,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+    if geometry_geojson and geom_geojson is not None:
+        f.geometry_geojson = geom_geojson  # type: ignore[attr-defined]
+    return f
+
+
 async def list_features_for_collection(
     db: AsyncSession, collection_id: str
 ) -> Sequence[Feature]:
-    result = await db.execute(
-        select(Feature).where(Feature.collection_id == collection_id)
+    """Return one logical feature per id (ST_Union of parts)."""
+    r = await db.execute(
+        text("""
+            SELECT id, collection_id,
+                   ST_AsText(ST_Union(geometry)) AS geometry_wkt,
+                   (array_agg(properties ORDER BY part_index))[1] AS properties,
+                   min(created_at) AS created_at, max(updated_at) AS updated_at
+            FROM features WHERE collection_id = :cid
+            GROUP BY id, collection_id
+        """),
+        {"cid": collection_id},
     )
-    return result.scalars().all()
+    return [_row_to_logical_feature(row) for row in r.fetchall()]
 
 
 def _order_by_clause(sortby: str | None, sortdesc: bool):
@@ -112,15 +188,22 @@ async def list_features_paginated(
     fulltext_q: str | None = None,
     feature_ids: Sequence[str] | None = None,
     collection_feature_count: int | None = None,
+    include_geometry: bool = True,
+    skip_count: bool = False,
 ) -> Tuple[Sequence[Feature], int]:
     """
     List features with OGC query params. Returns (features, numberMatched).
+    include_geometry=False: return features with bbox only (no geometry) for fast list/HTML view with large layers.
+    skip_count=True: do not run COUNT query; use collection_feature_count when no filters, else 0. Speeds up HTML view.
     property_filters: legacy name=value (* partial). structured_filters: key:op:value (eq, ne, gt, gte, lt, lte, like, ilike).
     fulltext_q: search term across all properties (uses properties_flat trigram index).
     feature_ids: when set, only return features with id in this list (e.g. for single-item tile).
     When no filters are applied and collection_feature_count is provided, use it as total (no COUNT query).
     When filters are applied, count matching rows.
     """
+    # Empty query params (e.g. sortby=) can arrive as ""; treat as None so we use the fast two-phase path
+    sortby = (sortby.strip() if sortby else None) or None
+
     has_filters = (
         bbox is not None
         or datetime_start is not None
@@ -131,141 +214,361 @@ async def list_features_paginated(
         or bool(feature_ids)
     )
 
-    base = select(Feature).where(Feature.collection_id == collection_id)
-    count_base = select(func.count()).select_from(Feature).where(Feature.collection_id == collection_id)
-
-    if feature_ids:
-        base = base.where(Feature.id.in_(list(feature_ids)))
-        count_base = count_base.where(Feature.id.in_(list(feature_ids)))
-
+    envelope = None
     if bbox is not None:
         minx, miny, maxx, maxy = bbox
         envelope = ST_MakeEnvelope(minx, miny, maxx, maxy, 4326)
-        spatial_filter = Feature.geometry.isnot(None) & ST_Intersects(Feature.geometry, envelope)
-        base = base.where(spatial_filter)
-        count_base = count_base.where(spatial_filter)
-
-    if datetime_start is not None:
-        base = base.where(Feature.created_at >= datetime_start)
-        count_base = count_base.where(Feature.created_at >= datetime_start)
-    if datetime_end is not None:
-        base = base.where(Feature.created_at <= datetime_end)
-        count_base = count_base.where(Feature.created_at <= datetime_end)
-
-    if property_filters:
-        for key, value in property_filters.items():
-            clause = _property_filter_clause(key, value)
-            base = base.where(clause)
-            count_base = count_base.where(clause)
-
-    if structured_filters:
-        for pf in structured_filters:
-            clause = _structured_filter_clause(pf)
-            base = base.where(clause)
-            count_base = count_base.where(clause)
-
     if fulltext_q and fulltext_q.strip():
         q = fulltext_q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{q}%"
-        # ILIKE on properties_flat uses the trigram index
-        base = base.where(Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\"))
-        count_base = count_base.where(Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\"))
 
-    # Count matching rows only when filters are applied; otherwise use collection's cached feature_count.
-    if has_filters:
-        total = (await db.execute(count_base)).scalar() or 0
+    # Count: logical features (COUNT(DISTINCT id)); uses idx_features_collection_id_id when no filters.
+    count_distinct = select(func.count(func.distinct(Feature.id))).where(Feature.collection_id == collection_id)
+    if feature_ids:
+        count_distinct = count_distinct.where(Feature.id.in_(list(feature_ids)))
+    if bbox is not None:
+        count_distinct = count_distinct.where(Feature.geometry.isnot(None) & ST_Intersects(Feature.geometry, envelope))
+    if datetime_start is not None:
+        count_distinct = count_distinct.where(Feature.created_at >= datetime_start)
+    if datetime_end is not None:
+        count_distinct = count_distinct.where(Feature.created_at <= datetime_end)
+    if property_filters:
+        for key, value in property_filters.items():
+            count_distinct = count_distinct.where(_property_filter_clause(key, value))
+    if structured_filters:
+        for pf in structured_filters:
+            count_distinct = count_distinct.where(_structured_filter_clause(pf))
+    if fulltext_q and fulltext_q.strip():
+        q = fulltext_q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{q}%"
+        count_distinct = count_distinct.where(Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\"))
+
+    if skip_count and not has_filters and collection_feature_count is not None:
+        total = int(collection_feature_count)
+    elif skip_count and has_filters:
+        total = (await db.execute(count_distinct)).scalar() or 0
+    elif skip_count:
+        total = 0
+    elif has_filters:
+        total = (await db.execute(count_distinct)).scalar() or 0
     elif collection_feature_count is not None:
         total = collection_feature_count
     else:
-        total = (await db.execute(count_base)).scalar() or 0
+        total = (await db.execute(count_distinct)).scalar() or 0
 
-    base = base.order_by(_order_by_clause(sortby, sortdesc))
-    base = base.limit(limit).offset(offset)
-    result = await db.execute(base)
-    features = result.scalars().all()
-    return (features, int(total))
+    # List: one logical feature per id. Always use two-phase: no ST_Union in DB.
+    # Phase 1: get page of ids (order by id, created_at, or property — no geometry).
+    # Phase 2: fetch parts for those ids, union/aggregate in Python.
+    use_two_phase = True
+
+    if use_two_phase:
+        # Phase 1: get page of logical feature ids only (no ST_Union, no array_agg).
+        # No filters + sortby id/None: use DISTINCT ON (id) so planner reads only (limit+offset) rows from index.
+        # With filters or sortby created_at: use grouped/distinct query (filtered set is smaller).
+        has_any_filter = (
+            bool(feature_ids)
+            or bbox is not None
+            or datetime_start is not None
+            or datetime_end is not None
+            or bool(property_filters)
+            or bool(structured_filters)
+            or bool(fulltext_q and fulltext_q.strip())
+        )
+        if (
+            not has_any_filter
+            and sortby in (None, "id")
+        ):
+            # Fast path: DISTINCT ON (id) with LIMIT so planner reads only (limit+offset) rows from index,
+            # not the whole table. Inner query emits one row per id in order; we take a slice for the page.
+            order_dir = "DESC" if sortdesc else "ASC"
+            fetch_count = limit + offset  # read this many "first row per id" from index
+            r1 = await db.execute(
+                text(f"""
+                    SELECT id, collection_id
+                    FROM (
+                        SELECT DISTINCT ON (id) id, collection_id
+                        FROM features
+                        WHERE collection_id = :cid
+                        ORDER BY id {order_dir}, part_index {order_dir}
+                        LIMIT :fetch
+                    ) sub
+                    ORDER BY id {order_dir}
+                    LIMIT :lim OFFSET :off
+                """),
+                {"cid": collection_id, "fetch": fetch_count, "lim": limit, "off": offset},
+            )
+            page_rows = r1.fetchall()
+            page_ids = [r.id for r in page_rows]
+        elif not has_any_filter and sortby == "created_at":
+            # Fast path: only id, collection_id, created_at — matches idx_features_collection_created_at_id
+            # so planner can use index-only scan (no heap). Still full index scan for GROUP BY + ORDER BY.
+            order_dir = "DESC" if sortdesc else "ASC"
+            r1 = await db.execute(
+                text(f"""
+                    SELECT id, collection_id
+                    FROM (
+                        SELECT id, collection_id, min(created_at) AS created_at
+                        FROM features
+                        WHERE collection_id = :cid
+                        GROUP BY id, collection_id
+                        ORDER BY created_at {order_dir}, id {order_dir}
+                        LIMIT :lim OFFSET :off
+                    ) sub
+                """),
+                {"cid": collection_id, "lim": limit, "off": offset},
+            )
+            page_rows = r1.fetchall()
+            page_ids = [r.id for r in page_rows]
+        else:
+            # Phase 1 with filters and/or sortby: get page_ids (no ST_Union).
+            # sortby created_at: GROUP BY id, min(created_at). sortby property key: GROUP BY id, array_agg(properties)[1], order by ->key.
+            if sortby == "created_at":
+                phase1 = (
+                    select(Feature.id, Feature.collection_id)
+                    .where(Feature.collection_id == collection_id)
+                    .group_by(Feature.id, Feature.collection_id)
+                    .add_columns(func.min(Feature.created_at).label("created_at"))
+                )
+            elif sortby and sortby != "id":
+                # Order by a property key: GROUP BY id with array_agg(properties) only (no geometry), order by props->>key
+                key = safe_json_key(sortby)
+                if key:
+                    phase1 = (
+                        select(
+                            Feature.id,
+                            Feature.collection_id,
+                            literal_column("(array_agg(features.properties ORDER BY features.part_index))[1]").label("props"),
+                        )
+                        .where(Feature.collection_id == collection_id)
+                        .group_by(Feature.id, Feature.collection_id)
+                    )
+                    order_prop = literal_column(f"props ->> '{key}'")
+                    order_phase1 = order_prop.asc() if not sortdesc else order_prop.desc()
+                else:
+                    phase1 = (
+                        select(Feature.id)
+                        .where(Feature.collection_id == collection_id)
+                        .distinct()
+                    )
+                    order_phase1 = Feature.id.asc() if not sortdesc else Feature.id.desc()
+            else:
+                phase1 = (
+                    select(Feature.id)
+                    .where(Feature.collection_id == collection_id)
+                    .distinct()
+                )
+                order_phase1 = Feature.id.asc() if not sortdesc else Feature.id.desc()
+
+            if feature_ids:
+                phase1 = phase1.where(Feature.id.in_(list(feature_ids)))
+            if bbox is not None:
+                phase1 = phase1.where(Feature.geometry.isnot(None) & ST_Intersects(Feature.geometry, envelope))
+            if datetime_start is not None:
+                phase1 = phase1.where(Feature.created_at >= datetime_start)
+            if datetime_end is not None:
+                phase1 = phase1.where(Feature.created_at <= datetime_end)
+            if property_filters:
+                for key, value in property_filters.items():
+                    phase1 = phase1.where(_property_filter_clause(key, value))
+            if structured_filters:
+                for pf in structured_filters:
+                    phase1 = phase1.where(_structured_filter_clause(pf))
+            if fulltext_q and fulltext_q.strip():
+                phase1 = phase1.where(Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\"))
+
+            if sortby == "created_at":
+                # Use literal so ORDER BY refers to the SELECT alias (min(created_at) AS created_at), not anon_1
+                order_phase1 = literal_column("created_at").asc() if not sortdesc else literal_column("created_at").desc()
+            elif not (sortby and sortby != "id" and safe_json_key(sortby)):
+                order_phase1 = Feature.id.asc() if not sortdesc else Feature.id.desc()
+            phase1 = phase1.order_by(order_phase1).limit(limit).offset(offset)
+            result1 = await db.execute(phase1)
+            page_rows = result1.fetchall()
+            page_ids = [r.id for r in page_rows]
+
+        if not page_ids:
+            return ([], int(total))
+
+        if not include_geometry:
+            # Fast path: fetch per-part bbox only (no GROUP BY, no ST_Extent in DB — minimal work per row).
+            # Aggregate bbox/properties in Python so DB does a simple index scan and releases quickly.
+            r = await db.execute(
+                text("""
+                    SELECT id, collection_id, part_index,
+                           ST_XMin(geometry) AS xmin, ST_YMin(geometry) AS ymin,
+                           ST_XMax(geometry) AS xmax, ST_YMax(geometry) AS ymax,
+                           properties, created_at, updated_at
+                    FROM features
+                    WHERE collection_id = :cid AND id = ANY(:ids)
+                    ORDER BY id, part_index
+                """),
+                {"cid": collection_id, "ids": page_ids},
+            )
+            rows = r.fetchall()
+            by_id: dict[str, list[Any]] = {}
+            for row in rows:
+                by_id.setdefault(row.id, []).append(row)
+            features = []
+            for pid in page_ids:
+                parts = by_id.get(pid)
+                if not parts:
+                    continue
+                sorted_parts = sorted(parts, key=lambda p: getattr(p, "part_index", 0))
+                first = sorted_parts[0]
+                xs = [float(p.xmin) for p in sorted_parts if p.xmin is not None]
+                ys = [float(p.ymin) for p in sorted_parts if p.ymin is not None]
+                xmaxs = [float(p.xmax) for p in sorted_parts if p.xmax is not None]
+                ymaxs = [float(p.ymax) for p in sorted_parts if p.ymax is not None]
+                bbox_list = None
+                if xs and ys and xmaxs and ymaxs:
+                    bbox_list = [min(xs), min(ys), max(xmaxs), max(ymaxs)]
+                f = Feature(
+                    id=first.id,
+                    collection_id=first.collection_id,
+                    part_index=0,
+                    geometry=None,
+                    properties=first.properties,
+                    created_at=min(p.created_at for p in sorted_parts),
+                    updated_at=max(p.updated_at for p in sorted_parts),
+                )
+                f.bbox = bbox_list  # type: ignore[attr-defined]
+                features.append(f)
+            return (features, int(total))
+
+        # Phase 2: fetch parts only (no ST_Union/array_agg in DB — fast, releases connection quickly).
+        # Aggregate to logical features in Python in parallel (union geometries per id).
+        parts_stmt = (
+            select(
+                Feature.id,
+                Feature.collection_id,
+                Feature.part_index,
+                cast(func.ST_AsGeoJSON(Feature.geometry), JSONB).label("geometry_geojson"),
+                Feature.properties,
+                Feature.created_at,
+                Feature.updated_at,
+            )
+            .where(Feature.collection_id == collection_id, Feature.id.in_(page_ids))
+            .order_by(Feature.id, Feature.part_index)
+        )
+        result2 = await db.execute(parts_stmt)
+        rows = result2.fetchall()
+        # Group by id (preserve part order)
+        groups: dict[str, list[Any]] = {}
+        for r in rows:
+            groups.setdefault(r.id, []).append(r)
+        # Aggregate each group in parallel (union in Python, no DB)
+        def build_one(pid: str) -> Feature | None:
+            if pid not in groups:
+                return None
+            return _parts_to_logical_feature(groups[pid])
+
+        loop = asyncio.get_event_loop()
+        results = await asyncio.gather(
+            *[loop.run_in_executor(None, build_one, pid) for pid in page_ids]
+        )
+        features = [f for f in results if f is not None]
+        return (features, int(total))
 
 
 async def get_feature(
     db: AsyncSession, collection_id: str, feature_id: str
 ) -> Feature | None:
-    result = await db.execute(
-        select(Feature).where(
-            Feature.collection_id == collection_id,
-            Feature.id == feature_id,
-        )
+    """Return one logical feature (ST_Union of parts) or None."""
+    r = await db.execute(
+        text("""
+            SELECT id, collection_id, ST_AsText(ST_Union(geometry)) AS geometry_wkt,
+                   (array_agg(properties ORDER BY part_index))[1] AS properties,
+                   min(created_at) AS created_at, max(updated_at) AS updated_at
+            FROM features WHERE collection_id = :cid AND id = :fid
+            GROUP BY id, collection_id
+        """),
+        {"cid": collection_id, "fid": feature_id},
     )
-    return result.scalar_one_or_none()
+    row = r.fetchone()
+    return _row_to_logical_feature(row) if row else None
 
 
 async def create_feature(db: AsyncSession, data: FeatureCreate) -> Feature:
-    geometry_wkt = geojson_to_wkt_element(
-        data.geometry.model_dump() if data.geometry else None
-    )
-    feature = Feature(
-        collection_id=data.collection_id,
-        geometry=geometry_wkt,
-        properties=_properties_without_readonly(data.properties),
-    )
-    db.add(feature)
+    """Create one logical feature; geometry is subdivided at insert (ST_Subdivide, ≤256 vertices/row)."""
+    from shapely.geometry import shape
+    geom_dict = data.geometry.model_dump() if data.geometry else None
+    wkt = shape(geom_dict).wkt if geom_dict else None
+    props = _properties_without_readonly(data.properties)
+    fid = str(uuid7())
+    max_vertices = get_settings().features_subdivide_max_vertices
+    now = datetime.now(timezone.utc)
+    sql, params = insert_feature_subdivided_sql(fid, data.collection_id, wkt, props, now, max_vertices)
+    await db.execute(text(sql), params)
     await db.execute(
         update(Collection)
         .where(Collection.id == data.collection_id)
         .values(feature_count=Collection.feature_count + 1)
     )
     await db.commit()
-    await db.refresh(feature)
+    feature = await get_feature(db, data.collection_id, fid)
+    assert feature is not None
     return feature
 
 
 async def replace_feature(
     db: AsyncSession, collection_id: str, feature_id: str, data: FeatureReplace
 ) -> bool:
-    """OGC Part 4: Replace feature with full representation. Returns True if updated."""
+    """OGC Part 4: Replace feature with full representation. Deletes all parts, inserts with ST_Subdivide."""
     feature = await get_feature(db, collection_id, feature_id)
     if feature is None:
         return False
-    geometry_wkt = geojson_to_wkt_element(
-        data.geometry.model_dump() if data.geometry else None
-    )
-    feature.geometry = geometry_wkt
-    feature.properties = _properties_without_readonly(data.properties)
+    await db.execute(text("DELETE FROM features WHERE collection_id = :cid AND id = :fid"), {"cid": collection_id, "fid": feature_id})
+    geom_dict = data.geometry.model_dump() if data.geometry else None
+    from shapely.geometry import shape
+    wkt = shape(geom_dict).wkt if geom_dict else None
+    props = _properties_without_readonly(data.properties)
+    max_vertices = get_settings().features_subdivide_max_vertices
+    now = datetime.now(timezone.utc)
+    sql, params = insert_feature_subdivided_sql(feature_id, collection_id, wkt, props, now, max_vertices)
+    await db.execute(text(sql), params)
     await db.commit()
-    await db.refresh(feature)
     return True
 
 
 async def update_feature(
     db: AsyncSession, collection_id: str, feature_id: str, data: FeaturePatch
 ) -> Feature | None:
-    """OGC Part 4: Partial update (merge-patch). Only updates provided fields. Returns updated feature or None."""
+    """OGC Part 4: Partial update (merge-patch). Replaces all parts with new geometry/properties and ST_Subdivide."""
     feature = await get_feature(db, collection_id, feature_id)
     if feature is None:
         return None
+    geom_dict = None
     if "geometry" in data.model_fields_set:
-        feature.geometry = (
-            geojson_to_wkt_element(data.geometry.model_dump())
-            if data.geometry is not None
-            else None
-        )
-    if "properties" in data.model_fields_set:
-        existing = feature.properties or {}
-        incoming = _properties_without_readonly(data.properties) or {}
-        feature.properties = {**existing, **incoming}
+        geom_dict = data.geometry.model_dump() if data.geometry is not None else None
+    else:
+        # Keep current geometry (from logical feature)
+        if feature.geometry is not None:
+            from app.utils.geo import geometry_to_geojson
+            geom_dict = geometry_to_geojson(feature.geometry)
+    existing = feature.properties or {}
+    incoming = _properties_without_readonly(data.properties) if "properties" in data.model_fields_set else None
+    props = {**existing, **(incoming or {})}
+    from shapely.geometry import shape
+    wkt = shape(geom_dict).wkt if geom_dict else None
+    await db.execute(text("DELETE FROM features WHERE collection_id = :cid AND id = :fid"), {"cid": collection_id, "fid": feature_id})
+    max_vertices = get_settings().features_subdivide_max_vertices
+    now = datetime.now(timezone.utc)
+    sql, params = insert_feature_subdivided_sql(feature_id, collection_id, wkt, props, now, max_vertices)
+    await db.execute(text(sql), params)
     await db.commit()
-    await db.refresh(feature)
-    return feature
+    return await get_feature(db, collection_id, feature_id)
 
 
 async def delete_feature(
     db: AsyncSession, collection_id: str, feature_id: str
 ) -> bool:
-    """Delete a feature by id within a collection. Returns True if deleted."""
-    feature = await get_feature(db, collection_id, feature_id)
-    if feature is None:
+    """Delete all parts of a logical feature by id. Returns True if deleted."""
+    result = await db.execute(
+        text("DELETE FROM features WHERE collection_id = :cid AND id = :fid"),
+        {"cid": collection_id, "fid": feature_id},
+    )
+    if result.rowcount == 0:
         return False
-
-    await db.delete(feature)
     await db.execute(
         update(Collection)
         .where(Collection.id == collection_id)

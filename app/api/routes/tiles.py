@@ -643,10 +643,11 @@ async def get_tiles_dynamic(
         )
         sql = f"""
         WITH page AS (
-            SELECT id, geometry, properties
+            SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
             FROM features
             WHERE collection_id = :cid AND geometry IS NOT NULL
               {extra_where}
+            GROUP BY id, collection_id
             ORDER BY {order_sql}
             LIMIT :page_limit OFFSET :offset
         )
@@ -693,9 +694,10 @@ async def get_tiles_dynamic(
         )
         sql = f"""
         WITH by_id AS MATERIALIZED (
-            SELECT id, geometry, properties
+            SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
             FROM features
             WHERE collection_id = :cid AND id = ANY(:ids) AND geometry IS NOT NULL
+            GROUP BY id, collection_id
         )
         SELECT ST_AsMVT(tile, :layer_name, 4096, 'geom') AS mvt
         FROM (
@@ -732,26 +734,27 @@ async def get_tiles_dynamic(
             structured_filters=[],
             fulltext_q=None,
         )
+        prop_select_feat = prop_select.replace("(properties ", "(feat.properties ") if prop_cols else ""
         sql = f"""
         SELECT ST_AsMVT(tile, :layer_name, 4096, 'geom') AS mvt
         FROM (
             SELECT
-                id{prop_select},
+                feat.id{prop_select_feat},
                 ST_AsMVTGeom(
-                    ST_Transform(ST_CurveToLine(geometry::geometry), 3857),
+                    ST_Transform(ST_CurveToLine(feat.geometry::geometry), 3857),
                     ST_TileEnvelope(:z, :x, :y),
                     4096,
                     256,
                     true
                 ) AS geom
-            FROM features
-            WHERE collection_id = :cid
-              AND geometry IS NOT NULL
-              AND ST_Intersects(
-                  geometry,
-                  {tile_env}
-              )
-              {extra_where}
+            FROM (
+                SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
+                FROM features
+                WHERE collection_id = :cid AND geometry IS NOT NULL
+                  AND ST_Intersects(geometry, {tile_env})
+                  {extra_where}
+                GROUP BY id, collection_id
+            ) AS feat
             LIMIT :max_features
         ) AS tile
         WHERE tile.geom IS NOT NULL

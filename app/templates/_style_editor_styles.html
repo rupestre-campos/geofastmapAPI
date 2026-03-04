@@ -1,0 +1,46 @@
+{# Shared styles for the style toolbox (Fill, Line, Point, Load & save). Include in block head. #}
+<style>
+  .style-toolbox { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--space); }
+  .style-toolbox-section { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space); }
+  .style-toolbox-section h3 { margin: 0 0 10px; font-size: 0.9rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+  .style-toolbox-section .form-row { margin-bottom: 10px; }
+  .style-toolbox-section .form-row:last-child { margin-bottom: 0; }
+  .style-toolbox-section label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.85rem; }
+  .style-toolbox-section label .label-text { min-width: 5em; }
+  .style-toolbox-section input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+  .style-toolbox-section input[type="number"], .style-toolbox-section input[type="range"] { min-width: 5em; width: 5em; padding: 4px 6px; box-sizing: border-box; }
+  .style-toolbox-section input[type="range"] { width: 80px; }
+  .style-toolbox-section select { padding: 2px 4px; font-size: inherit; }
+  .style-toolbox-zoom { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 0.8rem; color: var(--text-secondary); }
+  .style-toolbox-zoom label { font-size: 0.8rem; }
+  .style-toolbox-zoom .zoom-stops { margin-top: 4px; }
+  .style-toolbox-zoom .zoom-stops-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .style-toolbox-zoom .zoom-stop-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .style-toolbox-zoom .zoom-stop-row .zoom-input { width: 4.5em; min-width: 4.5em; padding: 4px 6px; font-size: inherit; box-sizing: border-box; }
+  .style-toolbox-zoom .zoom-stop-row .value-input { width: 5em; min-width: 5em; padding: 4px 6px; font-size: inherit; box-sizing: border-box; }
+  .style-toolbox-zoom .zoom-stop-row .btn-remove-stop { padding: 2px 8px; font-size: 1rem; line-height: 1; cursor: pointer; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text-secondary); }
+  .style-toolbox-zoom .zoom-stop-row .btn-remove-stop:hover { color: var(--text); background: var(--bg-elevated); }
+  .style-toolbox-zoom .add-zoom-breakpoint { margin-top: 4px; }
+  .layer-style-legend { width: 28px; height: 18px; border-radius: 3px; border: 3px solid; flex-shrink: 0; }
+  .vector-style-load-wrap { position: relative; display: inline-flex; vertical-align: middle; }
+  .vector-style-panel .vector-style-label { font-weight: 600; margin-right: 4px; color: var(--text-secondary); }
+  .vector-style-panel label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .vector-style-panel input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+  .vector-style-sep { color: var(--text-secondary); margin: 0 4px; }
+  .vector-style-load-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); cursor: pointer; font-size: inherit; min-width: 120px; }
+  .vector-style-load-trigger:hover { border-color: var(--text-secondary); }
+  .vector-style-load-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
+  .vector-style-load-label-text { flex: 1; text-align: left; }
+  .vector-style-load-list { position: absolute; top: 100%; left: 0; margin-top: 2px; min-width: 180px; max-height: 240px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 50; display: none; }
+  .vector-style-load-list.open { display: block; }
+  .vector-style-load-group-label { padding: 4px 8px; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
+  .vector-style-load-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; font-size: 0.85rem; border: none; background: none; width: 100%; text-align: left; }
+  .vector-style-load-item:hover { background: var(--bg-elevated); }
+  .vector-style-load-item-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
+  .vector-style-load-item-label { flex: 1; }
+  .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
+  .save-style-form .vector-style-label { font-weight: 600; margin-right: 4px; }
+  .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+  /* Items page: hide collection picker in Load & save */
+  .style-toolbox-items-page .style-toolbox-save-collection-row { display: none; }
+</style>

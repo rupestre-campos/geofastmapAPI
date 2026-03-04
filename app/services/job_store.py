@@ -16,12 +16,14 @@ from app.core.config import get_settings
 class JobInfo:
     job_id: str
     collection_id: str
-    status: str  # pending, running, replacing, completed, failed
+    status: str  # pending, running, replacing, completed, failed, cancelled
     message: str | None = None
+    items_in: int = 0
     items_created: int = 0
     items_failed: int = 0
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
+    finished_at: datetime | None = None  # set when status becomes completed, failed, or cancelled
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -29,10 +31,12 @@ class JobInfo:
             "collection_id": self.collection_id,
             "status": self.status,
             "message": self.message,
+            "items_in": self.items_in,
             "items_created": self.items_created,
             "items_failed": self.items_failed,
             "created_at": self.created_at.isoformat() + "Z",
             "updated_at": self.updated_at.isoformat() + "Z",
+            "finished_at": self.finished_at.isoformat() + "Z" if self.finished_at else None,
         }
 
 
@@ -59,22 +63,31 @@ def _update_job_memory(
     *,
     status: str | None = None,
     message: str | None = None,
+    items_in: int | None = None,
     items_created: int | None = None,
     items_failed: int | None = None,
+    finished_at: datetime | None = None,
 ) -> JobInfo | None:
     with _mem_lock:
         job = _mem_jobs.get(job_id)
         if not job:
             return None
+        now = datetime.utcnow()
         if status is not None:
             job.status = status
+            if status in ("completed", "failed", "cancelled") and job.finished_at is None:
+                job.finished_at = now
         if message is not None:
             job.message = message
+        if items_in is not None:
+            job.items_in = items_in
         if items_created is not None:
             job.items_created = items_created
         if items_failed is not None:
             job.items_failed = items_failed
-        job.updated_at = datetime.utcnow()
+        if finished_at is not None:
+            job.finished_at = finished_at
+        job.updated_at = now
         return job
 
 
@@ -94,16 +107,20 @@ def _create_job_redis(collection_id: str) -> JobInfo:
     job_id = str(uuid.uuid4())
     job = JobInfo(job_id=job_id, collection_id=collection_id, status="pending")
     key = _redis_key(job_id)
-    r.hset(key, mapping={
+    mapping = {
         "job_id": job_id,
         "collection_id": collection_id,
         "status": job.status,
         "message": job.message or "",
+        "items_in": str(job.items_in),
         "items_created": str(job.items_created),
         "items_failed": str(job.items_failed),
         "created_at": job.created_at.isoformat() + "Z",
         "updated_at": job.updated_at.isoformat() + "Z",
-    })
+    }
+    if job.finished_at is not None:
+        mapping["finished_at"] = job.finished_at.isoformat() + "Z"
+    r.hset(key, mapping=mapping)
     r.expire(key, 86400 * 7)  # 7 days
     coll_key = _jobs_by_collection_key(collection_id)
     r.lpush(coll_key, job_id)
@@ -120,15 +137,20 @@ def _get_job_redis(job_id: str) -> JobInfo | None:
     raw = r.hgetall(key)
     if not raw:
         return None
+    finished_at = None
+    if raw.get("finished_at"):
+        finished_at = datetime.fromisoformat(raw["finished_at"].replace("Z", "+00:00"))
     return JobInfo(
         job_id=raw["job_id"],
         collection_id=raw["collection_id"],
         status=raw["status"],
         message=raw.get("message") or None,
+        items_in=int(raw.get("items_in", 0)),
         items_created=int(raw.get("items_created", 0)),
         items_failed=int(raw.get("items_failed", 0)),
         created_at=datetime.fromisoformat(raw["created_at"].replace("Z", "+00:00")),
         updated_at=datetime.fromisoformat(raw["updated_at"].replace("Z", "+00:00")),
+        finished_at=finished_at,
     )
 
 
@@ -137,8 +159,10 @@ def _update_job_redis(
     *,
     status: str | None = None,
     message: str | None = None,
+    items_in: int | None = None,
     items_created: int | None = None,
     items_failed: int | None = None,
+    finished_at: datetime | None = None,
 ) -> JobInfo | None:
     import redis
     settings = get_settings()
@@ -147,16 +171,23 @@ def _update_job_redis(
     if not r.exists(key):
         return None
     updates = {}
+    now = datetime.utcnow().isoformat() + "Z"
     if status is not None:
         updates["status"] = status
+        if status in ("completed", "failed", "cancelled") and not r.hget(key, "finished_at"):
+            updates["finished_at"] = now
     if message is not None:
         updates["message"] = message
+    if items_in is not None:
+        updates["items_in"] = str(items_in)
     if items_created is not None:
         updates["items_created"] = str(items_created)
     if items_failed is not None:
         updates["items_failed"] = str(items_failed)
+    if finished_at is not None:
+        updates["finished_at"] = finished_at.isoformat() + "Z"
     if updates:
-        updates["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        updates["updated_at"] = now
         r.hset(key, mapping=updates)
     return _get_job_redis(job_id)
 
@@ -181,13 +212,15 @@ def update_job(
     *,
     status: str | None = None,
     message: str | None = None,
+    items_in: int | None = None,
     items_created: int | None = None,
     items_failed: int | None = None,
+    finished_at: datetime | None = None,
 ) -> JobInfo | None:
     settings = get_settings()
     if settings.bulk_queue_type == "redis":
-        return _update_job_redis(job_id, status=status, message=message, items_created=items_created, items_failed=items_failed)
-    return _update_job_memory(job_id, status=status, message=message, items_created=items_created, items_failed=items_failed)
+        return _update_job_redis(job_id, status=status, message=message, items_in=items_in, items_created=items_created, items_failed=items_failed, finished_at=finished_at)
+    return _update_job_memory(job_id, status=status, message=message, items_in=items_in, items_created=items_created, items_failed=items_failed, finished_at=finished_at)
 
 
 def list_jobs_for_collection(collection_id: str, limit: int = 20) -> list[JobInfo]:

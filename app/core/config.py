@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     # OGC API Features items: pagination limits
     items_default_limit: int = 100
     items_max_limit: int = 1000
+    # Max vertices per feature row; geometries are subdivided at insert via ST_Subdivide(geom, N).
+    features_subdivide_max_vertices: int = 256
 
     # Bulk import: batch size for DB inserts (background job)
     bulk_import_batch_size: int = 1000
@@ -34,11 +36,22 @@ class Settings(BaseSettings):
     # OGC API - Processes: geometric operations (intersection, erase) between collections.
     process_queue_type: str = "redis"  # redis | memory (memory = no separate worker)
     process_max_concurrent: int = 1  # max process jobs running at once per worker
+    # Stream A in batches by memory size. Keep low to limit worker RAM (each batch + B in bbox held in memory).
+    process_batch_max_bytes: int = 256 * 1024  # max bytes of geometry (A) per batch (default 256 KiB)
+    process_batch_max_rows: int = 0  # optional cap: max rows per batch (0 = only byte limit)
+    process_insert_batch_size: int = 200  # rows per INSERT commit when writing results (smaller = less memory)
+    # Max batch results held before inserting (1 = write as soon as one batch completes; minimizes memory).
+    process_max_pending_batches: int = 1
+    # Parallel batch workers per job (0 = use CPU count). Lower = less memory (fewer concurrent batches).
+    process_batch_workers: int = 0  # 0 = os.cpu_count(), else cap threads per job
+    process_progress_update_seconds: float = 2.0  # how often to update job progress (items_in/items_created)
+    # Intersection pair-based flow: chunk size when reading (id_a, id_b) pairs and fetching those two features only.
+    process_intersection_pair_chunk_size: int = 400  # pairs per chunk (each chunk = 2 bounded feature fetches)
 
     # Tiles: static MBTiles storage; dynamic tiles are served by FastAPI from PostGIS.
     tiles_storage_path: str = "/data/tiles"
     # Max features per MVT tile to avoid overloading the database (default 200k).
-    tiles_mvt_max_features: int = 10_000
+    tiles_mvt_max_features: int = items_max_limit
     # Redis cache TTL for dynamic tiles (seconds). 0 = no cache.
     tiles_dynamic_cache_ttl_seconds: int = 60
     # Also cache tiles with query params (limit, offset, bbox, etc.) to reduce DB load when panning/zooming.

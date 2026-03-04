@@ -1,0 +1,312 @@
+{# Shared style toolbox logic. Expects window.__styleEditorConfig before this script runs (or call GeofastStyleEditor.initToolbox(config) later).
+   config = { map, getLayerIds: function() return { fill, line, circle?, symbol? }, defaultSpec, legendElId?, onAfterApply?(spec) } #}
+<script>
+(function() {
+  const LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
+  const defaultSpec = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle' };
+  var ZOOM_STOP_DEFAULTS = {
+    'fill-opacity-zoom-stops': [[0, 0.3], [14, 0.7]],
+    'line-width-zoom-stops': [[0, 0.5], [14, 2]],
+    'line-opacity-zoom-stops': [[0, 0.5], [14, 1]],
+    'point-size-zoom-stops': [[0, 4], [14, 12]],
+    'point-opacity-zoom-stops': [[0, 0.5], [14, 1]]
+  };
+
+  function getStopsFromContainer(containerId) {
+    var container = document.getElementById(containerId);
+    if (!container) return [];
+    var list = container.querySelector('.zoom-stops-list');
+    if (!list) return [];
+    var rows = list.querySelectorAll('.zoom-stop-row');
+    var stops = [];
+    var valueType = (container.getAttribute('data-value-type') || 'number') === 'percent';
+    for (var i = 0; i < rows.length; i++) {
+      var zIn = rows[i].querySelector('.zoom-input');
+      var vIn = rows[i].querySelector('.value-input');
+      if (zIn && vIn) {
+        var z = parseFloat(zIn.value);
+        var v = parseFloat(vIn.value);
+        if (isNaN(z)) z = 0;
+        if (valueType && !isNaN(v)) v = v / 100;
+        else if (isNaN(v)) v = 0;
+        stops.push([z, v]);
+      }
+    }
+    stops.sort(function(a, b) { return a[0] - b[0]; });
+    return stops;
+  }
+
+  function renderZoomStops(containerId, stops, onRefresh) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    var list = container.querySelector('.zoom-stops-list');
+    if (!list) return;
+    var valueType = (container.getAttribute('data-value-type') || 'number') === 'percent';
+    var vMin = parseFloat(container.getAttribute('data-value-min')) || 0;
+    var vMax = parseFloat(container.getAttribute('data-value-max')) || 100;
+    var vStep = parseFloat(container.getAttribute('data-value-step')) || 1;
+    var suffix = valueType ? '%' : '';
+    list.innerHTML = '';
+    (stops && stops.length >= 2 ? stops : ZOOM_STOP_DEFAULTS[containerId] || [[0, valueType ? 0.3 : 1], [14, valueType ? 0.7 : 2]]).forEach(function(s) {
+      var zoom = Number(s[0]);
+      var val = Number(s[1]);
+      if (valueType) val = Math.round(val * 100);
+      var row = document.createElement('div');
+      row.className = 'zoom-stop-row';
+      row.innerHTML = '<label>Zoom <input type="number" class="zoom-input" min="0" max="22" value="' + zoom + '"> → <input type="number" class="value-input" min="' + vMin + '" max="' + vMax + '" step="' + (vStep || 'any') + '" value="' + val + '">' + suffix + '</label> <button type="button" class="btn-remove-stop" title="Remove breakpoint">×</button>';
+      list.appendChild(row);
+    });
+    list.querySelectorAll('.zoom-input, .value-input').forEach(function(inp) {
+      inp.oninput = inp.onchange = function() { if (onRefresh) onRefresh(); };
+    });
+    list.querySelectorAll('.btn-remove-stop').forEach(function(btn) {
+      btn.onclick = function() {
+        var r = btn.closest('.zoom-stop-row');
+        if (list.querySelectorAll('.zoom-stop-row').length <= 2) return;
+        if (r) r.remove();
+        if (onRefresh) onRefresh();
+      };
+    });
+    var addBtn = container.querySelector('.add-zoom-breakpoint');
+    if (addBtn && !addBtn._bound) {
+      addBtn._bound = true;
+      addBtn.onclick = function() {
+        var stopsNow = getStopsFromContainer(containerId);
+        var last = stopsNow[stopsNow.length - 1];
+        var nextZoom = last ? last[0] + 2 : 14;
+        var nextVal = last ? last[1] : (valueType ? 0.7 : 2);
+        if (valueType) nextVal = Math.round(nextVal * 100);
+        var row = document.createElement('div');
+        row.className = 'zoom-stop-row';
+        row.innerHTML = '<label>Zoom <input type="number" class="zoom-input" min="0" max="22" value="' + nextZoom + '"> → <input type="number" class="value-input" min="' + vMin + '" max="' + vMax + '" step="' + (vStep || 'any') + '" value="' + nextVal + '">' + suffix + '</label> <button type="button" class="btn-remove-stop" title="Remove breakpoint">×</button>';
+        list.appendChild(row);
+        row.querySelector('.zoom-input').oninput = row.querySelector('.value-input').oninput = function() { if (onRefresh) onRefresh(); };
+        row.querySelector('.btn-remove-stop').onclick = function() {
+          if (list.querySelectorAll('.zoom-stop-row').length <= 2) return;
+          row.remove();
+          if (onRefresh) onRefresh();
+        };
+        if (onRefresh) onRefresh();
+      };
+    }
+  }
+
+  function zoomStopsToExpression(stops) {
+    if (!stops || stops.length < 2) return null;
+    var flat = [];
+    stops.forEach(function(s) { flat.push(Number(s[0]), Number(s[1])); });
+    return ['interpolate', ['linear'], ['zoom']].concat(flat);
+  }
+
+  function applyVectorStyleToLayers(map, layerIds, spec, formEls) {
+    if (!map || !spec) return;
+    spec = spec || {};
+    var fillOpacityVal = spec.fillOpacityZoom && spec.fillOpacityZoom.length >= 2 ? zoomStopsToExpression(spec.fillOpacityZoom) : (spec.fillOpacity != null ? spec.fillOpacity : 0.6);
+    var lineWidthVal = spec.lineWidthZoom && spec.lineWidthZoom.length >= 2 ? zoomStopsToExpression(spec.lineWidthZoom) : (spec.lineWidth != null ? spec.lineWidth : 1);
+    var lineOpacityVal = spec.lineOpacityZoom && spec.lineOpacityZoom.length >= 2 ? zoomStopsToExpression(spec.lineOpacityZoom) : (spec.lineOpacity != null ? spec.lineOpacity : 1);
+    var pointSizeNum = Math.max(1, Math.min(40, spec.pointSize != null ? spec.pointSize : 8));
+    var pointSizeVal = spec.pointSizeZoom && spec.pointSizeZoom.length >= 2 ? zoomStopsToExpression(spec.pointSizeZoom) : pointSizeNum;
+    var pointOpacityValExpr = spec.pointOpacityZoom && spec.pointOpacityZoom.length >= 2 ? zoomStopsToExpression(spec.pointOpacityZoom) : (spec.pointOpacity != null ? spec.pointOpacity : 1);
+    function applyPaintValue(layerId, property, valueOrExpression) {
+      try {
+        if (Array.isArray(valueOrExpression)) map.setPaintProperty(layerId, property, valueOrExpression);
+        else map.setPaintProperty(layerId, property, valueOrExpression);
+      } catch (e) {}
+    }
+    var fillId = layerIds.fill, lineId = layerIds.line, circleId = layerIds.circle, symbolId = layerIds.symbol;
+    if (fillId && map.getLayer(fillId)) {
+      map.setLayoutProperty(fillId, 'visibility', spec.fillEnabled !== false ? 'visible' : 'none');
+      map.setPaintProperty(fillId, 'fill-color', spec.fillColor || '#58a6ff');
+      applyPaintValue(fillId, 'fill-opacity', fillOpacityVal);
+    }
+    if (lineId && map.getLayer(lineId)) {
+      map.setPaintProperty(lineId, 'line-color', spec.lineColor || '#58a6ff');
+      applyPaintValue(lineId, 'line-width', lineWidthVal);
+      applyPaintValue(lineId, 'line-opacity', lineOpacityVal);
+      map.setPaintProperty(lineId, 'line-dasharray', LINE_DASH[spec.linePattern] || LINE_DASH.solid);
+    }
+    if (circleId && map.getLayer(circleId)) {
+      map.setPaintProperty(circleId, 'circle-color', spec.pointColor || '#58a6ff');
+      applyPaintValue(circleId, 'circle-radius', pointSizeVal);
+      applyPaintValue(circleId, 'circle-opacity', pointOpacityValExpr);
+      map.setLayoutProperty(circleId, 'visibility', spec.pointIcon === 'circle' ? 'visible' : 'none');
+    }
+    if (symbolId && map.getLayer(symbolId)) {
+      try {
+        map.setLayoutProperty(symbolId, 'visibility', (spec.pointIcon === 'pin' || spec.pointIcon === 'marker') ? 'visible' : 'none');
+        if (spec.pointSizeZoom && spec.pointSizeZoom.length >= 2 && Array.isArray(pointSizeVal)) map.setLayoutProperty(symbolId, 'icon-size', ['/', zoomStopsToExpression(spec.pointSizeZoom), 12]);
+        else map.setLayoutProperty(symbolId, 'icon-size', pointSizeNum / 12);
+        map.setPaintProperty(symbolId, 'icon-color', spec.pointColor || '#58a6ff');
+        applyPaintValue(symbolId, 'icon-opacity', pointOpacityValExpr);
+      } catch (e) {}
+    }
+  }
+
+  function createGetCurrentSpec(formEls) {
+    return function getCurrentSpec() {
+      var fc = formEls.fillCheck, fillColor = formEls.fillColor, fillOpacity = formEls.fillOpacity, lineColor = formEls.lineColor, lineWidth = formEls.lineWidth, lineOpacity = formEls.lineOpacity, linePattern = formEls.linePattern;
+      var pointColor = formEls.pointColor, pointOpacity = formEls.pointOpacity, pointSize = formEls.pointSize, pointIcon = formEls.pointIcon;
+      var spec = {
+        fillColor: fillColor.value,
+        lineColor: lineColor.value,
+        fillOpacity: fillOpacity.value / 100,
+        lineOpacity: lineOpacity.value / 100,
+        lineWidth: Math.max(0.5, parseFloat(lineWidth.value) || 1),
+        linePattern: linePattern.value || 'solid',
+        fillEnabled: fc.checked,
+        pointColor: pointColor ? pointColor.value : '#58a6ff',
+        pointOpacity: pointOpacity ? (parseFloat(pointOpacity.value) || 100) / 100 : 1,
+        pointSize: Math.max(1, Math.min(40, parseFloat(pointSize ? pointSize.value : 8) || 8)),
+        pointIcon: pointIcon ? pointIcon.value : 'circle'
+      };
+      var fillOpByZoom = document.getElementById('fill-opacity-by-zoom');
+      if (fillOpByZoom && fillOpByZoom.checked) { var stops = getStopsFromContainer('fill-opacity-zoom-stops'); if (stops.length >= 2) spec.fillOpacityZoom = stops; }
+      var lineWByZoom = document.getElementById('line-width-by-zoom');
+      if (lineWByZoom && lineWByZoom.checked) { stops = getStopsFromContainer('line-width-zoom-stops'); if (stops.length >= 2) spec.lineWidthZoom = stops; }
+      var lineOpByZoom = document.getElementById('line-opacity-by-zoom');
+      if (lineOpByZoom && lineOpByZoom.checked) { stops = getStopsFromContainer('line-opacity-zoom-stops'); if (stops.length >= 2) spec.lineOpacityZoom = stops; }
+      var ptSizeByZoom = document.getElementById('point-size-by-zoom');
+      if (ptSizeByZoom && ptSizeByZoom.checked) { stops = getStopsFromContainer('point-size-zoom-stops'); if (stops.length >= 2) spec.pointSizeZoom = stops; }
+      var ptOpByZoom = document.getElementById('point-opacity-by-zoom');
+      if (ptOpByZoom && ptOpByZoom.checked) { stops = getStopsFromContainer('point-opacity-zoom-stops'); if (stops.length >= 2) spec.pointOpacityZoom = stops; }
+      return spec;
+    };
+  }
+
+  function createApplySpecToForm(formEls, map, getLayerIds, onAfterApply) {
+    var getCurrentSpec = createGetCurrentSpec(formEls);
+    return function applySpecToForm(s) {
+      s = s || {};
+      var fc = formEls.fillCheck, fillColor = formEls.fillColor, fillOpacity = formEls.fillOpacity, fillOpacityVal = formEls.fillOpacityVal;
+      var lineColor = formEls.lineColor, lineWidth = formEls.lineWidth, lineOpacity = formEls.lineOpacity, lineOpacityVal = formEls.lineOpacityVal, linePattern = formEls.linePattern;
+      var pointColor = formEls.pointColor, pointOpacity = formEls.pointOpacity, pointOpacityVal = formEls.pointOpacityVal, pointSize = formEls.pointSize, pointIcon = formEls.pointIcon;
+      fillColor.value = s.fillColor || '#58a6ff';
+      lineColor.value = s.lineColor || '#58a6ff';
+      fillOpacity.value = Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100);
+      lineOpacity.value = Math.round((s.lineOpacity != null ? s.lineOpacity : 1) * 100);
+      fillOpacityVal.textContent = fillOpacity.value;
+      lineOpacityVal.textContent = lineOpacity.value;
+      lineWidth.value = s.lineWidth != null ? s.lineWidth : 1;
+      linePattern.value = s.linePattern || 'solid';
+      fc.checked = s.fillEnabled !== false;
+      if (pointColor) pointColor.value = s.pointColor || '#58a6ff';
+      if (pointOpacity) { pointOpacity.value = Math.round((s.pointOpacity != null ? s.pointOpacity : 1) * 100); if (pointOpacityVal) pointOpacityVal.textContent = pointOpacity.value; }
+      if (pointSize) pointSize.value = s.pointSize != null ? Math.max(1, Math.min(40, s.pointSize)) : 8;
+      if (pointIcon) pointIcon.value = s.pointIcon || 'circle';
+      var refresh = function() {
+        applyVectorStyleToLayers(map, getLayerIds(), getCurrentSpec(), formEls);
+        updateStyleLegend(getCurrentSpec());
+        if (onAfterApply) onAfterApply(getCurrentSpec());
+      };
+      var fillOpZoom = document.getElementById('fill-opacity-by-zoom');
+      if (fillOpZoom) { fillOpZoom.checked = !!(s.fillOpacityZoom && s.fillOpacityZoom.length >= 2); document.getElementById('fill-opacity-zoom-stops').style.display = fillOpZoom.checked ? '' : 'none'; renderZoomStops('fill-opacity-zoom-stops', s.fillOpacityZoom, refresh); }
+      var lineWZoom = document.getElementById('line-width-by-zoom');
+      if (lineWZoom) { lineWZoom.checked = !!(s.lineWidthZoom && s.lineWidthZoom.length >= 2); document.getElementById('line-width-zoom-stops').style.display = lineWZoom.checked ? '' : 'none'; renderZoomStops('line-width-zoom-stops', s.lineWidthZoom, refresh); }
+      var lineOZoom = document.getElementById('line-opacity-by-zoom');
+      if (lineOZoom) { lineOZoom.checked = !!(s.lineOpacityZoom && s.lineOpacityZoom.length >= 2); document.getElementById('line-opacity-zoom-stops').style.display = lineOZoom.checked ? '' : 'none'; renderZoomStops('line-opacity-zoom-stops', s.lineOpacityZoom, refresh); }
+      var ptSizeZoom = document.getElementById('point-size-by-zoom');
+      if (ptSizeZoom) { ptSizeZoom.checked = !!(s.pointSizeZoom && s.pointSizeZoom.length >= 2); document.getElementById('point-size-zoom-stops').style.display = ptSizeZoom.checked ? '' : 'none'; renderZoomStops('point-size-zoom-stops', s.pointSizeZoom, refresh); }
+      var ptOpZoom = document.getElementById('point-opacity-by-zoom');
+      if (ptOpZoom) { ptOpZoom.checked = !!(s.pointOpacityZoom && s.pointOpacityZoom.length >= 2); document.getElementById('point-opacity-zoom-stops').style.display = ptOpZoom.checked ? '' : 'none'; renderZoomStops('point-opacity-zoom-stops', s.pointOpacityZoom, refresh); }
+      applyVectorStyleToLayers(map, getLayerIds(), getCurrentSpec(), formEls);
+      updateStyleLegend(getCurrentSpec());
+      if (onAfterApply) onAfterApply(getCurrentSpec());
+    };
+  }
+
+  function updateStyleLegend(spec, legendElId) {
+    var el = legendElId ? document.getElementById(legendElId) : document.getElementById('layer-style-legend');
+    if (el) {
+      var fill = (spec && spec.fillColor) || '#58a6ff';
+      var line = (spec && spec.lineColor) || '#58a6ff';
+      var fillOn = !spec || spec.fillEnabled !== false;
+      el.style.backgroundColor = fillOn ? fill : 'transparent';
+      el.style.borderColor = line;
+      el.style.opacity = '1';
+    }
+    if (typeof window.GeofastStyleEditor !== 'undefined' && window.GeofastStyleEditor.updateLoadStyleTrigger) window.GeofastStyleEditor.updateLoadStyleTrigger();
+  }
+
+  function initToolbox(config) {
+    config = config || {};
+    var map = config.map;
+    var getLayerIds = config.getLayerIds || function() { return {}; };
+    var defaultSpec = config.defaultSpec || defaultSpec;
+    var legendElId = config.legendElId || 'layer-style-legend';
+    var onAfterApply = config.onAfterApply;
+
+    var fillCheck = document.getElementById('vector-fill-enable');
+    var fillColor = document.getElementById('vector-fill-color');
+    var fillOpacity = document.getElementById('vector-fill-opacity');
+    var fillOpacityVal = document.getElementById('vector-fill-opacity-val');
+    var lineColor = document.getElementById('vector-line-color');
+    var lineWidth = document.getElementById('vector-line-width');
+    var lineOpacity = document.getElementById('vector-line-opacity');
+    var lineOpacityVal = document.getElementById('vector-line-opacity-val');
+    var linePattern = document.getElementById('vector-line-pattern');
+    var pointColor = document.getElementById('vector-point-color');
+    var pointOpacity = document.getElementById('vector-point-opacity');
+    var pointOpacityVal = document.getElementById('vector-point-opacity-val');
+    var pointSize = document.getElementById('vector-point-size');
+    var pointIcon = document.getElementById('vector-point-icon');
+    var formEls = { fillCheck: fillCheck, fillColor: fillColor, fillOpacity: fillOpacity, fillOpacityVal: fillOpacityVal, lineColor: lineColor, lineWidth: lineWidth, lineOpacity: lineOpacity, lineOpacityVal: lineOpacityVal, linePattern: linePattern, pointColor: pointColor, pointOpacity: pointOpacity, pointOpacityVal: pointOpacityVal, pointSize: pointSize, pointIcon: pointIcon };
+
+    var getCurrentSpec = createGetCurrentSpec(formEls);
+    var applySpecToForm = createApplySpecToForm(formEls, map, getLayerIds, onAfterApply);
+    var refreshStyle = function() {
+      var spec = getCurrentSpec();
+      applyVectorStyleToLayers(map, getLayerIds(), spec, formEls);
+      updateStyleLegend(spec, legendElId);
+      if (onAfterApply) onAfterApply(spec);
+    };
+
+    applySpecToForm(defaultSpec);
+
+    function bindZoomToggle(id, stopsId) {
+      var el = document.getElementById(id);
+      var stops = document.getElementById(stopsId);
+      if (!el || !stops) return;
+      el.onchange = function() { stops.style.display = this.checked ? '' : 'none'; refreshStyle(); };
+    }
+    bindZoomToggle('fill-opacity-by-zoom', 'fill-opacity-zoom-stops');
+    bindZoomToggle('line-width-by-zoom', 'line-width-zoom-stops');
+    bindZoomToggle('line-opacity-by-zoom', 'line-opacity-zoom-stops');
+    bindZoomToggle('point-size-by-zoom', 'point-size-zoom-stops');
+    bindZoomToggle('point-opacity-by-zoom', 'point-opacity-zoom-stops');
+    ['fill-opacity-zoom-stops', 'line-width-zoom-stops', 'line-opacity-zoom-stops', 'point-size-zoom-stops', 'point-opacity-zoom-stops'].forEach(function(id) { renderZoomStops(id, null, refreshStyle); });
+
+    if (fillCheck) fillCheck.onchange = refreshStyle;
+    if (fillColor) fillColor.oninput = refreshStyle;
+    if (fillOpacity) fillOpacity.oninput = function() { fillOpacityVal.textContent = this.value; refreshStyle(); };
+    if (lineColor) lineColor.oninput = refreshStyle;
+    if (lineWidth) lineWidth.oninput = refreshStyle;
+    if (lineOpacity) lineOpacity.oninput = function() { lineOpacityVal.textContent = this.value; refreshStyle(); };
+    if (linePattern) linePattern.onchange = refreshStyle;
+    if (pointColor) pointColor.oninput = refreshStyle;
+    if (pointOpacity) pointOpacity.oninput = function() { if (pointOpacityVal) pointOpacityVal.textContent = this.value; refreshStyle(); };
+    if (pointSize) pointSize.oninput = refreshStyle;
+    if (pointIcon) pointIcon.onchange = refreshStyle;
+
+    window.GeofastStyleEditor = window.GeofastStyleEditor || {};
+    window.GeofastStyleEditor.LINE_DASH = LINE_DASH;
+    window.GeofastStyleEditor.defaultSpec = defaultSpec;
+    window.GeofastStyleEditor.ZOOM_STOP_DEFAULTS = ZOOM_STOP_DEFAULTS;
+    window.GeofastStyleEditor.getStopsFromContainer = getStopsFromContainer;
+    window.GeofastStyleEditor.renderZoomStops = renderZoomStops;
+    window.GeofastStyleEditor.zoomStopsToExpression = zoomStopsToExpression;
+    window.GeofastStyleEditor.getCurrentSpec = getCurrentSpec;
+    window.GeofastStyleEditor.applySpecToForm = applySpecToForm;
+    window.GeofastStyleEditor.applyVectorStyleToLayers = function(spec) { applyVectorStyleToLayers(map, getLayerIds(), spec || getCurrentSpec(), formEls); };
+    window.GeofastStyleEditor.updateStyleLegend = function(spec) { updateStyleLegend(spec || getCurrentSpec(), legendElId); };
+  }
+
+  window.GeofastStyleEditor = window.GeofastStyleEditor || {};
+  window.GeofastStyleEditor.initToolbox = initToolbox;
+  window.GeofastStyleEditor.applyVectorStyleToLayers = applyVectorStyleToLayers;
+  window.GeofastStyleEditor.defaultSpec = defaultSpec;
+  window.GeofastStyleEditor.LINE_DASH = LINE_DASH;
+  window.GeofastStyleEditor.zoomStopsToExpression = zoomStopsToExpression;
+  window.GeofastStyleEditor.updateLoadStyleTrigger = function() {};
+  if (window.__styleEditorConfig) initToolbox(window.__styleEditorConfig);
+})();
+</script>

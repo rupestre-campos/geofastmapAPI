@@ -38,7 +38,9 @@
       <span class="job-status-badge job-status-{{ status }}">{{ status }}</span>
     </p>
     {% if message %}
-    <div class="job-message">{{ message }}</div>
+    <div class="job-message" id="job-message">{{ message }}</div>
+    {% else %}
+    <div class="job-message" id="job-message" style="display:none;"></div>
     {% endif %}
     <table class="job-meta-table">
       <tr>
@@ -50,8 +52,12 @@
         <td><code>{{ job_id }}</code></td>
       </tr>
       <tr>
+        <th>Items input</th>
+        <td id="job-items-in">{{ items_in }}</td>
+      </tr>
+      <tr>
         <th>Items created</th>
-        <td>{{ items_created }}</td>
+        <td id="job-items-created">{{ items_created }}</td>
       </tr>
       <tr>
         <th>Items failed</th>
@@ -62,8 +68,12 @@
         <td>{{ created_at }}</td>
       </tr>
       <tr>
-        <th>Updated</th>
-        <td>{{ updated_at }}</td>
+        <th>Last update</th>
+        <td id="job-updated-at">{{ updated_at }}</td>
+      </tr>
+      <tr id="job-finished-at-row" style="display:{{ 'none' if not finished_at else '' }};">
+        <th>Finished at</th>
+        <td id="job-finished-at">{{ finished_at or '—' }}</td>
       </tr>
     </table>
   </div>
@@ -83,11 +93,36 @@
       var jobId = {{ job_id | tojson }};
       var status = {{ status | tojson }};
       var pollInterval = 3000;
+      function formatTime(s) {
+        if (!s) return '—';
+        return s.replace('Z', '').replace('T', ' ').substring(0, 19);
+      }
+      function updateLive(job) {
+        var inEl = document.getElementById('job-items-in');
+        var outEl = document.getElementById('job-items-created');
+        var msgEl = document.getElementById('job-message');
+        var updatedEl = document.getElementById('job-updated-at');
+        var finishedEl = document.getElementById('job-finished-at');
+        var finishedRow = document.getElementById('job-finished-at-row');
+        if (inEl && job.items_in !== undefined) inEl.textContent = job.items_in;
+        if (outEl && job.items_created !== undefined) outEl.textContent = job.items_created;
+        if (updatedEl && job.updated_at) updatedEl.textContent = formatTime(job.updated_at);
+        if (job.finished_at && finishedEl) {
+          finishedEl.textContent = formatTime(job.finished_at);
+          if (finishedRow) finishedRow.style.display = '';
+        }
+        if (msgEl) {
+          var m = job.message || '';
+          msgEl.textContent = m;
+          msgEl.style.display = m ? '' : 'none';
+        }
+      }
       if (status === 'pending' || status === 'running' || status === 'replacing') {
         var t = setInterval(function() {
           fetch(base + '/jobs/' + jobId, { headers: { 'Accept': 'application/json' } })
             .then(function(r) { return r.json(); })
             .then(function(job) {
+              updateLive(job);
               if (job.status !== status) {
                 clearInterval(t);
                 window.location.reload();

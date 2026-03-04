@@ -2,6 +2,7 @@ services:
   db:
     image: postgis/postgis:16-3.4-alpine
     container_name: geofast_db
+    shm_size: "256mb"
     environment:
       POSTGRES_DB: geofast
       POSTGRES_USER: postgres

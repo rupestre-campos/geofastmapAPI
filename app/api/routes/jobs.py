@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from app.core.html import html_response, wants_html
-from app.services.job_store import get_job, list_jobs_for_collection
+from app.services.job_store import get_job, list_jobs_for_collection, update_job
 
 router = APIRouter()
 
@@ -25,6 +25,25 @@ async def list_jobs(
     return {"collection_id": collection_id, "jobs": [j.to_dict() for j in jobs]}
 
 
+@router.post(
+    "/{job_id}/cancel",
+    status_code=status.HTTP_200_OK,
+    summary="Cancel a queued job",
+    description="Marks a job as cancelled. Only jobs with status 'pending' (e.g. process jobs still in queue) can be cancelled. Running or completed jobs are unchanged.",
+)
+async def cancel_job(job_id: str):
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if job.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job is {job.status}; only pending (queued) jobs can be cancelled.",
+        )
+    update_job(job_id, status="cancelled", message="Cancelled by user.")
+    return {"job_id": job_id, "status": "cancelled", "message": "Job cancelled."}
+
+
 @router.get(
     "/{job_id}",
     summary="Job status",
@@ -43,9 +62,11 @@ async def get_job_status(request: Request, job_id: str):
             collection_id=job.collection_id,
             status=job.status,
             message=job.message or "",
+            items_in=job.items_in,
             items_created=job.items_created,
             items_failed=job.items_failed,
             created_at=job.created_at.isoformat() + "Z",
             updated_at=job.updated_at.isoformat() + "Z",
+            finished_at=job.finished_at.isoformat() + "Z" if job.finished_at else None,
         )
     return job.to_dict()

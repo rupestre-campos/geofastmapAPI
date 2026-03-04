@@ -29,6 +29,11 @@ class PropertyFilter:
 OPS = {e.value for e in PropertyOp}
 
 
+def safe_json_key(s: str) -> str:
+    """Return a safe substring for use as JSON key in SQL (alphanumeric + underscore only)."""
+    return "".join(c for c in (s or "") if c.isalnum() or c == "_")[:200]
+
+
 def parse_filter_param(filters: list[str] | None) -> list[PropertyFilter]:
     """
     Parse repeated filter=key:op:value into PropertyFilter list.

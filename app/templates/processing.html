@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block title %}Processing – GeoFast API{% endblock %}
+{% block head %}
+  <style>
+    .processing-form .form-row { margin-bottom: var(--space); }
+    .processing-form label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); margin-bottom: 0.35rem; }
+    .processing-form select { max-width: 100%; width: 280px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-size: 0.9rem; }
+    .processing-form .btn { margin-top: 0.5rem; }
+    .process-jobs-table { width: 100%; font-size: 0.9rem; }
+    .process-jobs-table th, .process-jobs-table td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+    .process-jobs-table th { font-weight: 500; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; }
+    .process-jobs-table .status-badge { display: inline-block; padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.8rem; font-weight: 600; text-transform: capitalize; }
+    .process-jobs-table .status-pending { background: rgba(174, 124, 0, 0.2); color: #9e6a03; }
+    .process-jobs-table .status-running { background: rgba(47, 129, 247, 0.2); color: var(--accent); }
+    .process-jobs-table .status-completed { background: rgba(63, 185, 80, 0.2); color: var(--success); }
+    .process-jobs-table .status-failed, .process-jobs-table .status-cancelled { background: rgba(248, 81, 73, 0.15); color: var(--danger); }
+    [data-theme="dark"] .process-jobs-table .status-pending { background: rgba(210, 153, 34, 0.2); color: #d4a72c; }
+    [data-theme="dark"] .process-jobs-table .status-running { background: rgba(88, 166, 255, 0.2); color: #58a6ff; }
+    .process-jobs-empty { color: var(--text-secondary); font-size: 0.9rem; padding: var(--space-lg); text-align: center; }
+    .process-result-link { font-weight: 500; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Processing</h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › Processing (intersection, erase)</p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Request processing</h2>
+    <p class="meta" style="margin-bottom: var(--space);">Select two layers (collections) and an operation. The job is queued and a new collection with the result will be created when done.</p>
+    <form class="processing-form" id="processing-form">
+      <div class="form-row">
+        <label for="layer-a">Layer A (first collection)</label>
+        <select id="layer-a" name="collection_id_a" required>
+          <option value="">— Select collection —</option>
+          {% for c in collections %}
+          <option value="{{ c.id }}">{{ c.title or c.id }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="layer-b">Layer B (second collection)</label>
+        <select id="layer-b" name="collection_id_b" required>
+          <option value="">— Select collection —</option>
+          {% for c in collections %}
+          <option value="{{ c.id }}">{{ c.title or c.id }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="operation">Operation</label>
+        <select id="operation" name="process_id">
+          <option value="intersection">Intersection (A ∩ B)</option>
+          <option value="erase">Erase (A minus B)</option>
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary" id="submit-btn">Queue job</button>
+      <span id="form-message" class="meta" style="margin-left: 0.5rem; display: none;"></span>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Process jobs</h2>
+    <p id="jobs-loading" class="meta">Loading…</p>
+    <p id="jobs-empty" class="process-jobs-empty" style="display: none;">No process jobs yet. Queue one above.</p>
+    <div id="jobs-wrap" style="display: none; overflow-x: auto;">
+      <table class="process-jobs-table" id="jobs-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Operation</th>
+            <th>Layer A</th>
+            <th>Layer B</th>
+            <th>Input</th>
+            <th>Output</th>
+            <th>Result</th>
+            <th>Created</th>
+            <th>Last updated</th>
+            <th>Finished at</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="jobs-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}
+{% block script %}
+<script>
+(function() {
+  var base = {{ base | tojson }};
+  var form = document.getElementById('processing-form');
+  var submitBtn = document.getElementById('submit-btn');
+  var formMessage = document.getElementById('form-message');
+  var jobsLoading = document.getElementById('jobs-loading');
+  var jobsEmpty = document.getElementById('jobs-empty');
+  var jobsWrap = document.getElementById('jobs-wrap');
+  var jobsTable = document.getElementById('jobs-table');
+  var tbody = document.getElementById('jobs-tbody');
+  var REFRESH_MS = 4000;
+
+  function esc(s) {
+    if (s == null || s === undefined) return '';
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function statusClass(s) {
+    s = (s || '').toLowerCase();
+    if (s === 'pending') return 'status-pending';
+    if (s === 'running') return 'status-running';
+    if (s === 'completed') return 'status-completed';
+    if (s === 'failed' || s === 'cancelled') return 'status-failed';
+    return '';
+  }
+
+  function renderJobs(jobs) {
+    if (!jobs || jobs.length === 0) {
+      jobsLoading.style.display = 'none';
+      jobsWrap.style.display = 'none';
+      jobsEmpty.style.display = 'block';
+      return;
+    }
+    jobsLoading.style.display = 'none';
+    jobsEmpty.style.display = 'none';
+    jobsWrap.style.display = 'block';
+    tbody.innerHTML = jobs.map(function(j) {
+      var op = (j.process_id || '').toLowerCase();
+      var opLabel = op === 'erase' ? 'Erase (A−B)' : (op === 'intersection' ? 'Intersection (A∩B)' : op || '—');
+      var resultCell = '';
+      if (j.result_collection_id) {
+        resultCell = '<a href="' + base + '/collections/' + encodeURIComponent(j.result_collection_id) + '?f=html" class="process-result-link">' + esc(j.result_collection_id) + '</a>';
+      } else if (j.status === 'completed' && j.message) {
+        var m = j.message;
+        var match = m.match(/Result collection:\s*([^\s.]+)/);
+        if (match) resultCell = '<a href="' + base + '/collections/' + encodeURIComponent(match[1]) + '?f=html" class="process-result-link">' + esc(match[1]) + '</a>';
+        else resultCell = '<span class="meta">' + esc(m.substring(0, 40)) + (m.length > 40 ? '…' : '') + '</span>';
+      } else {
+        resultCell = '<span class="meta">—</span>';
+      }
+      var cancelBtn = '';
+      if (j.status === 'pending') {
+        cancelBtn = '<button type="button" class="btn btn-danger btn-cancel" data-job-id="' + esc(j.job_id) + '">Cancel</button>';
+      }
+      function fmtTs(ts) {
+        if (!ts) return '—';
+        return (ts + '').replace('Z', '').replace('T', ' ').substring(0, 19);
+      }
+      var created = fmtTs(j.created_at);
+      var updated = fmtTs(j.updated_at);
+      var finished = fmtTs(j.finished_at);
+      return '<tr>' +
+        '<td><span class="status-badge ' + statusClass(j.status) + '">' + esc(j.status) + '</span></td>' +
+        '<td>' + esc(opLabel) + '</td>' +
+        '<td><a href="' + base + '/collections/' + encodeURIComponent(j.collection_id_a || j.collection_id) + '?f=html">' + esc(j.collection_id_a || j.collection_id) + '</a></td>' +
+        '<td>' + (j.collection_id_b ? '<a href="' + base + '/collections/' + encodeURIComponent(j.collection_id_b) + '?f=html">' + esc(j.collection_id_b) + '</a>' : '—') + '</td>' +
+        '<td>' + esc((j.items_in || 0).toString()) + '</td>' +
+        '<td>' + esc((j.items_created || 0).toString()) + '</td>' +
+        '<td>' + resultCell + '</td>' +
+        '<td>' + esc(created) + '</td>' +
+        '<td>' + esc(updated) + '</td>' +
+        '<td>' + esc(finished) + '</td>' +
+        '<td>' + cancelBtn + '</td>' +
+        '</tr>';
+    }).join('');
+    tbody.querySelectorAll('.btn-cancel').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var jobId = btn.getAttribute('data-job-id');
+        if (!jobId) return;
+        btn.disabled = true;
+        fetch(base + '/jobs/' + encodeURIComponent(jobId) + '/cancel', { method: 'POST', headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json().then(function(j) { if (!r.ok) return Promise.reject(j); return j; }); })
+          .then(function() { loadJobs(); })
+          .catch(function(e) { alert('Cancel failed: ' + (e.detail || e.message || JSON.stringify(e))); btn.disabled = false; });
+      });
+    });
+  }
+
+  function loadJobs() {
+    fetch(base + '/processes/jobs?limit=50', { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.json(); })
+      .then(function(d) { renderJobs(d.jobs || []); })
+      .catch(function() { renderJobs([]); });
+  }
+
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+    var layerA = document.getElementById('layer-a').value;
+    var layerB = document.getElementById('layer-b').value;
+    var op = document.getElementById('operation').value;
+    if (!layerA || !layerB) {
+      formMessage.textContent = 'Please select both layers.';
+      formMessage.style.display = 'inline';
+      formMessage.className = 'meta';
+      return;
+    }
+    if (layerA === layerB) {
+      formMessage.textContent = 'Layer A and B must be different.';
+      formMessage.style.display = 'inline';
+      formMessage.className = 'meta';
+      return;
+    }
+    var url = base + '/processes/' + op + '/execution';
+    var payload = { collection_id_a: layerA, collection_id_b: layerB };
+    submitBtn.disabled = true;
+    formMessage.textContent = 'Queuing…';
+    formMessage.style.display = 'inline';
+    formMessage.className = 'meta';
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+      .then(function(r) { return r.json().then(function(j) { if (!r.ok) return Promise.reject(j); return j; }); })
+      .then(function(j) {
+        formMessage.textContent = 'Job queued: ' + (j.job_id || '').substring(0, 8) + '…';
+        formMessage.className = 'meta';
+        loadJobs();
+      })
+      .catch(function(err) {
+        formMessage.textContent = 'Error: ' + (err.detail || err.message || JSON.stringify(err));
+        formMessage.className = 'meta';
+      })
+      .finally(function() { submitBtn.disabled = false; });
+  });
+
+  loadJobs();
+  var refreshTimer = setInterval(loadJobs, REFRESH_MS);
+})();
+</script>
+{% endblock %}
