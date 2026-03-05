@@ -64,6 +64,48 @@
         </select>
         <input type="text" id="map-search-q" name="q" class="search-bar-input" placeholder="Search in properties…" autocomplete="off">
         <button type="submit" class="btn btn-primary">Search</button>
+        <button type="button" class="btn" id="map-search-clear-btn">Clear search</button>
+      </div>
+      <div class="search-bar-advanced-toggle-wrap">
+        <button type="button" class="btn btn-sm search-bar-advanced-toggle" id="map-search-advanced-toggle" aria-expanded="false" aria-controls="map-search-advanced">Advanced search</button>
+      </div>
+      <div id="map-search-advanced" class="search-bar-advanced" hidden aria-hidden="true">
+        <div class="grid-2">
+          <div class="form-row">
+            <label for="map-search-limit">Limit</label>
+            <input type="number" id="map-search-limit" name="limit" value="10" min="1" max="1000">
+          </div>
+          <div class="form-row">
+            <label for="map-search-offset">Offset</label>
+            <input type="number" id="map-search-offset" name="offset" value="0" min="0">
+          </div>
+        </div>
+        <div class="form-row">
+          <label for="map-search-bbox">Bbox <span class="meta">(minx, miny, maxx, maxy)</span></label>
+          <input type="text" id="map-search-bbox" name="bbox" placeholder="-10, 40, 10, 50">
+        </div>
+        <div class="form-row">
+          <label for="map-search-datetime">Datetime <span class="meta">(instant or range)</span></label>
+          <input type="text" id="map-search-datetime" name="datetime" placeholder="2024-01-01 or 2024-01-01/2024-12-31">
+        </div>
+        <div class="grid-2">
+          <div class="form-row">
+            <label for="map-search-sortby">Sort by</label>
+            <select id="map-search-sortby" name="sortby">
+              <option value="">—</option>
+              <option value="id">id</option>
+              <option value="created_at">created_at</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>&nbsp;</label>
+            <label class="checkbox-inline"><input type="checkbox" id="map-search-sortdesc" name="sortdesc" value="true"> Descending</label>
+          </div>
+        </div>
+        <div class="form-row">
+          <label for="map-search-filter">Filter <span class="meta">(key:op:value per line)</span></label>
+          <textarea id="map-search-filter" name="filter" rows="2" placeholder="name:eq:Main"></textarea>
+        </div>
       </div>
     </form>
   </div>
@@ -157,11 +199,16 @@
 
       function layerKey(layer) { return (layer && (layer.layer_id || layer.collectionId)) || (layer && layer.collection_id) || ''; }
       function sourceId(collectionIdOrKey) { return 'layer-' + String(collectionIdOrKey).replace(/[^a-zA-Z0-9_-]/g, '_'); }
+      var layerStyleVisibility = {};
       function setLayerVisibility(layerKeyVal, visible) {
         var sid = sourceId(layerKeyVal);
-        var v = visible ? 'visible' : 'none';
+        var intended = layerStyleVisibility[layerKeyVal];
         ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {
-          if (map.getLayer(sid + suf)) map.setLayoutProperty(sid + suf, 'visibility', v);
+          var layerId = sid + suf;
+          if (!map.getLayer(layerId)) return;
+          var key = suf.slice(1);
+          var v = visible ? ((intended && intended[key] !== undefined) ? intended[key] : 'visible') : 'none';
+          map.setLayoutProperty(layerId, 'visibility', v);
         });
       }
       function renderLegend() {
@@ -277,17 +324,35 @@
         if (map.getSource('map-search-tiles')) map.removeSource('map-search-tiles');
       }
 
+      function getMapSearchParams(overrides) {
+        overrides = overrides || {};
+        var limit = overrides.limit != null ? overrides.limit : (parseInt(document.getElementById('map-search-limit').value, 10) || 10);
+        var offset = overrides.offset != null ? overrides.offset : (parseInt(document.getElementById('map-search-offset').value, 10) || 0);
+        var qVal = (document.getElementById('map-search-q').value || '').trim();
+        var bboxVal = (document.getElementById('map-search-bbox').value || '').trim();
+        var datetimeVal = (document.getElementById('map-search-datetime').value || '').trim();
+        var sortbyVal = (document.getElementById('map-search-sortby').value || '').trim();
+        var sortdesc = document.getElementById('map-search-sortdesc').checked;
+        var filterVal = (document.getElementById('map-search-filter').value || '').trim();
+        var params = [];
+        params.push('limit=' + encodeURIComponent(String(limit)));
+        params.push('offset=' + encodeURIComponent(String(offset)));
+        if (qVal) params.push('q=' + encodeURIComponent(qVal));
+        if (bboxVal) params.push('bbox=' + encodeURIComponent(bboxVal));
+        if (datetimeVal) params.push('datetime=' + encodeURIComponent(datetimeVal));
+        if (sortbyVal) params.push('sortby=' + encodeURIComponent(sortbyVal));
+        if (sortdesc) params.push('sortdesc=true');
+        if (filterVal) filterVal.split(/\r?\n/).forEach(function(line) { if (line.trim()) params.push('filter=' + encodeURIComponent(line.trim())); });
+        return { limit: limit, offset: offset, params: params };
+      }
+
       function addSearchLayers(collectionId, style) {
         removeSearchLayers();
         var paginationEl = document.getElementById('map-search-pagination');
         var limit = parseInt(paginationEl.getAttribute('data-limit'), 10) || 10;
         var offset = parseInt(paginationEl.getAttribute('data-offset'), 10) || 0;
-        var qVal = (document.getElementById('map-search-q').value || '').trim();
-        var params = [];
-        params.push('limit=' + encodeURIComponent(String(limit)));
-        params.push('offset=' + encodeURIComponent(String(offset)));
-        if (qVal) params.push('q=' + encodeURIComponent(qVal));
-        var query = params.length ? ('?' + params.join('&')) : '';
+        var p = getMapSearchParams({ limit: limit, offset: offset });
+        var query = p.params.length ? ('?' + p.params.join('&')) : '';
         var tileUrl = apiBaseUrlMaps() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/dynamic/{z}/{x}/{y}.pbf' + query;
         map.addSource('map-search-tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
         var fillColor = style.fillColor;
@@ -410,16 +475,12 @@
       function runLayerSearch(collectionId, options) {
         var limit = options && options.limit != null ? options.limit : 10;
         var offset = options && options.offset != null ? options.offset : 0;
-        var qVal = (document.getElementById('map-search-q').value || '').trim();
         var paginationEl = document.getElementById('map-search-pagination');
         paginationEl.setAttribute('data-limit', String(limit));
         paginationEl.setAttribute('data-offset', String(offset));
-        var params = [];
-        params.push('limit=' + encodeURIComponent(String(limit)));
-        params.push('offset=' + encodeURIComponent(String(offset)));
-        if (qVal) params.push('q=' + encodeURIComponent(qVal));
+        var p = getMapSearchParams({ limit: limit, offset: offset });
         var url = apiBaseUrlMaps() + '/collections/' + encodeURIComponent(collectionId) + '/items';
-        if (params.length) url += '?' + params.join('&');
+        if (p.params.length) url += '?' + p.params.join('&');
         fetch(url, { headers: { 'Accept': 'application/json' } })
           .then(function(r) { return r.json(); })
           .then(function(data) {
@@ -479,6 +540,13 @@
             var fillPaint = { 'fill-color': fillColor, 'fill-opacity': fillOpacity };
             var linePaint = { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash };
             var fillLayout = { visibility: fillVisible ? 'visible' : 'none' };
+            var ptIcon = style.pointIcon || 'circle';
+            layerStyleVisibility[lk] = {
+              fill: fillVisible ? 'visible' : 'none',
+              line: 'visible',
+              circle: (ptIcon === 'circle') ? 'visible' : 'none',
+              symbol: (ptIcon === 'pin' || ptIcon === 'marker') ? 'visible' : 'none'
+            };
             if (vlId) {
               map.addLayer({ id: sid + '-fill', type: 'fill', source: sid, 'source-layer': vlId, filter: notPointFilter, layout: fillLayout, paint: fillPaint }, beforeId);
               map.addLayer({ id: sid + '-line', type: 'line', source: sid, 'source-layer': vlId, filter: notPointFilter, paint: linePaint }, beforeId);
@@ -574,6 +642,24 @@
         next();
       });
 
+      function clearMapSearch() {
+        document.getElementById('map-search-q').value = '';
+        document.getElementById('map-search-limit').value = '10';
+        document.getElementById('map-search-offset').value = '0';
+        document.getElementById('map-search-bbox').value = '';
+        document.getElementById('map-search-datetime').value = '';
+        document.getElementById('map-search-sortby').value = '';
+        document.getElementById('map-search-sortdesc').checked = false;
+        document.getElementById('map-search-filter').value = '';
+        removeSearchLayers();
+        var card = document.getElementById('map-search-results-card');
+        if (card) card.style.display = 'none';
+        var adv = document.getElementById('map-search-advanced');
+        if (adv) { adv.hidden = true; adv.setAttribute('aria-hidden', 'true'); }
+        var toggle = document.getElementById('map-search-advanced-toggle');
+        if (toggle) { toggle.setAttribute('aria-expanded', 'false'); toggle.textContent = 'Advanced search'; }
+      }
+
       var searchForm = document.getElementById('map-search-form');
       if (searchForm) {
         searchForm.addEventListener('submit', function(e) {
@@ -581,9 +667,31 @@
           var select = document.getElementById('map-search-layer');
           var cid = select && select.value ? select.value : '';
           if (!cid) return;
-          runLayerSearch(cid, { limit: 10, offset: 0 });
+          var limit = parseInt(document.getElementById('map-search-limit').value, 10) || 10;
+          runLayerSearch(cid, { limit: limit, offset: 0 });
         });
       }
+      var clearBtn = document.getElementById('map-search-clear-btn');
+      if (clearBtn) clearBtn.addEventListener('click', clearMapSearch);
+
+      var advToggle = document.getElementById('map-search-advanced-toggle');
+      var advPanel = document.getElementById('map-search-advanced');
+      if (advToggle && advPanel) {
+        var advOpen = false;
+        function setAdvOpen(o) {
+          advOpen = o;
+          advPanel.hidden = !o;
+          advPanel.setAttribute('aria-hidden', o ? 'false' : 'true');
+          advToggle.setAttribute('aria-expanded', o ? 'true' : 'false');
+          advToggle.textContent = o ? 'Hide advanced' : 'Advanced search';
+        }
+        advToggle.addEventListener('click', function() { setAdvOpen(!advOpen); });
+        if ((document.getElementById('map-search-bbox').value || '').trim() ||
+            (document.getElementById('map-search-datetime').value || '').trim() ||
+            (document.getElementById('map-search-filter').value || '').trim() ||
+            (document.getElementById('map-search-sortby').value || '').trim()) setAdvOpen(true);
+      }
+
       var pagination = document.getElementById('map-search-pagination');
       if (pagination) {
         pagination.addEventListener('click', function(e) {
