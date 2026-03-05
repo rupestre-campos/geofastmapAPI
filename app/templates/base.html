@@ -205,6 +205,37 @@
     pre { padding: var(--space); overflow: auto; max-height: 280px; white-space: pre-wrap; margin: 0 0 var(--space); }
 
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--space); }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin: 0 0 var(--space);
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .card-header .card-title { margin: 0; padding-bottom: 0; border-bottom: none; }
+    .card-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+    .search-bar-form { margin-bottom: 0; }
+    .search-bar-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+    .search-bar-row .search-bar-input {
+      flex: 1;
+      min-width: 180px;
+      max-width: 100%;
+      margin-bottom: 0;
+    }
+    .search-bar-advanced-toggle-wrap { margin-bottom: 0.5rem; }
+    .search-bar-advanced-toggle { font-size: 0.8rem; color: var(--text-secondary); }
+    .search-bar-advanced-toggle:hover { color: var(--accent); }
+    .search-bar-advanced { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
+    .search-bar-advanced .form-row { margin-bottom: var(--space); }
     .alert { padding: 0.75rem 1rem; border-radius: var(--radius-sm); margin-top: 0.5rem; font-size: 0.85rem; }
     .alert-success { background: rgba(63, 185, 80, 0.15); color: var(--success); border: 1px solid rgba(63, 185, 80, 0.3); }
 

@@ -142,31 +142,45 @@
   </header>
 
   <div class="card">
-    <h2 class="card-title">Search & filters</h2>
-    <form method="get" action="{{ base }}/collections/{{ collection_id }}/items" id="search-form">
-      <input type="hidden" name="f" value="html">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn">Back to collection</a>
+        <a href="{{ base }}/collections/{{ collection_id }}/edit?f=html" class="btn btn-primary">Edit collection</a>
+        <a href="{{ base }}/collections/{{ collection_id }}/items/new?f=html" class="btn">Add feature</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Search</h2>
+      <div class="card-actions"></div>
+    </div>
+    {% from "components/search_bar.html" import search_bar %}
+    {% call search_bar(base + '/collections/' + collection_id + '/items', 'search-form', q or '', 'Apply filters', 'Search in properties…') %}
       <div class="grid-2">
         <div class="form-row">
           <label>Limit</label>
-          <input type="number" name="limit" value="{{ limit }}" min="1" max="{{ limit_max_value }}">
+          <input type="number" name="limit" value="{{ limit }}" min="1" max="{{ limit_max_value }}" form="search-form">
         </div>
         <div class="form-row">
           <label>Offset</label>
-          <input type="number" name="offset" value="{{ offset }}" min="0">
+          <input type="number" name="offset" value="{{ offset }}" min="0" form="search-form">
         </div>
       </div>
       <div class="form-row">
         <label>Bbox <span class="meta">(minx, miny, maxx, maxy)</span></label>
-        <input type="text" name="bbox" value="{{ bbox or '' }}" placeholder="-10, 40, 10, 50">
+        <input type="text" name="bbox" value="{{ bbox or '' }}" placeholder="-10, 40, 10, 50" form="search-form">
       </div>
       <div class="form-row">
         <label>Datetime <span class="meta">(instant or range)</span></label>
-        <input type="text" name="datetime" value="{{ datetime_param or '' }}" placeholder="2024-01-01 or 2024-01-01/2024-12-31">
+        <input type="text" name="datetime" value="{{ datetime_param or '' }}" placeholder="2024-01-01 or 2024-01-01/2024-12-31" form="search-form">
       </div>
       <div class="grid-2">
         <div class="form-row">
           <label>Sort by</label>
-          <select name="sortby">
+          <select name="sortby" form="search-form">
             <option value="">—</option>
             <option value="id" {{ 'selected' if sortby == 'id' else '' }}>id</option>
             <option value="created_at" {{ 'selected' if sortby == 'created_at' else '' }}>created_at</option>
@@ -174,29 +188,25 @@
         </div>
         <div class="form-row">
           <label>&nbsp;</label>
-          <label class="checkbox-inline"><input type="checkbox" name="sortdesc" value="true" {{ 'checked' if sortdesc else '' }}> Descending</label>
+          <label class="checkbox-inline"><input type="checkbox" name="sortdesc" value="true" {{ 'checked' if sortdesc else '' }} form="search-form"> Descending</label>
         </div>
       </div>
       <div class="form-row">
-        <label>Filter <span class="meta">(key:op:value per line; op: eq, ne, gt, gte, lt, lte, like, ilike)</span></label>
-        <textarea name="filter" rows="2" placeholder="name:eq:Main">{{ filter_param }}</textarea>
-      </div>
-      <div class="form-row">
-        <label>Full-text search (q)</label>
-        <input type="text" name="q" value="{{ q or '' }}" placeholder="Search in properties">
+        <label>Filter <span class="meta">(key:op:value per line)</span></label>
+        <textarea name="filter" rows="2" placeholder="name:eq:Main" form="search-form">{{ filter_param }}</textarea>
       </div>
       <div class="form-row">
         <label>Properties <span class="meta">(comma-separated; empty = all)</span></label>
-        <input type="text" name="properties" value="{{ properties or '' }}" placeholder="name, area">
+        <input type="text" name="properties" value="{{ properties or '' }}" placeholder="name, area" form="search-form">
       </div>
-      <div class="btn-group">
-        <button type="submit" class="btn btn-primary">Apply filters</button>
-      </div>
-    </form>
+    {% endcall %}
   </div>
 
   <div class="card items-table-card">
-    <h2 class="card-title">Results <span class="meta" id="results-count">({{ number_returned }} rows — click row to focus on map)</span></h2>
+    <div class="card-header">
+      <h2 class="card-title">Results <span class="meta" id="results-count">({{ number_returned }} rows — click row to focus on map)</span></h2>
+      <div class="card-actions"></div>
+    </div>
     {% if features %}
     <div class="table-scroll-wrap">
       <table id="items-table">
@@ -254,7 +264,13 @@
   </div>
 
   <div class="card">
-    <h2 class="card-title">Map <button type="button" class="btn btn-sm" id="btn-add-to-map" style="margin-left:8px;">Add to map</button></h2>
+    <div class="card-header">
+      <h2 class="card-title">Map</h2>
+      <div class="card-actions">
+        <button type="button" class="btn btn-sm" id="btn-search-in-map" title="Apply current filters using the visible map extent as bbox">Search in map</button>
+        <button type="button" class="btn btn-sm" id="btn-add-to-map">Add to map</button>
+      </div>
+    </div>
     <div id="map" class="map-container">
       <div class="map-controls">
         <select id="map-basemap" title="Basemap">
@@ -705,6 +721,19 @@
         var spec = layerStyleSpec();
         return { collection_id: collectionId, order: 0, style_spec: spec, popup: true, tiles_url: getDynamicTileUrl(), layer_id: 'items-' + collectionId };
       }
+      document.getElementById('btn-search-in-map').onclick = function() {
+        var b = map.getBounds();
+        var minx = b.getWest();
+        var miny = b.getSouth();
+        var maxx = b.getEast();
+        var maxy = b.getNorth();
+        var bboxStr = minx + ',' + miny + ',' + maxx + ',' + maxy;
+        var form = document.getElementById('search-form');
+        var params = new URLSearchParams(new FormData(form));
+        params.set('bbox', bboxStr);
+        params.set('offset', '0');
+        window.location.href = form.action + '?' + params.toString();
+      };
       document.getElementById('btn-add-to-map').onclick = function() {
         addMessage.textContent = '';
         addName.value = 'Items: ' + collectionId;

@@ -63,6 +63,17 @@
   </header>
 
   <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/collections/{{ collection_id }}/items/{{ feature.id }}?f=html" class="btn">Back to feature</a>
+        <a href="{{ base }}/collections/{{ collection_id }}/items?f=html" class="btn">Back to items</a>
+        <button type="button" class="btn btn-danger" id="btn-delete">Delete feature</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2 class="card-title">Map</h2>
     <div id="map" class="map-container item-edit-map">
       <div class="map-controls">
@@ -103,15 +114,6 @@
     <div class="btn-group" style="margin-top: var(--space);">
       <button type="button" class="btn" id="btn-add-prop">+ Add property</button>
       <button type="button" class="btn btn-primary" id="btn-save-props">Save properties</button>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2 class="card-title">Actions</h2>
-    <div class="btn-group">
-      <a href="{{ base }}/collections/{{ collection_id }}/items/{{ feature.id }}?f=html" class="btn">Back to feature</a>
-      <a href="{{ base }}/collections/{{ collection_id }}/items?f=html" class="btn">Back to items</a>
-      <button type="button" class="btn btn-danger" id="btn-delete">Delete feature</button>
     </div>
   </div>
 

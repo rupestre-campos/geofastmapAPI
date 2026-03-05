@@ -31,6 +31,16 @@
     </div>
   </div>
 
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/api-info/edit?f=html" class="btn">Edit API info</a>
+      </div>
+    </div>
+    <p class="meta">Change title, description, and contact without redeploying.</p>
+  </div>
+
   <div class="card landing-links-card">
     <h2 class="card-title">API links</h2>
     <ul class="links">
@@ -49,9 +59,4 @@
     <div class="content">{{ api_contact }}</div>
   </div>
   {% endif %}
-
-  <div class="landing-edit-wrap">
-    <a href="{{ base }}/api-info/edit?f=html" class="btn">Edit API info</a>
-    <span class="meta" style="margin-left:0.5rem;">Change title, description, and contact without redeploying.</span>
-  </div>
 {% endblock %}

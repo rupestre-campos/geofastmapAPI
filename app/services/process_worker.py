@@ -132,6 +132,28 @@ def _ensure_collection_and_partition_sync(engine: Engine, result_id: str, title:
         conn.commit()
 
 
+def _update_feature_count_sync(engine: Engine, collection_id: str) -> None:
+    """Recompute and update collections.feature_count for a given collection id."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT COUNT(DISTINCT id) AS n "
+                "FROM features WHERE collection_id = :cid"
+            ),
+            {"cid": collection_id},
+        ).first()
+        n = int(row.n) if row and row.n is not None else 0
+        conn.execute(
+            text(
+                "UPDATE collections "
+                "SET feature_count = :n "
+                "WHERE id = :cid"
+            ),
+            {"cid": collection_id, "n": n},
+        )
+        conn.commit()
+
+
 def _clear_result_collection_sync(session: Session, result_id: str) -> None:
     """Clear all features in the result collection (so we can refill). Uses TRUNCATE on the partition when possible (fast);
     falls back to DELETE if the partition is not found (e.g. default partition)."""
@@ -820,6 +842,13 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
         else:
             engine.dispose()
             return (f"Unknown process: {payload.process_id}", 0, 0)
+
+        # Update cached feature_count for the result collection so HTML views and tiles see the real size.
+        try:
+            _update_feature_count_sync(engine, result_id)
+        except Exception:
+            # Don't fail the whole job if this bookkeeping step has an issue.
+            pass
 
         engine.dispose()
         return (None, count, items_in)

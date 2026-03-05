@@ -37,6 +37,16 @@
   </header>
 
   <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/?f=html" class="btn">Back to home</a>
+        <a href="{{ base }}/collections?f=html" class="btn">Browse collections</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2 class="card-title">Map</h2>
     <p class="meta">Draw shapes on the map to preview the current style. Search for a collection and click to add it as a layer (static tiles if available, otherwise 100 features). Use the style panel below to edit, load, or save styles.</p>
     <div class="collection-search-wrap">
@@ -65,13 +75,6 @@
     </div>
     {% include "_style_toolbox.html" %}
     <p class="meta" style="margin-top:8px;"><span id="layer-style-legend" class="layer-style-legend" aria-hidden="true" style="display:inline-block;vertical-align:middle;"></span> Current style preview</p>
-  </div>
-
-  <div class="card">
-    <div class="btn-group">
-      <a href="{{ base }}/?f=html" class="btn">Back to home</a>
-      <a href="{{ base }}/collections?f=html" class="btn">Browse collections</a>
-    </div>
   </div>
 {% endblock %}
 {% block script %}

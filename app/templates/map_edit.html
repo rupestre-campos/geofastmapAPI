@@ -64,6 +64,21 @@
   </header>
 
   <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/maps?f=html" class="btn">Back to maps</a>
+        <button type="button" class="btn btn-primary" id="btn-save-map">Save map</button>
+        {% if map_id %}
+        <a href="{{ base }}/maps/{{ map_id }}?f=html" class="btn">View map</a>
+        <button type="button" class="btn btn-danger" id="btn-delete-map">Delete map</button>
+        {% endif %}
+      </div>
+    </div>
+    <p id="map-save-message" class="meta" style="margin:0;"></p>
+  </div>
+
+  <div class="card">
     <h2 class="card-title">Map details</h2>
     <div class="form-row">
       <label for="map-name">Name</label>
@@ -143,18 +158,6 @@
       <p class="meta" style="padding:0 var(--space) var(--space);margin:0;">Select a layer in the table above, then use the controls below to edit its style (fill, line, point, zoom breakpoints).</p>
       {% include "_style_toolbox.html" %}
     </details>
-  </div>
-
-  <div class="card">
-    <div class="btn-group">
-      <button type="button" class="btn btn-primary" id="btn-save-map">Save map</button>
-      <a href="{{ base }}/maps?f=html" class="btn">Cancel</a>
-      {% if map_id %}
-      <a href="{{ base }}/maps/{{ map_id }}?f=html" class="btn">View map</a>
-      <button type="button" class="btn btn-danger" id="btn-delete-map">Delete map</button>
-      {% endif %}
-    </div>
-    <p id="map-save-message" class="meta" style="margin-top:0.5rem;"></p>
   </div>
 
   {% if map_id %}

@@ -1,0 +1,37 @@
+{# Reusable search bar: single line (q + submit), expandable "Advanced search" block. Put limit/offset in advanced if needed. #}
+{% macro search_bar(action, form_id, q_value='', submit_label='Search', q_placeholder='Search…') %}
+<form method="get" action="{{ action }}" id="{{ form_id }}" class="search-bar-form">
+  <input type="hidden" name="f" value="html">
+  <div class="search-bar-row">
+    <input type="text" name="q" value="{{ q_value or '' }}" placeholder="{{ q_placeholder }}" class="search-bar-input" aria-label="Search" autocomplete="off">
+    <button type="submit" class="btn btn-primary">{{ submit_label }}</button>
+  </div>
+  <div class="search-bar-advanced-toggle-wrap">
+    <button type="button" class="btn btn-sm search-bar-advanced-toggle" aria-expanded="false" data-target="{{ form_id }}-advanced" aria-controls="{{ form_id }}-advanced">Advanced search</button>
+  </div>
+  <div id="{{ form_id }}-advanced" class="search-bar-advanced" hidden aria-hidden="true">
+    {{ caller() }}
+  </div>
+</form>
+<script>
+(function() {
+  var formId = {{ form_id | tojson }};
+  var btn = document.querySelector('#{{ form_id }} .search-bar-advanced-toggle');
+  var panel = document.getElementById(formId + '-advanced');
+  if (!btn || !panel) return;
+  var open = false;
+  function setOpen(o) {
+    open = o;
+    panel.hidden = !o;
+    panel.setAttribute('aria-hidden', o ? 'false' : 'true');
+    btn.setAttribute('aria-expanded', o ? 'true' : 'false');
+    btn.textContent = o ? 'Hide advanced' : 'Advanced search';
+  }
+  btn.addEventListener('click', function() { setOpen(!open); });
+  if (panel.querySelector('input[name="bbox"]') && panel.querySelector('input[name="bbox"]').value) setOpen(true);
+  else if (panel.querySelector('input[name="datetime"]') && panel.querySelector('input[name="datetime"]').value) setOpen(true);
+  else if (panel.querySelector('textarea[name="filter"]') && panel.querySelector('textarea[name="filter"]').value) setOpen(true);
+  else if (panel.querySelector('select[name="sortby"]') && panel.querySelector('select[name="sortby"]').value) setOpen(true);
+})();
+</script>
+{% endmacro %}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 
 from app.core.config import get_settings
 from app.services.job_store import get_job, update_job
@@ -18,6 +18,7 @@ from app.services.process_queue import (
 from app.services.process_worker import (
     _cleanup_result_collection_sync,
     _safe_result_collection_id,
+    _update_feature_count_sync,
     process_process_job_sync,
 )
 from app.services.tile_build_queue import create_tile_build_job, enqueue_tile_build
@@ -65,6 +66,34 @@ def main() -> None:
         print("Set PROCESS_QUEUE_TYPE=redis for process worker.", file=sys.stderr)
         sys.exit(1)
     _recover_orphaned_running_jobs(settings)
+    # One-time backfill: fix feature_count for existing process result collections that still show 0.
+    try:
+        engine = create_engine(
+            settings.database_sync_url,
+            pool_pre_ping=True,
+            future=True,
+            pool_size=2,
+            max_overflow=0,
+        )
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT id FROM collections "
+                        "WHERE feature_count = 0 "
+                        "AND (id LIKE 'intersection_%' OR id LIKE 'erase_%')"
+                    )
+                ).fetchall()
+            for r in rows:
+                try:
+                    _update_feature_count_sync(engine, r.id)
+                except Exception:
+                    continue
+        finally:
+            engine.dispose()
+    except Exception:
+        # Backfill is best-effort; continue even if it fails.
+        pass
     import redis
     r = redis.from_url(settings.redis_url, decode_responses=True)
     print("Process worker started. Waiting for jobs...", flush=True)

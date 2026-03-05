@@ -21,6 +21,8 @@
     .map-popup-id a:hover { text-decoration: underline; }
     .map-popup-row { margin-top: 0.25rem; word-break: break-word; color: #000; }
     .map-popup-row strong { font-weight: 700; margin-right: 0.35rem; color: #000; }
+    #map-search-results-card .table-scroll-wrap { overflow: auto; max-height: 50vh; margin-top: 8px; }
+    #map-search-results-card .collections-table { width: 100%; }
   </style>
 {% endblock %}
 {% block content %}
@@ -31,6 +33,40 @@
     <p class="meta">{{ map_description }}</p>
     {% endif %}
   </header>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/maps?f=html" class="btn">Back to maps</a>
+        <a href="{{ base }}/maps/{{ map_id }}/edit?f=html" class="btn btn-primary">Edit map</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Search in layers</h2>
+      <div class="card-actions"></div>
+    </div>
+    <form id="map-search-form" class="search-bar-form" action="javascript:void(0);">
+      <div class="search-bar-row">
+        <select id="map-search-layer" name="layer" required>
+          <option value="">Choose layer…</option>
+          {% set seen = [] %}
+          {% for lyr in (map_definition.layers or []) %}
+          {% set cid = lyr.collection_id or lyr.collectionId %}
+          {% if cid and cid not in seen %}
+          {% set _ = seen.append(cid) %}
+          <option value="{{ cid }}">{{ cid }}</option>
+          {% endif %}
+          {% endfor %}
+        </select>
+        <input type="text" id="map-search-q" name="q" class="search-bar-input" placeholder="Search in properties…" autocomplete="off">
+        <button type="submit" class="btn btn-primary">Search</button>
+      </div>
+    </form>
+  </div>
 
   <div class="card map-view-container">
     <div class="map-wrapper">
@@ -53,11 +89,29 @@
     <p class="map-view-meta">Layers: {{ (map_definition.layers | length) if map_definition and map_definition.layers else 0 }}</p>
   </div>
 
-  <div class="card">
-    <div class="btn-group">
-      <a href="{{ base }}/maps/{{ map_id }}/edit?f=html" class="btn btn-primary">Edit map</a>
-      <a href="{{ base }}/maps?f=html" class="btn">Back to maps</a>
-    </div>
+  <div class="card" id="map-search-results-card" style="display:none;">
+    <details id="map-search-results-details" open>
+      <summary class="card-header" style="list-style:none; cursor:pointer;">
+        <h2 class="card-title" style="margin:0; display:inline-block;">Search results</h2>
+        <span class="meta" id="map-search-results-count" style="margin-left:8px;"></span>
+      </summary>
+      <div class="pagination" id="map-search-pagination" style="margin-top:8px; margin-bottom:8px; display:none;" data-offset="0" data-limit="10" data-number-matched="0">
+        <span class="btn btn-disabled" aria-disabled="true">← Previous</span>
+        <span class="pagination-info" id="map-search-pagination-info">0 of 0</span>
+        <span class="btn btn-disabled" aria-disabled="true">Next →</span>
+      </div>
+      <div class="table-scroll-wrap" style="margin-top:0;">
+        <table id="map-search-results-table" class="collections-table">
+          <thead>
+            <tr id="map-search-results-thead">
+              <th></th>
+              <th>ID</th>
+            </tr>
+          </thead>
+          <tbody id="map-search-results-tbody"></tbody>
+        </table>
+      </div>
+    </details>
   </div>
 {% endblock %}
 {% block script %}
@@ -209,6 +263,187 @@
         return { fillColor: c, lineColor: c, fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1.5, lineDash: LINE_DASH.solid, fillVisible: true, pointColor: c, pointSize: 8, pointIcon: 'circle' };
       }
 
+      function apiBaseUrlMaps() {
+        var path = window.location.pathname;
+        var i = path.indexOf('/maps/');
+        var rootPath = i >= 0 ? path.substring(0, i) : '';
+        return window.location.origin + rootPath;
+      }
+
+      function removeSearchLayers() {
+        ['map-search-line', 'map-search-fill', 'map-search-circle'].forEach(function(id) {
+          if (map.getLayer(id)) map.removeLayer(id);
+        });
+        if (map.getSource('map-search-tiles')) map.removeSource('map-search-tiles');
+      }
+
+      function addSearchLayers(collectionId, style) {
+        removeSearchLayers();
+        var paginationEl = document.getElementById('map-search-pagination');
+        var limit = parseInt(paginationEl.getAttribute('data-limit'), 10) || 10;
+        var offset = parseInt(paginationEl.getAttribute('data-offset'), 10) || 0;
+        var qVal = (document.getElementById('map-search-q').value || '').trim();
+        var params = [];
+        params.push('limit=' + encodeURIComponent(String(limit)));
+        params.push('offset=' + encodeURIComponent(String(offset)));
+        if (qVal) params.push('q=' + encodeURIComponent(qVal));
+        var query = params.length ? ('?' + params.join('&')) : '';
+        var tileUrl = apiBaseUrlMaps() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/dynamic/{z}/{x}/{y}.pbf' + query;
+        map.addSource('map-search-tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
+        var fillColor = style.fillColor;
+        var lineColor = style.lineColor;
+        var fillOpacity = style.fillOpacity;
+        var lineOpacity = style.lineOpacity;
+        var lineWidth = style.lineWidth;
+        var lineDash = style.lineDash;
+        map.addLayer({ id: 'map-search-fill', type: 'fill', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } });
+        map.addLayer({ id: 'map-search-line', type: 'line', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } });
+        map.addLayer({ id: 'map-search-circle', type: 'circle', source: 'map-search-tiles', 'source-layer': collectionId, filter: pointFilter, paint: { 'circle-color': lineColor || '#58a6ff', 'circle-radius': 6, 'circle-opacity': 0.9 } });
+      }
+
+      function bboxFromGeoJsonGeometry(geom) {
+        if (!geom || !geom.coordinates) return null;
+        var minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+        function flatten(coords) {
+          if (coords.length >= 2 && typeof coords[0] === 'number') {
+            var x = coords[0], y = coords[1];
+            if (x < minx) minx = x;
+            if (y < miny) miny = y;
+            if (x > maxx) maxx = x;
+            if (y > maxy) maxy = y;
+            return;
+          }
+          for (var i = 0; i < coords.length; i++) flatten(coords[i]);
+        }
+        flatten(geom.coordinates);
+        if (minx === Infinity) return null;
+        return [minx, miny, maxx, maxy];
+      }
+
+      function bboxFromFeatures(features) {
+        var minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+        var any = false;
+        (features || []).forEach(function(f) {
+          var b = f.bbox;
+          if (!(Array.isArray(b) && b.length >= 4)) b = bboxFromGeoJsonGeometry(f.geometry);
+          if (b && b.length >= 4) {
+            any = true;
+            if (b[0] < minx) minx = b[0];
+            if (b[1] < miny) miny = b[1];
+            if (b[2] > maxx) maxx = b[2];
+            if (b[3] > maxy) maxy = b[3];
+          }
+        });
+        if (!any) return null;
+        return [[minx, miny], [maxx, maxy]];
+      }
+
+      function renderSearchTable(collectionId, data) {
+        var tableCard = document.getElementById('map-search-results-card');
+        if (!tableCard) return;
+        var tbody = document.getElementById('map-search-results-tbody');
+        var theadRow = document.getElementById('map-search-results-thead');
+        var countSpan = document.getElementById('map-search-results-count');
+        var paginationEl = document.getElementById('map-search-pagination');
+        var feats = data.features || [];
+        var nMatched = data.numberMatched != null ? data.numberMatched : feats.length;
+        var nReturned = data.numberReturned != null ? data.numberReturned : feats.length;
+        if (!feats.length) {
+          tbody.innerHTML = '';
+          theadRow.innerHTML = '<th></th><th>ID</th>';
+          countSpan.textContent = '(0 rows)';
+          document.getElementById('map-search-pagination-info').textContent = '0 of ' + nMatched;
+          paginationEl.style.display = 'none';
+          tableCard.style.display = '';
+          return;
+        }
+        var keys = [];
+        feats.forEach(function(f) {
+          var p = f.properties || {};
+          Object.keys(p).forEach(function(k) {
+            if (k === 'id') return;
+            if (keys.indexOf(k) === -1) keys.push(k);
+          });
+        });
+        keys.sort();
+        var headHtml = '<th></th><th>ID</th>' + keys.map(function(k) { return '<th>' + k + '</th>'; }).join('');
+        theadRow.innerHTML = headHtml;
+        var rowsHtml = feats.map(function(f) {
+          var id = f.id != null ? String(f.id) : '';
+          var props = f.properties || {};
+          var viewHref = base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(id) + '?f=html';
+          var cells = '';
+          keys.forEach(function(k) {
+            var v = props[k];
+            var txt = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+            var isLong = txt.length > 40;
+            var display = isLong ? (txt.substring(0, 37) + '…') : txt;
+            cells += '<td title="' + (txt || '') + '">' + display + '</td>';
+          });
+          return '<tr><td class="col-actions"><a href="' + viewHref + '" class="btn btn-sm">View</a></td><td>' + id + '</td>' + cells + '</tr>';
+        }).join('');
+        tbody.innerHTML = rowsHtml;
+        countSpan.textContent = '(' + nReturned + ' rows)';
+        var offset = parseInt(paginationEl.getAttribute('data-offset'), 10) || 0;
+        var limit = parseInt(paginationEl.getAttribute('data-limit'), 10) || 10;
+        paginationEl.setAttribute('data-number-matched', String(nMatched));
+        var start = nReturned ? (offset + 1) : 0;
+        var end = offset + nReturned;
+        var infoText = nReturned ? (start + '–' + end + ' of ' + nMatched) : ('0 of ' + nMatched);
+        document.getElementById('map-search-pagination-info').textContent = infoText;
+        var prevHtml, nextHtml;
+        if (offset > 0) {
+          prevHtml = '<a href="#" class="btn pagination-prev">← Previous</a>';
+        } else {
+          prevHtml = '<span class="btn btn-disabled" aria-disabled="true">← Previous</span>';
+        }
+        if (offset + nReturned < nMatched) {
+          nextHtml = '<a href="#" class="btn pagination-next">Next →</a>';
+        } else {
+          nextHtml = '<span class="btn btn-disabled" aria-disabled="true">Next →</span>';
+        }
+        document.getElementById('map-search-pagination').innerHTML = prevHtml + '<span class="pagination-info" id="map-search-pagination-info">' + infoText + '</span>' + nextHtml;
+        document.getElementById('map-search-pagination').style.display = 'block';
+        tableCard.style.display = '';
+      }
+
+      function runLayerSearch(collectionId, options) {
+        var limit = options && options.limit != null ? options.limit : 10;
+        var offset = options && options.offset != null ? options.offset : 0;
+        var qVal = (document.getElementById('map-search-q').value || '').trim();
+        var paginationEl = document.getElementById('map-search-pagination');
+        paginationEl.setAttribute('data-limit', String(limit));
+        paginationEl.setAttribute('data-offset', String(offset));
+        var params = [];
+        params.push('limit=' + encodeURIComponent(String(limit)));
+        params.push('offset=' + encodeURIComponent(String(offset)));
+        if (qVal) params.push('q=' + encodeURIComponent(qVal));
+        var url = apiBaseUrlMaps() + '/collections/' + encodeURIComponent(collectionId) + '/items';
+        if (params.length) url += '?' + params.join('&');
+        fetch(url, { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            renderSearchTable(collectionId, data);
+            var feats = data.features || [];
+            var bbox = bboxFromFeatures(feats);
+            if (bbox) {
+              try {
+                map.fitBounds(bbox, { padding: 40, maxZoom: 14, duration: 300 });
+              } catch (e) {}
+            }
+            var layer = null;
+            for (var i = 0; i < layers.length; i++) {
+              var cid = layers[i].collection_id || layers[i].collectionId;
+              if (cid === collectionId) { layer = layers[i]; break; }
+            }
+            var style = layer ? specFromLayer(layer) : { fillColor: defaultColor, lineColor: defaultColor, fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1.5, lineDash: LINE_DASH.solid, fillVisible: true };
+            addSearchLayers(collectionId, style);
+          })
+          .catch(function(err) {
+            console.error('Search failed', err);
+          });
+      }
+
       function addPointLayers(sid, layerId, style) {
         var ptColor = style.pointColor;
         var ptSize = style.pointSize;
@@ -338,6 +573,40 @@
         renderLegend();
         next();
       });
+
+      var searchForm = document.getElementById('map-search-form');
+      if (searchForm) {
+        searchForm.addEventListener('submit', function(e) {
+          e.preventDefault();
+          var select = document.getElementById('map-search-layer');
+          var cid = select && select.value ? select.value : '';
+          if (!cid) return;
+          runLayerSearch(cid, { limit: 10, offset: 0 });
+        });
+      }
+      var pagination = document.getElementById('map-search-pagination');
+      if (pagination) {
+        pagination.addEventListener('click', function(e) {
+          var target = e.target;
+          if (!(target && (target.classList.contains('pagination-prev') || target.classList.contains('pagination-next')))) return;
+          e.preventDefault();
+          var select = document.getElementById('map-search-layer');
+          var cid = select && select.value ? select.value : '';
+          if (!cid) return;
+          var limit = parseInt(pagination.getAttribute('data-limit'), 10) || 10;
+          var offset = parseInt(pagination.getAttribute('data-offset'), 10) || 0;
+          var total = parseInt(pagination.getAttribute('data-number-matched'), 10) || 0;
+          if (target.classList.contains('pagination-prev')) {
+            if (offset <= 0) return;
+            offset = Math.max(0, offset - limit);
+          } else if (target.classList.contains('pagination-next')) {
+            if (offset + limit >= total) return;
+            offset = offset + limit;
+          }
+          pagination.setAttribute('data-offset', String(offset));
+          runLayerSearch(cid, { limit: limit, offset: offset });
+        });
+      }
     })();
   </script>
 {% endblock %}

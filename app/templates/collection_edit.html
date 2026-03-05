@@ -69,6 +69,24 @@
   </header>
 
   <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn">Back to collection</a>
+        <a href="{{ base }}/collections?f=html" class="btn">Back to collections</a>
+        <a href="{{ base }}/collections/{{ collection_id }}/items/new?f=html" class="btn">Add feature</a>
+        <button type="button" class="btn" id="btn-build-tiles">Build static tiles</button>
+        <button type="button" class="btn btn-danger" id="btn-delete-tiles" style="display:none">Delete static tiles</button>
+        <button type="button" class="btn" id="btn-invalidate-cache" title="Clear Redis cache for this collection (dynamic tiles / search cache) so map shows fresh data">Invalidate tile cache</button>
+        <button type="button" class="btn" id="btn-recompute-extent">Recompute extent</button>
+        <button type="button" class="btn btn-danger" id="btn-delete-collection">Delete collection</button>
+      </div>
+    </div>
+    <p class="meta" id="tiles-hint" style="display:none">Static tiles not built. Click <strong>Build static tiles</strong> to compute.</p>
+    <p id="tile-build-result" class="meta" style="display:none; margin-top: 0.5rem;"></p>
+  </div>
+
+  <div class="card">
     <h2 class="card-title">Map – Bounding box</h2>
     <p class="meta">Draw or edit the polygon on the map to set the collection extent. The bbox is the extent of this polygon. You can also edit bbox numbers below; map bbox is used on save when both are set.</p>
     <div id="map" class="map-container collection-edit-map">
@@ -148,22 +166,6 @@
       <p id="bulk-result" class="meta"></p>
       <p id="bulk-result-success" class="alert alert-success" style="display:none;"></p>
     </form>
-  </div>
-
-  <div class="card">
-    <h2 class="card-title">Actions</h2>
-    <div class="btn-group">
-      <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn">Back to collection</a>
-      <a href="{{ base }}/collections?f=html" class="btn">Back to collections</a>
-      <a href="{{ base }}/collections/{{ collection_id }}/items/new?f=html" class="btn">Add feature</a>
-      <button type="button" class="btn" id="btn-build-tiles">Build static tiles</button>
-      <button type="button" class="btn btn-danger" id="btn-delete-tiles" style="display:none">Delete static tiles</button>
-      <button type="button" class="btn" id="btn-invalidate-cache" title="Clear Redis cache for this collection (dynamic tiles / search cache) so map shows fresh data">Invalidate tile cache</button>
-      <button type="button" class="btn" id="btn-recompute-extent">Recompute extent</button>
-      <button type="button" class="btn btn-danger" id="btn-delete-collection">Delete collection</button>
-    </div>
-    <p class="meta" id="tiles-hint" style="display:none">Static tiles not built. Click <strong>Build static tiles</strong> to compute.</p>
-    <p id="tile-build-result" class="meta" style="display:none; margin-top: 0.5rem;"></p>
   </div>
 
   <div id="confirm-delete-modal" class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-delete-title" aria-hidden="true">

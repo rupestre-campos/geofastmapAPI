@@ -126,7 +126,15 @@ async def list_collections(
         return html_response(
             "collections.html",
             base=base,
-            collections=[{"id": c.id, "title": c.title, "description": c.description} for c in collections_out],
+            collections=[
+                {
+                    "id": c.id,
+                    "title": c.title,
+                    "description": c.description,
+                    "feature_count": c.feature_count,
+                }
+                for c in collections_out
+            ],
             collections_with_bbox=collections_with_bbox,
             number_matched=number_matched,
             number_returned=len(collections_out),

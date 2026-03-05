@@ -33,6 +33,16 @@
   </header>
 
   <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/collections?f=html" class="btn">Return to collections</a>
+        <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn btn-primary">Back to collection</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2 class="card-title">Status</h2>
     <p style="margin: 0 0 var(--space);">
       <span class="job-status-badge job-status-{{ status }}">{{ status }}</span>
@@ -76,14 +86,6 @@
         <td id="job-finished-at">{{ finished_at or '—' }}</td>
       </tr>
     </table>
-  </div>
-
-  <div class="card">
-    <h2 class="card-title">Actions</h2>
-    <div class="btn-group">
-      <a href="{{ base }}/collections?f=html" class="btn">Return to collections</a>
-      <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn btn-primary">Back to collection</a>
-    </div>
   </div>
 {% endblock %}
 {% block script %}

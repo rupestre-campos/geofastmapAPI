@@ -7,31 +7,39 @@
   </header>
 
   <div class="card">
-    <h2 class="card-title">Search & filters</h2>
-    <form method="get" action="{{ base }}/collections" id="search-form">
-      <input type="hidden" name="f" value="html">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/collections/edit?f=html" class="btn btn-primary">Edit collections</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Search</h2>
+      <div class="card-actions"></div>
+    </div>
+    {% from "components/search_bar.html" import search_bar %}
+    {% call search_bar(base + '/collections', 'search-form', q or '', 'Apply filters', 'Search in id, title, description…') %}
       <div class="grid-2">
         <div class="form-row">
           <label>Limit</label>
-          <input type="number" name="limit" value="{{ limit | default(100) }}" min="1" max="1000">
+          <input type="number" name="limit" value="{{ limit | default(10) }}" min="1" max="1000" form="search-form">
         </div>
         <div class="form-row">
           <label>Offset</label>
-          <input type="number" name="offset" value="{{ offset | default(0) }}" min="0">
+          <input type="number" name="offset" value="{{ offset | default(0) }}" min="0" form="search-form">
         </div>
       </div>
       <div class="form-row">
-        <label>Full-text search (q)</label>
-        <input type="text" name="q" value="{{ q or '' }}" placeholder="Search in id, title, description">
-      </div>
-      <div class="form-row">
-        <label>Bbox <span class="meta">(minx, miny, maxx, maxy — collections whose extent intersects)</span></label>
-        <input type="text" name="bbox" value="{{ bbox or '' }}" placeholder="-10, 40, 10, 50">
+        <label>Bbox <span class="meta">(minx, miny, maxx, maxy)</span></label>
+        <input type="text" name="bbox" value="{{ bbox or '' }}" placeholder="-10, 40, 10, 50" form="search-form">
       </div>
       <div class="grid-2">
         <div class="form-row">
           <label>Sort by</label>
-          <select name="sortby">
+          <select name="sortby" form="search-form">
             <option value="">—</option>
             <option value="id" {{ 'selected' if sortby == 'id' else '' }}>id</option>
             <option value="title" {{ 'selected' if sortby == 'title' else '' }}>title</option>
@@ -41,13 +49,10 @@
         </div>
         <div class="form-row">
           <label>&nbsp;</label>
-          <label class="checkbox-inline"><input type="checkbox" name="sortdesc" value="true" {{ 'checked' if sortdesc else '' }}> Descending</label>
+          <label class="checkbox-inline"><input type="checkbox" name="sortdesc" value="true" {{ 'checked' if sortdesc else '' }} form="search-form"> Descending</label>
         </div>
       </div>
-      <div class="btn-group">
-        <button type="submit" class="btn btn-primary">Apply filters</button>
-      </div>
-    </form>
+    {% endcall %}
   </div>
 
   {% set has_active_search = (q or bbox or sortby or ((offset | default(0)) | int > 0)) %}
@@ -58,7 +63,10 @@
   {% endif %}
 
   <div class="card collections-table-card">
-    <h2 class="card-title">Collections <span class="meta" id="collections-count">({{ number_returned | default(0) }} rows — click row to focus on map)</span></h2>
+    <div class="card-header">
+      <h2 class="card-title">Collections <span class="meta" id="collections-count">({{ number_returned | default(0) }} rows — click row to focus on map)</span></h2>
+      <div class="card-actions"></div>
+    </div>
     {% if collections %}
     <div class="table-scroll-wrap">
       <table id="collections-table" class="collections-table">
@@ -66,6 +74,7 @@
           <tr>
             <th class="col-actions"></th>
             <th>ID</th>
+            <th>Items</th>
             <th>Title</th>
             <th>Description</th>
           </tr>
@@ -76,6 +85,7 @@
           <tr class="clickable-row" data-collection-id="{{ c.id }}" {% if cb and cb.bbox %}data-bbox="{{ cb.bbox | tojson }}"{% endif %} title="Click to focus on map">
             <td class="col-actions"><a href="{{ base }}/collections/{{ c.id }}?f=html" class="btn btn-sm">Open</a></td>
             <td class="col-id"><a href="{{ base }}/collections/{{ c.id }}?f=html">{{ c.id }}</a></td>
+            <td>{{ c.feature_count if c.feature_count is not none else '—' }}</td>
             <td>{{ c.title or '—' }}</td>
             <td>{{ (c.description or '—')[:80] }}{% if (c.description or '')|length > 80 %}…{% endif %}</td>
           </tr>
@@ -99,7 +109,7 @@
     </div>
     {% endif %}
     {% else %}
-    <p class="meta">No collections match your filters.{% if not q and not bbox %} <a href="{{ base }}/collections/edit?f=html">Create one</a> from Actions.{% endif %}</p>
+    <p class="meta">No collections match your filters.{% if not q and not bbox %} <a href="{{ base }}/collections/edit?f=html">Create one</a>.{% endif %}</p>
     {% endif %}
   </div>
 
@@ -123,18 +133,14 @@
     tr.clickable-row.collection-highlight { background: rgba(47, 129, 247, 0.15); }
   </style>
   <div class="card">
-    <h2 class="card-title">Map of collections</h2>
+    <div class="card-header">
+      <h2 class="card-title">Map of collections</h2>
+      <div class="card-actions"></div>
+    </div>
     <p class="meta">Click a row above to focus map on that collection, or click a bbox on the map to see details.</p>
     <div id="map" class="map-container"></div>
   </div>
   {% endif %}
-
-  <div class="card">
-    <h2 class="card-title">Actions</h2>
-    <div class="btn-group">
-      <a href="{{ base }}/collections/edit?f=html" class="btn btn-primary">Edit collections</a>
-    </div>
-  </div>
 
   <p class="meta">JSON: <a href="{{ collections_url_json | default(base + '/collections') }}" id="collections-json-link">{{ collections_url_json | default(base + '/collections') }}</a></p>
 {% endblock %}
@@ -168,7 +174,7 @@
         },
         layers: [
           { id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 },
-          { id: 'collections-fill', type: 'fill', source: 'collections', paint: { 'fill-color': '#58a6ff', 'fill-opacity': 0.25 } },
+          { id: 'collections-fill', type: 'fill', source: 'collections', paint: { 'fill-color': '#58a6ff', 'fill-opacity': 0.05 } },
           { id: 'collections-line', type: 'line', source: 'collections', paint: { 'line-color': '#58a6ff', 'line-width': 2 } }
         ]
       };

@@ -97,9 +97,9 @@ async def list_items(
             detail="Collection not found",
         )
     settings = get_settings()
-    # HTML view: default to a small page (100) for fast load when limit not specified
+    # HTML view: default to 10 items when limit not specified (single-line search)
     if wants_html(request) and "limit" not in request.query_params:
-        limit = limit if limit is not None else int(get_settings().items_max_limit/10)
+        limit = 10
     else:
         limit = limit if limit is not None else settings.items_default_limit
     limit = min(limit, settings.items_max_limit)

@@ -88,6 +88,10 @@ class CollectionPatch(BaseModel):
 class CollectionRead(CollectionBase):
     created_at: datetime
     updated_at: datetime
+    feature_count: int | None = Field(
+        default=None,
+        description="Total number of features in this collection (cached).",
+    )
     links: list[Link] | None = Field(default=None, description="OGC links (self, items).")
 
     model_config = ConfigDict(from_attributes=True)

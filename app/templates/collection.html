@@ -6,6 +6,16 @@
     <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection.id }}?f=html">{{ collection.id }}</a></p>
   </header>
 
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/collections/{{ collection.id }}/edit?f=html" class="btn btn-primary">Edit collection</a>
+        <a href="{{ base }}/collections/{{ collection.id }}/items?f=html" class="btn">View items</a>
+      </div>
+    </div>
+  </div>
+
   <style>
     .collection-info-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-secondary); margin-bottom: 2px; }
     .collection-info-value { font-size: 1rem; margin-bottom: var(--space); color: var(--text); }
@@ -49,14 +59,6 @@
         </select>
         <label id="map-bbox-toggle-wrap" style="display:none"><input type="checkbox" id="map-toggle-bbox" checked title="Show or hide layer extent bbox"> Bbox</label>
       </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2 class="card-title">Actions</h2>
-    <div class="btn-group">
-      <a href="{{ base }}/collections/{{ collection.id }}/edit?f=html" class="btn btn-primary">Edit collection</a>
-      <a href="{{ base }}/collections/{{ collection.id }}/items?f=html" class="btn">View items</a>
     </div>
   </div>
 

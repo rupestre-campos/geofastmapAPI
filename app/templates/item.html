@@ -30,7 +30,18 @@
   </header>
 
   <div class="card">
-    <h2 class="card-title">Map <button type="button" class="btn btn-sm" id="btn-add-to-map" style="margin-left:8px;">Add to map</button></h2>
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/collections/{{ collection_id }}/items?f=html" class="btn">Back to items</a>
+        <a href="{{ base }}/collections/{{ collection_id }}/items/{{ feature.id }}/edit?f=html" class="btn btn-primary">Edit feature</a>
+        <button type="button" class="btn" id="btn-add-to-map">Add to map</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Map</h2>
     <div id="map" class="map-container">
       <div class="map-controls">
         <select id="map-basemap" title="Basemap">
@@ -89,14 +100,6 @@
         </div>
         <p id="add-to-map-message" class="meta" style="margin-top:8px;"></p>
       </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2 class="card-title">Actions</h2>
-    <div class="btn-group">
-      <a href="{{ base }}/collections/{{ collection_id }}/items?f=html" class="btn">Back to items</a>
-      <a href="{{ base }}/collections/{{ collection_id }}/items/{{ feature.id }}/edit?f=html" class="btn btn-primary">Edit feature</a>
     </div>
   </div>
 {% endblock %}
