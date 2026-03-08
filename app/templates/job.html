@@ -36,6 +36,9 @@
     <div class="card-header">
       <h2 class="card-title">Actions</h2>
       <div class="card-actions">
+        {% if status == 'pending' %}
+        <button type="button" class="btn btn-danger" id="btn-cancel-job">Cancel job</button>
+        {% endif %}
         <a href="{{ base }}/collections?f=html" class="btn">Return to collections</a>
         <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn btn-primary">Back to collection</a>
       </div>
@@ -119,9 +122,31 @@
           msgEl.style.display = m ? '' : 'none';
         }
       }
+      var cancelBtn = document.getElementById('btn-cancel-job');
+      if (cancelBtn) {
+        cancelBtn.onclick = function() {
+          if (!confirm('Cancel this job? It will not run.')) return;
+          cancelBtn.disabled = true;
+          cancelBtn.textContent = 'Cancelling…';
+          fetch(base + '/jobs/' + encodeURIComponent(jobId) + '/cancel', { method: 'POST', headers: { 'Accept': 'application/json' } })
+            .then(function(r) {
+              if (r.ok) return r.json();
+              return r.json().then(function(err) { throw err; });
+            })
+            .then(function() {
+              window.location.reload();
+            })
+            .catch(function(e) {
+              cancelBtn.disabled = false;
+              cancelBtn.textContent = 'Cancel job';
+              alert('Failed to cancel: ' + (e.detail || e.message || 'Unknown error'));
+            });
+        };
+      }
+
       if (status === 'pending' || status === 'running' || status === 'replacing') {
         var t = setInterval(function() {
-          fetch(base + '/jobs/' + jobId, { headers: { 'Accept': 'application/json' } })
+          fetch(base + '/jobs/' + encodeURIComponent(jobId), { headers: { 'Accept': 'application/json' } })
             .then(function(r) { return r.json(); })
             .then(function(job) {
               updateLive(job);
