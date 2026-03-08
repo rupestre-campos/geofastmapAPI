@@ -3,7 +3,7 @@
 <script>
 (function() {
   const LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
-  const defaultSpec = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle' };
+  const defaultSpec = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, lineEnabled: true, pointEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle' };
   var ZOOM_STOP_DEFAULTS = {
     'fill-opacity-zoom-stops': [[0, 0.3], [14, 0.7]],
     'line-width-zoom-stops': [[0, 0.5], [14, 2]],
@@ -120,20 +120,22 @@
       applyPaintValue(fillId, 'fill-opacity', fillOpacityVal);
     }
     if (lineId && map.getLayer(lineId)) {
+      map.setLayoutProperty(lineId, 'visibility', spec.lineEnabled !== false ? 'visible' : 'none');
       map.setPaintProperty(lineId, 'line-color', spec.lineColor || '#58a6ff');
       applyPaintValue(lineId, 'line-width', lineWidthVal);
       applyPaintValue(lineId, 'line-opacity', lineOpacityVal);
       map.setPaintProperty(lineId, 'line-dasharray', LINE_DASH[spec.linePattern] || LINE_DASH.solid);
     }
+    var pointOn = spec.pointEnabled !== false;
     if (circleId && map.getLayer(circleId)) {
+      map.setLayoutProperty(circleId, 'visibility', pointOn && spec.pointIcon === 'circle' ? 'visible' : 'none');
       map.setPaintProperty(circleId, 'circle-color', spec.pointColor || '#58a6ff');
       applyPaintValue(circleId, 'circle-radius', pointSizeVal);
       applyPaintValue(circleId, 'circle-opacity', pointOpacityValExpr);
-      map.setLayoutProperty(circleId, 'visibility', spec.pointIcon === 'circle' ? 'visible' : 'none');
     }
     if (symbolId && map.getLayer(symbolId)) {
       try {
-        map.setLayoutProperty(symbolId, 'visibility', (spec.pointIcon === 'pin' || spec.pointIcon === 'marker') ? 'visible' : 'none');
+        map.setLayoutProperty(symbolId, 'visibility', pointOn && (spec.pointIcon === 'pin' || spec.pointIcon === 'marker') ? 'visible' : 'none');
         if (spec.pointSizeZoom && spec.pointSizeZoom.length >= 2 && Array.isArray(pointSizeVal)) map.setLayoutProperty(symbolId, 'icon-size', ['/', zoomStopsToExpression(spec.pointSizeZoom), 12]);
         else map.setLayoutProperty(symbolId, 'icon-size', pointSizeNum / 12);
         map.setPaintProperty(symbolId, 'icon-color', spec.pointColor || '#58a6ff');
@@ -144,7 +146,7 @@
 
   function createGetCurrentSpec(formEls) {
     return function getCurrentSpec() {
-      var fc = formEls.fillCheck, fillColor = formEls.fillColor, fillOpacity = formEls.fillOpacity, lineColor = formEls.lineColor, lineWidth = formEls.lineWidth, lineOpacity = formEls.lineOpacity, linePattern = formEls.linePattern;
+      var fc = formEls.fillCheck, lc = formEls.lineCheck, pc = formEls.pointCheck, fillColor = formEls.fillColor, fillOpacity = formEls.fillOpacity, lineColor = formEls.lineColor, lineWidth = formEls.lineWidth, lineOpacity = formEls.lineOpacity, linePattern = formEls.linePattern;
       var pointColor = formEls.pointColor, pointOpacity = formEls.pointOpacity, pointSize = formEls.pointSize, pointIcon = formEls.pointIcon;
       var spec = {
         fillColor: fillColor.value,
@@ -154,6 +156,8 @@
         lineWidth: Math.max(0.5, parseFloat(lineWidth.value) || 1),
         linePattern: linePattern.value || 'solid',
         fillEnabled: fc.checked,
+        lineEnabled: lc ? lc.checked : true,
+        pointEnabled: pc ? pc.checked : true,
         pointColor: pointColor ? pointColor.value : '#58a6ff',
         pointOpacity: pointOpacity ? (parseFloat(pointOpacity.value) || 100) / 100 : 1,
         pointSize: Math.max(1, Math.min(40, parseFloat(pointSize ? pointSize.value : 8) || 8)),
@@ -177,7 +181,7 @@
     var getCurrentSpec = createGetCurrentSpec(formEls);
     return function applySpecToForm(s) {
       s = s || {};
-      var fc = formEls.fillCheck, fillColor = formEls.fillColor, fillOpacity = formEls.fillOpacity, fillOpacityVal = formEls.fillOpacityVal;
+      var fc = formEls.fillCheck, lc = formEls.lineCheck, pc = formEls.pointCheck, fillColor = formEls.fillColor, fillOpacity = formEls.fillOpacity, fillOpacityVal = formEls.fillOpacityVal;
       var lineColor = formEls.lineColor, lineWidth = formEls.lineWidth, lineOpacity = formEls.lineOpacity, lineOpacityVal = formEls.lineOpacityVal, linePattern = formEls.linePattern;
       var pointColor = formEls.pointColor, pointOpacity = formEls.pointOpacity, pointOpacityVal = formEls.pointOpacityVal, pointSize = formEls.pointSize, pointIcon = formEls.pointIcon;
       fillColor.value = s.fillColor || '#58a6ff';
@@ -189,6 +193,8 @@
       lineWidth.value = s.lineWidth != null ? s.lineWidth : 1;
       linePattern.value = s.linePattern || 'solid';
       fc.checked = s.fillEnabled !== false;
+      if (lc) lc.checked = s.lineEnabled !== false;
+      if (pc) pc.checked = s.pointEnabled !== false;
       if (pointColor) pointColor.value = s.pointColor || '#58a6ff';
       if (pointOpacity) { pointOpacity.value = Math.round((s.pointOpacity != null ? s.pointOpacity : 1) * 100); if (pointOpacityVal) pointOpacityVal.textContent = pointOpacity.value; }
       if (pointSize) pointSize.value = s.pointSize != null ? Math.max(1, Math.min(40, s.pointSize)) : 8;
@@ -236,6 +242,8 @@
     var onAfterApply = config.onAfterApply;
 
     var fillCheck = document.getElementById('vector-fill-enable');
+    var lineCheck = document.getElementById('vector-line-enable');
+    var pointCheck = document.getElementById('vector-point-enable');
     var fillColor = document.getElementById('vector-fill-color');
     var fillOpacity = document.getElementById('vector-fill-opacity');
     var fillOpacityVal = document.getElementById('vector-fill-opacity-val');
@@ -249,7 +257,7 @@
     var pointOpacityVal = document.getElementById('vector-point-opacity-val');
     var pointSize = document.getElementById('vector-point-size');
     var pointIcon = document.getElementById('vector-point-icon');
-    var formEls = { fillCheck: fillCheck, fillColor: fillColor, fillOpacity: fillOpacity, fillOpacityVal: fillOpacityVal, lineColor: lineColor, lineWidth: lineWidth, lineOpacity: lineOpacity, lineOpacityVal: lineOpacityVal, linePattern: linePattern, pointColor: pointColor, pointOpacity: pointOpacity, pointOpacityVal: pointOpacityVal, pointSize: pointSize, pointIcon: pointIcon };
+    var formEls = { fillCheck: fillCheck, lineCheck: lineCheck, pointCheck: pointCheck, fillColor: fillColor, fillOpacity: fillOpacity, fillOpacityVal: fillOpacityVal, lineColor: lineColor, lineWidth: lineWidth, lineOpacity: lineOpacity, lineOpacityVal: lineOpacityVal, linePattern: linePattern, pointColor: pointColor, pointOpacity: pointOpacity, pointOpacityVal: pointOpacityVal, pointSize: pointSize, pointIcon: pointIcon };
 
     var getCurrentSpec = createGetCurrentSpec(formEls);
     var applySpecToForm = createApplySpecToForm(formEls, map, getLayerIds, onAfterApply);
@@ -276,6 +284,8 @@
     ['fill-opacity-zoom-stops', 'line-width-zoom-stops', 'line-opacity-zoom-stops', 'point-size-zoom-stops', 'point-opacity-zoom-stops'].forEach(function(id) { renderZoomStops(id, null, refreshStyle); });
 
     if (fillCheck) fillCheck.onchange = refreshStyle;
+    if (lineCheck) lineCheck.onchange = refreshStyle;
+    if (pointCheck) pointCheck.onchange = refreshStyle;
     if (fillColor) fillColor.oninput = refreshStyle;
     if (fillOpacity) fillOpacity.oninput = function() { fillOpacityVal.textContent = this.value; refreshStyle(); };
     if (lineColor) lineColor.oninput = refreshStyle;

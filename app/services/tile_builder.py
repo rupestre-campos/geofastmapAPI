@@ -12,6 +12,7 @@ from queue import Queue
 import orjson
 
 from app.core.config import get_settings
+from app.utils.geo import mvt_layer_name
 
 # Chunk size for DB streaming and queue between producer/consumer
 _EXPORT_CHUNK_SIZE = 50_000
@@ -128,20 +129,25 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
             queue.join()
             consumer_thread.join()
 
+        # Use sanitized layer name so it matches TileJSON vector_layers.id and frontend source-layer.
+        layer_name = mvt_layer_name(collection_id)
         # -L requires "layername:file" (single argument per layer)
+        # -r1: do not drop a fraction of points at low zooms; keep all points unless tile size forces it.
+        # Then coalesce/drop only when a tile would exceed maximum-tile-bytes (default 500KB).
         cmd = [
             "tippecanoe",
             "--read-parallel",
             "-o", out_path,
-            "-L", f"{collection_id}:{geojsonl_path}",
-            f"--layer={collection_id}",
+            "-L", f"{layer_name}:{geojsonl_path}",
+            f"--layer={layer_name}",
             f"-z{maxz}",
             f"-Z{minz}",
             "--force",
+            "-r1",
             "-ps",
             "--detect-shared-borders",
-            "--drop-densest-as-needed",
-            "--drop-smallest-as-needed",
+            "--coalesce-densest-as-needed",
+            "--coalesce-smallest-as-needed",
             "--full-detail=12",
             "--low-detail=10",
             "--minimum-detail=8",

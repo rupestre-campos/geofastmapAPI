@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.crud import collection_tiles as tiles_crud
+from app.utils.geo import mvt_layer_name
 from app.crud import collections as collections_crud
 from app.crud import styles as styles_crud
 from app.core.html import html_response, wants_html
@@ -202,6 +203,7 @@ async def get_collection_edit_form(
         collection={"id": out.id, "title": out.title, "description": out.description},
         extent_geojson=out.extent.model_dump() if out.extent else None,
         has_static_tiles=has_static_tiles,
+        tile_layer_id=mvt_layer_name(collection_id),
         google_maps_api_key=settings.google_maps_api_key or "",
         default_style={"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec} if default_style else None,
         collection_styles_url=f"{base}/collections/{collection_id}/styles",
@@ -238,6 +240,7 @@ async def get_collection(
             collection={"id": out.id, "title": out.title, "description": out.description},
             extent_geojson=out.extent.model_dump() if out.extent else None,
             has_static_tiles=has_static_tiles,
+            tile_layer_id=mvt_layer_name(collection_id),
             google_maps_api_key=settings.google_maps_api_key or "",
             default_style={"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec} if default_style else None,
             collection_styles_url=f"{base}/collections/{collection_id}/styles",

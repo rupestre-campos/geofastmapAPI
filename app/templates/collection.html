@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ collection.id }} – GeoFast API{% endblock %}
+{% block head %}{% include '_map_popup_css.html' %}{% endblock %}
 {% block content %}
   <header class="page-header">
     <h1>{{ collection.title or collection.id }}</h1>
@@ -20,11 +21,6 @@
     .collection-info-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-secondary); margin-bottom: 2px; }
     .collection-info-value { font-size: 1rem; margin-bottom: var(--space); color: var(--text); }
     .collection-info-value.title { font-size: 1.15rem; font-weight: 700; }
-    .map-popup { min-width: 160px; max-width: 320px; font-size: 0.85rem; color: #000; }
-    .map-popup-id { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
-    .map-popup-id a { color: #1967d2; }
-    .map-popup-row { margin-top: 0.25rem; word-break: break-word; color: #000; }
-    .map-popup-row strong { font-weight: 700; margin-right: 0.35rem; color: #000; }
   </style>
   <div class="card">
     <h2 class="card-title">Collection info</h2>
@@ -49,14 +45,7 @@
     <h2 class="card-title">Map</h2>
     <div id="map" class="map-container">
       <div class="map-controls">
-        <select id="map-basemap" title="Basemap">
-          <option value="osm">OpenStreetMap</option>
-          <option value="streets">Esri Streets</option>
-          <option value="satellite">Esri Satellite</option>
-          <option value="hybrid">Esri Hybrid</option>
-          <option value="google_satellite">Google Satellite</option>
-          <option value="google_hybrid">Google Hybrid</option>
-        </select>
+        {% include '_basemap_selector.html' %}
         <label id="map-bbox-toggle-wrap" style="display:none"><input type="checkbox" id="map-toggle-bbox" checked title="Show or hide layer extent bbox"> Bbox</label>
       </div>
     </div>
@@ -75,6 +64,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
   <script>
     const base = {{ base | tojson }};
     const collectionId = {{ collection.id | tojson }};
@@ -82,77 +72,49 @@
     const collectionDescription = {{ (collection.description or '') | tojson }};
     const extent = {{ extent_geojson | tojson if extent_geojson else 'null' }};
     const hasStaticTiles = {{ has_static_tiles | tojson }};
+    const tileLayerId = {{ tile_layer_id | tojson }};
     const tileUrlStatic = hasStaticTiles ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' : null;
     const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
     const collectionStylesUrl = {{ collection_styles_url | tojson if collection_styles_url else 'null' }};
 
     const googleKey = {{ google_maps_api_key | tojson }};
-    const BASEMAPS = {
-      osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] },
-      streets: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}'] },
-      satellite: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] },
-      hybrid: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], labels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}' },
-      google_satellite: { tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] },
-      google_hybrid: { tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] }
-    };
+    var BASEMAPS;
+    var basemapList;
+    var map;
 
-    const mapStyle = {
-      version: 8,
-      sources: { basemap: { type: 'raster', tiles: BASEMAPS.osm.tiles, tileSize: 256 } },
-      layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 }]
-    };
-
-    const map = new maplibregl.Map({
-      container: 'map',
-      style: mapStyle,
-      center: [0, 20],
-      zoom: 2,
-      renderWorldCopies: false
-    });
-
-    function zoomStopsToExpression(stops) {
-      if (!stops || stops.length < 2) return null;
-      var flat = [];
-      stops.forEach(function(s) { flat.push(Number(s[0]), Number(s[1])); });
-      return ['interpolate', ['linear'], ['zoom']].concat(flat);
-    }
+    var pointFilter = GeofastMapUtils.pointFilter;
+    var notPointFilter = GeofastMapUtils.notPointFilter;
     function addOverlayLayers() {
       if (tileUrlStatic) {
         var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
-        var fillColor = spec.fillColor || '#58a6ff';
-        var fillOpacity = spec.fillOpacity != null ? spec.fillOpacity : 0.6;
-        var fillOpacityExpr = (spec.fillOpacityZoom && spec.fillOpacityZoom.length >= 2) ? zoomStopsToExpression(spec.fillOpacityZoom) : null;
-        var lineColor = spec.lineColor || '#58a6ff';
-        var lineWidth = Math.max(0.5, spec.lineWidth != null ? spec.lineWidth : 1);
-        var lineWidthExpr = (spec.lineWidthZoom && spec.lineWidthZoom.length >= 2) ? zoomStopsToExpression(spec.lineWidthZoom) : null;
-        var lineOpacity = spec.lineOpacity != null ? spec.lineOpacity : 1;
-        var lineOpacityExpr = (spec.lineOpacityZoom && spec.lineOpacityZoom.length >= 2) ? zoomStopsToExpression(spec.lineOpacityZoom) : null;
-        var fillVisible = spec.fillEnabled !== false;
-        var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
-        var lineDash = LINE_DASH[spec.linePattern || 'solid'] || LINE_DASH.solid;
+        var s = GeofastMapUtils.specToPaint(spec);
         map.addSource('tiles', { type: 'vector', tiles: [tileUrlStatic], minzoom: 0, maxzoom: 14 });
         map.addLayer({
           id: 'layer',
           type: 'fill',
           source: 'tiles',
-          'source-layer': collectionId,
-          layout: { visibility: fillVisible ? 'visible' : 'none' },
-          paint: {
-            'fill-color': fillColor,
-            'fill-opacity': fillOpacityExpr || fillOpacity
-          }
+          'source-layer': tileLayerId,
+          filter: notPointFilter,
+          layout: { visibility: s.fillEnabled ? 'visible' : 'none' },
+          paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity }
         });
         map.addLayer({
           id: 'layer-line',
           type: 'line',
           source: 'tiles',
-          'source-layer': collectionId,
-          paint: {
-            'line-color': lineColor,
-            'line-width': lineWidthExpr || lineWidth,
-            'line-opacity': lineOpacityExpr || lineOpacity,
-            'line-dasharray': lineDash
-          }
+          'source-layer': tileLayerId,
+          filter: notPointFilter,
+          layout: { visibility: (s.lineVisible !== false) ? 'visible' : 'none' },
+          paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash }
+        });
+        map.addLayer({
+          id: 'layer-circle',
+          type: 'circle',
+          source: 'tiles',
+          'source-layer': tileLayerId,
+          filter: pointFilter,
+          layout: { visibility: (s.pointVisible !== false) ? 'visible' : 'none' },
+          paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity }
         });
       }
       if (extent && extent.bbox && extent.bbox[0]) {
@@ -168,73 +130,75 @@
     }
 
     function applyBasemapFromSelect() {
-      const v = document.getElementById('map-basemap').value;
-      const cfg = BASEMAPS[v];
-      map.getSource('basemap').setTiles(cfg.tiles);
-      if (cfg.labels) {
-        if (!map.getSource('basemap-labels')) {
-          map.addSource('basemap-labels', { type: 'raster', tiles: [cfg.labels], tileSize: 256 });
-          var beforeId = map.getLayer('layer') ? 'layer' : (map.getLayer('bbox-line') ? 'bbox-line' : undefined);
-          map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: 0, maxzoom: 22 }, beforeId);
-        }
-      } else {
-        if (map.getLayer('basemap-labels')) { map.removeLayer('basemap-labels'); map.removeSource('basemap-labels'); }
-      }
+      var sel = document.getElementById('map-basemap');
+      if (!sel || !map || !map.getSource('basemap')) return;
+      var v = sel.value;
+      var cfg = BASEMAPS[v];
+      if (!cfg) return;
+      var beforeId = map.getLayer('results-fill') ? 'results-fill' : (map.getLayer('bbox-line') ? 'bbox-line' : undefined);
+      GeofastMapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: beforeId });
+      GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
     }
 
-    map.on('load', function() {
-      map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
-      try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) { document.getElementById('map-basemap').value = s; } } catch(e) {}
-      applyBasemapFromSelect();
-      addOverlayLayers();
-      if (map.getLayer('bbox-line')) {
-        document.getElementById('map-bbox-toggle-wrap').style.display = '';
-        document.getElementById('map-toggle-bbox').onchange = function() {
-          map.setLayoutProperty('bbox-line', 'visibility', this.checked ? 'visible' : 'none');
-        };
-      }
-      if (hasStaticTiles && map.getLayer('layer')) {
-        var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false });
-        map.getCanvas().style.cursor = '';
-        map.on('mouseenter', ['layer', 'layer-line'], function() { map.getCanvas().style.cursor = 'pointer'; });
-        map.on('mouseleave', ['layer', 'layer-line'], function() { map.getCanvas().style.cursor = ''; });
-        map.on('click', ['layer', 'layer-line'], function(e) {
-          var feat = e.features && e.features[0];
-          if (!feat) return;
-          var props = feat.properties || {};
-          var id = props.id != null ? String(props.id) : (feat.id != null ? String(feat.id) : '—');
-          var featureUrl = base + '/collections/' + collectionId + '/items/' + encodeURIComponent(id) + '?f=html';
-          var parts = ['<div class="map-popup">', '<div class="map-popup-id"><strong>ID</strong> <a href="' + featureUrl + '">' + escapeHtml(id) + '</a></div>'];
-          Object.keys(props).sort().forEach(function(k) {
-            if (k === 'id') return;
-            var v = props[k];
-            var val = v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
-            parts.push('<div class="map-popup-row"><strong>' + escapeHtml(k) + '</strong> ' + escapeHtml(val) + '</div>');
+    function initMap() {
+      var sel = document.getElementById('map-basemap');
+      GeofastMapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
+      var initialId = null;
+      try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch(e) {}
+      if (!initialId && basemapList.length) initialId = basemapList[0].id;
+      if (!initialId && BASEMAPS.osm) initialId = 'osm';
+      var initial = (initialId && BASEMAPS[initialId]) ? BASEMAPS[initialId] : (BASEMAPS.osm || (basemapList[0] && BASEMAPS[basemapList[0].id]));
+      if (!initial) return;
+      if (sel) sel.value = initialId || sel.options[0].value;
+      var mapStyle = GeofastMapUtils.buildMapStyleWithBasemap(initial);
+      map = new maplibregl.Map({
+        container: 'map',
+        style: mapStyle,
+        center: [0, 20],
+        zoom: 2,
+        renderWorldCopies: false
+      });
+      GeofastMapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
+      map.on('load', function() {
+        map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+        applyBasemapFromSelect();
+        addOverlayLayers();
+        if (map.getLayer('bbox-line')) {
+          document.getElementById('map-bbox-toggle-wrap').style.display = '';
+          document.getElementById('map-toggle-bbox').onchange = function() {
+            map.setLayoutProperty('bbox-line', 'visibility', this.checked ? 'visible' : 'none');
+          };
+        }
+        if (hasStaticTiles && map.getLayer('layer')) {
+          var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
+          map.getCanvas().style.cursor = '';
+          map.on('mouseenter', ['layer', 'layer-line', 'layer-circle'], function() { map.getCanvas().style.cursor = 'pointer'; });
+          map.on('mouseleave', ['layer', 'layer-line', 'layer-circle'], function() { map.getCanvas().style.cursor = ''; });
+          map.on('click', ['layer', 'layer-line', 'layer-circle'], function(e) {
+            var feat = e.features && e.features[0];
+            if (!feat) return;
+            popup.setLngLat(e.lngLat).setHTML(GeofastMapUtils.popupHtmlForFeature(feat, base, collectionId)).addTo(map);
           });
-          parts.push('</div>');
-          popup.setLngLat(e.lngLat).setHTML(parts.join('')).addTo(map);
-        });
-        function escapeHtml(s) {
-          var d = document.createElement('div');
-          d.textContent = s;
-          return d.innerHTML;
         }
+        sel.onchange = function() {
+          try { localStorage.setItem('geofast-basemap', this.value); } catch(e) {}
+          applyBasemapFromSelect();
+        };
+      });
+    }
+
+    GeofastMapUtils.fetchBasemaps(base).then(function(result) {
+      BASEMAPS = result.byId;
+      basemapList = result.basemaps;
+      if (!basemapList.length) {
+        BASEMAPS = GeofastMapUtils.getBasemaps(googleKey);
+        basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
       }
-      document.getElementById('map-basemap').onchange = function() {
-        const v = this.value;
-        try { localStorage.setItem('geofast-basemap', v); } catch(e) {}
-        const cfg = BASEMAPS[v];
-        map.getSource('basemap').setTiles(cfg.tiles);
-        if (cfg.labels) {
-          if (!map.getSource('basemap-labels')) {
-            map.addSource('basemap-labels', { type: 'raster', tiles: [cfg.labels], tileSize: 256 });
-            var beforeId = map.getLayer('layer') ? 'layer' : (map.getLayer('bbox-line') ? 'bbox-line' : undefined);
-            map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: 0, maxzoom: 22 }, beforeId);
-          }
-        } else {
-          if (map.getLayer('basemap-labels')) { map.removeLayer('basemap-labels'); map.removeSource('basemap-labels'); }
-        }
-      };
+      initMap();
+    }).catch(function() {
+      BASEMAPS = GeofastMapUtils.getBasemaps(googleKey);
+      basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
+      initMap();
     });
   </script>
 {% endblock %}

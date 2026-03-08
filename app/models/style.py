@@ -13,7 +13,7 @@ class Style(Base):
     - collection_id is '' => public style (reusable with any layer).
     - collection_id set => style for that collection only (shareable later).
     - is_default: for collection styles, one per collection can be default.
-    - style_spec: JSON with fillColor, lineColor, fillOpacity, lineOpacity, lineWidth, linePattern, fillEnabled.
+    - style_spec: JSON with fillColor, lineColor, fillOpacity, lineOpacity, lineWidth, linePattern, fillEnabled, lineEnabled, pointEnabled, pointColor, pointSize, pointIcon, etc.
     """
 
     __tablename__ = "styles"

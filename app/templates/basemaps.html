@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Basemaps – GeoFast API{% endblock %}
+{% block head %}
+  <style>
+    .basemaps-map-wrap .map-container { min-height: 320px; height: 320px; width: 100%; box-sizing: border-box; }
+    .basemaps-map-wrap .map-controls { position: absolute; top: 8px; left: 8px; z-index: 10; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Basemaps</h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › Basemaps</p>
+    <p class="meta">Raster basemaps available in all map views. Name, copyright, and zoom levels are shown in the map UI.</p>
+  </header>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/basemaps/new?f=html" class="btn btn-primary">Add basemap</a>
+        <a href="{{ base }}/styles/basemaps" class="btn" target="_blank" rel="noopener">View API (JSON)</a>
+      </div>
+    </div>
+  </div>
+
+  {% if basemaps %}
+  <div class="card basemaps-map-wrap">
+    <h2 class="card-title">Preview</h2>
+    <p class="meta">Select a basemap to see it on the map.</p>
+    <div class="map-controls">
+      <select id="map-basemap" title="Basemap">
+        {% for b in basemaps %}
+        <option value="{{ b.id }}">{{ b.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div id="map" class="map-container"></div>
+    <p class="meta" style="margin-top:8px;"><span id="map-basemap-copyright" class="meta"></span></p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2 class="card-title">Basemaps</h2>
+    {% if basemaps %}
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Name</th>
+          <th>Copyright</th>
+          <th>Zoom</th>
+          <th>Order</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in basemaps %}
+        <tr>
+          <td><code>{{ b.id }}</code></td>
+          <td>{{ b.name }}</td>
+          <td class="meta">{{ b.copyright or '—' }}</td>
+          <td>{{ b.min_zoom }}–{{ b.max_zoom }}</td>
+          <td>{{ b.sort_order }}</td>
+          <td>
+            <a href="{{ base }}/basemaps/{{ b.id }}/edit?f=html" class="btn btn-sm">Edit</a>
+            <form method="post" action="{{ base }}/basemaps/{{ b.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete this basemap?');">
+              <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="meta">No basemaps yet. <a href="{{ base }}/basemaps/new?f=html">Add one</a> or run migrations to seed defaults.</p>
+    {% endif %}
+  </div>
+{% endblock %}
+{% block script %}
+  {% if basemaps %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
+  <script>
+    (function() {
+      var base = {{ base | tojson }};
+      var serverBasemaps = {{ basemaps | tojson }};
+      var BASEMAPS = {};
+      var basemapList = [];
+      serverBasemaps.forEach(function(b) {
+        BASEMAPS[b.id] = {
+          tiles: b.tiles || [],
+          labels: b.labels || undefined,
+          name: b.name || b.id,
+          copyright: b.copyright || undefined,
+          minZoom: b.min_zoom != null ? b.min_zoom : 0,
+          maxZoom: b.max_zoom != null ? b.max_zoom : 22
+        };
+        basemapList.push({ id: b.id, name: b.name || b.id });
+      });
+      if (basemapList.length === 0) return;
+      var initial = BASEMAPS[basemapList[0].id];
+      if (!initial || !initial.tiles.length) return;
+      var mapStyle = GeofastMapUtils.buildMapStyleWithBasemap(initial);
+      mapStyle.glyphs = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
+      var map = new maplibregl.Map({
+        container: 'map',
+        style: mapStyle,
+        center: [0, 20],
+        zoom: 2,
+        renderWorldCopies: false
+      });
+      GeofastMapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
+      GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), initial);
+      map.on('load', function() {
+        map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+        var sel = document.getElementById('map-basemap');
+        sel.onchange = function() {
+          var cfg = BASEMAPS[this.value];
+          if (cfg) {
+            GeofastMapUtils.applyBasemapToMap(map, cfg);
+            GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
+          }
+        };
+      });
+    })();
+  </script>
+  {% endif %}
+{% endblock %}

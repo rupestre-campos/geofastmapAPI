@@ -19,6 +19,7 @@ from app.services.process_worker import (
     _cleanup_result_collection_sync,
     _safe_result_collection_id,
     _update_feature_count_sync,
+    cleanup_process_worker_temp_dir,
     process_process_job_sync,
 )
 from app.services.tile_build_queue import create_tile_build_job, enqueue_tile_build
@@ -65,6 +66,7 @@ def main() -> None:
     if settings.process_queue_type != "redis":
         print("Set PROCESS_QUEUE_TYPE=redis for process worker.", file=sys.stderr)
         sys.exit(1)
+    cleanup_process_worker_temp_dir()
     _recover_orphaned_running_jobs(settings)
     # One-time backfill: fix feature_count for existing process result collections that still show 0.
     try:

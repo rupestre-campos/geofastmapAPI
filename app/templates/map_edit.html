@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{% if map_id %}Edit map{% else %}Create map{% endif %} – GeoFast API{% endblock %}
 {% block head %}
+  {% include '_map_popup_css.html' %}
   <style>
     #map.map-edit-map { min-height: 70vh; height: 70vh; width: 100%; box-sizing: border-box; }
     .collection-search-wrap { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
@@ -20,9 +21,6 @@
     .layers-table-wrap input[type="number"], .layers-table-wrap input[type="range"] { width: 4em; padding: 2px 4px; }
     .layers-table-wrap select { padding: 2px 4px; font-size: inherit; }
     .layers-table-wrap .btn-remove-layer { padding: 2px 8px; font-size: 0.8rem; }
-    .maplibregl-popup { z-index: 1000; }
-    .maplibregl-popup-content { padding: 10px 12px; min-width: 120px; min-height: 1.5em; background: #fff !important; color: #000 !important; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); }
-    .map-popup { min-width: 160px; max-width: 320px; font-size: 0.85rem; color: #000; }
     .layer-style-collapsible { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); }
     .layer-style-collapsible summary { padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 0.9rem; color: var(--text-secondary); display: flex; align-items: center; gap: 10px; list-style: none; user-select: none; }
     .layer-style-collapsible summary::-webkit-details-marker { display: none; }
@@ -43,18 +41,19 @@
     .style-toolbox-zoom .zoom-stop-row .value-input { width: 5em; }
     .style-toolbox-zoom .btn-remove-stop { padding: 2px 8px; font-size: 1rem; cursor: pointer; }
     .layers-table-wrap tr.selected td { background: var(--bg-elevated); }
-    .layer-style-collapsible .style-toolbox-save-collection-row { display: none; }
     .vector-style-load-wrap { position: relative; display: inline-flex; }
     .vector-style-load-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); cursor: pointer; min-width: 120px; }
     .vector-style-load-list { position: absolute; top: 100%; left: 0; margin-top: 2px; min-width: 180px; max-height: 240px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 50; display: none; }
     .vector-style-load-list.open { display: block; }
+    .vector-style-load-group-label { padding: 4px 8px; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
+    .vector-style-load-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; font-size: 0.85rem; border: none; background: none; width: 100%; text-align: left; }
+    .vector-style-load-item:hover { background: var(--bg-elevated); }
+    .vector-style-load-item-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-load-item-label { flex: 1; }
+    .vector-style-load-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
+    .vector-style-load-label-text { flex: 1; text-align: left; }
     .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
     .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
-    .map-popup-id { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
-    .map-popup-id a { color: #1967d2; text-decoration: none; }
-    .map-popup-id a:hover { text-decoration: underline; }
-    .map-popup-row { margin-top: 0.25rem; word-break: break-word; color: #000; }
-    .map-popup-row strong { font-weight: 700; margin-right: 0.35rem; color: #000; }
   </style>
 {% endblock %}
 {% block content %}
@@ -111,41 +110,25 @@
 
   <div class="card">
     <h2 class="card-title">Map</h2>
-    <p class="meta">Only collections with static tiles built are listed. Click the search bar to list them; type to search. Add a collection to see it on the map. Edit style below.</p>
+    <p class="meta">Only collections with static tiles built are listed. Click the search bar to list them; type to search. Add a collection to see it on the map (it gets a default style). Edit a layer's style in the Style editor below; styles are saved with the map, not with the collection.</p>
     <div class="collection-search-wrap">
       <input type="text" id="collection-search" placeholder="Search collections with static tiles… (click to list)" autocomplete="off">
       <div id="collection-search-results" class="collection-search-results" aria-live="polite"></div>
     </div>
     <div id="map" class="map-container map-edit-map">
       <div class="map-controls" style="position:absolute;top:8px;left:8px;z-index:10;">
-        <select id="map-basemap" title="Basemap">
-          <option value="osm">OpenStreetMap</option>
-          <option value="streets">Esri Streets</option>
-          <option value="satellite">Esri Satellite</option>
-          <option value="hybrid">Esri Hybrid</option>
-          <option value="google_satellite">Google Satellite</option>
-          <option value="google_hybrid">Google Hybrid</option>
-        </select>
+        {% include '_basemap_selector.html' %}
         <button type="button" class="btn btn-sm" id="btn-set-extent" title="Use current map view as default extent when opening this map">Set extent from current view</button>
       </div>
     </div>
     <h2 class="card-title" style="margin-top:var(--space-lg);">Layers</h2>
-    <p class="meta">Style each layer (loaded from collection default when added). Click a row to edit it in the Style editor below. Changes apply live and are saved with the map.</p>
+    <p class="meta">Reorder layers with the handle, toggle popup on click, or remove. Click a row to select it and edit style in the Style editor below.</p>
     <div class="layers-table-wrap" id="layers-table-wrap" style="display:none;">
       <table>
         <thead>
           <tr>
             <th></th>
             <th>Collection</th>
-            <th>Fill</th>
-            <th>Line</th>
-            <th>Fill op.</th>
-            <th>Line width</th>
-            <th>Pattern</th>
-            <th>Fill</th>
-            <th>Point</th>
-            <th>Pt size</th>
-            <th>Pt icon</th>
             <th>Popup</th>
             <th></th>
           </tr>
@@ -155,7 +138,7 @@
     </div>
     <details id="style-editor-details" class="layer-style-collapsible">
       <summary>Style editor</summary>
-      <p class="meta" style="padding:0 var(--space) var(--space);margin:0;">Select a layer in the table above, then use the controls below to edit its style (fill, line, point, zoom breakpoints).</p>
+      <p class="meta" style="padding:0 var(--space) var(--space);margin:0;">Select a layer in the table above, then use the controls below to edit its style (fill, line, point, zoom breakpoints). Changes are saved with the map when you click Save map.</p>
       {% include "_style_toolbox.html" %}
     </details>
   </div>
@@ -176,6 +159,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
   <script>
     (function() {
       var base = {{ base | tojson }};
@@ -186,14 +170,9 @@
       var initialBbox = {{ map_definition.bbox | tojson if map_definition and map_definition.bbox is defined else 'null' }};
       var initialBasemap = {{ map_definition.basemap | tojson if map_definition and map_definition.basemap is defined else 'null' }};
 
-      var DEFAULT_SPEC = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle' };
+      var DEFAULT_SPEC = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, lineEnabled: true, pointEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle' };
       var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
-      function zoomStopsToExpression(stops) {
-        if (!stops || stops.length < 2) return null;
-        var flat = [];
-        stops.forEach(function(s) { flat.push(Number(s[0]), Number(s[1])); });
-        return ['interpolate', ['linear'], ['zoom']].concat(flat);
-      }
+      function zoomStopsToExpression(stops) { return GeofastMapUtils.zoomStopsToExpression(stops); }
       function getStopsFromContainer(containerId) {
         var container = document.getElementById(containerId);
         if (!container) return [];
@@ -276,11 +255,12 @@
         if (zoomKey && spec[zoomKey] && spec[zoomKey].length >= 2) return zoomStopsToExpression(spec[zoomKey]);
         return spec[key] != null ? spec[key] : defaultVal;
       }
-      var pointFilter = ['==', ['geometry-type'], 'Point'];
-      var notPointFilter = ['!=', ['geometry-type'], 'Point'];
+      var pointFilter = GeofastMapUtils.pointFilter;
+      var notPointFilter = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
 
       var state = { layers: [], selectedLayerIndex: null, bbox: initialBbox && initialBbox.length === 4 ? initialBbox.slice() : null, basemap: initialBasemap || null };
       var styleToolboxApplySpec = null;
+      // Load layers from saved map definition. Each layer's style_spec is stored with the map (map-specific, not collection/public styles).
       initialLayers.forEach(function(l) {
         var spec = l.style_spec && typeof l.style_spec === 'object' ? Object.assign({}, DEFAULT_SPEC, l.style_spec) : (l.color ? { fillColor: l.color, lineColor: l.color, fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true } : Object.assign({}, DEFAULT_SPEC));
         state.layers.push({
@@ -294,31 +274,41 @@
       });
 
       var map = null;
-      var BASEMAPS = {
-        osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] },
-        streets: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}'] },
-        satellite: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] },
-        hybrid: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], labels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}' },
-        google_satellite: { tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] },
-        google_hybrid: { tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] }
-      };
-      var mapStyle = {
-        version: 8,
-        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
-        sources: { basemap: { type: 'raster', tiles: BASEMAPS.osm.tiles, tileSize: 256 } },
-        layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 }]
-      };
-      map = new maplibregl.Map({ container: 'map', style: mapStyle, center: [0, 20], zoom: 2, renderWorldCopies: false });
-      document.getElementById('map-basemap').onchange = function() {
-        state.basemap = this.value;
-        var b = BASEMAPS[this.value] || BASEMAPS.osm;
-        if (map.getSource('basemap')) map.getSource('basemap').setTiles(b.tiles);
-      };
-      document.getElementById('btn-set-extent').onclick = function() {
-        var b = map.getBounds();
-        if (b) state.bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
-      };
+      var BASEMAPS;
+      var basemapList;
 
+      function initMapEditWithBasemaps() {
+        var sel = document.getElementById('map-basemap');
+        GeofastMapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
+        var initialId = state.basemap && BASEMAPS[state.basemap] ? state.basemap : null;
+        try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch(e) {}
+        if (!initialId && basemapList.length) initialId = basemapList[0].id;
+        if (!initialId && BASEMAPS.osm) initialId = 'osm';
+        var initial = (initialId && BASEMAPS[initialId]) ? BASEMAPS[initialId] : (BASEMAPS.osm || (basemapList[0] && BASEMAPS[basemapList[0].id]));
+        if (!initial) return;
+        var mapStyle = GeofastMapUtils.buildMapStyleWithBasemap(initial);
+        mapStyle.glyphs = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
+        map = new maplibregl.Map({ container: 'map', style: mapStyle, center: [0, 20], zoom: 2, renderWorldCopies: false });
+        GeofastMapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
+        sel.value = initialId;
+        state.basemap = initialId;
+        GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), initial);
+        sel.onchange = function() {
+          state.basemap = this.value;
+          var b = BASEMAPS[this.value] || BASEMAPS.osm;
+          var layers = map.getStyle() && map.getStyle().layers;
+          var firstId = null;
+          if (layers) { for (var i = 0; i < layers.length; i++) { if (layers[i].id !== 'basemap' && layers[i].id !== 'basemap-labels') { firstId = layers[i].id; break; } } }
+          GeofastMapUtils.applyBasemapToMap(map, b, { beforeLayerId: firstId });
+          GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), b);
+        };
+        document.getElementById('btn-set-extent').onclick = function() {
+          var b = map.getBounds();
+          if (b) state.bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+        };
+      }
+
+      function runAfterMapReady() {
       function fetchCollectionBbox(collectionId) {
         return fetch(base + '/collections/' + encodeURIComponent(collectionId), { headers: { 'Accept': 'application/json' } })
           .then(function(r) { return r.ok ? r.json() : null; })
@@ -395,8 +385,9 @@
         var ptSizeNum = Math.max(1, Math.min(40, typeof ptSize === 'number' ? ptSize : 8));
         var ptOpacity = paintValue(s, 'pointOpacity', 1);
         var ptIcon = s.pointIcon || 'circle';
-        var circleVisible = ptIcon === 'circle';
-        var symbolVisible = ptIcon === 'pin' || ptIcon === 'marker';
+        var pointOn = s.pointEnabled !== false;
+        var circleVisible = pointOn && ptIcon === 'circle';
+        var symbolVisible = pointOn && (ptIcon === 'pin' || ptIcon === 'marker');
         var circlePaint = { 'circle-color': ptColor, 'circle-radius': typeof ptSize === 'number' ? ptSize : ptSizeNum, 'circle-stroke-width': 0, 'circle-opacity': ptOpacity };
         var circleOpt = { id: sid + '-circle', type: 'circle', source: sid, filter: pointFilter, paint: circlePaint };
         if (layerId) circleOpt['source-layer'] = layerId;
@@ -425,10 +416,11 @@
         if (typeof lineWidth === 'number') lineWidth = Math.max(0.5, lineWidth);
         var lineOpacity = paintValue(s, 'lineOpacity', 1);
         var fillVisible = s.fillEnabled !== false;
+        var lineVisible = s.lineEnabled !== false;
         var lineDash = LINE_DASH[s.linePattern] || LINE_DASH.solid;
         function addLayers(vlId) {
           map.addLayer({ id: sid + '-fill', type: 'fill', source: sid, 'source-layer': vlId, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } }, beforeId);
-          map.addLayer({ id: sid + '-line', type: 'line', source: sid, 'source-layer': vlId, filter: notPointFilter, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } }, beforeId);
+          map.addLayer({ id: sid + '-line', type: 'line', source: sid, 'source-layer': vlId, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } }, beforeId);
           addPointLayers(sid, vlId, s, beforeId);
         }
         if (layer.tiles_url) {
@@ -444,7 +436,7 @@
               if (map.getSource(sid)) { resolve(sid + '-fill'); return; }
               map.addSource(sid, { type: 'geojson', data: fc });
               map.addLayer({ id: sid + '-fill', type: 'fill', source: sid, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } }, beforeId);
-              map.addLayer({ id: sid + '-line', type: 'line', source: sid, filter: notPointFilter, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } }, beforeId);
+              map.addLayer({ id: sid + '-line', type: 'line', source: sid, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } }, beforeId);
               addPointLayers(sid, null, s, beforeId);
               resolve(sid + '-fill');
             })
@@ -482,6 +474,7 @@
         if (typeof lineWidth === 'number') lineWidth = Math.max(0.5, lineWidth);
         var lineOpacity = paintValue(s, 'lineOpacity', 1);
         var fillVisible = s.fillEnabled !== false;
+        var lineVisible = s.lineEnabled !== false;
         var lineDash = LINE_DASH[s.linePattern] || LINE_DASH.solid;
         var fillId = sid + '-fill', lineId = sid + '-line';
         if (map.getLayer(fillId)) {
@@ -490,6 +483,7 @@
           map.setPaintProperty(fillId, 'fill-opacity', fillOpacity);
         }
         if (map.getLayer(lineId)) {
+          map.setLayoutProperty(lineId, 'visibility', lineVisible ? 'visible' : 'none');
           map.setPaintProperty(lineId, 'line-color', lineColor);
           map.setPaintProperty(lineId, 'line-width', lineWidth);
           map.setPaintProperty(lineId, 'line-opacity', lineOpacity);
@@ -500,17 +494,18 @@
         var ptSizeNum = Math.max(1, Math.min(40, typeof ptSize === 'number' ? ptSize : 8));
         var ptOpacity = paintValue(s, 'pointOpacity', 1);
         var ptIcon = s.pointIcon || 'circle';
+        var pointOn = s.pointEnabled !== false;
         if (map.getLayer(sid + '-circle')) {
           map.setPaintProperty(sid + '-circle', 'circle-color', ptColor);
           map.setPaintProperty(sid + '-circle', 'circle-radius', typeof ptSize === 'number' ? ptSizeNum : ptSize);
           map.setPaintProperty(sid + '-circle', 'circle-opacity', ptOpacity);
-          map.setLayoutProperty(sid + '-circle', 'visibility', ptIcon === 'circle' ? 'visible' : 'none');
+          map.setLayoutProperty(sid + '-circle', 'visibility', pointOn && ptIcon === 'circle' ? 'visible' : 'none');
         }
         if (map.getLayer(sid + '-symbol')) {
           map.setPaintProperty(sid + '-symbol', 'icon-color', ptColor);
           map.setLayoutProperty(sid + '-symbol', 'icon-size', typeof ptSize === 'number' ? ptSize / 12 : ['/', ptSize, 12]);
           map.setPaintProperty(sid + '-symbol', 'icon-opacity', ptOpacity);
-          map.setLayoutProperty(sid + '-symbol', 'visibility', (ptIcon === 'pin' || ptIcon === 'marker') ? 'visible' : 'none');
+          map.setLayoutProperty(sid + '-symbol', 'visibility', pointOn && (ptIcon === 'pin' || ptIcon === 'marker') ? 'visible' : 'none');
         }
       }
 
@@ -527,12 +522,7 @@
         addNext(0);
       }
 
-      function escapeHtml(s) {
-        if (s == null) return '';
-        var d = document.createElement('div');
-        d.textContent = s;
-        return d.innerHTML;
-      }
+      function escapeHtml(s) { return GeofastMapUtils.escapeHtml(s); }
 
       function renderLayers() {
         var wrap = document.getElementById('layers-table-wrap');
@@ -551,7 +541,7 @@
           tr.dataset.index = idx;
           if (state.selectedLayerIndex === idx) tr.classList.add('selected');
           tr.onclick = function(e) {
-            if (e.target.closest('.btn-remove-layer') || e.target.closest('.drag-handle')) return;
+            if (e.target.closest('.btn-remove-layer') || e.target.closest('.drag-handle') || e.target.closest('input') || e.target.closest('label')) return;
             state.selectedLayerIndex = idx;
             renderLayers();
             if (styleToolboxApplySpec) styleToolboxApplySpec(state.layers[idx].style_spec || DEFAULT_SPEC);
@@ -559,21 +549,13 @@
           tr.innerHTML =
             '<td class="drag-handle" title="Drag to reorder">⋮⋮</td>' +
             '<td><code>' + escapeHtml(label) + '</code></td>' +
-            '<td><input type="color" value="' + (s.fillColor || '#58a6ff') + '" data-index="' + idx + '" data-prop="fillColor" title="Fill color"></td>' +
-            '<td><input type="color" value="' + (s.lineColor || '#58a6ff') + '" data-index="' + idx + '" data-prop="lineColor" title="Line color"></td>' +
-            '<td><input type="range" min="0" max="100" value="' + Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100) + '" data-index="' + idx + '" data-prop="fillOpacity" title="Fill opacity"><span data-opacity-val="' + idx + '">' + Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100) + '%</span></td>' +
-            '<td><input type="number" min="0.5" max="20" step="0.5" value="' + (s.lineWidth != null ? s.lineWidth : 1) + '" data-index="' + idx + '" data-prop="lineWidth" style="width:3.5em"></td>' +
-            '<td><select data-index="' + idx + '" data-prop="linePattern"><option value="solid"' + (s.linePattern === 'solid' ? ' selected' : '') + '>Solid</option><option value="dashed"' + (s.linePattern === 'dashed' ? ' selected' : '') + '>Dashed</option><option value="dotted"' + (s.linePattern === 'dotted' ? ' selected' : '') + '>Dotted</option></select></td>' +
-            '<td><label><input type="checkbox" data-index="' + idx + '" data-prop="fillEnabled"' + (s.fillEnabled !== false ? ' checked' : '') + '> Fill</label></td>' +
-            '<td><input type="color" value="' + (s.pointColor || '#58a6ff') + '" data-index="' + idx + '" data-prop="pointColor" title="Point color"></td>' +
-            '<td><input type="number" min="1" max="40" step="1" value="' + (s.pointSize != null ? s.pointSize : 8) + '" data-index="' + idx + '" data-prop="pointSize" style="width:3em" title="Point size"></td>' +
-            '<td><select data-index="' + idx + '" data-prop="pointIcon"><option value="circle"' + (s.pointIcon === 'circle' ? ' selected' : '') + '>Circle</option><option value="pin"' + (s.pointIcon === 'pin' ? ' selected' : '') + '>Pin</option><option value="marker"' + (s.pointIcon === 'marker' ? ' selected' : '') + '>Marker</option></select></td>' +
             '<td><label><input type="checkbox" data-index="' + idx + '" data-prop="popup"' + (layer.popup ? ' checked' : '') + ' title="Show popup on click"> Popup</label></td>' +
             '<td><button type="button" class="btn btn-danger btn-sm btn-remove-layer" data-index="' + idx + '">Remove</button></td>';
           tbody.appendChild(tr);
         });
         tbody.querySelectorAll('.btn-remove-layer').forEach(function(btn) {
-          btn.onclick = function() {
+          btn.onclick = function(e) {
+            e.stopPropagation();
             var i = parseInt(this.dataset.index, 10);
             var sid = sourceId(layerKey(state.layers[i]));
             state.layers.splice(i, 1);
@@ -589,61 +571,8 @@
             renderLayers();
           };
         });
-        tbody.querySelectorAll('input[type="color"]').forEach(function(inp) {
-          inp.oninput = function() {
-            var i = parseInt(this.dataset.index, 10);
-            var prop = this.dataset.prop;
-            if (!state.layers[i].style_spec) state.layers[i].style_spec = Object.assign({}, DEFAULT_SPEC);
-            state.layers[i].style_spec[prop] = this.value;
-            applyLayerStyleToMap(i);
-          };
-        });
-        tbody.querySelectorAll('input[type="range"]').forEach(function(inp) {
-          inp.oninput = function() {
-            var i = parseInt(this.dataset.index, 10);
-            var val = parseInt(this.value, 10) / 100;
-            if (!state.layers[i].style_spec) state.layers[i].style_spec = Object.assign({}, DEFAULT_SPEC);
-            state.layers[i].style_spec.fillOpacity = val;
-            var span = tbody.querySelector('[data-opacity-val="' + i + '"]');
-            if (span) span.textContent = Math.round(val * 100) + '%';
-            applyLayerStyleToMap(i);
-          };
-        });
-        tbody.querySelectorAll('input[type="number"]').forEach(function(inp) {
-          inp.oninput = function() {
-            var i = parseInt(this.dataset.index, 10);
-            var val = parseFloat(this.value);
-            if (!state.layers[i].style_spec) state.layers[i].style_spec = Object.assign({}, DEFAULT_SPEC);
-            if (this.dataset.prop === 'lineWidth') state.layers[i].style_spec.lineWidth = isNaN(val) ? 1 : Math.max(0.5, Math.min(20, val));
-            if (this.dataset.prop === 'pointSize') state.layers[i].style_spec.pointSize = isNaN(val) ? 8 : Math.max(1, Math.min(40, val));
-            applyLayerStyleToMap(i);
-          };
-        });
-        tbody.querySelectorAll('select[data-prop="linePattern"]').forEach(function(sel) {
-          sel.onchange = function() {
-            var i = parseInt(this.dataset.index, 10);
-            if (!state.layers[i].style_spec) state.layers[i].style_spec = Object.assign({}, DEFAULT_SPEC);
-            state.layers[i].style_spec.linePattern = this.value;
-            applyLayerStyleToMap(i);
-          };
-        });
-        tbody.querySelectorAll('input[type="checkbox"][data-prop="fillEnabled"]').forEach(function(cb) {
-          cb.onchange = function() {
-            var i = parseInt(this.dataset.index, 10);
-            if (!state.layers[i].style_spec) state.layers[i].style_spec = Object.assign({}, DEFAULT_SPEC);
-            state.layers[i].style_spec.fillEnabled = this.checked;
-            applyLayerStyleToMap(i);
-          };
-        });
-        tbody.querySelectorAll('select[data-prop="pointIcon"]').forEach(function(sel) {
-          sel.onchange = function() {
-            var i = parseInt(this.dataset.index, 10);
-            if (!state.layers[i].style_spec) state.layers[i].style_spec = Object.assign({}, DEFAULT_SPEC);
-            state.layers[i].style_spec.pointIcon = this.value;
-            applyLayerStyleToMap(i);
-          };
-        });
         tbody.querySelectorAll('input[type="checkbox"][data-prop="popup"]').forEach(function(cb) {
+          cb.onclick = function(e) { e.stopPropagation(); };
           cb.onchange = function() {
             var i = parseInt(this.dataset.index, 10);
             state.layers[i].popup = this.checked;
@@ -700,6 +629,8 @@
         var wrap = document.getElementById('style-toolbox');
         if (!wrap) return;
         var fillCheck = document.getElementById('vector-fill-enable');
+        var lineCheck = document.getElementById('vector-line-enable');
+        var pointCheck = document.getElementById('vector-point-enable');
         var fillColor = document.getElementById('vector-fill-color');
         var fillOpacity = document.getElementById('vector-fill-opacity');
         var fillOpacityVal = document.getElementById('vector-fill-opacity-val');
@@ -722,6 +653,8 @@
             lineWidth: lineWidth ? Math.max(0.5, parseFloat(lineWidth.value) || 1) : 1,
             linePattern: linePattern ? linePattern.value : 'solid',
             fillEnabled: fillCheck ? fillCheck.checked : true,
+            lineEnabled: lineCheck ? lineCheck.checked : true,
+            pointEnabled: pointCheck ? pointCheck.checked : true,
             pointColor: pointColor ? pointColor.value : '#58a6ff',
             pointOpacity: pointOpacity ? (parseFloat(pointOpacity.value) || 100) / 100 : 1,
             pointSize: pointSize ? Math.max(1, Math.min(40, parseFloat(pointSize.value) || 8)) : 8,
@@ -763,6 +696,8 @@
           if (lineWidth) lineWidth.value = s.lineWidth != null ? s.lineWidth : 1;
           if (linePattern) linePattern.value = s.linePattern || 'solid';
           if (fillCheck) fillCheck.checked = s.fillEnabled !== false;
+          if (lineCheck) lineCheck.checked = s.lineEnabled !== false;
+          if (pointCheck) pointCheck.checked = s.pointEnabled !== false;
           if (pointColor) pointColor.value = s.pointColor || '#58a6ff';
           if (pointOpacity) { pointOpacity.value = Math.round((s.pointOpacity != null ? s.pointOpacity : 1) * 100); if (pointOpacityVal) pointOpacityVal.textContent = pointOpacity.value; }
           if (pointSize) pointSize.value = s.pointSize != null ? Math.max(1, Math.min(40, s.pointSize)) : 8;
@@ -784,6 +719,7 @@
           if (zo) { zo.checked = !!(s.pointSizeZoom && s.pointSizeZoom.length >= 2); el = document.getElementById('point-size-zoom-stops'); if (el) el.style.display = zo.checked ? '' : 'none'; renderZoomStops('point-size-zoom-stops', s.pointSizeZoom, refresh); }
           zo = document.getElementById('point-opacity-by-zoom');
           if (zo) { zo.checked = !!(s.pointOpacityZoom && s.pointOpacityZoom.length >= 2); el = document.getElementById('point-opacity-zoom-stops'); if (el) el.style.display = zo.checked ? '' : 'none'; renderZoomStops('point-opacity-zoom-stops', s.pointOpacityZoom, refresh); }
+          pushSpecToLayer();
         }
         styleToolboxApplySpec = applySpecToForm;
         function pushSpecToLayer() {
@@ -793,6 +729,8 @@
           renderLayers();
         }
         if (fillCheck) fillCheck.onchange = pushSpecToLayer;
+        if (lineCheck) lineCheck.onchange = pushSpecToLayer;
+        if (pointCheck) pointCheck.onchange = pushSpecToLayer;
         if (fillColor) fillColor.oninput = pushSpecToLayer;
         if (fillOpacity) { fillOpacity.oninput = function() { if (fillOpacityVal) fillOpacityVal.textContent = this.value; pushSpecToLayer(); }; }
         if (lineColor) lineColor.oninput = pushSpecToLayer;
@@ -818,6 +756,234 @@
         bindZoomCb('line-opacity-by-zoom', 'line-opacity-zoom-stops');
         bindZoomCb('point-size-by-zoom', 'point-size-zoom-stops');
         bindZoomCb('point-opacity-by-zoom', 'point-opacity-zoom-stops');
+
+        function publicStylesUrl() { return base + '/styles'; }
+        function collectionStylesUrl(cid) { return base + '/collections/' + encodeURIComponent(cid) + '/styles'; }
+        var styleListCache = {};
+        function styleSpecToLegendCss(spec) {
+          spec = spec || {};
+          return { fill: spec.fillColor || '#58a6ff', line: spec.lineColor || '#58a6ff', fillOn: spec.fillEnabled !== false };
+        }
+        function updateLoadStyleTrigger() {
+          var sel = document.getElementById('vector-style-select');
+          var val = sel ? sel.value : '';
+          var spec = (val && styleListCache[val]) ? styleListCache[val].style_spec : getCurrentSpec();
+          var leg = styleSpecToLegendCss(spec);
+          var legendEl = document.getElementById('vector-style-load-legend');
+          var labelEl = document.getElementById('vector-style-load-label-text');
+          if (legendEl) { legendEl.style.backgroundColor = leg.fillOn ? leg.fill : 'transparent'; legendEl.style.borderColor = leg.line; legendEl.style.opacity = '1'; }
+          if (labelEl) labelEl.textContent = (val && styleListCache[val]) ? (styleListCache[val].title || styleListCache[val].id) : 'Current';
+        }
+        function addItemToList(sel, listEl, value, label, spec, collectionId) {
+          if (value) styleListCache[value] = { id: value.replace(/^p:/, '').replace(/^c:[^:]+:/, ''), title: label, style_spec: spec || {}, collectionId: collectionId || null };
+          sel.appendChild(new Option(label, value));
+          if (!listEl) return;
+          var leg = styleSpecToLegendCss(spec);
+          var item = document.createElement('div');
+          item.className = 'vector-style-load-item';
+          item.setAttribute('role', 'option');
+          item.dataset.value = value;
+          var legSpan = document.createElement('span');
+          legSpan.className = 'vector-style-load-item-legend';
+          legSpan.style.backgroundColor = leg.fillOn ? leg.fill : 'transparent';
+          legSpan.style.borderColor = leg.line;
+          legSpan.style.opacity = '1';
+          var labSpan = document.createElement('span');
+          labSpan.className = 'vector-style-load-item-label';
+          labSpan.textContent = label;
+          item.appendChild(legSpan);
+          item.appendChild(labSpan);
+          item.onclick = (function(v) {
+            return function() {
+              sel.value = v;
+              sel.dispatchEvent(new Event('change'));
+              listEl.classList.remove('open');
+              var tr = document.getElementById('vector-style-load-trigger');
+              if (tr) tr.setAttribute('aria-expanded', 'false');
+              updateLoadStyleTrigger();
+            };
+          })(value);
+          listEl.appendChild(item);
+        }
+        function loadStylesList() {
+          var sel = document.getElementById('vector-style-select');
+          var listEl = document.getElementById('vector-style-load-list');
+          if (!sel) return Promise.resolve();
+          styleListCache = { '': null };
+          while (sel.firstChild) sel.removeChild(sel.firstChild);
+          if (listEl) listEl.innerHTML = '';
+          addItemToList(sel, listEl, '', 'Current', getCurrentSpec());
+          return fetch(publicStylesUrl(), { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
+            .then(function(data) {
+              var list = data.styles || [];
+              if (list.length && listEl) {
+                var gl = document.createElement('div');
+                gl.className = 'vector-style-load-group-label';
+                gl.textContent = 'Public styles';
+                listEl.appendChild(gl);
+              }
+              list.forEach(function(s) {
+                addItemToList(sel, listEl, 'p:' + s.id, s.title || s.id, s.style_spec);
+              });
+              return fetch(base + '/collections', { headers: { 'Accept': 'application/json' } });
+            })
+            .then(function(r) { return r.ok ? r.json() : { collections: [] }; })
+            .then(function(data) {
+              var colls = data.collections || [];
+              var loadCollSelect = document.getElementById('load-style-collection');
+              if (loadCollSelect) {
+                while (loadCollSelect.options.length > 1) loadCollSelect.remove(1);
+                colls.forEach(function(c) {
+                  loadCollSelect.add(new Option(c.id || c.title || c.id, c.id));
+                });
+              }
+              var saveCollSelect = document.getElementById('save-style-collection');
+              if (saveCollSelect) {
+                while (saveCollSelect.options.length > 1) saveCollSelect.remove(1);
+                colls.forEach(function(c) {
+                  saveCollSelect.add(new Option(c.id || c.title || c.id, c.id));
+                });
+              }
+              var collectionsToFetch = [];
+              if (state.layers && state.layers.length > 0) {
+                var seen = {};
+                state.layers.forEach(function(l) {
+                  var cid = l.collection_id || l.collectionId;
+                  if (!seen[cid]) { seen[cid] = true; collectionsToFetch.push({ id: cid, name: cid }); }
+                });
+              }
+              if (collectionsToFetch.length === 0 && loadCollSelect && loadCollSelect.value) {
+                var opt = loadCollSelect.options[loadCollSelect.selectedIndex];
+                collectionsToFetch.push({ id: loadCollSelect.value, name: opt ? opt.text : loadCollSelect.value });
+              }
+              function fetchOneCollectionStyles(cid, cname) {
+                return fetch(collectionStylesUrl(cid), { headers: { 'Accept': 'application/json' } })
+                  .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
+                  .then(function(data) {
+                    var list = data.styles || [];
+                    if (list.length && listEl) {
+                      var gl = document.createElement('div');
+                      gl.className = 'vector-style-load-group-label';
+                      gl.textContent = 'Collection: ' + (cname || cid);
+                      listEl.appendChild(gl);
+                    }
+                    list.forEach(function(s) {
+                      addItemToList(sel, listEl, 'c:' + cid + ':' + s.id, s.title || s.id, s.style_spec, cid);
+                    });
+                  });
+              }
+              var chain = Promise.resolve();
+              collectionsToFetch.forEach(function(c) { chain = chain.then(function() { return fetchOneCollectionStyles(c.id, c.name); }); });
+              return chain.then(function() { updateLoadStyleTrigger(); });
+            })
+            .catch(function() { updateLoadStyleTrigger(); });
+        }
+        var loadCollSelect = document.getElementById('load-style-collection');
+        if (loadCollSelect) loadCollSelect.onchange = function() { loadStylesList(); };
+        var loadTrigger = document.getElementById('vector-style-load-trigger');
+        var loadList = document.getElementById('vector-style-load-list');
+        if (loadTrigger && loadList) {
+          loadTrigger.onclick = function(e) {
+            e.stopPropagation();
+            loadList.classList.toggle('open');
+            loadTrigger.setAttribute('aria-expanded', loadList.classList.contains('open'));
+          };
+          document.addEventListener('click', function() {
+            loadList.classList.remove('open');
+            loadTrigger.setAttribute('aria-expanded', 'false');
+          });
+        }
+        document.getElementById('vector-style-select').onchange = function() {
+          var val = this.value;
+          if (!val) return;
+          var isPublic = val.indexOf('p:') === 0;
+          var url;
+          if (isPublic) {
+            url = publicStylesUrl() + '/' + encodeURIComponent(val.slice(2));
+          } else if (val.indexOf('c:') === 0) {
+            var rest = val.slice(2);
+            var colon = rest.indexOf(':');
+            var cid = colon >= 0 ? rest.slice(0, colon) : rest;
+            var styleId = colon >= 0 ? rest.slice(colon + 1) : rest;
+            url = collectionStylesUrl(cid) + '/' + encodeURIComponent(styleId);
+          } else return;
+          fetch(url, { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.json(); })
+            .then(function(s) {
+              if (s.style_spec) applySpecToForm(s.style_spec);
+              updateLoadStyleTrigger();
+            })
+            .catch(function() {});
+        };
+        function getSaveCollectionId() { var el = document.getElementById('save-style-collection'); return el ? el.value : ''; }
+        function populateReplaceDropdown() {
+          var rep = document.getElementById('save-style-replace');
+          rep.options.length = 1;
+          var saveTo = document.getElementById('save-style-to').value;
+          var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl(getSaveCollectionId());
+          fetch(url, { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+              (data.styles || []).forEach(function(s) { rep.add(new Option(s.title || s.id, s.id)); });
+            })
+            .catch(function() {});
+        }
+        document.getElementById('save-style-to').onchange = function() {
+          var isColl = this.value === 'collection';
+          document.getElementById('save-style-default-wrap').style.display = isColl ? '' : 'none';
+          document.getElementById('save-style-collection').closest('label').style.display = isColl ? '' : 'none';
+          if (isColl) populateReplaceDropdown();
+          else document.getElementById('save-style-replace').options.length = 1;
+        };
+        document.getElementById('save-style-collection').onchange = function() { populateReplaceDropdown(); };
+        document.getElementById('save-style-collection').closest('label').style.display = 'none';
+        document.getElementById('btn-save-style').onclick = function() {
+          document.getElementById('save-style-form').style.display = 'flex';
+          document.getElementById('save-style-to').value = 'public';
+          document.getElementById('save-style-default-wrap').style.display = 'none';
+          document.getElementById('save-style-collection').closest('label').style.display = 'none';
+          populateReplaceDropdown();
+        };
+        document.getElementById('btn-save-style-cancel').onclick = function() {
+          document.getElementById('save-style-form').style.display = 'none';
+        };
+        document.getElementById('save-style-replace').onchange = function() {
+          if (this.value) document.getElementById('save-style-id').value = this.value;
+        };
+        document.getElementById('btn-save-style-submit').onclick = function() {
+          var replaceVal = document.getElementById('save-style-replace').value;
+          var idInput = document.getElementById('save-style-id').value.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+          var id = replaceVal || idInput || null;
+          if (!id) { alert('Enter a style id (letters, numbers, hyphen, underscore)'); return; }
+          var title = document.getElementById('save-style-title').value.trim() || null;
+          var saveTo = document.getElementById('save-style-to').value;
+          var setDefault = document.getElementById('save-style-default').checked;
+          var cid = getSaveCollectionId();
+          if (saveTo === 'collection' && !cid) { alert('Select a collection'); return; }
+          var method = 'POST';
+          var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl(cid);
+          var body = { id: id, style_spec: getCurrentSpec() };
+          if (title) body.title = title;
+          if (saveTo === 'collection') body.set_default = setDefault;
+          if (replaceVal) {
+            method = 'PUT';
+            url = (saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl(cid)) + '/' + encodeURIComponent(id);
+            body = saveTo === 'public' ? { style_spec: getCurrentSpec(), title: title } : { style_spec: getCurrentSpec(), title: title, set_default: setDefault };
+          }
+          fetch(url, { method: method, headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body) })
+            .then(function(r) { if (!r.ok) return r.json().then(function(j) { throw j; }); return r.json(); })
+            .then(function() {
+              document.getElementById('save-style-form').style.display = 'none';
+              document.getElementById('save-style-id').value = '';
+              document.getElementById('save-style-title').value = '';
+              document.getElementById('save-style-replace').value = '';
+              document.getElementById('save-style-default').checked = false;
+              loadStylesList();
+            })
+            .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); });
+        };
+        loadStylesList();
       }
 
       function fetchFirst10Collections() {
@@ -911,7 +1077,7 @@
           thumbnail: document.getElementById('map-thumbnail').value.trim() || null,
           definition: {
             layers: state.layers.map(function(l, i) {
-              var spec = l.style_spec && typeof l.style_spec === 'object' ? l.style_spec : null;
+              var spec = l.style_spec && typeof l.style_spec === 'object' ? JSON.parse(JSON.stringify(l.style_spec)) : null;
               return { collection_id: l.collection_id, order: i, style_spec: spec, popup: l.popup === true, tiles_url: l.tiles_url || null, layer_id: l.layer_id || null };
             }),
             bbox: state.bbox,
@@ -1012,20 +1178,7 @@
         return ids;
       }
 
-      function popupHtmlForFeature(feat, collectionId) {
-        var props = feat.properties || {};
-        var id = props.id != null ? String(props.id) : (feat.id != null ? String(feat.id) : '—');
-        var featureUrl = base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(id) + '?f=html';
-        var parts = ['<div class="map-popup">', '<div class="map-popup-id"><strong>ID</strong> <a href="' + escapeHtml(featureUrl) + '">' + escapeHtml(id) + '</a></div>'];
-        Object.keys(props).sort().forEach(function(k) {
-          if (k === 'id') return;
-          var v = props[k];
-          var val = v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
-          parts.push('<div class="map-popup-row"><strong>' + escapeHtml(k) + '</strong> ' + escapeHtml(val) + '</div>');
-        });
-        parts.push('</div>');
-        return parts.join('');
-      }
+      function popupHtmlForFeature(feat, collectionId) { return GeofastMapUtils.popupHtmlForFeature(feat, base, collectionId); }
 
       function collectionIdFromLayerId(mapLayerId) {
         var sid = mapLayerId.replace(/-fill$|-line$|-circle$|-symbol$/, '');
@@ -1043,7 +1196,11 @@
         if (state.basemap && BASEMAPS[state.basemap]) {
           document.getElementById('map-basemap').value = state.basemap;
           var b = BASEMAPS[state.basemap];
-          if (map.getSource('basemap')) map.getSource('basemap').setTiles(b.tiles);
+          var layers = map.getStyle() && map.getStyle().layers;
+          var firstId = null;
+          if (layers) { for (var i = 0; i < layers.length; i++) { if (layers[i].id !== 'basemap' && layers[i].id !== 'basemap-labels') { firstId = layers[i].id; break; } } }
+          GeofastMapUtils.applyBasemapToMap(map, b, { beforeLayerId: firstId });
+          GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), b);
         }
         var pinSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="36" viewBox="0 0 24 36"><path fill="%2358a6ff" stroke="%23111" stroke-width="1" d="M12 0C5.4 0 0 5.4 0 12c0 9 12 24 12 24s12-15 12-24C24 5.4 18.6 0 12 0z"/></svg>';
         map.loadImage('data:image/svg+xml,' + encodeURIComponent(pinSvg), function(err, img) {
@@ -1069,7 +1226,7 @@
           var cid = collectionIdFromLayerId(feat.layer.id);
           if (cid) {
             if (window._geofastMapPopup) { try { window._geofastMapPopup.remove(); } catch (err) {} }
-            var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false });
+            var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
             popup.setLngLat(e.lngLat).setHTML(popupHtmlForFeature(feat, cid)).addTo(map);
             window._geofastMapPopup = popup;
           }
@@ -1077,6 +1234,20 @@
       });
       setupStyleToolbox();
       renderLayers();
+      }
+
+      GeofastMapUtils.fetchBasemaps(base).then(function(result) {
+        BASEMAPS = result.byId;
+        basemapList = result.basemaps;
+        if (!basemapList.length) { BASEMAPS = GeofastMapUtils.getBasemaps(googleKey); basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; }); }
+        initMapEditWithBasemaps();
+        runAfterMapReady();
+      }).catch(function() {
+        BASEMAPS = GeofastMapUtils.getBasemaps(googleKey);
+        basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
+        initMapEditWithBasemaps();
+        runAfterMapReady();
+      });
     })();
   </script>
 {% endblock %}

@@ -1,18 +1,15 @@
 """OGC API - Processes worker: intersection and erase between two collections. Streams from DB, parallel batch workers, low RAM."""
 from __future__ import annotations
 
-import json
 import os
 import re
-import tempfile
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterator
 
-# Chunk size when streaming intersection results from temp file into DB (minimize features in memory).
+# Chunk size when streaming intersection results into DB (minimize features in memory).
 _INTERSECTION_STREAM_INSERT_CHUNK = 200
-# Delimiter for (id_a, id_b) pair lines in temp file (for sort -u).
-_PAIR_SEP = "\t"
 
 from shapely import wkb
 from shapely.ops import unary_union
@@ -26,6 +23,23 @@ from app.services.process_queue import ProcessJobPayload
 from app.services.job_store import update_job
 
 _MAX_RESULT_COLLECTION_ID_LEN = 60
+
+
+def cleanup_process_worker_temp_dir() -> None:
+    """Remove contents of the process worker temp directory at startup (leftovers from past runs or crashes)."""
+    path = (get_settings().process_temp_path or "").strip()
+    if not path:
+        return
+    # Restrict to under /tmp or /var/tmp to avoid accidental deletion of project dirs
+    abs_path = os.path.abspath(path)
+    if not (abs_path.startswith("/tmp") or abs_path.startswith("/var/tmp")):
+        return
+    try:
+        if os.path.isdir(abs_path):
+            shutil.rmtree(abs_path, ignore_errors=True)
+        os.makedirs(abs_path, exist_ok=True)
+    except OSError:
+        pass
 
 
 def _stream_batches_by_size(
@@ -215,61 +229,15 @@ def _insert_features_sync(session: Session, result_id: str, features: list[tuple
         session.commit()
 
 
-def _write_intersection_batch_to_file(
-    file_handle: Any,
-    chunk_results: list[tuple[Any, dict]],
-) -> int:
-    """Write one batch of (geom, props) to a JSONL file. One line per feature. Returns count written."""
-    count = 0
-    for geom_shapely, props in chunk_results:
-        if geom_shapely is None or geom_shapely.is_empty:
-            continue
-        line = json.dumps({"wkt": geom_shapely.wkt, "props": props}) + "\n"
-        file_handle.write(line)
-        count += 1
-    file_handle.flush()
-    return count
-
-
-def _insert_features_from_wkt_sync(
-    session: Session,
-    result_id: str,
-    rows: list[tuple[str, dict]],
-    batch_size: int | None = None,
-) -> int:
-    """Insert (wkt_str, properties) into features for result_id. Subdivides geometry. Returns number inserted."""
-    from uuid6 import uuid7
-
-    from app.utils.feature_subdivide import insert_feature_subdivided_sql
-
-    if batch_size is None:
-        batch_size = max(1, get_settings().process_insert_batch_size)
-    max_vertices = get_settings().features_subdivide_max_vertices
-    now = datetime.now(timezone.utc)
-    inserted = 0
-    for i in range(0, len(rows), batch_size):
-        batch = rows[i : i + batch_size]
-        for wkt, props in batch:
-            if not wkt or not str(wkt).strip():
-                continue
-            fid = str(uuid7())
-            sql, params = insert_feature_subdivided_sql(fid, result_id, wkt, props, now, max_vertices)
-            session.execute(text(sql), params)
-            inserted += 1
-        session.commit()
-    return inserted
-
-
-def _stream_intersection_pairs_to_file(
+def _stream_intersection_pairs_chunks(
     session: Session,
     collection_id_a: str,
     collection_id_b: str,
-    file_handle: Any,
+    chunk_size: int,
     on_progress: Callable[[int], None] | None = None,
-) -> int:
-    """Stream unique (id_a, id_b) pairs from DB where A geometry intersects B. Writes one line per pair.
-    Uses DISTINCT so we get logical pairs only (no part-part duplicates); no sort needed.
-    on_progress(count) called every ~50k rows so caller can update job status."""
+) -> Iterator[list[tuple[str, str]]]:
+    """Stream unique (id_a, id_b) pairs from DB in memory chunks. No temp file.
+    Uses DISTINCT; on_progress(total) called every ~50k rows."""
     result = session.execute(
         text("""
             SELECT DISTINCT a.id AS id_a, b.id AS id_b
@@ -282,47 +250,22 @@ def _stream_intersection_pairs_to_file(
         {"cid_a": collection_id_a, "cid_b": collection_id_b},
         execution_options={"stream_results": True},
     )
-    count = 0
+    chunk: list[tuple[str, str]] = []
+    total = 0
     progress_interval = 50_000
     for row in result:
         id_a = getattr(row, "id_a", None) or row[0]
         id_b = getattr(row, "id_b", None) or row[1]
         if id_a and id_b:
-            file_handle.write(f"{id_a}{_PAIR_SEP}{id_b}\n")
-            count += 1
-            if on_progress and count % progress_interval == 0:
-                on_progress(count)
-    file_handle.flush()
-    return count
-
-
-def _sort_unique_pairs_file(path: str) -> None:
-    """Overwrite file with sorted unique lines (id_a\\tid_b). Reduces memory vs in-Python set."""
-    import subprocess
-    try:
-        subprocess.run(
-            ["sort", "-u", "-t", _PAIR_SEP, "-k", "1,2", "-o", path, path],
-            check=True,
-            capture_output=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        # Fallback: read lines, dedupe in memory (set of pairs), write back (may use more memory)
-        with open(path, "r", encoding="utf-8") as f:
-            seen: set[tuple[str, str]] = set()
-            lines: list[str] = []
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split(_PAIR_SEP, 1)
-                if len(parts) != 2:
-                    continue
-                key = (parts[0], parts[1])
-                if key not in seen:
-                    seen.add(key)
-                    lines.append(line + "\n")
-        with open(path, "w", encoding="utf-8") as f:
-            f.writelines(sorted(lines))
+            chunk.append((id_a, id_b))
+            total += 1
+            if on_progress and total % progress_interval == 0:
+                on_progress(total)
+            if len(chunk) >= chunk_size:
+                yield chunk
+                chunk = []
+    if chunk:
+        yield chunk
 
 
 def _fetch_logical_features_by_ids(
@@ -406,77 +349,6 @@ def _process_intersection_pairs_chunk(
         except Exception:
             continue
     return out
-
-
-def _aggregate_intersection_result_sync(engine: Engine, result_id: str) -> int:
-    """Final aggregation: GROUP BY (id_a, id_b), ST_Union(geometry), then replace result collection.
-    Uses a session-scoped temp table so we never hold large geometry in Python. Small footprint."""
-    from uuid6 import uuid7
-
-    from app.utils.feature_subdivide import insert_feature_subdivided_sql
-
-    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
-    session = SessionLocal()
-    try:
-        session.execute(
-            text("""
-                CREATE TEMP TABLE process_intersection_agg (
-                    id_a text,
-                    id_b text,
-                    geom geometry(Geometry, 4326),
-                    props jsonb
-                )
-            """)
-        )
-        session.execute(
-            text("""
-                INSERT INTO process_intersection_agg (id_a, id_b, geom, props)
-                SELECT
-                    f.properties->>'_id_a',
-                    f.properties->>'_id_b',
-                    ST_Union(f.geometry),
-                    (array_agg(f.properties ORDER BY f.id))[1]
-                FROM features f
-                WHERE f.collection_id = :cid
-                GROUP BY f.properties->>'_id_a', f.properties->>'_id_b'
-            """),
-            {"cid": result_id},
-        )
-        # Clear result partition before re-inserting aggregated rows (TRUNCATE = fast)
-        _clear_result_collection_sync(session, result_id)
-
-        max_vertices = get_settings().features_subdivide_max_vertices
-        now = datetime.now(timezone.utc)
-        insert_batch = max(1, get_settings().process_insert_batch_size)
-        inserted = 0
-        # Stream aggregated rows in chunks (fetchmany) to avoid loading all into memory
-        fetch_chunk = max(100, insert_batch * 2)
-        result_cursor = session.execute(
-            text("SELECT id_a, id_b, ST_AsText(geom) AS wkt, props FROM process_intersection_agg")
-        )
-        while True:
-            rows = result_cursor.fetchmany(fetch_chunk)
-            if not rows:
-                break
-            for row in rows:
-                wkt = getattr(row, "wkt", None)
-                props = getattr(row, "props", None)
-                if not wkt or not str(wkt).strip():
-                    continue
-                props_dict = dict(props) if props else {}
-                fid = str(uuid7())
-                sql, params = insert_feature_subdivided_sql(
-                    fid, result_id, str(wkt), props_dict, now, max_vertices
-                )
-                session.execute(text(sql), params)
-                inserted += 1
-            session.commit()
-        result_cursor.close()
-        session.execute(text("DROP TABLE process_intersection_agg"))
-        session.commit()
-        return inserted
-    finally:
-        session.close()
 
 
 def _run_intersection_sync(
@@ -707,96 +579,33 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
             )
 
         if payload.process_id == "intersection":
-            # Pair-based flow: (1) query list of (id_a, id_b) that need processing, (2) stream to workers that fetch only those two features and intersect.
-            # Avoids one feature from A intersecting with millions of B in a single worker.
+            # Stream (id_a, id_b) pairs from DB in chunks; for each chunk fetch A/B, intersect, write directly to result partition. No temp files, no aggregation.
             pair_chunk_size = max(1, getattr(settings, "process_intersection_pair_chunk_size", 400))
-            stream_chunk = max(1, min(getattr(settings, "process_insert_batch_size", 200), _INTERSECTION_STREAM_INSERT_CHUNK))
-
-            fd_pairs, pairs_path = tempfile.mkstemp(suffix=".pairs.txt", prefix="geofast_")
-            fd_result, result_path = tempfile.mkstemp(suffix=".intersection.jsonl", prefix="geofast_")
+            stream_session = SessionLocal()
+            insert_session = SessionLocal()
             try:
-                # Phase 1: stream unique (id_a, id_b) pairs from DB to file (DISTINCT = no sort needed)
-                session = SessionLocal()
-                try:
-                    with os.fdopen(fd_pairs, "w", encoding="utf-8") as pairs_file:
+                def on_pairs_progress(n: int) -> None:
+                    maybe_update("Finding pairs…")
 
-                        def on_pairs_progress(n: int) -> None:
-                            nonlocal items_in
-                            items_in = n
-                            maybe_update("Finding pairs…")
-
-                        items_in = _stream_intersection_pairs_to_file(
-                            session,
-                            payload.collection_id_a,
-                            payload.collection_id_b,
-                            pairs_file,
-                            on_progress=on_pairs_progress,
-                        )
-                finally:
-                    session.close()
-                maybe_update("Pairs found, computing…")
-
-                # Phase 2: read pairs in chunks; for each chunk fetch only id_a and id_b features, intersect, write to result file
-                with os.fdopen(fd_result, "w", encoding="utf-8") as result_file:
-                    pair_chunk: list[tuple[str, str]] = []
-                    with open(pairs_path, "r", encoding="utf-8") as f:
-                        for line in f:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            parts = line.split(_PAIR_SEP, 1)
-                            if len(parts) != 2:
-                                continue
-                            pair_chunk.append((parts[0], parts[1]))
-                            if len(pair_chunk) >= pair_chunk_size:
-                                maybe_update("Computing intersection…")
-                                chunk_results = _process_intersection_pairs_chunk(
-                                    engine, payload.collection_id_a, payload.collection_id_b, pair_chunk
-                                )
-                                items_out += _write_intersection_batch_to_file(result_file, chunk_results)
-                                pair_chunk = []
-                        if pair_chunk:
-                            chunk_results = _process_intersection_pairs_chunk(
-                                engine, payload.collection_id_a, payload.collection_id_b, pair_chunk
-                            )
-                            items_out += _write_intersection_batch_to_file(result_file, chunk_results)
-
-                # Phase 3: stream result file to DB in small chunks
-                maybe_update("Inserting from file…")
-                insert_session = SessionLocal()
-                try:
-                    chunk_rows: list[tuple[str, dict]] = []
-                    with open(result_path, "r", encoding="utf-8") as f:
-                        for line in f:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            try:
-                                rec = json.loads(line)
-                                wkt = rec.get("wkt") or ""
-                                props = rec.get("props")
-                                if isinstance(props, dict):
-                                    chunk_rows.append((wkt, props))
-                                else:
-                                    chunk_rows.append((wkt, {}))
-                            except (json.JSONDecodeError, TypeError):
-                                continue
-                            if len(chunk_rows) >= stream_chunk:
-                                _insert_features_from_wkt_sync(insert_session, result_id, chunk_rows, batch_size=stream_chunk)
-                                chunk_rows = []
-                        if chunk_rows:
-                            _insert_features_from_wkt_sync(insert_session, result_id, chunk_rows, batch_size=stream_chunk)
-                finally:
-                    insert_session.close()
+                for pair_chunk in _stream_intersection_pairs_chunks(
+                    stream_session,
+                    payload.collection_id_a,
+                    payload.collection_id_b,
+                    pair_chunk_size,
+                    on_progress=on_pairs_progress,
+                ):
+                    items_in += len(pair_chunk)
+                    maybe_update("Computing intersection…")
+                    chunk_results = _process_intersection_pairs_chunk(
+                        engine, payload.collection_id_a, payload.collection_id_b, pair_chunk
+                    )
+                    if chunk_results:
+                        _insert_features_sync(insert_session, result_id, chunk_results)
+                        items_out += len(chunk_results)
+                count = items_out
             finally:
-                for p in (pairs_path, result_path):
-                    try:
-                        os.unlink(p)
-                    except OSError:
-                        pass
-
-            maybe_update("Aggregating by A/B id…")
-            count = _aggregate_intersection_result_sync(engine, result_id)
+                stream_session.close()
+                insert_session.close()
 
         elif payload.process_id == "erase":
             SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)

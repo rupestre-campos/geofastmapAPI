@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+
+def mvt_layer_name(collection_id: str) -> str:
+    """Safe MVT layer name: alphanumeric and underscore only. Use for TileJSON vector_layers.id,
+    tippecanoe -L, and ST_AsMVT so the frontend source-layer matches the tile layer name."""
+    safe = re.sub(r"[^a-zA-Z0-9_]", "_", collection_id)
+    return safe if safe else "default"
 
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.shape import to_shape

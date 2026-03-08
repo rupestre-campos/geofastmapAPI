@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}{% if is_new %}New basemap{% else %}Edit {{ basemap.name }}{% endif %} – GeoFast API{% endblock %}
+{% block head %}
+  <style>
+    .basemap-form .form-row { margin-bottom: var(--space); }
+    .basemap-form label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 0.9rem; }
+    .basemap-form input[type="text"], .basemap-form input[type="number"], .basemap-form textarea { width: 100%; max-width: 560px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-size: 0.95rem; }
+    .basemap-form textarea { min-height: 100px; resize: vertical; font-family: ui-monospace, monospace; font-size: 0.85rem; }
+    .basemap-form .meta { font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px; }
+    .basemap-form input[readonly] { background: var(--bg-elevated); color: var(--text-secondary); }
+    .basemap-preview-wrap .map-container { min-height: 320px; height: 320px; width: 100%; box-sizing: border-box; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>{% if is_new %}New basemap{% else %}Edit {{ basemap.name }}{% endif %}</h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › <a href="{{ base }}/basemaps?f=html">Basemaps</a> › {% if is_new %}New{% else %}Edit{% endif %}</p>
+  </header>
+
+  <div class="card basemap-form">
+    <form method="post" action="{% if is_new %}{{ base }}/basemaps{% else %}{{ base }}/basemaps/{{ basemap.id }}{% endif %}">
+      <div class="form-row">
+        <label for="basemap-id">ID</label>
+        {% if is_new %}
+        <input type="text" id="basemap-id" name="id" required pattern="[a-zA-Z0-9_-]+" placeholder="e.g. osm, my_custom" maxlength="120">
+        <p class="meta">Letters, numbers, hyphen, underscore only. Cannot be changed after create.</p>
+        {% else %}
+        <input type="text" id="basemap-id" value="{{ basemap.id }}" readonly>
+        <p class="meta">ID cannot be changed.</p>
+        {% endif %}
+      </div>
+      <div class="form-row">
+        <label for="basemap-name">Name</label>
+        <input type="text" id="basemap-name" name="name" required value="{{ basemap.name if basemap else '' }}" maxlength="200" placeholder="e.g. OpenStreetMap">
+        <p class="meta">Display name in the basemap selector on maps.</p>
+      </div>
+      <div class="form-row">
+        <label for="basemap-copyright">Copyright / attribution</label>
+        <input type="text" id="basemap-copyright" name="copyright" value="{{ basemap.copyright if basemap else '' }}" maxlength="500" placeholder="e.g. © OpenStreetMap contributors">
+        <p class="meta">Shown in map attribution. Optional.</p>
+      </div>
+      <div class="form-row" style="display:flex; gap: var(--space); flex-wrap: wrap;">
+        <div>
+          <label for="basemap-min-zoom">Min zoom</label>
+          <input type="number" id="basemap-min-zoom" name="min_zoom" value="{{ basemap.min_zoom if basemap else 0 }}" min="0" max="24" style="max-width:80px;">
+        </div>
+        <div>
+          <label for="basemap-max-zoom">Max zoom</label>
+          <input type="number" id="basemap-max-zoom" name="max_zoom" value="{{ basemap.max_zoom if basemap else 22 }}" min="0" max="24" style="max-width:80px;">
+        </div>
+        <div>
+          <label for="basemap-sort-order">Sort order</label>
+          <input type="number" id="basemap-sort-order" name="sort_order" value="{{ basemap.sort_order if basemap else 0 }}" style="max-width:80px;">
+          <p class="meta">Lower = first in list.</p>
+        </div>
+      </div>
+      <div class="form-row">
+        <label for="basemap-tiles">Tile URLs</label>
+        <textarea id="basemap-tiles" name="tiles" required placeholder="https://tile.example.com/{z}/{x}/{y}.png">{% if basemap and basemap.tiles %}{{ basemap.tiles | join('\n') }}{% endif %}</textarea>
+        <p class="meta">One URL per line. Use {z}, {x}, {y} for tile coordinates. For Google add &amp;key=YOUR_KEY in the URL if needed.</p>
+      </div>
+      <div class="form-row">
+        <label for="basemap-labels">Labels overlay URL (optional)</label>
+        <input type="text" id="basemap-labels" name="labels" value="{{ basemap.labels if basemap else '' }}" placeholder="https://... (for hybrid basemaps)">
+      </div>
+      <div class="card basemap-preview-wrap" style="margin-top: var(--space-lg);">
+        <h2 class="card-title">Preview</h2>
+        <p class="meta">Map updates as you change tile URL or zoom range.</p>
+        <div id="basemap-preview-map" class="map-container"></div>
+      </div>
+      <div class="btn-group" style="margin-top: var(--space);">
+        <button type="submit" class="btn btn-primary">{% if is_new %}Create{% else %}Save{% endif %}</button>
+        <a href="{{ base }}/basemaps?f=html" class="btn">Cancel</a>
+      </div>
+    </form>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
+  <script>
+    (function() {
+      var base = {{ base | tojson }};
+      var initialTiles = {{ (basemap.tiles if basemap and basemap.tiles else []) | tojson }};
+      var initialLabels = {{ (basemap.labels if basemap and basemap.labels else '') | tojson }};
+      var initialMinZoom = {{ basemap.min_zoom if basemap else 0 }};
+      var initialMaxZoom = {{ basemap.max_zoom if basemap else 22 }};
+      var defaultOsm = { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], minZoom: 0, maxZoom: 22 };
+      function getConfigFromForm() {
+        var tilesEl = document.getElementById('basemap-tiles');
+        var tiles = (tilesEl && tilesEl.value ? tilesEl.value.trim().split(/\r?\n/) : []).filter(function(u) { return u.length > 0; });
+        var minZ = parseInt(document.getElementById('basemap-min-zoom').value, 10);
+        var maxZ = parseInt(document.getElementById('basemap-max-zoom').value, 10);
+        if (isNaN(minZ)) minZ = 0;
+        if (isNaN(maxZ)) maxZ = 22;
+        var labelsEl = document.getElementById('basemap-labels');
+        var labels = labelsEl && labelsEl.value ? labelsEl.value.trim() : '';
+        return { tiles: tiles, labels: labels || undefined, minZoom: minZ, maxZoom: maxZ };
+      }
+      var initialTilesArr = Array.isArray(initialTiles) ? initialTiles : (typeof initialTiles === 'string' ? initialTiles.split(/\r?\n/).filter(function(u) { return u.length > 0; }) : []);
+      var initialConfig = initialTilesArr.length ? { tiles: initialTilesArr, labels: initialLabels || undefined, minZoom: initialMinZoom, maxZoom: initialMaxZoom } : defaultOsm;
+      var mapStyle = GeofastMapUtils.buildMapStyleWithBasemap(initialConfig);
+      mapStyle.glyphs = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
+      var map = new maplibregl.Map({
+        container: 'basemap-preview-map',
+        style: mapStyle,
+        center: [0, 20],
+        zoom: 2,
+        renderWorldCopies: false
+      });
+      GeofastMapUtils.setBasemapTransformRequest(map, initialConfig.maxZoom, initialConfig.tiles);
+      map.on('load', function() {
+        map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+        function updatePreview() {
+          var cfg = getConfigFromForm();
+          if (!cfg.tiles || cfg.tiles.length === 0) {
+            cfg = defaultOsm;
+          }
+          GeofastMapUtils.applyBasemapToMap(map, cfg);
+          GeofastMapUtils.setBasemapTransformRequest(map, cfg.maxZoom, cfg.tiles);
+        }
+        var tilesEl = document.getElementById('basemap-tiles');
+        var minEl = document.getElementById('basemap-min-zoom');
+        var maxEl = document.getElementById('basemap-max-zoom');
+        var labelsEl = document.getElementById('basemap-labels');
+        var timeout = null;
+        function scheduleUpdate() {
+          if (timeout) clearTimeout(timeout);
+          timeout = setTimeout(updatePreview, 400);
+        }
+        if (tilesEl) { tilesEl.oninput = scheduleUpdate; tilesEl.onchange = scheduleUpdate; }
+        if (minEl) { minEl.oninput = scheduleUpdate; minEl.onchange = scheduleUpdate; }
+        if (maxEl) { maxEl.oninput = scheduleUpdate; maxEl.onchange = scheduleUpdate; }
+        if (labelsEl) { labelsEl.oninput = scheduleUpdate; labelsEl.onchange = scheduleUpdate; }
+      });
+    })();
+  </script>
+{% endblock %}

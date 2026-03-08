@@ -1,0 +1,30 @@
+{# Shared popup styles for feature maps (collection, items, item, map_edit, map_view, item_edit, collections). #}
+<style>
+  .maplibregl-popup { z-index: 1000; }
+  .maplibregl-popup-content {
+    padding: 10px 12px;
+    min-width: 120px;
+    max-width: 360px;
+    max-height: 320px;
+    overflow: auto;
+    background: #fff !important;
+    color: #000 !important;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  }
+  .map-popup { min-width: 160px; max-width: 100%; font-size: 0.85rem; color: #000; word-break: break-word; }
+  .map-popup-id { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
+  .map-popup-id a { color: #1967d2; text-decoration: none; }
+  .map-popup-id a:hover { text-decoration: underline; }
+  .map-popup-row { margin-top: 0.25rem; word-break: break-word; color: #000; }
+  .map-popup-row strong { font-weight: 700; margin-right: 0.35rem; color: #000; }
+  /* Collections list map popup */
+  .map-popup-item { padding: 10px 0; border-bottom: 1px solid #ddd; }
+  .map-popup-item:last-child { border-bottom: none; }
+  .map-popup-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; color: #666; margin-bottom: 2px; }
+  .map-popup-title-value { font-size: 1.15rem; font-weight: 700; margin-bottom: 8px; color: #000; }
+  .map-popup-id-value { font-size: 0.9rem; color: #333; margin-bottom: 6px; }
+  .map-popup-desc-value { font-size: 0.9rem; margin-bottom: 8px; color: #000; line-height: 1.3; }
+  .map-popup-item a { color: #0566c8; text-decoration: none; font-weight: 500; }
+  .map-popup-item a:hover { text-decoration: underline; }
+</style>

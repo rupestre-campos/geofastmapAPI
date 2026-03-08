@@ -79,32 +79,15 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
   {% include "_style_editor_toolbox_script.html" %}
   <script>
     const base = {{ base | tojson }};
     const googleKey = {{ google_maps_api_key | tojson }};
 
-    const BASEMAPS = {
-      osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] },
-      streets: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}'] },
-      satellite: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] },
-      hybrid: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], labels: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Reference_Overlay/MapServer/tile/{z}/{y}/{x}' },
-      google_satellite: { tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] },
-      google_hybrid: { tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}' + (googleKey ? '&key=' + googleKey : '')] }
-    };
-    const mapStyle = {
-      version: 8,
-      glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
-      sources: { basemap: { type: 'raster', tiles: BASEMAPS.osm.tiles, tileSize: 256 } },
-      layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 22 }]
-    };
-    const map = new maplibregl.Map({
-      container: 'map',
-      style: mapStyle,
-      center: [0, 20],
-      zoom: 2,
-      renderWorldCopies: false
-    });
+    var BASEMAPS;
+    var basemapList;
+    var map;
 
     var geoEditor = null;
     var editorSource = null;
@@ -126,40 +109,53 @@
     }
 
     function applyBasemapFromSelect() {
-      var v = document.getElementById('map-basemap').value;
+      var sel = document.getElementById('map-basemap');
+      if (!sel || !map || !map.getSource('basemap')) return;
+      var v = sel.value;
       var cfg = BASEMAPS[v];
-      map.getSource('basemap').setTiles(cfg.tiles);
-      if (cfg.labels) {
-        if (!map.getSource('basemap-labels')) {
-          map.addSource('basemap-labels', { type: 'raster', tiles: [cfg.labels], tileSize: 256 });
-          map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: 0, maxzoom: 22 }, 'editor-fill');
-        }
-      } else {
-        if (map.getLayer('basemap-labels')) { map.removeLayer('basemap-labels'); map.removeSource('basemap-labels'); }
-      }
+      if (!cfg) return;
+      GeofastMapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: map.getLayer('editor-fill') ? 'editor-fill' : undefined });
+      GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
     }
 
     var LINE_DASH = window.GeofastStyleEditor && window.GeofastStyleEditor.LINE_DASH ? window.GeofastStyleEditor.LINE_DASH : { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
-    var defaultSpec = window.GeofastStyleEditor && window.GeofastStyleEditor.defaultSpec ? window.GeofastStyleEditor.defaultSpec : { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle' };
+    var defaultSpec = window.GeofastStyleEditor && window.GeofastStyleEditor.defaultSpec ? window.GeofastStyleEditor.defaultSpec : { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, lineEnabled: true, pointEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle' };
     var styleEditorState = { activeEditTarget: 'editor', layersOnMap: [] };
 
-    map.on('load', function() {
-      map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
-      try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) { document.getElementById('map-basemap').value = s; } } catch(e) {}
-      applyBasemapFromSelect();
+    function initStyleEditorMap() {
+      var sel = document.getElementById('map-basemap');
+      GeofastMapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
+      var initialId = null;
+      try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch(e) {}
+      if (!initialId && basemapList.length) initialId = basemapList[0].id;
+      if (!initialId && BASEMAPS.osm) initialId = 'osm';
+      var initial = (initialId && BASEMAPS[initialId]) ? BASEMAPS[initialId] : (BASEMAPS.osm || (basemapList[0] && BASEMAPS[basemapList[0].id]));
+      if (!initial) return;
+      if (sel) sel.value = initialId || (sel.options[0] && sel.options[0].value);
+      var mapStyle = GeofastMapUtils.buildMapStyleWithBasemap(initial);
+      mapStyle.glyphs = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
+      map = new maplibregl.Map({ container: 'map', style: mapStyle, center: [0, 20], zoom: 2, renderWorldCopies: false });
+      GeofastMapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
+      map.on('load', function() {
+        map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
+        try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) sel.value = s; } catch(e) {}
+        applyBasemapFromSelect();
+        sel.onchange = function() { try { localStorage.setItem('geofast-basemap', this.value); } catch(e) {} applyBasemapFromSelect(); };
 
-      map.addSource('editor-features', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        map.addSource('editor-features', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       editorSource = map.getSource('editor-features');
-      map.addLayer({ id: 'editor-fill', type: 'fill', source: 'editor-features', filter: ['!=', ['geometry-type'], 'Point'], paint: { 'fill-color': defaultSpec.fillColor, 'fill-opacity': defaultSpec.fillOpacity } });
-      map.addLayer({ id: 'editor-line', type: 'line', source: 'editor-features', filter: ['!=', ['geometry-type'], 'Point'], paint: { 'line-color': defaultSpec.lineColor, 'line-width': defaultSpec.lineWidth, 'line-opacity': defaultSpec.lineOpacity, 'line-dasharray': LINE_DASH.solid } });
-      map.addLayer({ id: 'editor-circle', type: 'circle', source: 'editor-features', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-color': defaultSpec.pointColor, 'circle-radius': defaultSpec.pointSize, 'circle-stroke-width': 0 } });
+      var pointFilter = ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]];
+      var notPointFilter = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
+      map.addLayer({ id: 'editor-fill', type: 'fill', source: 'editor-features', filter: notPointFilter, paint: { 'fill-color': defaultSpec.fillColor, 'fill-opacity': defaultSpec.fillOpacity } });
+      map.addLayer({ id: 'editor-line', type: 'line', source: 'editor-features', filter: notPointFilter, paint: { 'line-color': defaultSpec.lineColor, 'line-width': defaultSpec.lineWidth, 'line-opacity': defaultSpec.lineOpacity, 'line-dasharray': LINE_DASH.solid } });
+      map.addLayer({ id: 'editor-circle', type: 'circle', source: 'editor-features', filter: pointFilter, paint: { 'circle-color': defaultSpec.pointColor, 'circle-radius': defaultSpec.pointSize, 'circle-stroke-width': 0 } });
       var pinSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="36" viewBox="0 0 24 36"><path fill="%2358a6ff" stroke="%23111" stroke-width="1" d="M12 0C5.4 0 0 5.4 0 12c0 9 12 24 12 24s12-15 12-24C24 5.4 18.6 0 12 0z"/></svg>';
       var pinUrl = 'data:image/svg+xml,' + encodeURIComponent(pinSvg);
       map.loadImage(pinUrl, function(err, img) {
         if (!err && img) {
           map.addImage('geofast-pin', img);
           if (!map.getLayer('editor-symbol')) {
-            map.addLayer({ id: 'editor-symbol', type: 'symbol', source: 'editor-features', filter: ['==', ['geometry-type'], 'Point'], layout: { 'icon-image': 'geofast-pin', 'icon-size': defaultSpec.pointSize / 12, 'icon-allow-overlap': true }, paint: { 'icon-color': defaultSpec.pointColor }, minzoom: 0 });
+            map.addLayer({ id: 'editor-symbol', type: 'symbol', source: 'editor-features', filter: pointFilter, layout: { 'icon-image': 'geofast-pin', 'icon-size': defaultSpec.pointSize / 12, 'icon-allow-overlap': true }, paint: { 'icon-color': defaultSpec.pointColor }, minzoom: 0 });
             map.setLayoutProperty('editor-symbol', 'visibility', 'none');
           }
         }
@@ -640,6 +636,8 @@
         var lineWidth = Math.max(0.5, s.lineWidth != null ? s.lineWidth : 1);
         var lineOpacity = s.lineOpacity != null ? s.lineOpacity : 1;
         var fillVisible = s.fillEnabled !== false;
+        var lineVisible = s.lineEnabled !== false;
+        var pointVisible = s.pointEnabled !== false;
         var lineDash = LINE_DASH[s.linePattern || 'solid'] || LINE_DASH.solid;
         var zoomStopsToExpression = window.GeofastStyleEditor && window.GeofastStyleEditor.zoomStopsToExpression ? window.GeofastStyleEditor.zoomStopsToExpression : function(stops) { if (!stops || stops.length < 2) return null; var flat = []; stops.forEach(function(s) { flat.push(Number(s[0]), Number(s[1])); }); return ['interpolate', ['linear'], ['zoom']].concat(flat); };
         var fillOpacityPaint = (s.fillOpacityZoom && s.fillOpacityZoom.length >= 2) ? zoomStopsToExpression(s.fillOpacityZoom) : fillOpacity;
@@ -654,21 +652,31 @@
               var tileUrl = tiles[0].indexOf('{z}') !== -1 ? tiles[0] : (base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf');
               map.addSource(sourceId, { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
               var layerId = tilejson.vector_layers && tilejson.vector_layers[0] ? tilejson.vector_layers[0].id : collectionId;
-              map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, 'source-layer': layerId, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, 'editor-fill');
-              map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, 'source-layer': layerId, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, 'editor-line');
+              var pointFilter = ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]];
+              var notPointFilter = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
+              var ptColor = (s && s.pointColor) || defaultSpec.pointColor || '#58a6ff';
+              var ptSize = (s && s.pointSize != null) ? s.pointSize : (defaultSpec.pointSize != null ? defaultSpec.pointSize : 8);
+              map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, 'editor-fill');
+              map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, 'editor-line');
+              map.addLayer({ id: sourceId + '-circle', type: 'circle', source: sourceId, 'source-layer': layerId, filter: pointFilter, layout: { visibility: pointVisible ? 'visible' : 'none' }, paint: { 'circle-color': ptColor, 'circle-radius': ptSize, 'circle-opacity': 0.9 } });
               styleEditorState.activeEditTarget = sourceId;
               if (styleEditorState.applySpecToForm) styleEditorState.applySpecToForm(s);
               if (styleEditorState.applyVectorStyle) styleEditorState.applyVectorStyle();
               if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
               if (styleEditorState.loadStylesList) styleEditorState.loadStylesList();
             } else {
+              var pointFilterGeo = ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]];
+              var notPointFilterGeo = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
               fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=100', { headers: { 'Accept': 'application/geo+json' } })
                 .then(function(r) { return r.json(); })
                 .then(function(fc) {
                   if (!fc.features || fc.features.length === 0) return;
                   map.addSource(sourceId, { type: 'geojson', data: fc });
-                  map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, 'editor-fill');
-                  map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, 'editor-line');
+                  var ptColorGeo = (s && s.pointColor) || defaultSpec.pointColor || '#58a6ff';
+                  var ptSizeGeo = (s && s.pointSize != null) ? s.pointSize : (defaultSpec.pointSize != null ? defaultSpec.pointSize : 8);
+                  map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, filter: notPointFilterGeo, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, 'editor-fill');
+                  map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, filter: notPointFilterGeo, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, 'editor-line');
+                  map.addLayer({ id: sourceId + '-circle', type: 'circle', source: sourceId, filter: pointFilterGeo, layout: { visibility: pointVisible ? 'visible' : 'none' }, paint: { 'circle-color': ptColorGeo, 'circle-radius': ptSizeGeo, 'circle-opacity': 0.9 } });
                   styleEditorState.activeEditTarget = sourceId;
                   if (styleEditorState.applySpecToForm) styleEditorState.applySpecToForm(s);
                   if (styleEditorState.applyVectorStyle) styleEditorState.applyVectorStyle();
@@ -723,5 +731,17 @@
         map.on('pm:remove', onEditorChange);
       });
     }).catch(function(err) { console.warn('GeoEditor load failed', err); });
+    }
+
+    GeofastMapUtils.fetchBasemaps(base).then(function(result) {
+      BASEMAPS = result.byId;
+      basemapList = result.basemaps;
+      if (!basemapList.length) { BASEMAPS = GeofastMapUtils.getBasemaps(googleKey); basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; }); }
+      initStyleEditorMap();
+    }).catch(function() {
+      BASEMAPS = GeofastMapUtils.getBasemaps(googleKey);
+      basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
+      initStyleEditorMap();
+    });
   </script>
 {% endblock %}

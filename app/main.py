@@ -1,8 +1,10 @@
+from pathlib import Path
+
 from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import collection_styles, collections, items, jobs, maps, processes, root, styles, tiles
+from app.api.routes import basemaps_api, basemaps_pages, collection_styles, collections, items, jobs, maps, processes, root, styles, tiles
 from app.core.config import get_settings
 from app.services.bulk_queue import start_memory_consumer
 from app.services.bulk_worker import process_bulk_job
@@ -42,9 +44,15 @@ def create_app() -> FastAPI:
     app.include_router(tiles.router, prefix="/collections", tags=["tiles"])
     app.include_router(collection_styles.router, prefix="/collections", tags=["styles"])
     app.include_router(styles.router, prefix="/styles", tags=["styles"])
+    app.include_router(basemaps_api.router, prefix="/styles/basemaps", tags=["basemaps"])
+    app.include_router(basemaps_pages.router, prefix="/basemaps", tags=["basemaps-pages"])
     app.include_router(processes.router, prefix="/processes", tags=["processes"])
     app.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
     app.include_router(maps.router, prefix="/maps", tags=["maps"])
+
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    if static_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     return app
 

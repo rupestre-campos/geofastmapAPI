@@ -8,12 +8,15 @@ from pydantic import BaseModel, Field
 
 
 class MapLayer(BaseModel):
-    """Single layer in a map definition."""
+    """Single layer in a map definition. Style is stored with the map (not linked to collection or public styles)."""
 
     collection_id: str = Field(..., description="Collection id")
     color: str | None = Field(None, description="Fill/line color hex (legacy); use style_spec when present")
     order: int = Field(0, description="Display order (0 = bottom)")
-    style_spec: dict | None = Field(None, description="Same as /styles: fillColor, lineColor, fillOpacity, lineOpacity, lineWidth, linePattern, fillEnabled, pointColor, pointSize, pointIcon")
+    style_spec: dict | None = Field(
+        None,
+        description="Map-layer style override: fillColor, lineColor, fillOpacity, lineOpacity, lineWidth, linePattern, fillEnabled, lineEnabled, pointEnabled, pointColor, pointSize, pointOpacity, pointIcon; and optionally fillOpacityZoom, lineWidthZoom, lineOpacityZoom, pointSizeZoom, pointOpacityZoom (zoom breakpoints). Stored with the map, not with the collection.",
+    )
     popup: bool = Field(False, description="Show popup on click for this layer")
     tiles_url: str | None = Field(None, description="When set, use this vector tile URL (dynamic tiles) instead of TileJSON")
     layer_id: str | None = Field(None, description="Optional unique id for this layer when using tiles_url (e.g. items-{coll}, item-{id})")

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
+
 from app.core.config import get_settings
 from app.services.bulk_import import run_bulk_import_sync
-from app.services.bulk_queue import BulkJobPayload
+from app.services.bulk_queue import QUEUE_KEY, BulkJobPayload
 from app.services.bulk_storage import get_bulk_storage
 from app.services.job_store import update_job
 from app.services.tile_build_queue import (
@@ -12,6 +14,41 @@ from app.services.tile_build_queue import (
     enqueue_tile_build,
     update_tile_build_job,
 )
+
+
+def cleanup_orphan_bulk_uploads() -> None:
+    """At startup, delete any file in bulk storage that does not have a job pending on the queue."""
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return
+    try:
+        import redis
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        payloads = r.lrange(QUEUE_KEY, 0, -1) or []
+    except Exception:
+        return
+    pending_storage_keys: set[str] = set()
+    for s in payloads:
+        try:
+            payload = BulkJobPayload.from_json(s)
+            pending_storage_keys.add(payload.storage_key)
+        except Exception:
+            continue
+    base = (settings.bulk_storage_path or "").rstrip("/")
+    if not base or not os.path.isdir(base):
+        return
+    storage = get_bulk_storage()
+    for name in os.listdir(base):
+        if name.startswith(".") or ".." in name:
+            continue
+        path = os.path.join(base, name)
+        if not os.path.isfile(path):
+            continue
+        if name not in pending_storage_keys:
+            try:
+                storage.delete(name)
+            except Exception:
+                pass
 
 
 def process_bulk_job(payload: BulkJobPayload) -> None:

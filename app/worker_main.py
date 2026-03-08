@@ -11,7 +11,7 @@ import sys
 
 from app.core.config import get_settings
 from app.services.bulk_queue import QUEUE_KEY, BulkJobPayload
-from app.services.bulk_worker import process_bulk_job
+from app.services.bulk_worker import cleanup_orphan_bulk_uploads, process_bulk_job
 
 
 def main() -> None:
@@ -19,6 +19,8 @@ def main() -> None:
     if settings.bulk_queue_type != "redis":
         print("Set BULK_QUEUE_TYPE=redis to use the standalone worker.", file=sys.stderr)
         sys.exit(1)
+
+    cleanup_orphan_bulk_uploads()
 
     import redis
     r = redis.from_url(settings.redis_url, decode_responses=True)

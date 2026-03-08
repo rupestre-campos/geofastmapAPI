@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.html import html_response, wants_html
 from app.crud import collection_tiles as tiles_crud
+from app.utils.geo import mvt_layer_name
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.crud import styles as styles_crud
@@ -275,6 +276,7 @@ async def list_items(
             next_page_url=next_page_url,
             default_style=default_style_dict,
             has_static_tiles=has_static_tiles,
+            tile_layer_id=mvt_layer_name(collection_id),
             google_maps_api_key=get_settings().google_maps_api_key or "",
         )
     fc = FeatureCollection(
@@ -399,6 +401,7 @@ async def new_item_form(
         collection_id=collection_id,
         default_style=default_style_dict,
         has_static_tiles=has_static_tiles,
+        tile_layer_id=mvt_layer_name(collection_id),
         google_maps_api_key=get_settings().google_maps_api_key or "",
     )
 
@@ -456,6 +459,7 @@ async def get_item(
             properties_json=json.dumps(feat_geojson.properties or {}, indent=2),
             default_style=default_style_dict,
             has_static_tiles=has_static_tiles,
+            tile_layer_id=mvt_layer_name(collection_id),
             google_maps_api_key=get_settings().google_maps_api_key or "",
         )
     return GeoJSONResponse(content=feat_geojson.model_dump(mode="json"))
@@ -509,6 +513,7 @@ async def get_item_edit(
         properties_json=json.dumps(feat_geojson.properties or {}, indent=2),
         default_style=default_style_dict,
         has_static_tiles=has_static_tiles,
+        tile_layer_id=mvt_layer_name(collection_id),
         google_maps_api_key=get_settings().google_maps_api_key or "",
     )
 

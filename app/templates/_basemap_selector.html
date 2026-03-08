@@ -1,0 +1,3 @@
+{# Reusable basemap <select>. Populated by JS from GET /styles/basemaps (or fallback). Optional: map_basemap_copyright_id for attribution span. #}
+<select id="{{ basemap_select_id | default('map-basemap') }}" title="Basemap"></select>
+<span id="{{ map_basemap_copyright_id | default('map-basemap-copyright') }}" class="map-basemap-copyright meta" style="display:none; max-width:240px; font-size:0.75rem;"></span>

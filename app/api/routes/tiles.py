@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.utils.datetime_parse import parse_datetime_param
+from app.utils.geo import mvt_layer_name
 from app.utils.property_filters import PropertyFilter, parse_filter_param
 from app.crud import collection_tiles as tiles_crud
 from app.crud import collections as collections_crud
@@ -241,6 +242,7 @@ async def get_tiles_tilejson(
     tile_urls = [f"{base}/collections/{collection_id}/tiles/dynamic/{{z}}/{{x}}/{{y}}.pbf"]
     if has_static:
         tile_urls.insert(0, f"{base}/collections/{collection_id}/tiles/static/{{z}}/{{x}}/{{y}}.pbf")
+    layer_id = mvt_layer_name(collection_id)
     tilejson = {
         "tilejson": "2.2.0",
         "name": collection_id,
@@ -248,15 +250,9 @@ async def get_tiles_tilejson(
         "version": "1.0.0",
         "scheme": "xyz",
         "tiles": tile_urls,
-        "vector_layers": [{"id": collection_id, "description": "", "minzoom": 0, "maxzoom": 14}],
+        "vector_layers": [{"id": layer_id, "description": "", "minzoom": 0, "maxzoom": 14}],
     }
     return JSONResponse(content=tilejson)
-
-
-def _mvt_layer_name(collection_id: str) -> str:
-    """Safe MVT layer name: alphanumeric and underscore only."""
-    safe = re.sub(r"[^a-zA-Z0-9_]", "_", collection_id)
-    return safe if safe else "default"
 
 
 # Max property keys to expose as separate MVT attributes (avoids huge dynamic SQL)
@@ -599,8 +595,8 @@ async def get_tiles_dynamic(
             headers=cache_headers,
         )
 
-    # In-process PostGIS MVT (ids/properties only when worker not set). Use collection_id so TileJSON vector_layers.id and static (tippecanoe) layer name match.
-    layer_name = collection_id
+    # Use same layer name as TileJSON and static tiles (sanitized) so source-layer matches.
+    layer_name = mvt_layer_name(collection_id)
     max_features = settings.tiles_mvt_max_features
 
     if props_include:

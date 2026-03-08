@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     process_progress_update_seconds: float = 2.0  # how often to update job progress (items_in/items_created)
     # Intersection pair-based flow: chunk size when reading (id_a, id_b) pairs and fetching those two features only.
     process_intersection_pair_chunk_size: int = 400  # pairs per chunk (each chunk = 2 bounded feature fetches)
+    # Temp directory for process worker; cleaned on startup. Set empty to disable cleanup.
+    process_temp_path: str = "/tmp/geofast_process_worker"
 
     # Tiles: static MBTiles storage; dynamic tiles are served by FastAPI from PostGIS.
     tiles_storage_path: str = "/data/tiles"
