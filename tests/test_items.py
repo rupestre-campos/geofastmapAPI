@@ -1,4 +1,5 @@
 import asyncio
+import json
 from unittest.mock import patch
 
 import pytest
@@ -59,6 +60,44 @@ async def test_create_get_and_delete_feature(client):
     # Ensure feature is gone
     resp = await client.get(f"/collections/roads/items/{feature_id}")
     assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_items_data_download_geojsonl(client):
+    resp = await client.post(
+        "/collections",
+        json={
+            "id": "export",
+            "title": "Export",
+            "extent": {"bbox": [[0, 0, 10, 10]], "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"},
+        },
+    )
+    assert resp.status_code == 201
+    for name, kind in [("Alpha", "road"), ("Beta", "river")]:
+        resp = await client.post(
+            "/collections/export/items",
+            json={
+                "collection_id": "export",
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+                "properties": {"name": name, "kind": kind},
+            },
+        )
+        assert resp.status_code == 201
+
+    resp = await client.get("/collections/export/items/data", params={"name": "Alpha", "properties": "name"})
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/x-ndjson")
+    assert 'filename="export.geojsonl"' in resp.headers.get("content-disposition", "")
+
+    lines = [line for line in resp.text.splitlines() if line.strip()]
+    assert len(lines) == 1
+    feature = json.loads(lines[0])
+    assert feature["type"] == "Feature"
+    assert feature["geometry"]["type"] == "Point"
+    assert feature["properties"]["name"] == "Alpha"
+    assert feature["properties"]["id"] == feature["id"]
+    assert "kind" not in feature["properties"]
 
 
 @pytest.mark.asyncio

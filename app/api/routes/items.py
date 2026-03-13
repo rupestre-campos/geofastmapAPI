@@ -3,7 +3,9 @@ import json
 from pathlib import Path as PathLib
 from urllib.parse import urlencode
 
+import orjson
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, Request, Response, status, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -403,6 +405,83 @@ async def new_item_form(
         has_static_tiles=has_static_tiles,
         tile_layer_id=mvt_layer_name(collection_id),
         google_maps_api_key=get_settings().google_maps_api_key or "",
+    )
+
+
+@router.get(
+    "/{collection_id}/items/data",
+    summary="Download items as GeoJSONL",
+    description="Stream matching collection features as line-delimited GeoJSON. Supports bbox, datetime, filter, q, properties, and legacy attribute filters.",
+)
+async def download_items_data(
+    request: Request,
+    collection_id: str,
+    db: AsyncSession = Depends(get_db),
+    bbox: str | None = Query(None, description="Bounding box: minx,miny,maxx,maxy (WGS84)."),
+    datetime_param: str | None = Query(None, alias="datetime", description="Instant or range (e.g. 2024-01-01 or 2024-12-31/2025-01-31). Filters by feature created_at."),
+    properties_include: str | None = Query(None, alias="properties", description="Comma-separated property names to return."),
+    filter_param: list[str] | None = Query(None, alias="filter", description="Structured filters: key:op:value (repeat for AND)."),
+    q: str | None = Query(None, description="Full-text search across all property values."),
+):
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    bbox_tuple: tuple[float, float, float, float] | None = None
+    if bbox:
+        parts = [p.strip() for p in bbox.split(",")]
+        if len(parts) == 4:
+            try:
+                bbox_tuple = (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+            except ValueError:
+                pass
+    dt_start, dt_end = None, None
+    if datetime_param:
+        dt_start, dt_end = parse_datetime_param(datetime_param)
+    if filter_param:
+        filter_param = [x for s in filter_param for x in s.strip().split("\n") if x.strip()]
+    structured_filters = parse_filter_param(filter_param) if filter_param else []
+    fulltext_q = q.strip() if q and q.strip() else None
+    property_filters: dict[str, str] = {}
+    if request.query_params:
+        for key, value in request.query_params.items():
+            if key.lower() not in ITEMS_RESERVED_PARAMS and value is not None:
+                property_filters[key] = value
+    props_include_set: set[str] | None = None
+    if properties_include:
+        props_include_set = {p.strip() for p in properties_include.split(",") if p.strip()}
+
+    async def _iter_geojsonl():
+        result = await features_crud.stream_features_geojsonl(
+            db,
+            collection_id,
+            bbox=bbox_tuple,
+            datetime_start=dt_start,
+            datetime_end=dt_end,
+            property_filters=property_filters or None,
+            structured_filters=structured_filters or None,
+            fulltext_q=fulltext_q,
+        )
+        try:
+            async for row in result:
+                props = dict(row.properties) if row.properties else {}
+                if props_include_set is not None:
+                    props = {k: v for k, v in props.items() if k in props_include_set}
+                if row.id is not None and "id" not in props:
+                    props["id"] = row.id
+                yield orjson.dumps({
+                    "type": "Feature",
+                    "id": row.id,
+                    "geometry": orjson.loads(row.geometry_geojson) if row.geometry_geojson else None,
+                    "properties": props,
+                }) + b"\n"
+        finally:
+            await result.close()
+
+    safe_filename = "".join(c if c.isalnum() or c in {"-", "_", "."} else "_" for c in collection_id) or "collection"
+    return StreamingResponse(
+        _iter_geojsonl(),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}.geojsonl"'},
     )
 
 

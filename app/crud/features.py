@@ -111,6 +111,49 @@ async def list_features_for_collection(
     return [_row_to_logical_feature(row) for row in r.fetchall()]
 
 
+async def stream_features_geojsonl(
+    db: AsyncSession,
+    collection_id: str,
+    *,
+    bbox: tuple[float, float, float, float] | None = None,
+    datetime_start: datetime | None = None,
+    datetime_end: datetime | None = None,
+    property_filters: dict[str, str] | None = None,
+    structured_filters: Sequence[PropertyFilter] | None = None,
+    fulltext_q: str | None = None,
+):
+    """Stream one logical feature row per id for GeoJSONL export."""
+    stmt = (
+        select(
+            Feature.id.label("id"),
+            Feature.collection_id.label("collection_id"),
+            func.ST_AsGeoJSON(func.ST_Union(Feature.geometry)).label("geometry_geojson"),
+            literal_column("(array_agg(features.properties ORDER BY features.part_index))[1]").label("properties"),
+        )
+        .where(Feature.collection_id == collection_id)
+    )
+    if bbox is not None:
+        minx, miny, maxx, maxy = bbox
+        envelope = ST_MakeEnvelope(minx, miny, maxx, maxy, 4326)
+        stmt = stmt.where(Feature.geometry.isnot(None) & ST_Intersects(Feature.geometry, envelope))
+    if datetime_start is not None:
+        stmt = stmt.where(Feature.created_at >= datetime_start)
+    if datetime_end is not None:
+        stmt = stmt.where(Feature.created_at <= datetime_end)
+    if property_filters:
+        for key, value in property_filters.items():
+            stmt = stmt.where(_property_filter_clause(key, value))
+    if structured_filters:
+        for pf in structured_filters:
+            stmt = stmt.where(_structured_filter_clause(pf))
+    if fulltext_q and fulltext_q.strip():
+        q = fulltext_q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{q}%"
+        stmt = stmt.where(Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\"))
+    stmt = stmt.group_by(Feature.id, Feature.collection_id).order_by(Feature.id.asc())
+    return await db.stream(stmt.execution_options(stream_results=True))
+
+
 def _order_by_clause(sortby: str | None, sortdesc: bool):
     """Build ORDER BY: id, created_at, or properties->>'sortby'. Uses column when possible for index."""
     if not sortby:
