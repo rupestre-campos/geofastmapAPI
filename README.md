@@ -198,4 +198,4 @@ Because we lived without it: heavyweight servers, slow feeds, and bloated stacks
 
 ## License
 
-See [LICENSE](LICENSE) in the repo (if present). Otherwise use and modify as needed for your environment.
+GeoFast API is released under a **permissive license with attribution**: you may use, modify, and distribute it for any purpose, but you **must give clear credit** to GeoFast API (e.g. in documentation, “About” / “Credits,” or as “Powered by GeoFast API”). See [LICENSE](LICENSE) for the full terms.
