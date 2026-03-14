@@ -15,7 +15,7 @@ from app.utils.geo import mvt_layer_name
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.crud import styles as styles_crud
-from app.db.session import get_db
+from app.db.session import get_db, AsyncSessionLocal
 from app.models.feature import Feature
 from app.services.bulk_import import list_shp_in_zip
 from app.services.bulk_queue import BulkJobPayload, enqueue
@@ -450,32 +450,53 @@ async def download_items_data(
     if properties_include:
         props_include_set = {p.strip() for p in properties_include.split(",") if p.strip()}
 
+    # Larger batches = fewer DB round-trips; buffer output for bigger TCP chunks = higher throughput.
+    _GEOJSONL_BATCH_SIZE = 2000
+    _GEOJSONL_CHUNK_TARGET = 256 * 1024  # 256 KB per yield for good throughput, still low RAM
+
     async def _iter_geojsonl():
-        result = await features_crud.stream_features_geojsonl(
-            db,
-            collection_id,
-            bbox=bbox_tuple,
-            datetime_start=dt_start,
-            datetime_end=dt_end,
-            property_filters=property_filters or None,
-            structured_filters=structured_filters or None,
-            fulltext_q=fulltext_q,
-        )
+        # Use a dedicated session so we don't hold the request-scoped connection for the
+        # whole download; close it explicitly so the pool never leaks (fixes GC warning).
+        session = AsyncSessionLocal()
         try:
-            async for row in result:
-                props = dict(row.properties) if row.properties else {}
-                if props_include_set is not None:
-                    props = {k: v for k, v in props.items() if k in props_include_set}
-                if row.id is not None and "id" not in props:
-                    props["id"] = row.id
-                yield orjson.dumps({
-                    "type": "Feature",
-                    "id": row.id,
-                    "geometry": orjson.loads(row.geometry_geojson) if row.geometry_geojson else None,
-                    "properties": props,
-                }) + b"\n"
+            gen = features_crud.stream_features_geojsonl(
+                session,
+                collection_id,
+                bbox=bbox_tuple,
+                datetime_start=dt_start,
+                datetime_end=dt_end,
+                property_filters=property_filters or None,
+                structured_filters=structured_filters or None,
+                fulltext_q=fulltext_q,
+                batch_size=_GEOJSONL_BATCH_SIZE,
+            )
+            try:
+                buf: list[bytes] = []
+                buf_size = 0
+                async for row in gen:
+                    props = dict(row.properties) if row.properties else {}
+                    if props_include_set is not None:
+                        props = {k: v for k, v in props.items() if k in props_include_set}
+                    if row.id is not None and "id" not in props:
+                        props["id"] = row.id
+                    line = orjson.dumps({
+                        "type": "Feature",
+                        "id": row.id,
+                        "geometry": row.geometry_geojson,
+                        "properties": props,
+                    }) + b"\n"
+                    buf.append(line)
+                    buf_size += len(line)
+                    if buf_size >= _GEOJSONL_CHUNK_TARGET:
+                        yield b"".join(buf)
+                        buf.clear()
+                        buf_size = 0
+                if buf:
+                    yield b"".join(buf)
+            finally:
+                await gen.aclose()
         finally:
-            await result.close()
+            await session.close()
 
     safe_filename = "".join(c if c.isalnum() or c in {"-", "_", "."} else "_" for c in collection_id) or "collection"
     return StreamingResponse(

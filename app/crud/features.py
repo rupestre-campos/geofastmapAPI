@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Sequence, AsyncGenerator
 from datetime import datetime, timezone
 from typing import Any, Tuple
 
@@ -9,7 +9,7 @@ from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_Intersects, ST_MakeEnvelope
 from shapely.geometry import mapping, shape
 from shapely.ops import unary_union
-from sqlalchemy import Float, cast, func, literal_column, select, text, update
+from sqlalchemy import Float, and_, cast, func, literal_column, or_, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
@@ -50,7 +50,21 @@ def _parts_to_logical_feature(parts: list[Any]) -> Feature:
             except Exception:
                 pass
     if geoms:
-        union_geom = unary_union(geoms)
+        try:
+            union_geom = unary_union(geoms)
+        except Exception:
+            # Fallback: try to make each geom valid individually, then union again
+            fixed = []
+            for gg in geoms:
+                try:
+                    if not gg.is_valid:
+                        from shapely.validation import make_valid
+                        gg = make_valid(gg)
+                    if not gg.is_empty:
+                        fixed.append(gg)
+                except Exception:
+                    continue
+            union_geom = unary_union(fixed) if fixed else None
         geometry_geojson = mapping(union_geom) if union_geom and not union_geom.is_empty else None
     else:
         geometry_geojson = None
@@ -111,8 +125,7 @@ async def list_features_for_collection(
     return [_row_to_logical_feature(row) for row in r.fetchall()]
 
 
-async def stream_features_geojsonl(
-    db: AsyncSession,
+def _geojsonl_export_base_stmt(
     collection_id: str,
     *,
     bbox: tuple[float, float, float, float] | None = None,
@@ -122,19 +135,22 @@ async def stream_features_geojsonl(
     structured_filters: Sequence[PropertyFilter] | None = None,
     fulltext_q: str | None = None,
 ):
-    """Stream one logical feature row per id for GeoJSONL export."""
-    stmt = (
-        select(
-            Feature.id.label("id"),
-            Feature.collection_id.label("collection_id"),
-            func.ST_AsGeoJSON(func.ST_Union(Feature.geometry)).label("geometry_geojson"),
-            literal_column("(array_agg(features.properties ORDER BY features.part_index))[1]").label("properties"),
-        )
-        .where(Feature.collection_id == collection_id)
-    )
+    """Build base SELECT for GeoJSONL export (id, geometry_geojson, properties) with filters applied."""
+    envelope = None
     if bbox is not None:
         minx, miny, maxx, maxy = bbox
         envelope = ST_MakeEnvelope(minx, miny, maxx, maxy, 4326)
+    stmt = (
+        select(
+            Feature.id,
+            Feature.collection_id,
+            Feature.part_index,
+            cast(func.ST_AsGeoJSON(Feature.geometry), JSONB).label("geometry_geojson"),
+            Feature.properties,
+        )
+        .where(Feature.collection_id == collection_id)
+    )
+    if envelope is not None:
         stmt = stmt.where(Feature.geometry.isnot(None) & ST_Intersects(Feature.geometry, envelope))
     if datetime_start is not None:
         stmt = stmt.where(Feature.created_at >= datetime_start)
@@ -150,8 +166,58 @@ async def stream_features_geojsonl(
         q = fulltext_q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{q}%"
         stmt = stmt.where(Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\"))
-    stmt = stmt.group_by(Feature.id, Feature.collection_id).order_by(Feature.id.asc())
-    return await db.stream(stmt.execution_options(stream_results=True))
+    return stmt.order_by(Feature.id.asc(), Feature.part_index.asc())
+
+
+async def stream_features_geojsonl(
+    db: AsyncSession,
+    collection_id: str,
+    *,
+    bbox: tuple[float, float, float, float] | None = None,
+    datetime_start: datetime | None = None,
+    datetime_end: datetime | None = None,
+    property_filters: dict[str, str] | None = None,
+    structured_filters: Sequence[PropertyFilter] | None = None,
+    fulltext_q: str | None = None,
+    batch_size: int = 500,
+) -> AsyncGenerator[Any, None]:
+    """Stream raw feature parts for GeoJSONL export using keyset pagination.
+
+    Fetches in small batches (default 500 rows) so the server never holds a large
+    result set in memory. Connection is only used for short queries and can be
+    closed between batches. Yields one row at a time for immediate streaming.
+    """
+    base = _geojsonl_export_base_stmt(
+        collection_id,
+        bbox=bbox,
+        datetime_start=datetime_start,
+        datetime_end=datetime_end,
+        property_filters=property_filters,
+        structured_filters=structured_filters,
+        fulltext_q=fulltext_q,
+    )
+    last_id: str | None = None
+    last_part: int | None = None
+    batch_size = max(1, min(batch_size, 2000))
+
+    while True:
+        stmt = base.limit(batch_size)
+        if last_id is not None and last_part is not None:
+            stmt = stmt.where(
+                or_(
+                    Feature.id > last_id,
+                    and_(Feature.id == last_id, Feature.part_index > last_part),
+                )
+            )
+        result = await db.execute(stmt)
+        rows = result.fetchall()
+        if not rows:
+            break
+        for row in rows:
+            yield row
+        last_row = rows[-1]
+        last_id = last_row.id
+        last_part = getattr(last_row, "part_index", 0)
 
 
 def _order_by_clause(sortby: str | None, sortdesc: bool):
@@ -534,8 +600,16 @@ async def get_feature(
 async def create_feature(db: AsyncSession, data: FeatureCreate) -> Feature:
     """Create one logical feature; geometry is subdivided at insert (ST_Subdivide, ≤256 vertices/row)."""
     from shapely.geometry import shape
+    from shapely.validation import make_valid
+
     geom_dict = data.geometry.model_dump() if data.geometry else None
-    wkt = shape(geom_dict).wkt if geom_dict else None
+    wkt = None
+    if geom_dict:
+        geom = shape(geom_dict)
+        if not geom.is_valid:
+            geom = make_valid(geom)
+        if not geom.is_empty:
+            wkt = geom.wkt
     props = _properties_without_readonly(data.properties)
     fid = str(uuid7())
     max_vertices = get_settings().features_subdivide_max_vertices
@@ -563,7 +637,15 @@ async def replace_feature(
     await db.execute(text("DELETE FROM features WHERE collection_id = :cid AND id = :fid"), {"cid": collection_id, "fid": feature_id})
     geom_dict = data.geometry.model_dump() if data.geometry else None
     from shapely.geometry import shape
-    wkt = shape(geom_dict).wkt if geom_dict else None
+    from shapely.validation import make_valid
+
+    wkt = None
+    if geom_dict:
+        geom = shape(geom_dict)
+        if not geom.is_valid:
+            geom = make_valid(geom)
+        if not geom.is_empty:
+            wkt = geom.wkt
     props = _properties_without_readonly(data.properties)
     max_vertices = get_settings().features_subdivide_max_vertices
     now = datetime.now(timezone.utc)
@@ -592,7 +674,15 @@ async def update_feature(
     incoming = _properties_without_readonly(data.properties) if "properties" in data.model_fields_set else None
     props = {**existing, **(incoming or {})}
     from shapely.geometry import shape
-    wkt = shape(geom_dict).wkt if geom_dict else None
+    from shapely.validation import make_valid
+
+    wkt = None
+    if geom_dict:
+        geom = shape(geom_dict)
+        if not geom.is_valid:
+            geom = make_valid(geom)
+        if not geom.is_empty:
+            wkt = geom.wkt
     await db.execute(text("DELETE FROM features WHERE collection_id = :cid AND id = :fid"), {"cid": collection_id, "fid": feature_id})
     max_vertices = get_settings().features_subdivide_max_vertices
     now = datetime.now(timezone.utc)

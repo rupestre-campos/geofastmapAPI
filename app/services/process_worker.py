@@ -212,20 +212,60 @@ def _insert_features_sync(session: Session, result_id: str, features: list[tuple
     from uuid6 import uuid7
 
     from app.utils.feature_subdivide import insert_feature_subdivided_sql
+    from shapely.geometry import GeometryCollection, MultiPoint, MultiLineString, MultiPolygon, Point, LineString, Polygon
+    from shapely.ops import unary_union
+    from shapely.validation import make_valid
 
     if batch_size is None:
         batch_size = max(1, get_settings().process_insert_batch_size)
     max_vertices = get_settings().features_subdivide_max_vertices
+    def _split_geometry_by_type(geom):
+        if geom is None or geom.is_empty:
+            return []
+        if not geom.is_valid:
+            geom = make_valid(geom)
+        if geom is None or geom.is_empty:
+            return []
+        if isinstance(geom, GeometryCollection):
+            pts = []
+            lines = []
+            polys = []
+            for g in geom.geoms:
+                if g is None or g.is_empty:
+                    continue
+                if not g.is_valid:
+                    g = make_valid(g)
+                    if g is None or g.is_empty:
+                        continue
+                if isinstance(g, (Polygon, MultiPolygon)):
+                    polys.append(g)
+                elif isinstance(g, (LineString, MultiLineString)):
+                    lines.append(g)
+                elif isinstance(g, (Point, MultiPoint)):
+                    pts.append(g)
+            out = []
+            if polys:
+                out.append(unary_union(polys))
+            if lines:
+                out.append(unary_union(lines))
+            if pts:
+                out.append(unary_union(pts))
+            return [g for g in out if g and not g.is_empty]
+        return [geom]
+
     now = datetime.now(timezone.utc)
     for i in range(0, len(features), batch_size):
         batch = features[i : i + batch_size]
         for geom_shapely, props in batch:
             if geom_shapely is None or geom_shapely.is_empty:
                 continue
-            fid = str(uuid7())
-            wkt = geom_shapely.wkt
-            sql, params = insert_feature_subdivided_sql(fid, result_id, wkt, props, now, max_vertices)
-            session.execute(text(sql), params)
+            for geom in _split_geometry_by_type(geom_shapely):
+                if geom is None or geom.is_empty:
+                    continue
+                fid = str(uuid7())
+                wkt = geom.wkt
+                sql, params = insert_feature_subdivided_sql(fid, result_id, wkt, props, now, max_vertices)
+                session.execute(text(sql), params)
         session.commit()
 
 

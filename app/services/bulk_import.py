@@ -9,7 +9,9 @@ from typing import Callable
 
 from sqlalchemy import create_engine, delete, text, update
 from sqlalchemy.orm import Session, sessionmaker
-from shapely.geometry import shape
+from shapely.geometry import shape, GeometryCollection, MultiPoint, MultiLineString, MultiPolygon, Point, LineString, Polygon
+from shapely.ops import unary_union
+from shapely.validation import make_valid
 from uuid6 import uuid7
 
 from app.core.config import get_settings
@@ -87,18 +89,60 @@ def _import_one_source(
     failed = 0
     max_vertices = get_settings().features_subdivide_max_vertices
 
+    def _split_geometry_by_type(geom):
+        if geom is None or geom.is_empty:
+            return []
+        if not geom.is_valid:
+            geom = make_valid(geom)
+        if geom is None or geom.is_empty:
+            return []
+        if isinstance(geom, GeometryCollection):
+            pts = []
+            lines = []
+            polys = []
+            for g in geom.geoms:
+                if g is None or g.is_empty:
+                    continue
+                if not g.is_valid:
+                    g = make_valid(g)
+                    if g is None or g.is_empty:
+                        continue
+                if isinstance(g, (Polygon, MultiPolygon)):
+                    polys.append(g)
+                elif isinstance(g, (LineString, MultiLineString)):
+                    lines.append(g)
+                elif isinstance(g, (Point, MultiPoint)):
+                    pts.append(g)
+            out = []
+            if polys:
+                out.append(unary_union(polys))
+            if lines:
+                out.append(unary_union(lines))
+            if pts:
+                out.append(unary_union(pts))
+            return [g for g in out if g and not g.is_empty]
+        return [geom]
+
     with fiona.open(open_path, driver=driver) as src:
         for rec in src:
             try:
                 geom_dict = rec.get("geometry")
                 props = dict(rec.get("properties") or {})
-                wkt = shape(geom_dict).wkt if geom_dict else None
-                fid = str(uuid7())
-                sql, params = insert_feature_subdivided_sql(
-                    fid, collection_id, wkt, props if props else None, now, max_vertices
-                )
-                session.execute(text(sql), params)
-                created += 1
+                if geom_dict:
+                    base_geom = shape(geom_dict)
+                    geoms = _split_geometry_by_type(base_geom)
+                else:
+                    geoms = [None]
+                for geom in geoms:
+                    wkt = None
+                    if geom is not None and not geom.is_empty:
+                        wkt = geom.wkt
+                    fid = str(uuid7())
+                    sql, params = insert_feature_subdivided_sql(
+                        fid, collection_id, wkt, props if props else None, now, max_vertices
+                    )
+                    session.execute(text(sql), params)
+                    created += 1
             except Exception:
                 failed += 1
                 continue
