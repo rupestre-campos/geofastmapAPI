@@ -1,148 +1,201 @@
-## GeoFast API
+# GeoFast API
 
-OGC API - Features–style service built with **FastAPI**, **PostgreSQL**, and **SQLAlchemy**, following an MVC-ish layout:
+**Fast, OGC-compliant geo API for vector tiles, PostGIS, and web maps.**
 
+Complicated geo enabled server? That was then. **GeoFast API** is a modern stack: FastAPI + PostgreSQL/PostGIS, built to be *fast*—low latency, streaming downloads, efficient vector tiles, and real-time intersection/erase. No Java, no heavyweight servers. Just Python, async I/O, and a database that knows geometry.
 
-- `app/models`: ORM models (`Collection`, `Feature`)
-- `app/schemas`: Pydantic schemas (collections, Feature, FeatureCollection)
-- `app/crud`: data access and business logic
-- `app/api/routes`: FastAPI routers for collections and items
-- `alembic`: database migrations
-- `tests`: async API tests with **mocked DB** (no database or Docker required)
+---
 
-### Requirements
+## What is it?
 
-- Docker and Docker Compose (for containerized run)
-- Python 3.10+ (for local/dev usage)
+GeoFast API is an **OGC API – Features** (and tiles, styles, processes) implementation focused on:
 
-### Installation (local dev)
+- **Speed** — Async FastAPI, asyncpg, keyset-paginated streaming, bounded-memory exports
+- **Vector tiles** — Static MBTiles (Tippecanoe) and dynamic MVT from PostGIS; TileJSON per collection
+- **Spatial operations** — Intersection and erase between collections (OGC API – Processes style), with background workers and progress
+- **Web maps** — HTML map views, collection/item editors, style editor, basemaps, multi-layer maps
+- **Bulk & streaming** — Bulk import (GeoJSON, GeoJSONL, KML, GPKG, shapefile in ZIP), streaming GeoJSONL download with low RAM and fast time-to-first-byte
+
+Use it as a **vector tile server**, a **feature API** for QGIS/other clients, or the **backend for your own web mapping apps**.
+
+---
+
+## Features
+
+| Area | What you get |
+|------|----------------|
+| **OGC API – Features** | Collections, items (CRUD), pagination, `bbox`, `datetime`, `sortby`, attribute filters, full-text search (`q`), property selection |
+| **Tiles** | TileJSON per collection; static PMTiles/MBTiles build (Tippecanoe worker); dynamic MVT from PostGIS; cache (Redis) and optional tile job queue |
+| **Styles** | Per-collection and global styles; style editor UI; fill/line/point toggles and paint options |
+| **Processes** | **Intersection** and **Erase** between two collections; async jobs with status and result collection |
+| **Maps** | Saved maps (layers + basemap + styles); HTML map view and editor |
+| **Bulk** | Upload GeoJSON, GeoJSONL, KML, GPKG, or shapefile (ZIP); append or replace; background worker (Redis or in-process) |
+| **Export** | `GET /collections/{id}/items/data` → streaming GeoJSONL download (keyset pagination, 256 KB chunks, minimal RAM) |
+| **Data integrity** | Geometry validation (`make_valid`); optional splitting of GeometryCollections into points/lines/polygons on import and process results; migration to fix existing invalid geometries |
+
+---
+
+## Tech stack
+
+- **API:** [FastAPI](https://fastapi.tiangolo.com/), [Pydantic](https://docs.pydantic.dev/)
+- **DB:** [PostgreSQL](https://www.postgresql.org/) + [PostGIS](https://postgis.net/), [SQLAlchemy](https://www.sqlalchemy.org/) 2.0 async ([asyncpg](https://magicstack.github.io/asyncpg/))
+- **Tiles:** [Tippecanoe](https://github.com/felt/tippecanoe) (static), PostGIS MVT (dynamic), [MapLibre GL JS](https://maplibre.org/) (frontend)
+- **Workers:** Redis-backed queues for bulk import, tile builds, and process jobs
+- **Migrations:** [Alembic](https://alembic.sqlalchemy.org/)
+
+---
+
+## Quick start (Docker Compose)
+
+**Requirements:** Docker and Docker Compose.
 
 ```bash
 git clone <this-repo>
 cd geofast_api
-
-python -m venv .venv
-source .venv/bin/activate
-
-# install runtime + dev deps (tests, coverage, etc.)
-pip install -r requirements-dev.txt
-```
-
-### Running the API with Docker Compose
-
-From the project root:
-
-```bash
 docker compose up --build
 ```
 
-This will:
+This starts:
 
-- Start **PostgreSQL** on host port `5434` (container port `5432`)
-- Run Alembic migrations
-- Start the FastAPI app on `http://localhost:8000`
+- **PostgreSQL (PostGIS)** on port `5434` (host)
+- **Redis** on port `6379`
+- **API** on **http://localhost:8000** (runs migrations then uvicorn)
+- **Worker** — bulk import (GeoJSON, shapefile, etc.)
+- **Tile worker** — Tippecanoe MBTiles/PMTiles builds
+- **Process worker** — intersection and erase jobs
 
-Open the interactive docs:
+- **Landing (HTML):** http://localhost:8000/?f=html  
+- **OpenAPI (Swagger):** http://localhost:8000/docs  
+- **Collections:** http://localhost:8000/collections  
 
-- Swagger UI: `http://localhost:8000/docs`
+Create a collection, add data (upload or API), then use **View items**, **Build tiles**, or **Download GeoJSONL** from the collection page.
 
-**Items endpoint** (`GET /collections/{id}/items`) supports OGC-style query parameters (aligned with [QGIS OGC API Features](https://docs.qgis.org/3.40/en/docs/server_manual/services/ogcapif.html)):
+---
 
-- **limit** / **offset** – Pagination (default limit from config, max 1000). Response includes `numberMatched`, `numberReturned` and **next** / **prev** links.
-- **bbox** – Bounding box filter: `minx,miny,maxx,maxy` (WGS84). Uses PostGIS spatial index.
-- **datetime** – Filter by feature `created_at`: instant (e.g. `2024-01-01`) or range (`2024-01-01/2024-12-31`).
-- **sortby** – Sort by `id`, `created_at`, or any property name.
-- **sortdesc** – Sort descending when `true`.
-- **Attribute filtering** – Any other query param is treated as a property filter: `?name=Main%20St` (exact), `?name=*St` (ends with), `?name=Main*` (starts with). Multiple filters are ANDed.
-- **Attribute selection** – `?properties=name,area` returns only those keys in each feature’s `properties`.
+## API overview
 
-To stop:
+| Path | Description |
+|------|-------------|
+| `GET /` | OGC landing page (JSON or HTML with `?f=html`) |
+| `GET /conformance` | OGC conformance classes |
+| `GET /collections` | List collections (OGC – Features) |
+| `GET /collections/{id}` | Collection metadata; HTML map/view |
+| `GET /collections/{id}/items` | Features (GeoJSON FC); supports `limit`, `offset`, `bbox`, `datetime`, `sortby`, `filter`, `q`, `properties` |
+| `GET /collections/{id}/items/data` | **Streaming GeoJSONL download** (low RAM, fast start) |
+| `GET/POST/PUT/PATCH/DELETE /collections/{id}/items[/{feature_id}]` | Feature CRUD (OGC Part 4 style) |
+| `GET /collections/{id}/tiles` | TileJSON (dynamic and/or static tiles) |
+| `POST /collections/{id}/tiles/build` | Request static tile build (returns job id) |
+| `GET /collections/{id}/tiles/static/{z}/{x}/{y}.pbf` | Static vector tiles (PMTiles/MBTiles) |
+| `GET /collections/{id}/styles` | Collection styles |
+| `GET /styles` | Global (public) styles |
+| `GET /processes` | List processes (intersection, erase); `?f=html` → processing UI |
+| `POST /processes/intersection/execution` | Run intersection (body: `collection_id_a`, `collection_id_b`) |
+| `POST /processes/erase/execution` | Run erase (body: `collection_id_a`, `collection_id_b`) |
+| `GET /jobs/{job_id}` | Job status (bulk, tiles, process); cancel supported for process jobs |
+| `GET /maps` | List saved maps |
+| `GET /maps/{id}` | Map view (HTML or JSON) |
+
+Most list/detail endpoints support **`?f=html`** or **`Accept: text/html`** for the web UI (maps, forms, style editor).
+
+---
+
+## Items query parameters (OGC-style)
+
+For `GET /collections/{id}/items` (and the same filters apply to the GeoJSONL export and dynamic tiles):
+
+- **limit** / **offset** — Pagination (default limit from config, max 1000). Response includes `numberMatched`, `numberReturned`, **next** / **prev** links.
+- **bbox** — Bounding box: `minx,miny,maxx,maxy` (WGS84). Uses PostGIS spatial index.
+- **datetime** — Filter by feature `created_at`: instant (`2024-01-01`) or range (`2024-01-01/2024-12-31`).
+- **sortby** — `id`, `created_at`, or any property name.
+- **sortdesc** — Sort descending when `true`.
+- **filter** — Structured filters: `filter=key:op:value` (repeat for AND). Operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`.
+- **q** — Full-text search across property values (uses trigram index).
+- **properties** — Comma-separated property names (attribute selection).
+- **Any other query param** — Treated as property filter: `?name=Main%20St` (exact), `?name=*St` (ends with), etc. Multiple filters are ANDed.
+
+---
+
+## Configuration
+
+Key settings (env vars or `.env`; see `app/core/config.py`):
+
+- **DATABASE_URL** — PostgreSQL + PostGIS (e.g. `postgresql+asyncpg://user:pass@host:5432/geofast`).
+- **REDIS_URL** — For bulk queue, tile build queue, process queue, and tile cache (default `redis://localhost:6379/0`).
+- **BULK_QUEUE_TYPE** — `redis` (separate worker) or `memory` (in-process consumer).
+- **PROCESS_QUEUE_TYPE** — `redis` or `memory` for intersection/erase jobs.
+- **TILES_STORAGE_PATH** — Where static MBTiles/PMTiles are stored (default `/data/tiles`).
+- **BULK_STORAGE_PATH** — Where uploaded files go (default `/data/bulk-uploads`).
+- **database_pool_size** / **database_pool_max_overflow** — Tune for concurrent tile/export load.
+
+Optional:
+
+- **TILES_DYNAMIC_USE_QUEUE** — Use Redis search cache + tile job queue for dynamic tiles (workers read from cache).
+- **TILES_DYNAMIC_WORKER_URL** — Offload dynamic tiles to another service (e.g. tippecanoe worker).
+- **process_max_concurrent**, **process_batch_max_bytes**, etc. — Tune process worker memory and parallelism.
+
+---
+
+## Running without Docker
+
+1. **PostgreSQL + PostGIS** and **Redis** running and reachable.
+2. Set **DATABASE_URL** (and **REDIS_URL** if using Redis).
+3. Migrations and run:
 
 ```bash
-docker compose down
-```
-
-### Checking tile build logs
-
-When you request a static MBTiles build (`POST /collections/{id}/tiles/build`), a **tile worker** processes the job. To see what it’s doing or why it stopped:
-
-**1. Tile worker container logs (Docker)**
-
-```bash
-# Last 200 lines
-docker compose logs tile_worker --tail=200
-
-# Follow live
-docker compose logs -f tile_worker
-```
-
-You’ll see messages like:
-- `Tile worker started. Waiting for build jobs...`
-
-**2. Tile worker CPU and memory (Docker Compose)**
-
-The tile worker runs **tippecanoe** to build MBTiles. By default it is allowed up to **4 CPUs** and **8 GB RAM** so it can use more hardware when building large layers. To change this, edit `docker-compose.yml` under `tile_worker`: adjust `cpus`, `mem_limit`, and (for Swarm) `deploy.resources.limits`. If you run with `docker compose up` (no Swarm), ensure Docker Desktop (or your engine) gives the daemon enough CPUs and memory so the container can use them.
-- `Building tiles for <collection_id> (job_id=...)...`
-- `[tile_builder] Running tippecanoe for <collection_id> (N features)...`
-- `Build completed for <collection_id>` or `Build FAILED for <collection_id>: <error>`
-
-**2. Job status via API**
-
-The build response includes a `status_url` (e.g. `http://localhost:8000/jobs/<job_id>`). Poll that URL for tile build status (pending, running, completed, failed, cancelled):
-
-```bash
-curl -s http://localhost:8000/jobs/<job_id> | jq
-```
-
-If a build stops in the middle (e.g. worker OOM), check the worker logs; then you can trigger a new build with `POST .../tiles/build` again.
-
-### Running the API locally (without Docker)
-
-1. Ensure you have a PostgreSQL database and set `DATABASE_URL` (or adjust `database_url` in `app/core/config.py`).
-2. Run Alembic migrations:
-
-```bash
+pip install -r requirements.txt
 alembic upgrade head
-```
-
-3. Start the dev server:
-
-```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Then open `http://localhost:8000/docs`.
+For bulk import and tile builds you’ll need workers (same codebase: `python -m app.worker_main`, `python -m app.tile_worker_main`, `python -m app.process_worker_main`) and Redis so they can consume the same queues.
 
-### Running tests
+---
 
-Tests use an **in-memory mock** for the database (no PostgreSQL or Docker required). Run:
+## Tests
 
-```bash
-pytest
-```
-
-### Running tests with coverage
-
-First make sure dev deps are installed:
+Tests use an in-memory mock DB (no PostgreSQL or Docker required):
 
 ```bash
 pip install -r requirements-dev.txt
+pytest
 ```
 
-Then run pytest with coverage:
+With coverage:
 
 ```bash
 pytest --cov=app --cov-report=term-missing --cov-report=html
+# open htmlcov/index.html
 ```
 
-This will:
+---
 
-- Show a line-by-line coverage summary in the terminal
-- Generate an HTML report under `htmlcov/`
+## Tile build and process jobs
 
-Open the HTML coverage report in a browser:
+- **Tile build:** `POST /collections/{id}/tiles/build` returns a `job_id` and `status_url`. Poll `GET /jobs/{job_id}` until completed (or failed/cancelled). Tile worker runs Tippecanoe; resource limits are in `docker-compose.yml` (e.g. 4 CPUs, 8 GB RAM).
+- **Process jobs:** After `POST /processes/intersection/execution` or `POST /processes/erase/execution`, poll `GET /jobs/{job_id}`. You can cancel with `POST /jobs/{job_id}/cancel` when status is `pending`.
+- **Logs:** `docker compose logs tile_worker` or `docker compose logs process_worker` to inspect build or process runs.
 
-```bash
-xdg-open htmlcov/index.html  # Linux (or open via your file browser)
-```
+---
 
+## Project layout (high level)
+
+- **app/models** — ORM (Collection, Feature, Style, Map, etc.).
+- **app/schemas** — Pydantic request/response models.
+- **app/crud** — Data access and business logic (collections, features, tiles, styles, maps).
+- **app/api/routes** — FastAPI routers (root, collections, items, tiles, styles, processes, jobs, maps, basemaps).
+- **app/services** — Bulk import, tile build queue, process worker, dynamic tile cache, job store.
+- **app/templates** — Jinja2 HTML (maps, collection/item/style editors, landing).
+- **alembic/versions** — DB migrations (PostGIS, partitions, indexes, basemaps, etc.).
+- **static** — JS/CSS for map UIs (e.g. MapLibre, geofast-map-utils).
+
+---
+
+## Why “GeoFast”?
+
+Because we lived without it: heavyweight servers, slow feeds, and bloated stacks. **GeoFast API** is built to be fast and lean—async from the DB to the HTTP response, streaming where it matters, and no more resources than you need. Vector tiles, DB-backed intersection, and web maps, without the pfff.
+
+---
+
+## License
+
+See [LICENSE](LICENSE) in the repo (if present). Otherwise use and modify as needed for your environment.
