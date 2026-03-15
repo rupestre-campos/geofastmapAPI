@@ -1,6 +1,7 @@
-"""OGC API - Processes worker: intersection and erase between two collections. Streams from DB, parallel batch workers, low RAM."""
+"""OGC API - Processes worker: intersection and erase between two collections or single feature vs layers."""
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -23,6 +24,32 @@ from app.services.process_queue import ProcessJobPayload
 from app.services.job_store import update_job
 
 _MAX_RESULT_COLLECTION_ID_LEN = 60
+_RESULT_HASH_LEN = 12
+
+
+def _hash_for_result(s: str) -> str:
+    """Deterministic short hash for result collection naming (first 12 hex chars of SHA-256)."""
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:_RESULT_HASH_LEN]
+
+
+def _sanitize_result_collection_id(raw: str) -> str:
+    """Sanitize user-provided collection id for use as result: alphanumeric, underscore, hyphen; max length."""
+    s = re.sub(r"[^a-zA-Z0-9_-]", "_", raw).strip("_") or "result"
+    return s[:_MAX_RESULT_COLLECTION_ID_LEN]
+
+
+def _default_result_collection_id(process_id: str, collection_id_a: str, collection_id_b: str) -> str:
+    """Deterministic result collection id for collection-vs-collection: process_id + hash(id_a|id_b) (sorted)."""
+    a, b = sorted([collection_id_a, collection_id_b])
+    h = _hash_for_result(f"{a}|{b}")
+    return f"{process_id}_{h}"[:_MAX_RESULT_COLLECTION_ID_LEN]
+
+
+def _default_result_collection_id_feature(process_id: str, feature_id: str, collection_ids: list[str]) -> str:
+    """Deterministic result collection id for feature-vs-layers: process_id + hash(feature_id|sorted(layers))."""
+    layers = "|".join(sorted(collection_ids))
+    h = _hash_for_result(f"{feature_id}|{layers}")
+    return f"{process_id}_{h}"[:_MAX_RESULT_COLLECTION_ID_LEN]
 
 
 def cleanup_process_worker_temp_dir() -> None:
@@ -67,19 +94,6 @@ def _stream_batches_by_size(
         yield batch_a
 
 
-def _safe_result_collection_id(process_id: str, id_a: str, id_b: str) -> str:
-    """Build a valid result collection id: operation_collection_id_a_collection_id_b (sanitized, max length)."""
-    def sanitize(s: str, max_len: int = 18) -> str:
-        s = re.sub(r"[^a-zA-Z0-9_]", "_", s).strip("_") or "x"
-        return s[:max_len]
-    a = sanitize(id_a)
-    b = sanitize(id_b)
-    raw = f"{process_id}_{a}_{b}"
-    if len(raw) <= _MAX_RESULT_COLLECTION_ID_LEN:
-        return raw
-    return raw[:_MAX_RESULT_COLLECTION_ID_LEN]
-
-
 def _geom_to_shapely(geom: Any):
     """Convert DB geometry (hex WKB str or bytes) to Shapely geometry."""
     if geom is None:
@@ -113,16 +127,21 @@ def _geom_to_wkb_bytes(geom: Any) -> bytes | None:
         return None
 
 
-def _ensure_collection_and_partition_sync(engine: Engine, result_id: str, title: str) -> None:
+def _ensure_collection_and_partition_sync(
+    engine: Engine,
+    result_id: str,
+    title: str,
+    description: str | None = None,
+) -> None:
     """Create collection row and ensure features partition exists (sync). Idempotent."""
     with engine.connect() as conn:
         conn.execute(
             text("""
                 INSERT INTO collections (id, title, description, extent, created_at, updated_at)
-                VALUES (:id, :title, NULL, NULL, :now, :now)
+                VALUES (:id, :title, :description, NULL, :now, :now)
                 ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, description = EXCLUDED.description, updated_at = EXCLUDED.updated_at
             """),
-            {"id": result_id, "title": title, "now": datetime.now(timezone.utc)},
+            {"id": result_id, "title": title, "description": description, "now": datetime.now(timezone.utc)},
         )
         conn.commit()
 
@@ -306,6 +325,222 @@ def _stream_intersection_pairs_chunks(
                 chunk = []
     if chunk:
         yield chunk
+
+
+def _get_single_feature_geometry_sync(
+    engine: Engine,
+    collection_id: str,
+    feature_id: str,
+) -> tuple[Any, dict] | tuple[None, None]:
+    """Fetch one logical feature by id; return (shapely_geom, properties) or (None, None)."""
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    session = SessionLocal()
+    try:
+        rows = session.execute(
+            text("""
+                SELECT id, part_index, geometry, properties
+                FROM features
+                WHERE collection_id = :cid AND id = :fid AND geometry IS NOT NULL
+                ORDER BY part_index
+            """),
+            {"cid": collection_id, "fid": feature_id},
+        ).fetchall()
+        if not rows:
+            return (None, None)
+        geoms = []
+        props = dict(rows[0].properties) if rows[0].properties else {}
+        for r in rows:
+            shp = _geom_to_shapely(r.geometry)
+            if shp and not shp.is_empty:
+                geoms.append(shp)
+        if not geoms:
+            return (None, None)
+        union_geom = unary_union(geoms)
+        if union_geom is None or union_geom.is_empty:
+            return (None, None)
+        return (union_geom, props)
+    finally:
+        session.close()
+
+
+def _get_single_geometry_from_geojson(geojson_dict: dict) -> Any | None:
+    """Extract one Shapely geometry from GeoJSON Feature or FeatureCollection. Returns None if invalid."""
+    from shapely.geometry import shape
+    if not geojson_dict:
+        return None
+    kind = geojson_dict.get("type")
+    if kind == "Feature":
+        geom = geojson_dict.get("geometry")
+        if not geom:
+            return None
+        try:
+            return shape(geom)
+        except Exception:
+            return None
+    if kind == "FeatureCollection":
+        features = geojson_dict.get("features") or []
+        geoms = []
+        for f in features:
+            if f.get("type") == "Feature" and f.get("geometry"):
+                try:
+                    g = shape(f["geometry"])
+                    if g and not g.is_empty:
+                        geoms.append(g)
+                except Exception:
+                    pass
+        if not geoms:
+            return None
+        return unary_union(geoms)
+    if kind in ("Point", "LineString", "Polygon", "MultiPoint", "MultiLineString", "MultiPolygon"):
+        try:
+            return shape(geojson_dict)
+        except Exception:
+            return None
+    return None
+
+
+def _run_intersection_feature_vs_layers_sync(
+    engine: Engine,
+    result_id: str,
+    geom_a: Any,
+    props_a: dict,
+    collection_ids: list[str],
+    insert_session: Session,
+) -> int:
+    """Single geometry vs multiple layers: for each layer, find intersecting features; intersect; insert. Returns count."""
+    from shapely.validation import make_valid
+    total = 0
+    for cid in collection_ids:
+        session = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)()
+        try:
+            rows = session.execute(
+                text("""
+                    SELECT id, geometry, properties
+                    FROM features
+                    WHERE collection_id = :cid AND geometry IS NOT NULL
+                    AND ST_Intersects(geometry, ST_GeomFromText(:wkt, 4326))
+                """),
+                {"cid": cid, "wkt": geom_a.wkt},
+            ).fetchall()
+            batch = []
+            for r in rows:
+                shp_b = _geom_to_shapely(r.geometry)
+                if shp_b is None or shp_b.is_empty:
+                    continue
+                try:
+                    if not geom_a.intersects(shp_b):
+                        continue
+                    inter = geom_a.intersection(shp_b)
+                    if inter.is_empty:
+                        continue
+                    if not inter.is_valid:
+                        inter = make_valid(inter)
+                    if inter is None or inter.is_empty:
+                        continue
+                    props = {**props_a, **_dict(r.properties), "_layer": cid, "_id_b": r.id}
+                    for part in _split_geometry_by_type_for_insert(inter):
+                        if part is None or part.is_empty:
+                            continue
+                        batch.append((part, props))
+                except Exception:
+                    continue
+            if batch:
+                _insert_features_sync(insert_session, result_id, batch)
+                total += len(batch)
+        finally:
+            session.close()
+    return total
+
+
+def _run_erase_feature_vs_layers_sync(
+    engine: Engine,
+    result_id: str,
+    geom_a: Any,
+    props_a: dict,
+    collection_ids: list[str],
+    insert_session: Session,
+) -> int:
+    """Single geometry vs multiple layers: geom_result = geom_a minus (union of all features in layers). Insert result. Returns count."""
+    from shapely.validation import make_valid
+    current = geom_a
+    for cid in collection_ids:
+        session = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)()
+        try:
+            rows = session.execute(
+                text("""
+                    SELECT id, geometry
+                    FROM features
+                    WHERE collection_id = :cid AND geometry IS NOT NULL
+                    AND ST_Intersects(geometry, ST_GeomFromText(:wkt, 4326))
+                """),
+                {"cid": cid, "wkt": current.wkt},
+            ).fetchall()
+            list_b = []
+            for r in rows:
+                shp_b = _geom_to_shapely(r.geometry)
+                if shp_b and not shp_b.is_empty:
+                    list_b.append(shp_b)
+            if list_b:
+                try:
+                    union_b = unary_union(list_b)
+                    current = current.difference(union_b)
+                    if current is None or current.is_empty:
+                        break
+                    if not current.is_valid:
+                        current = make_valid(current)
+                except Exception:
+                    pass
+        finally:
+            session.close()
+    if current is None or current.is_empty:
+        return 0
+    total = 0
+    for part in _split_geometry_by_type_for_insert(current):
+        if part is None or part.is_empty:
+            continue
+        _insert_features_sync(insert_session, result_id, [(part, dict(props_a))])
+        total += 1
+    return total
+
+
+def _dict(x: Any) -> dict:
+    return dict(x) if x else {}
+
+
+def _split_geometry_by_type_for_insert(geom: Any) -> list[Any]:
+    """Split GeometryCollection into points/lines/polygons for insert; return list of Shapely geoms."""
+    from shapely.geometry import GeometryCollection, MultiPoint, MultiLineString, MultiPolygon, Point, LineString, Polygon
+    from shapely.validation import make_valid
+    if geom is None or geom.is_empty:
+        return []
+    if not geom.is_valid:
+        geom = make_valid(geom)
+    if geom is None or geom.is_empty:
+        return []
+    if isinstance(geom, GeometryCollection):
+        pts, lines, polys = [], [], []
+        for g in geom.geoms:
+            if g is None or g.is_empty:
+                continue
+            if not g.is_valid:
+                g = make_valid(g)
+                if g is None or g.is_empty:
+                    continue
+            if isinstance(g, (Polygon, MultiPolygon)):
+                polys.append(g)
+            elif isinstance(g, (LineString, MultiLineString)):
+                lines.append(g)
+            elif isinstance(g, (Point, MultiPoint)):
+                pts.append(g)
+        out = []
+        if polys:
+            out.append(unary_union(polys))
+        if lines:
+            out.append(unary_union(lines))
+        if pts:
+            out.append(unary_union(pts))
+        return [g for g in out if g and not g.is_empty]
+    return [geom]
 
 
 def _fetch_logical_features_by_ids(
@@ -563,21 +798,88 @@ def _run_erase_sync(
     return total_inserted
 
 
-def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, int, int]:
+def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, int, int, str]:
     """
-    Run intersection or erase process. Streams from DB, parallel batch workers, low RAM.
-    Returns (None, count) on success, (error_message, 0) on failure.
+    Run intersection or erase process (collection vs collection or single feature vs layers).
+    Returns (None, count, items_in, result_id) on success, (error_message, 0, 0, "") on failure.
     """
     import os
     import time
     from sqlalchemy import create_engine
 
     settings = get_settings()
+    engine = create_engine(
+        settings.database_sync_url,
+        pool_pre_ping=True,
+        future=True,
+        pool_size=8,
+        max_overflow=4,
+    )
+
+    if payload.is_feature_vs_layers:
+        try:
+            if payload.feature_ref:
+                geom_a, props_a = _get_single_feature_geometry_sync(
+                    engine,
+                    payload.feature_ref["collection_id"],
+                    payload.feature_ref["feature_id"],
+                )
+            else:
+                geom_a = _get_single_geometry_from_geojson(payload.feature_geojson or {})
+                props_a = {}
+            if geom_a is None or geom_a.is_empty:
+                engine.dispose()
+                return ("Feature geometry is empty or invalid.", 0, 0, "")
+            if payload.update_existing and payload.result_collection_id:
+                result_id = payload.result_collection_id
+                with engine.connect() as conn:
+                    row = conn.execute(
+                        text("SELECT id FROM collections WHERE id = :cid"),
+                        {"cid": result_id},
+                    ).first()
+                    if not row:
+                        engine.dispose()
+                        return (f"Collection to update not found: {result_id}", 0, 0, "")
+            elif payload.result_collection_id:
+                result_id = _sanitize_result_collection_id(payload.result_collection_id)
+            else:
+                feature_id = payload.feature_ref.get("feature_id", "geojson") if payload.feature_ref else "geojson"
+                result_id = _default_result_collection_id_feature(
+                    payload.process_id, feature_id, payload.collection_ids
+                )
+            layer_list = ", ".join(payload.collection_ids)
+            title = result_id
+            description = f"Between a feature and {len(payload.collection_ids)} layers: {layer_list}."
+            if not payload.update_existing:
+                _ensure_collection_and_partition_sync(engine, result_id, title, description=description)
+            SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+            insert_session = SessionLocal()
+            try:
+                _clear_result_collection_sync(insert_session, result_id)
+                if payload.process_id == "intersection":
+                    count = _run_intersection_feature_vs_layers_sync(
+                        engine, result_id, geom_a, props_a, payload.collection_ids, insert_session
+                    )
+                else:
+                    count = _run_erase_feature_vs_layers_sync(
+                        engine, result_id, geom_a, props_a, payload.collection_ids, insert_session
+                    )
+            finally:
+                insert_session.close()
+            try:
+                _update_feature_count_sync(engine, result_id)
+            except Exception:
+                pass
+            engine.dispose()
+            return (None, count, 1, result_id)
+        except Exception as e:
+            engine.dispose()
+            return (str(e), 0, 0, "")
+
     cpu_count = getattr(os, "cpu_count", lambda: 4)() or 4
     max_workers = max(1, settings.process_batch_workers or cpu_count)
     batch_max_bytes = max(1024, settings.process_batch_max_bytes)
     batch_max_rows = max(0, settings.process_batch_max_rows)
-    # Pool must cover: 1 stream session + 1 insert session + max_workers (each does B query)
     pool_size = max(5, max_workers + 3)
     engine = create_engine(
         settings.database_sync_url,
@@ -587,13 +889,27 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
         max_overflow=min(4, max_workers),
     )
 
-    result_id = _safe_result_collection_id(
-        payload.process_id, payload.collection_id_a, payload.collection_id_b
-    )
+    if payload.update_existing and payload.result_collection_id:
+        result_id = payload.result_collection_id
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT id FROM collections WHERE id = :cid"),
+                {"cid": result_id},
+            ).first()
+            if not row:
+                engine.dispose()
+                return (f"Collection to update not found: {result_id}", 0, 0, "")
+    elif payload.result_collection_id:
+        result_id = _sanitize_result_collection_id(payload.result_collection_id)
+    else:
+        result_id = _default_result_collection_id(
+            payload.process_id, payload.collection_id_a, payload.collection_id_b
+        )
     title = f"{payload.process_id.title()} of {payload.collection_id_a} and {payload.collection_id_b}"
 
     try:
-        _ensure_collection_and_partition_sync(engine, result_id, title)
+        if not payload.update_existing:
+            _ensure_collection_and_partition_sync(engine, result_id, title)
         SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
         session = SessionLocal()
         _clear_result_collection_sync(session, result_id)
@@ -690,7 +1006,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
             count = items_out
         else:
             engine.dispose()
-            return (f"Unknown process: {payload.process_id}", 0, 0)
+            return (f"Unknown process: {payload.process_id}", 0, 0, "")
 
         # Update cached feature_count for the result collection so HTML views and tiles see the real size.
         try:
@@ -700,7 +1016,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
             pass
 
         engine.dispose()
-        return (None, count, items_in)
+        return (None, count, items_in, result_id)
     except Exception as e:
         engine.dispose()
-        return (str(e), 0, 0)
+        return (str(e), 0, 0, "")

@@ -11,10 +11,14 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, Response
+from typing import Literal
+
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.html import html_response, wants_html
 from app.utils.datetime_parse import parse_datetime_param
 from app.utils.geo import mvt_layer_name
 from app.utils.property_filters import PropertyFilter, parse_filter_param
@@ -31,6 +35,7 @@ from app.services.dynamic_tile_cache import (
     _params_key_from_query,
 )
 from app.services.tile_build_queue import (
+    TileBuildOptions,
     clear_pending,
     create_tile_build_job,
     enqueue_tile_build,
@@ -42,20 +47,63 @@ from app.services.tile_build_queue import (
 router = APIRouter()
 
 
+class TileBuildRequestBody(BaseModel):
+    """Optional tile build options. If omitted, server defaults are used (min/max zoom from config, all attributes, drop-densest, drop-smallest, -ps and -r1 on)."""
+    min_zoom: int | None = Field(None, ge=0, le=24, description="Minimum zoom level (default from config tippecanoe_minzoom).")
+    max_zoom: int | None = Field(None, ge=0, le=24, description="Maximum zoom level (default from config tippecanoe_maxzoom).")
+    include_attributes: list[str] | None = Field(None, description="Only include these feature attributes in tiles. If omitted, all attributes are included.")
+    exclude_attributes: list[str] | None = Field(None, description="Exclude these feature attributes from tiles.")
+    densest: Literal["drop", "coalesce"] | None = Field(None, description="When tile is too large: 'drop' = drop-densest-as-needed (default), 'coalesce' = coalesce-densest-as-needed.")
+    smallest: Literal["drop", "coalesce"] | None = Field(None, description="When tile is too large: 'drop' = drop-smallest-as-needed (default), 'coalesce' = coalesce-smallest-as-needed.")
+    no_line_simplification: bool | None = Field(None, description="If true, use -ps (no line/polygon simplification). Default false (simplification on).")
+    simplify_only_low_zooms: bool | None = Field(None, description="If true, use -pS (simplify only at low zooms, not at maxzoom).")
+    no_shared_node_simplification: bool | None = Field(None, description="If true, use -pn (do not simplify away shared nodes, e.g. road intersections).")
+    no_tiny_polygon_reduction: bool | None = Field(None, description="If true, use -pt (do not combine tiny polygons into squares).")
+    no_point_dropping: bool | None = Field(None, description="If true, use -r1 (do not drop fraction of points at low zooms; for clustering). Default false (point dropping on).")
+
+
 def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
+
+
+@router.get(
+    "/{collection_id}/tiles/build",
+    summary="Tile build options page",
+    description="HTML page to configure and start a static tile build. Use ?f=html. From here you set zoom levels, attributes, and simplification strategy before queuing the build.",
+)
+async def get_tile_build_page(
+    request: Request,
+    collection_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html for the tile build options page")
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    settings = get_settings()
+    base = _base_url(request)
+    return html_response(
+        "tile_build.html",
+        base=base,
+        collection_id=collection_id,
+        collection_title=collection.title or collection_id,
+        default_min_zoom=settings.tippecanoe_minzoom,
+        default_max_zoom=settings.tippecanoe_maxzoom,
+    )
 
 
 @router.post(
     "/{collection_id}/tiles/build",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Request static MBTiles build",
-    description="Enqueue build of MBTiles for this collection. Returns job_id to poll status. One build per collection at a time; duplicate requests return existing job.",
+    description="Enqueue build of MBTiles. Optional body: min_zoom, max_zoom, include/exclude_attributes, densest, smallest, no_line_simplification, simplify_only_low_zooms, no_shared_node_simplification, no_tiny_polygon_reduction, no_point_dropping. Returns job_id to poll status.",
 )
 async def build_tiles(
     request: Request,
     collection_id: str,
     db: AsyncSession = Depends(get_db),
+    body: TileBuildRequestBody | None = None,
 ):
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
@@ -115,9 +163,25 @@ async def build_tiles(
                 "collection_id": collection_id,
             },
         )
+    # Build options from request body (None = use defaults in worker)
+    options = None
+    if body is not None:
+        options = TileBuildOptions(
+            min_zoom=body.min_zoom,
+            max_zoom=body.max_zoom,
+            include_attributes=body.include_attributes if body.include_attributes else None,
+            exclude_attributes=body.exclude_attributes if body.exclude_attributes else None,
+            densest=body.densest,
+            smallest=body.smallest,
+            no_line_simplification=body.no_line_simplification,
+            simplify_only_low_zooms=body.simplify_only_low_zooms,
+            no_shared_node_simplification=body.no_shared_node_simplification,
+            no_tiny_polygon_reduction=body.no_tiny_polygon_reduction,
+            no_point_dropping=body.no_point_dropping,
+        )
     job = create_tile_build_job(collection_id)
     update_tile_build_job(job.job_id, message="Tile build")
-    enqueued = enqueue_tile_build(collection_id, job.job_id)
+    enqueued = enqueue_tile_build(collection_id, job.job_id, options=options)
     if not enqueued:
         # Race: another request set pending; return that job
         existing = get_pending_job_id(collection_id)
@@ -238,6 +302,8 @@ async def get_tiles_tilejson(
     settings = get_settings()
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     has_static = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
+    minzoom = rec.minzoom if (rec and rec.minzoom is not None) else 0
+    maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
     # Prefer static ZXY URL when static tiles (MBTiles) exist so clients can use a single tile endpoint
     tile_urls = [f"{base}/collections/{collection_id}/tiles/dynamic/{{z}}/{{x}}/{{y}}.pbf"]
     if has_static:
@@ -250,7 +316,9 @@ async def get_tiles_tilejson(
         "version": "1.0.0",
         "scheme": "xyz",
         "tiles": tile_urls,
-        "vector_layers": [{"id": layer_id, "description": "", "minzoom": 0, "maxzoom": 14}],
+        "minzoom": minzoom,
+        "maxzoom": maxzoom,
+        "vector_layers": [{"id": layer_id, "description": "", "minzoom": minzoom, "maxzoom": maxzoom}],
     }
     return JSONResponse(content=tilejson)
 

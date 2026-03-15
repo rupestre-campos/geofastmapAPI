@@ -2,7 +2,7 @@
 
 **Fast, OGC-compliant geo API for vector tiles, PostGIS, and web maps.**
 
-Complicated geo enabled server? That was then. **GeoFast API** is a modern stack: FastAPI + PostgreSQL/PostGIS, built to be *fast*—low latency, streaming downloads, efficient vector tiles, and real-time intersection/erase. No Java, no heavyweight servers. Just Python, async I/O, and a database that knows geometry.
+Struggle dealing with large geospatial files? That was then. **GeoFast API** is a modern stack: FastAPI + PostgreSQL/PostGIS, built to be *fast*—low latency, streaming downloads, efficient vector tiles, and real-time intersection/erase. No Java, no heavyweight servers. Just Python, async I/O, and a database that knows geometry.
 
 ---
 

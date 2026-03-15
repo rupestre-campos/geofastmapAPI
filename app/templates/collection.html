@@ -74,6 +74,8 @@
     const collectionDescription = {{ (collection.description or '') | tojson }};
     const extent = {{ extent_geojson | tojson if extent_geojson else 'null' }};
     const hasStaticTiles = {{ has_static_tiles | tojson }};
+    const staticMinzoom = {{ static_minzoom | tojson }};
+    const staticMaxzoom = {{ static_maxzoom | tojson }};
     const tileLayerId = {{ tile_layer_id | tojson }};
     const tileUrlStatic = hasStaticTiles ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' : null;
     const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
@@ -90,7 +92,7 @@
       if (tileUrlStatic) {
         var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
         var s = GeofastMapUtils.specToPaint(spec);
-        map.addSource('tiles', { type: 'vector', tiles: [tileUrlStatic], minzoom: 0, maxzoom: 14 });
+        map.addSource('tiles', { type: 'vector', tiles: [tileUrlStatic], minzoom: staticMinzoom, maxzoom: staticMaxzoom });
         map.addLayer({
           id: 'layer',
           type: 'fill',

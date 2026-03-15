@@ -12,6 +12,7 @@ from queue import Queue
 import orjson
 
 from app.core.config import get_settings
+from app.services.tile_build_queue import TileBuildOptions
 from app.utils.geo import mvt_layer_name
 
 # Chunk size for DB streaming and queue between producer/consumer
@@ -48,11 +49,15 @@ def _consumer(queue: Queue, file_handle) -> None:
         queue.task_done()
 
 
-def build_pmtiles_sync(collection_id: str) -> str | None:
+def build_pmtiles_sync(
+    collection_id: str,
+    options: TileBuildOptions | None = None,
+) -> str | None:
     """
     Export collection to GeoJSONSeq (streaming, producer-consumer), run tippecanoe, save and register.
     Returns error message or None on success.
     Uses sync DB; run in thread/worker process.
+    options: optional overrides for min/max zoom, attributes, densest/smallest strategy; None = use config defaults.
     """
     from datetime import datetime, timezone
     from sqlalchemy import create_engine, text
@@ -65,8 +70,9 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
     tiles_dir = settings.tiles_storage_path
     os.makedirs(tiles_dir, exist_ok=True)
     out_path = os.path.join(tiles_dir, f"{collection_id}.mbtiles")
-    minz = settings.tippecanoe_minzoom
-    maxz = settings.tippecanoe_maxzoom
+    opts = options or TileBuildOptions()
+    minz = opts.min_zoom if opts.min_zoom is not None else settings.tippecanoe_minzoom
+    maxz = opts.max_zoom if opts.max_zoom is not None else settings.tippecanoe_maxzoom
 
     with SessionLocal() as session:
         row = session.execute(
@@ -89,10 +95,10 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
         with SessionLocal() as s:
             s.execute(
                 text("""
-                    INSERT INTO collection_tiles (collection_id, pmtiles_path, built_at, features_updated_at)
-                    VALUES (:cid, NULL, :now, NULL)
+                    INSERT INTO collection_tiles (collection_id, pmtiles_path, built_at, features_updated_at, minzoom, maxzoom)
+                    VALUES (:cid, NULL, :now, NULL, NULL, NULL)
                     ON CONFLICT (collection_id) DO UPDATE SET
-                        pmtiles_path = NULL, built_at = :now, features_updated_at = NULL
+                        pmtiles_path = NULL, built_at = :now, features_updated_at = NULL, minzoom = NULL, maxzoom = NULL
                 """),
                 {"cid": collection_id, "now": datetime.now(timezone.utc)},
             )
@@ -132,8 +138,7 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
         # Use sanitized layer name so it matches TileJSON vector_layers.id and frontend source-layer.
         layer_name = mvt_layer_name(collection_id)
         # -L requires "layername:file" (single argument per layer)
-        # -r1: do not drop a fraction of points at low zooms; keep all points unless tile size forces it.
-        # Then coalesce/drop only when a tile would exceed maximum-tile-bytes (default 500KB).
+        # Optional: -r1 (no point dropping at low zooms), -ps/-pS/-pn/-pt (simplification). Defaults: -r1 and -ps on.
         cmd = [
             "tippecanoe",
             "--read-parallel",
@@ -143,15 +148,40 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
             f"-z{maxz}",
             f"-Z{minz}",
             "--force",
-            "-r1",
-            "-ps",
             "--detect-shared-borders",
-            "--drop-densest-as-needed",
-            "--drop-smallest-as-needed",
             "--full-detail=12",
             "--low-detail=10",
             "--minimum-detail=8",
         ]
+        if opts.no_point_dropping:
+            cmd.append("-r1")
+        if opts.no_line_simplification:
+            cmd.append("-ps")
+        if opts.simplify_only_low_zooms:
+            cmd.append("-pS")
+        if opts.no_shared_node_simplification:
+            cmd.append("-pn")
+        if opts.no_tiny_polygon_reduction:
+            cmd.append("-pt")
+        # Densest: drop (default) or coalesce
+        if opts.densest == "coalesce":
+            cmd.append("--coalesce-densest-as-needed")
+        else:
+            cmd.append("--drop-densest-as-needed")
+        # Smallest: drop (default) or coalesce
+        if opts.smallest == "coalesce":
+            cmd.append("--coalesce-smallest-as-needed")
+        else:
+            cmd.append("--drop-smallest-as-needed")
+        # Attribute filter: --include=attr (only these) or -x attr (exclude)
+        if opts.include_attributes:
+            for attr in opts.include_attributes:
+                if attr:
+                    cmd.append(f"--include={attr}")
+        if opts.exclude_attributes:
+            for attr in opts.exclude_attributes:
+                if attr:
+                    cmd.extend(["-x", attr])
         print(f"[tile_builder] Running tippecanoe for {collection_id} ({total_features} features)...", file=sys.stderr, flush=True)
         # Stream stdout/stderr to process FDs so Docker logs show tippecanoe output in real time
         proc = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, text=True)
@@ -178,14 +208,16 @@ def build_pmtiles_sync(collection_id: str) -> str | None:
                 pass
         session.execute(
             text("""
-                INSERT INTO collection_tiles (collection_id, pmtiles_path, built_at, features_updated_at)
-                VALUES (:cid, :path, :now, :fua)
+                INSERT INTO collection_tiles (collection_id, pmtiles_path, built_at, features_updated_at, minzoom, maxzoom)
+                VALUES (:cid, :path, :now, :fua, :minz, :maxz)
                 ON CONFLICT (collection_id) DO UPDATE SET
                     pmtiles_path = EXCLUDED.pmtiles_path,
                     built_at = EXCLUDED.built_at,
-                    features_updated_at = EXCLUDED.features_updated_at
+                    features_updated_at = EXCLUDED.features_updated_at,
+                    minzoom = EXCLUDED.minzoom,
+                    maxzoom = EXCLUDED.maxzoom
             """),
-            {"cid": collection_id, "path": out_path, "now": datetime.now(timezone.utc), "fua": max_updated},
+            {"cid": collection_id, "path": out_path, "now": datetime.now(timezone.utc), "fua": max_updated, "minz": minz, "maxz": maxz},
         )
         session.commit()
 

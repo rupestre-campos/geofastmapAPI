@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+{% block title %}Build static tiles – {{ collection_id }} – GeoFast API{% endblock %}
+{% block head %}
+  <style>
+    .tile-build-form .form-row { margin-bottom: var(--space); }
+    .tile-build-form label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); margin-bottom: 0.35rem; }
+    .tile-build-form input[type="number"],
+    .tile-build-form input[type="text"],
+    .tile-build-form textarea {
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    .tile-build-form .radio-group { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.35rem; }
+    .tile-build-form .radio-group label { display: inline-flex; align-items: center; gap: 0.4rem; font-weight: normal; color: var(--text); cursor: pointer; }
+    .tile-build-form .radio-group input { width: auto; margin: 0; }
+    .tile-build-form .checkbox-group label.checkbox-label { display: inline-flex; align-items: center; gap: 0.4rem; font-weight: normal; color: var(--text); cursor: pointer; }
+    .tile-build-form .checkbox-group input[type="checkbox"] { width: auto; margin: 0; }
+    .tile-build-form .hint { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.25rem; }
+    .tile-build-form .zoom-row { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-end; }
+    .tile-build-form .zoom-row .form-row { margin-bottom: 0; }
+    .tile-build-form .zoom-row input { width: 80px; }
+    .attr-lists-wrap { display: flex; flex-wrap: wrap; gap: 2rem; margin-top: 0.5rem; }
+    .attr-list-box { min-width: 200px; flex: 1; max-width: 360px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.6rem 0.75rem; background: var(--bg-elevated); min-height: 52px; }
+    .attr-list-box .attr-tags { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+    .attr-tag { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.2rem 0.5rem; border-radius: var(--radius-sm); background: var(--card); border: 1px solid var(--border); font-size: 0.8rem; }
+    .attr-tag .attr-tag-remove { background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 0 0.15rem; font-size: 1rem; line-height: 1; }
+    .attr-tag .attr-tag-remove:hover { color: var(--danger); }
+    .attr-available { margin-top: 0.5rem; }
+    .attr-available .attr-pill { display: inline-flex; align-items: center; gap: 0.35rem; margin: 0.2rem 0.2rem 0 0; padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); background: var(--card); border: 1px solid var(--border); font-size: 0.85rem; }
+    .attr-available .attr-pill .attr-pill-btn { padding: 0.15rem 0.4rem; font-size: 0.75rem; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; }
+    .attr-available .attr-pill .attr-pill-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .attr-schema-loading { color: var(--text-secondary); font-size: 0.9rem; }
+    .attr-schema-empty { color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.35rem; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Build static tiles</h1>
+    <p class="breadcrumb">
+      <a href="{{ base }}/?f=html">Home</a> ›
+      <a href="{{ base }}/collections?f=html">Collections</a> ›
+      <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> ›
+      <a href="{{ base }}/collections/{{ collection_id }}/edit?f=html">Edit</a> ›
+      Build tiles
+    </p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Options</h2>
+    <p class="meta" style="margin-bottom: var(--space);">Configure zoom levels, which attributes to include in the tiles, and how to simplify when tiles are too large. Leave defaults to use server settings.</p>
+
+    <form class="tile-build-form" id="tile-build-form">
+      <div class="zoom-row">
+        <div class="form-row">
+          <label for="min-zoom">Minimum zoom</label>
+          <input type="number" id="min-zoom" min="0" max="24" step="1" placeholder="{{ default_min_zoom }}" title="Leave empty for default ({{ default_min_zoom }})">
+          <p class="hint">0–24. Default: {{ default_min_zoom }}</p>
+        </div>
+        <div class="form-row">
+          <label for="max-zoom">Maximum zoom</label>
+          <input type="number" id="max-zoom" min="0" max="24" step="1" placeholder="{{ default_max_zoom }}" title="Leave empty for default ({{ default_max_zoom }})">
+          <p class="hint">0–24. Default: {{ default_max_zoom }}</p>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label>Attributes in tiles</label>
+        <p class="hint">Choose which property names to include or exclude. Leave both lists empty to include all attributes. Schema is loaded from one feature in the collection.</p>
+        <div id="attr-schema-loading" class="attr-schema-loading" style="display: none;">Loading schema…</div>
+        <div id="attr-schema-error" class="attr-schema-empty" style="display: none;"></div>
+        <div id="attr-lists-section" style="display: none;">
+          <div class="attr-lists-wrap">
+            <div class="attr-list-box">
+              <div class="hint" style="margin-bottom: 0.35rem;">Include in tiles (empty = all)</div>
+              <div id="include-list" class="attr-tags"></div>
+            </div>
+            <div class="attr-list-box">
+              <div class="hint" style="margin-bottom: 0.35rem;">Exclude from tiles</div>
+              <div id="exclude-list" class="attr-tags"></div>
+            </div>
+          </div>
+          <div class="attr-available" id="attr-available-wrap">
+            <div class="hint" style="margin-bottom: 0.35rem;">Available properties – add to list above</div>
+            <div id="attr-available" class="attr-tags"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label>When a tile is too large – densest features</label>
+        <div class="radio-group">
+          <label><input type="radio" name="densest" value="drop" checked> Drop densest as needed</label>
+          <label><input type="radio" name="densest" value="coalesce"> Coalesce densest as needed</label>
+        </div>
+        <p class="hint">Drop = remove least visible; Coalesce = merge adjacent dense features.</p>
+      </div>
+
+      <div class="form-row">
+        <label>When a tile is too large – smallest features</label>
+        <div class="radio-group">
+          <label><input type="radio" name="smallest" value="drop" checked> Drop smallest as needed</label>
+          <label><input type="radio" name="smallest" value="coalesce"> Coalesce smallest as needed</label>
+        </div>
+        <p class="hint">Drop = remove smallest; Coalesce = merge smallest features.</p>
+      </div>
+
+      <div class="form-row">
+        <label>Simplification &amp; points (tippecanoe -ps, -pS, -pn, -pt, -r1)</label>
+        <p class="hint">Check to enable each option. Defaults: line simplification and point dropping are on (uncheck to disable).</p>
+        <div class="checkbox-group" style="margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem;">
+          <label class="checkbox-label"><input type="checkbox" name="no_line_simplification" id="opt-no-line-simplification"> No line simplification (-ps)</label>
+          <label class="checkbox-label"><input type="checkbox" name="simplify_only_low_zooms" id="opt-simplify-only-low-zooms"> Simplify only at low zooms (-pS)</label>
+          <label class="checkbox-label"><input type="checkbox" name="no_shared_node_simplification" id="opt-no-shared-nodes"> No simplification of shared nodes (-pn)</label>
+          <label class="checkbox-label"><input type="checkbox" name="no_tiny_polygon_reduction" id="opt-no-tiny-polygon"> No tiny polygon reduction (-pt)</label>
+          <label class="checkbox-label"><input type="checkbox" name="no_point_dropping" id="opt-no-point-dropping"> No point dropping at low zooms (-r1)</label>
+        </div>
+        <p class="hint" style="margin-top: 0.35rem;">-ps: don't simplify lines/polygons. -pS: don't simplify at maxzoom. -pn: keep intersection nodes. -pt: don't merge tiny polygons. -r1: keep all points at low zoom (for clustering).</p>
+      </div>
+
+      <div class="btn-group" style="margin-top: var(--space);">
+        <button type="submit" class="btn btn-primary" id="submit-btn">Start build</button>
+        <a href="{{ base }}/collections/{{ collection_id }}/edit?f=html" class="btn">Cancel</a>
+        <span id="form-message" class="meta" style="margin-left: 0.5rem; display: none;"></span>
+      </div>
+    </form>
+  </div>
+{% endblock %}
+{% block script %}
+<script>
+(function() {
+  var base = {{ base | tojson }};
+  var collectionId = {{ collection_id | tojson }};
+  var defaultMinZoom = {{ default_min_zoom }};
+  var defaultMaxZoom = {{ default_max_zoom }};
+  var form = document.getElementById('tile-build-form');
+  var submitBtn = document.getElementById('submit-btn');
+  var messageEl = document.getElementById('form-message');
+  var includedList = [];
+  var excludedList = [];
+  var availableProps = [];
+
+  function esc(s) {
+    if (s == null || s === undefined) return '';
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function renderIncludeList() {
+    var el = document.getElementById('include-list');
+    el.innerHTML = includedList.map(function(attr) {
+      return '<span class="attr-tag">' + esc(attr) + ' <button type="button" class="attr-tag-remove" data-attr="' + esc(attr) + '" data-list="include" aria-label="Remove">×</button></span>';
+    }).join('');
+    el.querySelectorAll('.attr-tag-remove').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var a = btn.getAttribute('data-attr');
+        includedList = includedList.filter(function(x) { return x !== a; });
+        renderIncludeList();
+        renderAvailable();
+      });
+    });
+  }
+
+  function renderExcludeList() {
+    var el = document.getElementById('exclude-list');
+    el.innerHTML = excludedList.map(function(attr) {
+      return '<span class="attr-tag">' + esc(attr) + ' <button type="button" class="attr-tag-remove" data-attr="' + esc(attr) + '" data-list="exclude" aria-label="Remove">×</button></span>';
+    }).join('');
+    el.querySelectorAll('.attr-tag-remove').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var a = btn.getAttribute('data-attr');
+        excludedList = excludedList.filter(function(x) { return x !== a; });
+        renderExcludeList();
+        renderAvailable();
+      });
+    });
+  }
+
+  function renderAvailable() {
+    var used = {};
+    includedList.forEach(function(a) { used[a] = true; });
+    excludedList.forEach(function(a) { used[a] = true; });
+    var list = availableProps.filter(function(a) { return !used[a]; });
+    var el = document.getElementById('attr-available');
+    el.innerHTML = list.map(function(attr) {
+      return '<span class="attr-pill">' + esc(attr) +
+        ' <button type="button" class="attr-pill-btn" data-attr="' + esc(attr) + '" data-to="include">+ Include</button>' +
+        ' <button type="button" class="attr-pill-btn" data-attr="' + esc(attr) + '" data-to="exclude">− Exclude</button></span>';
+    }).join('');
+    el.querySelectorAll('.attr-pill-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var a = btn.getAttribute('data-attr');
+        var to = btn.getAttribute('data-to');
+        if (to === 'include') {
+          if (includedList.indexOf(a) === -1) includedList.push(a);
+          excludedList = excludedList.filter(function(x) { return x !== a; });
+        } else {
+          if (excludedList.indexOf(a) === -1) excludedList.push(a);
+          includedList = includedList.filter(function(x) { return x !== a; });
+        }
+        renderIncludeList();
+        renderExcludeList();
+        renderAvailable();
+      });
+    });
+  }
+
+  var loadingEl = document.getElementById('attr-schema-loading');
+  var errorEl = document.getElementById('attr-schema-error');
+  var sectionEl = document.getElementById('attr-lists-section');
+  loadingEl.style.display = 'block';
+  fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=1', { headers: { 'Accept': 'application/json' } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      loadingEl.style.display = 'none';
+      var features = d.features || [];
+      var keys = [];
+      if (features.length && features[0].properties && typeof features[0].properties === 'object') {
+        keys = Object.keys(features[0].properties).sort();
+      }
+      availableProps = keys;
+      if (keys.length) {
+        sectionEl.style.display = 'block';
+        renderIncludeList();
+        renderExcludeList();
+        renderAvailable();
+      } else {
+        errorEl.textContent = 'No features in this collection (or first feature has no properties). Cannot show attribute list. Leave both lists empty to include all attributes in tiles.';
+        errorEl.style.display = 'block';
+        sectionEl.style.display = 'block';
+        document.getElementById('include-list').innerHTML = '';
+        document.getElementById('exclude-list').innerHTML = '';
+        document.getElementById('attr-available').innerHTML = '<span class="attr-schema-empty">—</span>';
+      }
+    })
+    .catch(function(err) {
+      loadingEl.style.display = 'none';
+      errorEl.textContent = 'Could not load schema: ' + (err.message || 'request failed');
+      errorEl.style.display = 'block';
+      sectionEl.style.display = 'block';
+    });
+
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+    var minZoomRaw = document.getElementById('min-zoom').value.trim();
+    var maxZoomRaw = document.getElementById('max-zoom').value.trim();
+    var minZoom = minZoomRaw === '' ? null : parseInt(minZoomRaw, 10);
+    var maxZoom = maxZoomRaw === '' ? null : parseInt(maxZoomRaw, 10);
+    if (minZoom !== null && (isNaN(minZoom) || minZoom < 0 || minZoom > 24)) {
+      messageEl.textContent = 'Minimum zoom must be 0–24.';
+      messageEl.style.display = 'inline';
+      return;
+    }
+    if (maxZoom !== null && (isNaN(maxZoom) || maxZoom < 0 || maxZoom > 24)) {
+      messageEl.textContent = 'Maximum zoom must be 0–24.';
+      messageEl.style.display = 'inline';
+      return;
+    }
+    var includeAttrs = includedList.length ? includedList.slice() : null;
+    var excludeAttrs = excludedList.length ? excludedList.slice() : null;
+    var densest = document.querySelector('input[name="densest"]:checked').value;
+    var smallest = document.querySelector('input[name="smallest"]:checked').value;
+    var noLineSimplification = document.getElementById('opt-no-line-simplification').checked;
+    var simplifyOnlyLowZooms = document.getElementById('opt-simplify-only-low-zooms').checked;
+    var noSharedNodeSimplification = document.getElementById('opt-no-shared-nodes').checked;
+    var noTinyPolygonReduction = document.getElementById('opt-no-tiny-polygon').checked;
+    var noPointDropping = document.getElementById('opt-no-point-dropping').checked;
+
+    var body = {};
+    if (minZoom !== null) body.min_zoom = minZoom;
+    if (maxZoom !== null) body.max_zoom = maxZoom;
+    if (includeAttrs) body.include_attributes = includeAttrs;
+    if (excludeAttrs) body.exclude_attributes = excludeAttrs;
+    body.densest = densest;
+    body.smallest = smallest;
+    body.no_line_simplification = noLineSimplification;
+    body.simplify_only_low_zooms = simplifyOnlyLowZooms;
+    body.no_shared_node_simplification = noSharedNodeSimplification;
+    body.no_tiny_polygon_reduction = noTinyPolygonReduction;
+    body.no_point_dropping = noPointDropping;
+
+    submitBtn.disabled = true;
+    messageEl.textContent = 'Queuing build…';
+    messageEl.style.display = 'inline';
+
+    fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/build', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(function(r) { return r.json().then(function(j) { if (!r.ok) return Promise.reject(j); return j; }); })
+      .then(function(d) {
+        if (d.job_id) {
+          window.location.href = base + '/jobs/' + encodeURIComponent(d.job_id) + '?f=html';
+          return;
+        }
+        messageEl.textContent = d.message || 'Build queued.';
+        submitBtn.disabled = false;
+      })
+      .catch(function(err) {
+        messageEl.textContent = 'Error: ' + (err.detail || err.message || JSON.stringify(err));
+        messageEl.style.display = 'inline';
+        submitBtn.disabled = false;
+      });
+  });
+})();
+</script>
+{% endblock %}

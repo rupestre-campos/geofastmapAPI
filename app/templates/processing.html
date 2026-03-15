@@ -28,36 +28,125 @@
 
   <div class="card">
     <h2 class="card-title">Request processing</h2>
-    <p class="meta" style="margin-bottom: var(--space);">Select two layers (collections) and an operation. The job is queued and a new collection with the result will be created when done.</p>
-    <form class="processing-form" id="processing-form">
-      <div class="form-row">
-        <label for="layer-a">Layer A (first collection)</label>
-        <select id="layer-a" name="collection_id_a" required>
-          <option value="">— Select collection —</option>
-          {% for c in collections %}
-          <option value="{{ c.id }}">{{ c.title or c.id }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="form-row">
-        <label for="layer-b">Layer B (second collection)</label>
-        <select id="layer-b" name="collection_id_b" required>
-          <option value="">— Select collection —</option>
-          {% for c in collections %}
-          <option value="{{ c.id }}">{{ c.title or c.id }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="form-row">
-        <label for="operation">Operation</label>
-        <select id="operation" name="process_id">
-          <option value="intersection">Intersection (A ∩ B)</option>
-          <option value="erase">Erase (A minus B)</option>
-        </select>
-      </div>
-      <button type="submit" class="btn btn-primary" id="submit-btn">Queue job</button>
-      <span id="form-message" class="meta" style="margin-left: 0.5rem; display: none;"></span>
-    </form>
+    <div class="form-row" style="margin-bottom: var(--space);">
+      <label style="margin-right: 1rem;">Mode</label>
+      <label><input type="radio" name="process-mode" value="collection" checked> Collection vs collection</label>
+      <label style="margin-left: 1rem;"><input type="radio" name="process-mode" value="feature"> Single feature vs layers</label>
+    </div>
+
+    <div id="form-collection" class="processing-form-wrap">
+      <p class="meta" style="margin-bottom: var(--space);">Select two layers (collections) and an operation. Result collection: <code>intersection_</code> or <code>erase_</code> + layer ids.</p>
+      <form class="processing-form" id="processing-form">
+        <div class="form-row">
+          <label for="layer-a">Layer A (first collection)</label>
+          <select id="layer-a" name="collection_id_a">
+            <option value="">— Select collection —</option>
+            {% for c in collections %}
+            <option value="{{ c.id }}">{{ c.title or c.id }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="layer-b">Layer B (second collection)</label>
+          <select id="layer-b" name="collection_id_b">
+            <option value="">— Select collection —</option>
+            {% for c in collections %}
+            <option value="{{ c.id }}">{{ c.title or c.id }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="operation">Operation</label>
+          <select id="operation" name="process_id">
+            <option value="intersection">Intersection (A ∩ B)</option>
+            <option value="erase">Erase (A minus B)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Result</label>
+          <label><input type="radio" name="result-dest-collection" value="new" checked> Create new collection</label>
+          <label style="margin-left: 1rem;"><input type="radio" name="result-dest-collection" value="update"> Update existing collection</label>
+        </div>
+        <div id="result-new-collection" class="form-row">
+          <label for="result-name-collection">Result collection name</label>
+          <input type="text" id="result-name-collection" placeholder="Default: process + hash of layer ids" style="width: 100%; max-width: 360px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+          <button type="button" class="btn" id="default-name-collection" style="margin-left: 0.5rem;">Use default name</button>
+        </div>
+        <div id="result-update-collection" class="form-row" style="display: none;">
+          <label for="result-select-collection">Collection to update</label>
+          <select id="result-select-collection" style="min-width: 280px;">
+            <option value="">— Select collection —</option>
+            {% for c in collections %}
+            <option value="{{ c.id }}">{{ c.title or c.id }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary" id="submit-btn">Queue job</button>
+        <span id="form-message" class="meta" style="margin-left: 0.5rem; display: none;"></span>
+      </form>
+    </div>
+
+    <div id="form-feature" class="processing-form-wrap" style="display: none;">
+      <p class="meta" style="margin-bottom: var(--space);">Provide one feature (by reference or GeoJSON) and select one or more layers. Result collection: <code>intersection_&lt;uuid&gt;</code> or <code>erase_&lt;uuid&gt;</code> with description "Between a feature and N layers: …".</p>
+      <form class="processing-form" id="processing-form-feature">
+        <div class="form-row">
+          <label>Feature input</label>
+          <label><input type="radio" name="feature-input-type" value="reference" checked> By reference (collection + feature id)</label>
+          <label style="margin-left: 1rem;"><input type="radio" name="feature-input-type" value="geojson"> GeoJSON</label>
+        </div>
+        <div id="feature-ref-row" class="form-row">
+          <label for="feature-collection">Collection</label>
+          <select id="feature-collection">
+            <option value="">— Select —</option>
+            {% for c in collections %}
+            <option value="{{ c.id }}">{{ c.title or c.id }}</option>
+            {% endfor %}
+          </select>
+          <label for="feature-id" style="margin-left: 0.75rem;">Feature id</label>
+          <input type="text" id="feature-id" placeholder="Feature id" style="width: 220px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+        </div>
+        <div id="feature-geojson-row" class="form-row" style="display: none;">
+          <label for="feature-geojson">GeoJSON Feature or FeatureCollection</label>
+          <textarea id="feature-geojson" rows="6" placeholder='{"type":"Feature","geometry":{...},"properties":{}}' style="width: 100%; max-width: 480px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-family: monospace; font-size: 0.85rem;"></textarea>
+        </div>
+        <div class="form-row">
+          <label>Layers (select one or more)</label>
+          <div id="layers-checkboxes" style="max-height: 160px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.5rem; background: var(--bg);">
+            {% for c in collections %}
+            <label style="display: block; margin-bottom: 0.35rem;"><input type="checkbox" name="layer-cid" value="{{ c.id }}"> {{ c.title or c.id }}</label>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="form-row">
+          <label for="operation-feature">Operation</label>
+          <select id="operation-feature">
+            <option value="intersection">Intersection</option>
+            <option value="erase">Erase (feature minus layers)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Result</label>
+          <label><input type="radio" name="result-dest-feature" value="new" checked> Create new collection</label>
+          <label style="margin-left: 1rem;"><input type="radio" name="result-dest-feature" value="update"> Update existing collection</label>
+        </div>
+        <div id="result-new-feature" class="form-row">
+          <label for="result-name-feature">Result collection name</label>
+          <input type="text" id="result-name-feature" placeholder="Default: process + hash(feature + layers)" style="width: 100%; max-width: 360px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+          <button type="button" class="btn" id="default-name-feature" style="margin-left: 0.5rem;">Use default name</button>
+        </div>
+        <div id="result-update-feature" class="form-row" style="display: none;">
+          <label for="result-select-feature">Collection to update</label>
+          <select id="result-select-feature" style="min-width: 280px;">
+            <option value="">— Select collection —</option>
+            {% for c in collections %}
+            <option value="{{ c.id }}">{{ c.title or c.id }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary" id="submit-btn-feature">Queue job</button>
+        <span id="form-message-feature" class="meta" style="margin-left: 0.5rem; display: none;"></span>
+      </form>
+    </div>
   </div>
 
   <div class="card">
@@ -70,8 +159,8 @@
           <tr>
             <th>Status</th>
             <th>Operation</th>
-            <th>Layer A</th>
-            <th>Layer B</th>
+            <th>Layer A / Feature</th>
+            <th>Layer B / Layers</th>
             <th>Input</th>
             <th>Output</th>
             <th>Result</th>
@@ -129,6 +218,15 @@
     tbody.innerHTML = jobs.map(function(j) {
       var op = (j.process_id || '').toLowerCase();
       var opLabel = op === 'erase' ? 'Erase (A−B)' : (op === 'intersection' ? 'Intersection (A∩B)' : op || '—');
+      var cellA = '';
+      var cellB = '';
+      if (j.collection_ids && j.collection_ids.length) {
+        cellA = '<span class="meta">' + esc(j.feature_source || 'feature') + '</span>';
+        cellB = (j.collection_ids || []).map(function(cid) { return '<a href="' + base + '/collections/' + encodeURIComponent(cid) + '?f=html">' + esc(cid) + '</a>'; }).join(', ');
+      } else {
+        cellA = j.collection_id_a ? '<a href="' + base + '/collections/' + encodeURIComponent(j.collection_id_a) + '?f=html">' + esc(j.collection_id_a) + '</a>' : '—';
+        cellB = j.collection_id_b ? '<a href="' + base + '/collections/' + encodeURIComponent(j.collection_id_b) + '?f=html">' + esc(j.collection_id_b) + '</a>' : '—';
+      }
       var resultCell = '';
       if (j.result_collection_id) {
         resultCell = '<a href="' + base + '/collections/' + encodeURIComponent(j.result_collection_id) + '?f=html" class="process-result-link">' + esc(j.result_collection_id) + '</a>';
@@ -154,8 +252,8 @@
       return '<tr>' +
         '<td><span class="status-badge ' + statusClass(j.status) + '">' + esc(j.status) + '</span></td>' +
         '<td>' + esc(opLabel) + '</td>' +
-        '<td><a href="' + base + '/collections/' + encodeURIComponent(j.collection_id_a || j.collection_id) + '?f=html">' + esc(j.collection_id_a || j.collection_id) + '</a></td>' +
-        '<td>' + (j.collection_id_b ? '<a href="' + base + '/collections/' + encodeURIComponent(j.collection_id_b) + '?f=html">' + esc(j.collection_id_b) + '</a>' : '—') + '</td>' +
+        '<td>' + cellA + '</td>' +
+        '<td>' + cellB + '</td>' +
         '<td>' + esc((j.items_in || 0).toString()) + '</td>' +
         '<td>' + esc((j.items_created || 0).toString()) + '</td>' +
         '<td>' + resultCell + '</td>' +
@@ -185,6 +283,96 @@
       .catch(function() { renderJobs([]); });
   }
 
+  document.querySelectorAll('input[name="process-mode"]').forEach(function(radio) {
+    radio.addEventListener('change', function() {
+      var isFeature = document.querySelector('input[name="process-mode"]:checked').value === 'feature';
+      document.getElementById('form-collection').style.display = isFeature ? 'none' : 'block';
+      document.getElementById('form-feature').style.display = isFeature ? 'block' : 'none';
+    });
+  });
+
+  document.querySelectorAll('input[name="feature-input-type"]').forEach(function(radio) {
+    radio.addEventListener('change', function() {
+      var isGeo = document.querySelector('input[name="feature-input-type"]:checked').value === 'geojson';
+      document.getElementById('feature-ref-row').style.display = isGeo ? 'none' : 'block';
+      document.getElementById('feature-geojson-row').style.display = isGeo ? 'block' : 'none';
+      updateDefaultNameFeature();
+    });
+  });
+
+  function fetchDefaultResultNameCollection() {
+    var layerA = document.getElementById('layer-a').value;
+    var layerB = document.getElementById('layer-b').value;
+    var op = document.getElementById('operation').value;
+    if (!layerA || !layerB) return Promise.resolve(null);
+    var q = 'mode=collection&process_id=' + encodeURIComponent(op) + '&collection_id_a=' + encodeURIComponent(layerA) + '&collection_id_b=' + encodeURIComponent(layerB);
+    return fetch(base + '/processes/default-result-name?' + q, { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(j) { return j && j.result_collection_id ? j.result_collection_id : null; })
+      .catch(function() { return null; });
+  }
+
+  function fetchDefaultResultNameFeature() {
+    var op = document.getElementById('operation-feature').value;
+    var useRef = document.querySelector('input[name="feature-input-type"]:checked').value === 'reference';
+    var cids = Array.prototype.slice.call(document.querySelectorAll('input[name="layer-cid"]:checked')).map(function(cb) { return cb.value; });
+    if (!cids.length) return Promise.resolve(null);
+    var fid = useRef ? (document.getElementById('feature-id').value || '').trim() : 'geojson';
+    if (useRef && !fid) return Promise.resolve(null);
+    var q = 'mode=feature&process_id=' + encodeURIComponent(op) + '&feature_id=' + encodeURIComponent(fid) + '&collection_ids=' + encodeURIComponent(cids.join(','));
+    return fetch(base + '/processes/default-result-name?' + q, { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(j) { return j && j.result_collection_id ? j.result_collection_id : null; })
+      .catch(function() { return null; });
+  }
+
+  function updateDefaultNameCollection() {
+    fetchDefaultResultNameCollection().then(function(name) {
+      if (name) document.getElementById('result-name-collection').placeholder = 'Default: ' + name;
+    });
+  }
+
+  function updateDefaultNameFeature() {
+    fetchDefaultResultNameFeature().then(function(name) {
+      if (name) document.getElementById('result-name-feature').placeholder = 'Default: ' + name;
+    });
+  }
+
+  document.getElementById('layer-a').addEventListener('change', updateDefaultNameCollection);
+  document.getElementById('layer-b').addEventListener('change', updateDefaultNameCollection);
+  document.getElementById('operation').addEventListener('change', updateDefaultNameCollection);
+
+  document.getElementById('feature-collection').addEventListener('change', updateDefaultNameFeature);
+  document.getElementById('feature-id').addEventListener('input', updateDefaultNameFeature);
+  document.getElementById('operation-feature').addEventListener('change', updateDefaultNameFeature);
+  document.querySelectorAll('input[name="layer-cid"]').forEach(function(cb) { cb.addEventListener('change', updateDefaultNameFeature); });
+
+  document.querySelectorAll('input[name="result-dest-collection"]').forEach(function(radio) {
+    radio.addEventListener('change', function() {
+      var isNew = document.querySelector('input[name="result-dest-collection"]:checked').value === 'new';
+      document.getElementById('result-new-collection').style.display = isNew ? 'block' : 'none';
+      document.getElementById('result-update-collection').style.display = isNew ? 'none' : 'block';
+    });
+  });
+  document.querySelectorAll('input[name="result-dest-feature"]').forEach(function(radio) {
+    radio.addEventListener('change', function() {
+      var isNew = document.querySelector('input[name="result-dest-feature"]:checked').value === 'new';
+      document.getElementById('result-new-feature').style.display = isNew ? 'block' : 'none';
+      document.getElementById('result-update-feature').style.display = isNew ? 'none' : 'block';
+    });
+  });
+
+  document.getElementById('default-name-collection').addEventListener('click', function() {
+    fetchDefaultResultNameCollection().then(function(name) {
+      if (name) document.getElementById('result-name-collection').value = name;
+    });
+  });
+  document.getElementById('default-name-feature').addEventListener('click', function() {
+    fetchDefaultResultNameFeature().then(function(name) {
+      if (name) document.getElementById('result-name-feature').value = name;
+    });
+  });
+
   form.addEventListener('submit', function(e) {
     e.preventDefault();
     var layerA = document.getElementById('layer-a').value;
@@ -202,8 +390,20 @@
       formMessage.className = 'meta';
       return;
     }
+    var resultDest = document.querySelector('input[name="result-dest-collection"]:checked').value;
+    var updateExisting = resultDest === 'update';
+    var resultId = updateExisting
+      ? document.getElementById('result-select-collection').value
+      : (document.getElementById('result-name-collection').value || '').trim();
+    if (updateExisting && !resultId) {
+      formMessage.textContent = 'Select a collection to update.';
+      formMessage.style.display = 'inline';
+      formMessage.className = 'meta';
+      return;
+    }
     var url = base + '/processes/' + op + '/execution';
-    var payload = { collection_id_a: layerA, collection_id_b: layerB };
+    var payload = { collection_id_a: layerA, collection_id_b: layerB, update_existing: updateExisting };
+    if (resultId) payload.result_collection_id = resultId;
     submitBtn.disabled = true;
     formMessage.textContent = 'Queuing…';
     formMessage.style.display = 'inline';
@@ -226,7 +426,106 @@
       .finally(function() { submitBtn.disabled = false; });
   });
 
+  var formFeature = document.getElementById('processing-form-feature');
+  var submitBtnFeature = document.getElementById('submit-btn-feature');
+  var formMessageFeature = document.getElementById('form-message-feature');
+  formFeature.addEventListener('submit', function(e) {
+    e.preventDefault();
+    var useRef = document.querySelector('input[name="feature-input-type"]:checked').value === 'reference';
+    var collectionIds = Array.prototype.slice.call(document.querySelectorAll('input[name="layer-cid"]:checked')).map(function(cb) { return cb.value; });
+    if (!collectionIds.length) {
+      formMessageFeature.textContent = 'Select at least one layer.';
+      formMessageFeature.style.display = 'inline';
+      formMessageFeature.className = 'meta';
+      return;
+    }
+    var featurePayload;
+    if (useRef) {
+      var cid = document.getElementById('feature-collection').value;
+      var fid = (document.getElementById('feature-id').value || '').trim();
+      if (!cid || !fid) {
+        formMessageFeature.textContent = 'Select collection and enter feature id.';
+        formMessageFeature.style.display = 'inline';
+        formMessageFeature.className = 'meta';
+        return;
+      }
+      featurePayload = { type: 'reference', collection_id: cid, feature_id: fid };
+    } else {
+      var geojsonText = (document.getElementById('feature-geojson').value || '').trim();
+      if (!geojsonText) {
+        formMessageFeature.textContent = 'Paste GeoJSON Feature or FeatureCollection.';
+        formMessageFeature.style.display = 'inline';
+        formMessageFeature.className = 'meta';
+        return;
+      }
+      try {
+        var geojson = JSON.parse(geojsonText);
+        featurePayload = { type: 'geojson', geojson: geojson };
+      } catch (err) {
+        formMessageFeature.textContent = 'Invalid JSON: ' + err.message;
+        formMessageFeature.style.display = 'inline';
+        formMessageFeature.className = 'meta';
+        return;
+      }
+    }
+    var opFeature = document.getElementById('operation-feature').value;
+    var resultDestFeature = document.querySelector('input[name="result-dest-feature"]:checked').value;
+    var updateExistingFeature = resultDestFeature === 'update';
+    var resultIdFeature = updateExistingFeature
+      ? document.getElementById('result-select-feature').value
+      : (document.getElementById('result-name-feature').value || '').trim();
+    if (updateExistingFeature && !resultIdFeature) {
+      formMessageFeature.textContent = 'Select a collection to update.';
+      formMessageFeature.style.display = 'inline';
+      formMessageFeature.className = 'meta';
+      return;
+    }
+    var urlFeature = base + '/processes/' + opFeature + '-feature/execution';
+    var payloadFeature = { feature: featurePayload, collection_ids: collectionIds, update_existing: updateExistingFeature };
+    if (resultIdFeature) payloadFeature.result_collection_id = resultIdFeature;
+    submitBtnFeature.disabled = true;
+    formMessageFeature.textContent = 'Queuing…';
+    formMessageFeature.style.display = 'inline';
+    formMessageFeature.className = 'meta';
+    fetch(urlFeature, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(payloadFeature),
+    })
+      .then(function(r) { return r.json().then(function(j) { if (!r.ok) return Promise.reject(j); return j; }); })
+      .then(function(j) {
+        formMessageFeature.textContent = 'Job queued: ' + (j.job_id || '').substring(0, 8) + '…';
+        formMessageFeature.className = 'meta';
+        loadJobs();
+      })
+      .catch(function(err) {
+        formMessageFeature.textContent = 'Error: ' + (err.detail || err.message || JSON.stringify(err));
+        formMessageFeature.className = 'meta';
+      })
+      .finally(function() { submitBtnFeature.disabled = false; });
+  });
+
+  function applyUrlParams() {
+    var params = new URLSearchParams(window.location.search);
+    var mode = params.get('mode');
+    var featureCollectionId = params.get('feature_collection_id');
+    var featureId = params.get('feature_id');
+    if (mode === 'feature' && featureCollectionId && featureId) {
+      document.querySelector('input[name="process-mode"][value="feature"]').checked = true;
+      document.getElementById('form-collection').style.display = 'none';
+      document.getElementById('form-feature').style.display = 'block';
+      document.querySelector('input[name="feature-input-type"][value="reference"]').checked = true;
+      document.getElementById('feature-ref-row').style.display = 'block';
+      document.getElementById('feature-geojson-row').style.display = 'none';
+      document.getElementById('feature-collection').value = featureCollectionId;
+      document.getElementById('feature-id').value = featureId;
+    }
+  }
+
   loadJobs();
+  applyUrlParams();
+  updateDefaultNameCollection();
+  updateDefaultNameFeature();
   var refreshTimer = setInterval(loadJobs, REFRESH_MS);
 })();
 </script>

@@ -76,14 +76,14 @@
         <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn">Back to collection</a>
         <a href="{{ base }}/collections?f=html" class="btn">Back to collections</a>
         <a href="{{ base }}/collections/{{ collection_id }}/items/new?f=html" class="btn">Add feature</a>
-        <button type="button" class="btn" id="btn-build-tiles">Build static tiles</button>
+        <a href="{{ base }}/collections/{{ collection_id }}/tiles/build?f=html" class="btn">Build static tiles</a>
         <button type="button" class="btn btn-danger" id="btn-delete-tiles" style="display:none">Delete static tiles</button>
         <button type="button" class="btn" id="btn-invalidate-cache" title="Clear Redis cache for this collection (dynamic tiles / search cache) so map shows fresh data">Invalidate tile cache</button>
         <button type="button" class="btn" id="btn-recompute-extent">Recompute extent</button>
         <button type="button" class="btn btn-danger" id="btn-delete-collection">Delete collection</button>
       </div>
     </div>
-    <p class="meta" id="tiles-hint" style="display:none">Static tiles not built. Click <strong>Build static tiles</strong> to compute.</p>
+    <p class="meta" id="tiles-hint" style="display:none">Static tiles not built. Go to <strong>Build static tiles</strong> to choose options and start a build.</p>
     <p id="tile-build-result" class="meta" style="display:none; margin-top: 0.5rem;"></p>
   </div>
 
@@ -206,6 +206,8 @@
     const tileLayerId = {{ tile_layer_id | tojson }};
     const initialExtent = {{ extent_geojson | tojson if extent_geojson else 'null' }};
     const hasStaticTiles = {{ has_static_tiles | tojson }};
+    const staticMinzoom = {{ static_minzoom | tojson }};
+    const staticMaxzoom = {{ static_maxzoom | tojson }};
     const tileUrlStatic = hasStaticTiles ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' : null;
     const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
     const collectionStylesUrl = {{ collection_styles_url | tojson if collection_styles_url else 'null' }};
@@ -379,7 +381,7 @@
         var s = GeofastMapUtils.specToPaint(tileSpec);
         var pointFilter = GeofastMapUtils.pointFilter;
         var notPointFilter = GeofastMapUtils.notPointFilter;
-        map.addSource('tiles', { type: 'vector', tiles: [tileUrlStatic], minzoom: 0, maxzoom: 14 });
+        map.addSource('tiles', { type: 'vector', tiles: [tileUrlStatic], minzoom: staticMinzoom, maxzoom: staticMaxzoom });
         map.addLayer({ id: 'tiles-fill', type: 'fill', source: 'tiles', 'source-layer': tileLayerId, filter: notPointFilter, layout: { visibility: s.fillEnabled ? 'visible' : 'none' }, paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
         map.addLayer({ id: 'tiles-line', type: 'line', source: 'tiles', 'source-layer': tileLayerId, filter: notPointFilter, layout: { visibility: (s.lineEnabled !== false) ? 'visible' : 'none' }, paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
         map.addLayer({ id: 'tiles-circle', type: 'circle', source: 'tiles', 'source-layer': tileLayerId, filter: pointFilter, layout: { visibility: (s.pointEnabled !== false) ? 'visible' : 'none' }, paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity } });
@@ -982,23 +984,6 @@
 
     document.getElementById('btn-delete-tiles').style.display = hasStaticTiles ? '' : 'none';
     document.getElementById('tiles-hint').style.display = hasStaticTiles ? 'none' : '';
-    document.getElementById('btn-build-tiles').onclick = function() {
-      var resultEl = document.getElementById('tile-build-result');
-      resultEl.style.display = 'none';
-      resultEl.innerHTML = '';
-      fetch(base + '/collections/' + collectionId + '/tiles/build', { method: 'POST', headers: { 'Accept': 'application/json' } })
-        .then(function(r) { return r.json(); })
-        .then(function(d) {
-          if (d.job_id) {
-            resultEl.innerHTML = (d.message || 'Tile build queued.') + ' <a href="' + base + '/jobs/' + d.job_id + '?f=html">Check job status →</a>';
-            resultEl.style.display = 'block';
-            if (window.refreshCollectionJobs) window.refreshCollectionJobs();
-          } else {
-            alert(d.message || JSON.stringify(d));
-          }
-        })
-        .catch(function(e) { resultEl.textContent = 'Error: ' + (e.detail || e.message || e); resultEl.style.display = 'block'; });
-    };
     (function confirmDeleteModal() {
       var modal = document.getElementById('confirm-delete-modal');
       var msgEl = document.getElementById('confirm-delete-message');

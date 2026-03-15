@@ -36,7 +36,7 @@ def main() -> None:
         job_id = payload.job_id
         print(f"Building tiles for {cid} (job_id={job_id})...", flush=True)
         update_tile_build_job(job_id, status="building")
-        err = build_pmtiles_sync(cid)
+        err = build_pmtiles_sync(cid, options=payload.options)
         clear_pending(cid)
         if err:
             update_tile_build_job(job_id, status="failed", message=err)

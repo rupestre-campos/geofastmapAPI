@@ -31,6 +31,7 @@
       <div class="card-actions">
         <a href="{{ base }}/collections/{{ collection_id }}/items?f=html" class="btn">Back to items</a>
         <a href="{{ base }}/collections/{{ collection_id }}/items/{{ feature.id }}/edit?f=html" class="btn btn-primary">Edit feature</a>
+        <a href="{{ base }}/processes?f=html&amp;mode=feature&amp;feature_collection_id={{ collection_id | urlencode }}&amp;feature_id={{ feature.id | urlencode }}" class="btn">Process feature (intersection / erase)</a>
         <button type="button" class="btn" id="btn-add-to-map">Add to map</button>
       </div>
     </div>

@@ -194,6 +194,8 @@ async def get_collection_edit_form(
     settings = get_settings()
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     has_static_tiles = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
+    static_minzoom = rec.minzoom if (rec and rec.minzoom is not None) else 0
+    static_maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
     out = CollectionRead.model_validate(collection)
     default_style = await styles_crud.get_default_style(db, collection_id)
     return html_response(
@@ -203,6 +205,8 @@ async def get_collection_edit_form(
         collection={"id": out.id, "title": out.title, "description": out.description},
         extent_geojson=out.extent.model_dump() if out.extent else None,
         has_static_tiles=has_static_tiles,
+        static_minzoom=static_minzoom,
+        static_maxzoom=static_maxzoom,
         tile_layer_id=mvt_layer_name(collection_id),
         google_maps_api_key=settings.google_maps_api_key or "",
         default_style={"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec} if default_style else None,
@@ -233,6 +237,8 @@ async def get_collection(
     if wants_html(request):
         rec = await tiles_crud.get_collection_tiles(db, collection_id)
         has_static_tiles = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
+        static_minzoom = rec.minzoom if (rec and rec.minzoom is not None) else 0
+        static_maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
         settings = get_settings()
         return html_response(
             "collection.html",
@@ -240,6 +246,8 @@ async def get_collection(
             collection={"id": out.id, "title": out.title, "description": out.description},
             extent_geojson=out.extent.model_dump() if out.extent else None,
             has_static_tiles=has_static_tiles,
+            static_minzoom=static_minzoom,
+            static_maxzoom=static_maxzoom,
             tile_layer_id=mvt_layer_name(collection_id),
             google_maps_api_key=settings.google_maps_api_key or "",
             default_style={"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec} if default_style else None,

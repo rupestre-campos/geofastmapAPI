@@ -17,7 +17,8 @@ from app.services.process_queue import (
 )
 from app.services.process_worker import (
     _cleanup_result_collection_sync,
-    _safe_result_collection_id,
+    _default_result_collection_id,
+    _default_result_collection_id_feature,
     _update_feature_count_sync,
     cleanup_process_worker_temp_dir,
     process_process_job_sync,
@@ -43,15 +44,24 @@ def _recover_orphaned_running_jobs(settings) -> None:
             if not meta:
                 update_job(job_id, status="failed", message="Job interrupted (worker restarted).")
                 continue
-            result_id = _safe_result_collection_id(
-                meta.get("process_id", ""),
-                meta.get("collection_id_a", ""),
-                meta.get("collection_id_b", ""),
-            )
-            try:
-                _cleanup_result_collection_sync(engine, result_id)
-            except Exception:
-                pass
+            result_id = meta.get("result_collection_id")
+            if not result_id and meta.get("collection_id_a") and meta.get("collection_id_b"):
+                result_id = _default_result_collection_id(
+                    meta.get("process_id", ""),
+                    meta.get("collection_id_a", ""),
+                    meta.get("collection_id_b", ""),
+                )
+            if not result_id and meta.get("collection_ids") and meta.get("feature_id"):
+                result_id = _default_result_collection_id_feature(
+                    meta.get("process_id", ""),
+                    meta.get("feature_id", ""),
+                    meta.get("collection_ids", []),
+                )
+            if result_id:
+                try:
+                    _cleanup_result_collection_sync(engine, result_id)
+                except Exception:
+                    pass
             update_job(
                 job_id,
                 status="failed",
@@ -114,16 +124,16 @@ def main() -> None:
         if job and job.status == "cancelled":
             print(f"Skipping cancelled job {job_id}", flush=True)
             continue
-        print(f"Running {payload.process_id} ({payload.collection_id_a}, {payload.collection_id_b}) job_id={job_id}...", flush=True)
+        if payload.is_feature_vs_layers:
+            print(f"Running {payload.process_id} (feature vs {len(payload.collection_ids)} layers) job_id={job_id}...", flush=True)
+        else:
+            print(f"Running {payload.process_id} ({payload.collection_id_a}, {payload.collection_id_b}) job_id={job_id}...", flush=True)
         update_job(job_id, status="running", message=f"Computing {payload.process_id}...")
-        err, count, items_in = process_process_job_sync(payload)
+        err, count, items_in, result_id = process_process_job_sync(payload)
         if err:
             update_job(job_id, status="failed", message=err)
             print(f"Process FAILED: {err}", file=sys.stderr, flush=True)
         else:
-            result_id = _safe_result_collection_id(
-                payload.process_id, payload.collection_id_a, payload.collection_id_b
-            )
             set_process_job_result(job_id, result_id)
             update_job(
                 job_id,

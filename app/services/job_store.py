@@ -251,3 +251,36 @@ def _list_jobs_for_collection_redis(collection_id: str, limit: int) -> list[JobI
             jobs.append(job)
     jobs.sort(key=lambda j: j.updated_at, reverse=True)
     return jobs[:limit]
+
+
+def list_all_jobs(limit: int = 100) -> list[JobInfo]:
+    """Return all recent jobs (all types, all collections), newest first. For Redis uses SCAN on job keys."""
+    settings = get_settings()
+    if settings.bulk_queue_type == "redis":
+        return _list_all_jobs_redis(limit=limit)
+    return _list_all_jobs_memory(limit=limit)
+
+
+def _list_all_jobs_memory(limit: int) -> list[JobInfo]:
+    with _mem_lock:
+        jobs = list(_mem_jobs.values())
+    jobs.sort(key=lambda j: j.updated_at, reverse=True)
+    return jobs[:limit]
+
+
+def _list_all_jobs_redis(limit: int) -> list[JobInfo]:
+    import redis
+    settings = get_settings()
+    r = redis.from_url(settings.redis_url, decode_responses=True)
+    prefix = "geofast:job:"
+    job_ids: list[str] = []
+    for key in r.scan_iter(match=prefix + "*", count=500):
+        if key.startswith(prefix) and key != prefix:
+            job_ids.append(key[len(prefix) :])
+    jobs: list[JobInfo] = []
+    for jid in job_ids:
+        job = _get_job_redis(jid)
+        if job:
+            jobs.append(job)
+    jobs.sort(key=lambda j: j.updated_at, reverse=True)
+    return jobs[:limit]
