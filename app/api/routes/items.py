@@ -291,6 +291,23 @@ async def list_items(
     return GeoJSONResponse(content=fc.model_dump(mode="json"))
 
 
+@router.get(
+    "/{collection_id}/queryables",
+    summary="List queryable property keys for a collection",
+    description="Returns property names that can be used in filter=key:op:value. Used by the filter builder UI.",
+)
+async def get_collection_queryables(
+    collection_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return distinct property keys for the collection (for building filter lines)."""
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    keys = await features_crud.get_collection_property_keys(db, collection_id)
+    return {"properties": keys}
+
+
 @router.post(
     "/{collection_id}/items/bulk",
     status_code=status.HTTP_202_ACCEPTED,

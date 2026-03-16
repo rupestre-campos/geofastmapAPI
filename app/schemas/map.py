@@ -18,6 +18,7 @@ class MapLayer(BaseModel):
         description="Map-layer style override: fillColor, lineColor, fillOpacity, lineOpacity, lineWidth, linePattern, fillEnabled, lineEnabled, pointEnabled, pointColor, pointSize, pointOpacity, pointIcon; and optionally fillOpacityZoom, lineWidthZoom, lineOpacityZoom, pointSizeZoom, pointOpacityZoom (zoom breakpoints). Stored with the map, not with the collection.",
     )
     popup: bool = Field(False, description="Show popup on click for this layer")
+    popup_id_property: str | None = Field(None, description="Property name to show as the identifier in popups (e.g. name, code). When unset, feature id is used.")
     tiles_url: str | None = Field(None, description="When set, use this vector tile URL (dynamic tiles) instead of TileJSON")
     layer_id: str | None = Field(None, description="Optional unique id for this layer when using tiles_url (e.g. items-{coll}, item-{id})")
 

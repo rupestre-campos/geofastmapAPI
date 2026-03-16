@@ -33,6 +33,7 @@
         <option value="{{ b.id }}">{{ b.name }}</option>
         {% endfor %}
       </select>
+      <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
     </div>
     <div id="map" class="map-container"></div>
     <p class="meta" style="margin-top:8px;"><span id="map-basemap-copyright" class="meta"></span></p>
@@ -112,6 +113,7 @@
       GeofastMapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
       GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), initial);
       map.on('load', function() {
+        GeofastMapUtils.setupFullscreenForMap(map);
         map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
         var sel = document.getElementById('map-basemap');
         sel.onchange = function() {

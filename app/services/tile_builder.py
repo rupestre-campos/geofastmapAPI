@@ -173,15 +173,19 @@ def build_pmtiles_sync(
             cmd.append("--coalesce-smallest-as-needed")
         else:
             cmd.append("--drop-smallest-as-needed")
-        # Attribute filter: --include=attr (only these) or -x attr (exclude)
+        # Attribute filter: --include=attr (only these) or -x attr (exclude).
+        # Always include "id" when using include_attributes so popup links use the real feature id (UUID), not tippecanoe's numeric index.
         if opts.include_attributes:
-            for attr in opts.include_attributes:
-                if attr:
-                    cmd.append(f"--include={attr}")
+            include_set = {a for a in opts.include_attributes if a}
+            if "id" not in include_set:
+                include_set.add("id")
+            for attr in sorted(include_set):
+                cmd.append(f"--include={attr}")
         if opts.exclude_attributes:
             for attr in opts.exclude_attributes:
-                if attr:
+                if attr and attr != "id":
                     cmd.extend(["-x", attr])
+            # Never exclude "id" so popup links use the real feature id (UUID)
         print(f"[tile_builder] Running tippecanoe for {collection_id} ({total_features} features)...", file=sys.stderr, flush=True)
         # Stream stdout/stderr to process FDs so Docker logs show tippecanoe output in real time
         proc = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, text=True)

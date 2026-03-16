@@ -20,6 +20,7 @@
     .jobs-table .meta { color: var(--text-secondary); font-size: 0.85rem; }
     .jobs-loading { color: var(--text-secondary); }
     .jobs-empty { color: var(--text-secondary); font-size: 0.9rem; padding: var(--space-lg); text-align: center; }
+    #jobs-wrap { max-height: 60vh; overflow-y: auto; overflow-x: auto; }
   </style>
 {% endblock %}
 {% block content %}
@@ -31,7 +32,7 @@
   <div class="card">
     <h2 class="card-title">All jobs</h2>
     <p class="meta" style="margin-bottom: var(--space);">Bulk imports, tile builds, and process jobs (intersection/erase). Newest first. Page auto-refreshes while there are running jobs.</p>
-    <div id="jobs-wrap" style="overflow-x: auto; {{ 'display: none;' if not jobs else '' }}">
+    <div id="jobs-wrap" style="{{ 'display: none;' if not jobs else '' }}">
       <table class="jobs-table" id="jobs-table">
         <thead>
           <tr>

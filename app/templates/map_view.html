@@ -13,6 +13,9 @@
     .map-view-container .map-legend-icon { width: 20px; height: 14px; flex-shrink: 0; border-radius: 2px; border: 2px solid; box-sizing: border-box; }
     .map-view-container .map-legend-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
     .map-view-container .map-legend-row input[type="checkbox"] { cursor: pointer; }
+    .map-view-container .map-controls .btn-legend,
+    .map-view-container .map-controls .btn-fullscreen { margin-left: 6px; }
+    .map-wrapper:fullscreen .map-container { width: 100%; height: 100%; min-height: 100%; }
     .map-view-meta { margin-top: var(--space); font-size: 0.9rem; color: var(--text-secondary); }
     #map-search-results-card .table-scroll-wrap { overflow: auto; max-height: 50vh; margin-top: 8px; }
     #map-search-results-card .collections-table { width: 100%; }
@@ -98,27 +101,15 @@
         <div class="form-row">
           <label for="map-search-filter">Filter <span class="meta">(key:op:value per line)</span></label>
           <textarea id="map-search-filter" name="filter" rows="2" placeholder="name:eq:Main"></textarea>
+          {% from "components/filter_builder.html" import filter_builder %}
+          {{ filter_builder('map-search-filter', base, none, 'map-search-filter-builder') }}
         </div>
       </div>
     </form>
   </div>
 
-  <div class="card map-view-container">
-    <div class="map-wrapper">
-      <div id="map" class="map-container"></div>
-      <div class="map-controls">
-        {% include '_basemap_selector.html' %}
-      </div>
-      <div id="map-legend" class="map-legend" style="display: none;">
-        <div class="map-legend-title">Layers</div>
-        <div id="map-legend-list"></div>
-      </div>
-    </div>
-    <p class="map-view-meta">Layers: {{ (map_definition.layers | length) if map_definition and map_definition.layers else 0 }}</p>
-  </div>
-
   <div class="card" id="map-search-results-card" style="display:none;">
-    <details id="map-search-results-details" open>
+    <details id="map-search-results-details">
       <summary class="card-header" style="list-style:none; cursor:pointer;">
         <h2 class="card-title" style="margin:0; display:inline-block;">Search results</h2>
         <span class="meta" id="map-search-results-count" style="margin-left:8px;"></span>
@@ -141,10 +132,26 @@
       </div>
     </details>
   </div>
+
+  <div class="card map-view-container">
+    <div class="map-wrapper">
+      <div id="map" class="map-container"></div>
+      <div class="map-controls">
+        {% include '_basemap_selector.html' %}
+        <button type="button" class="btn btn-sm btn-legend" id="map-legend-toggle" title="Show or hide layers legend">Hide legend</button>
+        <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
+      </div>
+      <div id="map-legend" class="map-legend" style="display: none;">
+        <div class="map-legend-title">Layers</div>
+        <div id="map-legend-list"></div>
+      </div>
+    </div>
+    <p class="map-view-meta">Layers: {{ (map_definition.layers | length) if map_definition and map_definition.layers else 0 }}</p>
+  </div>
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
+  <script src="{{ base }}/static/js/geofast-map-utils.js?v=2"></script>
   <script>
     (function() {
       var base = {{ base | tojson }};
@@ -231,9 +238,34 @@
           row.appendChild(cb);
           list.appendChild(row);
         });
-        container.style.display = 'block';
+        if (container.dataset.legendCollapsed !== 'true') container.style.display = 'block';
+        updateLegendToggleLabel();
       }
       var currentSearchCollectionId = null;
+      function updateLegendToggleLabel() {
+        var btn = document.getElementById('map-legend-toggle');
+        var leg = document.getElementById('map-legend');
+        if (btn && leg) btn.textContent = leg.style.display === 'none' ? 'Show legend' : 'Hide legend';
+      }
+      function setupLegendToggle() {
+        var btn = document.getElementById('map-legend-toggle');
+        var leg = document.getElementById('map-legend');
+        if (!btn || !leg) return;
+        btn.onclick = function() {
+          if (leg.dataset.legendCollapsed === 'true') {
+            leg.dataset.legendCollapsed = '';
+            leg.style.display = 'block';
+          } else {
+            leg.dataset.legendCollapsed = 'true';
+            leg.style.display = 'none';
+          }
+          updateLegendToggleLabel();
+        };
+        updateLegendToggleLabel();
+      }
+      function setupFullscreen() {
+        GeofastMapUtils.setupFullscreenForMap(map);
+      }
       function getPopupLayerIds() {
         var ids = [];
         layers.forEach(function(layer) {
@@ -314,18 +346,38 @@
         var p = getMapSearchParams({ limit: limit, offset: offset });
         var query = p.params.length ? ('?' + p.params.join('&')) : '';
         var tileUrl = apiBaseUrlMaps() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/dynamic/{z}/{x}/{y}.pbf' + query;
-        map.addSource('map-search-tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
-        var fillColor = style.fillColor;
-        var lineColor = style.lineColor;
-        var fillOpacity = style.fillOpacity;
-        var lineOpacity = style.lineOpacity;
-        var lineWidth = style.lineWidth;
-        var lineDash = style.lineDash;
-        map.addLayer({ id: 'map-search-fill', type: 'fill', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } });
-        map.addLayer({ id: 'map-search-line', type: 'line', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } });
-        var ptRadius = style.pointRadius != null ? style.pointRadius : 8;
-        var ptOpacity = style.pointOpacity != null ? style.pointOpacity : 0.9;
-        map.addLayer({ id: 'map-search-circle', type: 'circle', source: 'map-search-tiles', 'source-layer': collectionId, filter: pointFilter, paint: { 'circle-color': style.pointColor || lineColor || '#58a6ff', 'circle-radius': ptRadius, 'circle-opacity': ptOpacity } });
+        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles', { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(tj) {
+            var minz = tj.minzoom != null ? tj.minzoom : 0;
+            var maxz = tj.maxzoom != null ? tj.maxzoom : 14;
+            map.addSource('map-search-tiles', { type: 'vector', tiles: [tileUrl], minzoom: minz, maxzoom: maxz });
+            var fillColor = style.fillColor;
+            var lineColor = style.lineColor;
+            var fillOpacity = style.fillOpacity;
+            var lineOpacity = style.lineOpacity;
+            var lineWidth = style.lineWidth;
+            var lineDash = style.lineDash;
+            map.addLayer({ id: 'map-search-fill', type: 'fill', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } });
+            map.addLayer({ id: 'map-search-line', type: 'line', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } });
+            var ptRadius = style.pointRadius != null ? style.pointRadius : 8;
+            var ptOpacity = style.pointOpacity != null ? style.pointOpacity : 0.9;
+            map.addLayer({ id: 'map-search-circle', type: 'circle', source: 'map-search-tiles', 'source-layer': collectionId, filter: pointFilter, paint: { 'circle-color': style.pointColor || lineColor || '#58a6ff', 'circle-radius': ptRadius, 'circle-opacity': ptOpacity } });
+          })
+          .catch(function() {
+            map.addSource('map-search-tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
+            var fillColor = style.fillColor;
+            var lineColor = style.lineColor;
+            var fillOpacity = style.fillOpacity;
+            var lineOpacity = style.lineOpacity;
+            var lineWidth = style.lineWidth;
+            var lineDash = style.lineDash;
+            map.addLayer({ id: 'map-search-fill', type: 'fill', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } });
+            map.addLayer({ id: 'map-search-line', type: 'line', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } });
+            var ptRadius = style.pointRadius != null ? style.pointRadius : 8;
+            var ptOpacity = style.pointOpacity != null ? style.pointOpacity : 0.9;
+            map.addLayer({ id: 'map-search-circle', type: 'circle', source: 'map-search-tiles', 'source-layer': collectionId, filter: pointFilter, paint: { 'circle-color': style.pointColor || lineColor || '#58a6ff', 'circle-radius': ptRadius, 'circle-opacity': ptOpacity } });
+          });
       }
 
       function bboxFromGeoJsonGeometry(geom) {
@@ -399,6 +451,9 @@
           var id = f.id != null ? String(f.id) : '';
           var props = f.properties || {};
           var viewHref = base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(id) + '?f=html';
+          var bbox = (f.bbox && f.bbox.length >= 4) ? f.bbox : bboxFromGeoJsonGeometry(f.geometry);
+          var bboxStr = bbox && bbox.length >= 4 ? bbox.join(',') : '';
+          var bboxAttr = bboxStr ? ' data-bbox="' + String(bboxStr).replace(/"/g, '&quot;') + '"' : '';
           var cells = '';
           keys.forEach(function(k) {
             var v = props[k];
@@ -407,7 +462,7 @@
             var display = isLong ? (txt.substring(0, 37) + '…') : txt;
             cells += '<td title="' + (txt || '') + '">' + display + '</td>';
           });
-          return '<tr><td class="col-actions"><a href="' + viewHref + '" class="btn btn-sm">View</a></td><td>' + id + '</td>' + cells + '</tr>';
+          return '<tr' + bboxAttr + '><td class="col-actions"><button type="button" class="btn btn-sm map-search-center-btn" title="Center map on this feature">View</button></td><td><a href="' + viewHref + '">' + id + '</a></td>' + cells + '</tr>';
         }).join('');
         tbody.innerHTML = rowsHtml;
         countSpan.textContent = '(' + nReturned + ' rows)';
@@ -529,8 +584,20 @@
             resolve(sid + '-line');
           }
           if (layer.tiles_url) {
-            map.addSource(sid, { type: 'vector', tiles: [layer.tiles_url], minzoom: 0, maxzoom: 14 });
-            addFillLinePoint(cid);
+            fetch(base + '/collections/' + encodeURIComponent(cid) + '/tiles', { headers: { 'Accept': 'application/json' } })
+              .then(function(r) { return r.json(); })
+              .then(function(tj) {
+                var minz = tj.minzoom != null ? tj.minzoom : 0;
+                var maxz = tj.maxzoom != null ? tj.maxzoom : 14;
+                if (!map.getSource(sid)) map.addSource(sid, { type: 'vector', tiles: [layer.tiles_url], minzoom: minz, maxzoom: maxz });
+                addFillLinePoint(cid);
+                resolve(sid + '-line');
+              })
+              .catch(function() {
+                if (!map.getSource(sid)) map.addSource(sid, { type: 'vector', tiles: [layer.tiles_url], minzoom: 0, maxzoom: 14 });
+                addFillLinePoint(cid);
+                resolve(sid + '-line');
+              });
             return;
           }
           function loadGeoJson() {
@@ -552,7 +619,9 @@
               if (hasStatic) {
                 var tileUrl = tiles[0].indexOf('{z}') !== -1 ? tiles[0] : (base + '/collections/' + encodeURIComponent(cid) + '/tiles/static/{z}/{x}/{y}.pbf');
                 var vl = tilejson.vector_layers && tilejson.vector_layers[0] ? tilejson.vector_layers[0].id : cid;
-                map.addSource(sid, { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
+                var minz = tilejson.minzoom != null ? tilejson.minzoom : 0;
+                var maxz = tilejson.maxzoom != null ? tilejson.maxzoom : 14;
+                map.addSource(sid, { type: 'vector', tiles: [tileUrl], minzoom: minz, maxzoom: maxz });
                 addFillLinePoint(vl);
               } else {
                 loadGeoJson();
@@ -563,6 +632,8 @@
       }
 
       map.on('load', function() {
+        setupLegendToggle();
+        setupFullscreen();
         map.resize();
         if (mapBbox && mapBbox.length === 4) {
           map.fitBounds([[mapBbox[0], mapBbox[1]], [mapBbox[2], mapBbox[3]]], { padding: 60 });
@@ -576,18 +647,50 @@
           var hit = layerIds.length > 0 && (function() { try { return map.queryRenderedFeatures(e.point, { layers: layerIds }).length > 0; } catch (err) { return false; } })();
           map.getCanvas().style.cursor = hit ? 'pointer' : '';
         });
+        if (typeof GeofastMapUtils.setupLayeredPopupNavigation === 'function') {
+          GeofastMapUtils.setupLayeredPopupNavigation();
+        }
         map.on('click', function(e) {
           var layerIds = getPopupLayerIdsFiltered();
           if (layerIds.length === 0) return;
           var features;
           try { features = map.queryRenderedFeatures(e.point, { layers: layerIds }); } catch (err) { return; }
-          var feat = features && features[0];
-          if (!feat) return;
+          if (!features || features.length === 0) return;
+          var feat = features[0];
           var cid = collectionIdFromLayerId(feat.layer.id);
-          if (cid) {
-            if (window._geofastMapPopup) { try { window._geofastMapPopup.remove(); } catch (err) {} }
+          if (!cid) return;
+          if (window._geofastMapPopup) { try { window._geofastMapPopup.remove(); } catch (err) {} }
+          if (typeof GeofastMapUtils.groupFeaturesByCollection === 'function') {
+            function getCid(f) { return collectionIdFromLayerId(f.layer.id); }
+            var grouped = GeofastMapUtils.groupFeaturesByCollection(features, getCid);
+            if (grouped.byLayerOrder.length === 0) return;
+            var displayIdByLayer = {};
+            layers.forEach(function(l) {
+              var lcid = l.collection_id || l.collectionId;
+              if (lcid && l.popup && l.popup_id_property) displayIdByLayer[lcid] = l.popup_id_property;
+            });
+            window._geofastMapPopupData = { byLayerOrder: grouped.byLayerOrder, byLayer: grouped.byLayer, base: base, displayIdByLayer: displayIdByLayer };
             var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
-            popup.setLngLat(e.lngLat).setHTML(GeofastMapUtils.popupHtmlForFeature(feat, base, cid)).addTo(map);
+            var html;
+            if (grouped.byLayerOrder.length > 1) {
+              html = GeofastMapUtils.popupHtmlLayersStep(grouped.byLayerOrder, grouped.byLayer, base);
+            } else {
+              var cid0 = grouped.byLayerOrder[0];
+              var feats = grouped.byLayer[cid0];
+              var dispId = displayIdByLayer[cid0] || null;
+              if (feats.length > 1) {
+                html = GeofastMapUtils.popupHtmlFeaturesStep(cid0, feats, base, dispId);
+              } else {
+                html = GeofastMapUtils.popupHtmlFeatureStep(feats[0], cid0, base, dispId);
+              }
+            }
+            popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+            window._geofastMapPopup = popup;
+          } else {
+            var dispId = null;
+            for (var i = 0; i < layers.length; i++) { if ((layers[i].collection_id || layers[i].collectionId) === cid && layers[i].popup_id_property) { dispId = layers[i].popup_id_property; break; } }
+            var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
+            popup.setLngLat(e.lngLat).setHTML(GeofastMapUtils.popupHtmlForFeature(feat, base, cid, dispId)).addTo(map);
             window._geofastMapPopup = popup;
           }
         });
@@ -648,6 +751,15 @@
       var clearBtn = document.getElementById('map-search-clear-btn');
       if (clearBtn) clearBtn.addEventListener('click', clearMapSearch);
 
+      var layerSelect = document.getElementById('map-search-layer');
+      if (layerSelect && typeof window.geofastFilterBuilderSetCollection !== 'undefined' && window.geofastFilterBuilderSetCollection['map-search-filter-builder']) {
+        layerSelect.addEventListener('change', function() {
+          var cid = this.value ? this.value.trim() : '';
+          window.geofastFilterBuilderSetCollection['map-search-filter-builder'](cid);
+        });
+        if (layerSelect.value) window.geofastFilterBuilderSetCollection['map-search-filter-builder'](layerSelect.value);
+      }
+
       var advToggle = document.getElementById('map-search-advanced-toggle');
       var advPanel = document.getElementById('map-search-advanced');
       if (advToggle && advPanel) {
@@ -687,6 +799,29 @@
           }
           pagination.setAttribute('data-offset', String(offset));
           runLayerSearch(cid, { limit: limit, offset: offset });
+        });
+      }
+
+      var resultsCard = document.getElementById('map-search-results-card');
+      if (resultsCard) {
+        resultsCard.addEventListener('click', function(e) {
+          var btn = e.target && e.target.classList && e.target.classList.contains('map-search-center-btn') ? e.target : (e.target.closest && e.target.closest('.map-search-center-btn'));
+          if (!btn) return;
+          e.preventDefault();
+          var row = btn.closest('tr');
+          if (!row) return;
+          var bboxStr = row.getAttribute('data-bbox');
+          if (!bboxStr) return;
+          var parts = bboxStr.split(',').map(Number);
+          if (parts.length !== 4 || !isFinite(parts[0]) || !isFinite(parts[1]) || !isFinite(parts[2]) || !isFinite(parts[3])) return;
+          try {
+            var minx = parts[0], miny = parts[1], maxx = parts[2], maxy = parts[3];
+            if (minx === maxx && miny === maxy) {
+              var pad = 0.001;
+              minx -= pad; miny -= pad; maxx += pad; maxy += pad;
+            }
+            map.fitBounds([[minx, miny], [maxx, maxy]], { padding: 60, maxZoom: 14, duration: 500 });
+          } catch (err) {}
         });
       }
       }

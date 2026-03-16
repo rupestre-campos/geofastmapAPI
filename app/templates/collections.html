@@ -28,7 +28,7 @@
       <div class="grid-2">
         <div class="form-row">
           <label>Limit</label>
-          <input type="number" name="limit" value="{{ limit | default(10) }}" min="1" max="1000" form="search-form">
+          <input type="number" name="limit" value="{{ limit | default(20) }}" min="1" max="1000" form="search-form">
         </div>
         <div class="form-row">
           <label>Offset</label>
@@ -116,9 +116,14 @@
     {% endif %}
   </div>
 
+  {% if collections %}
+  <style>
+    .collections-table-card .table-scroll-wrap { max-height: 60vh; overflow-y: auto; overflow-x: auto; }
+  </style>
+  {% endif %}
+
   {% if collections_with_bbox %}
   <style>
-    .collections-table-card .table-scroll-wrap { overflow-x: auto; }
     .collections-table { width: 100%; border-collapse: collapse; }
     .collections-table th { text-align: left; padding: 8px 10px; font-weight: 600; font-size: 0.85rem; color: var(--text-secondary); border-bottom: 1px solid var(--border); }
     .collections-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
@@ -132,7 +137,12 @@
       <div class="card-actions"></div>
     </div>
     <p class="meta">Click a row above to focus map on that collection, or click a bbox on the map to see details.</p>
-    <div id="map" class="map-container"></div>
+    <div class="map-wrapper" style="position:relative;">
+      <div class="map-controls" style="position:absolute;top:8px;left:8px;z-index:10;">
+        <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
+      </div>
+      <div id="map" class="map-container"></div>
+    </div>
   </div>
   {% endif %}
 
@@ -140,6 +150,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
   <script>
     const base = {{ base | tojson }};
     const collectionsWithBbox = {{ collections_with_bbox | tojson }};
@@ -174,6 +185,7 @@
       };
       const map = new maplibregl.Map({ container: 'map', style: mapStyle, renderWorldCopies: false });
       map.on('load', function() {
+        GeofastMapUtils.setupFullscreenForMap(map);
         map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
         var bounds = geojson.features.reduce(function(acc, f) {
           var ring = f.geometry.coordinates[0];

@@ -189,7 +189,9 @@
       </div>
       <div class="form-row">
         <label>Filter <span class="meta">(key:op:value per line)</span></label>
-        <textarea name="filter" rows="2" placeholder="name:eq:Main" form="search-form">{{ filter_param }}</textarea>
+        <textarea id="search-form-filter" name="filter" rows="2" placeholder="name:eq:Main" form="search-form">{{ filter_param }}</textarea>
+        {% from "components/filter_builder.html" import filter_builder %}
+        {{ filter_builder('search-form-filter', base, collection_id, 'items-filter-builder') }}
       </div>
       <div class="form-row">
         <label>Properties <span class="meta">(comma-separated; empty = all)</span></label>
@@ -270,6 +272,7 @@
     <div id="map" class="map-container">
       <div class="map-controls">
         {% include '_basemap_selector.html' %}
+        <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
         {% if has_static_tiles %}
         <label><input type="checkbox" id="show-collection-tiles" title="Show full layer (static tiles)"> Show collection tiles</label>
         {% endif %}
@@ -502,6 +505,7 @@
       map = new maplibregl.Map({ container: 'map', style: mapStyle, center: [0, 20], zoom: 2, renderWorldCopies: false });
       GeofastMapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
       map.on('load', function() {
+        GeofastMapUtils.setupFullscreenForMap(map);
         try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) sel.value = s; } catch(e) {}
         applyBasemapFromSelect();
         addOverlayLayers();

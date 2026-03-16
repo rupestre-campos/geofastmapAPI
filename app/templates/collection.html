@@ -47,6 +47,7 @@
     <div id="map" class="map-container">
       <div class="map-controls">
         {% include '_basemap_selector.html' %}
+        <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
         <label id="map-bbox-toggle-wrap" style="display:none"><input type="checkbox" id="map-toggle-bbox" checked title="Show or hide layer extent bbox"> Bbox</label>
       </div>
     </div>
@@ -164,6 +165,7 @@
       });
       GeofastMapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
       map.on('load', function() {
+        GeofastMapUtils.setupFullscreenForMap(map);
         map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
         applyBasemapFromSelect();
         addOverlayLayers();

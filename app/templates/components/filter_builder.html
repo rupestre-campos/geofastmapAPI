@@ -1,0 +1,74 @@
+{# Filter builder: column + operation + value, appends key:op:value to a textarea. Include with filter_textarea_id, base_url, and optional collection_id (to load columns; for map view set via JS when layer selected). #}
+{% macro filter_builder(filter_textarea_id, base_url, collection_id=none, builder_id='filter-builder') %}
+<div class="filter-builder" id="{{ builder_id }}" data-textarea-id="{{ filter_textarea_id }}" data-base-url="{{ base_url or '' }}" data-collection-id="{{ collection_id or '' }}">
+  <div class="filter-builder-add-row" style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:6px;">
+    <span class="meta">Add filter:</span>
+    <select class="filter-builder-key" aria-label="Property key" style="min-width:120px;">
+      <option value="">— column —</option>
+    </select>
+    <select class="filter-builder-op" aria-label="Operation">
+      <option value="eq">equals</option>
+      <option value="ne">not equals</option>
+      <option value="gt">greater than</option>
+      <option value="gte">greater or equal</option>
+      <option value="lt">less than</option>
+      <option value="lte">less or equal</option>
+      <option value="like">like</option>
+      <option value="ilike">ilike</option>
+    </select>
+    <input type="text" class="filter-builder-value" placeholder="value" aria-label="Filter value" style="min-width:100px;">
+    <button type="button" class="btn btn-sm filter-builder-add-btn">Add</button>
+  </div>
+  <p class="meta" style="margin-top:4px;">Operations: <code>eq</code> equals, <code>ne</code> not equals, <code>gt</code>/<code>gte</code>/<code>lt</code>/<code>lte</code> numeric, <code>like</code>/<code>ilike</code> pattern (% wildcard).</p>
+</div>
+<script>
+(function() {
+  var root = document.getElementById({{ builder_id | tojson }});
+  if (!root) return;
+  var textareaId = root.getAttribute('data-textarea-id');
+  var baseUrl = root.getAttribute('data-base-url') || '';
+  var keySelect = root.querySelector('.filter-builder-key');
+  var opSelect = root.querySelector('.filter-builder-op');
+  var valueInput = root.querySelector('.filter-builder-value');
+  var addBtn = root.querySelector('.filter-builder-add-btn');
+  function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+  function getTextarea() { return document.getElementById(textareaId); }
+  function appendLine(line) {
+    var ta = getTextarea();
+    if (!ta) return;
+    var cur = (ta.value || '').trim();
+    if (cur) cur += '\n';
+    ta.value = cur + line;
+  }
+  addBtn.addEventListener('click', function() {
+    var key = (keySelect.value || '').trim();
+    var op = (opSelect.value || 'eq').trim();
+    var val = (valueInput.value || '').trim();
+    if (!key || !op) return;
+    appendLine(key + ':' + op + ':' + val);
+    valueInput.value = '';
+  });
+  valueInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); addBtn.click(); }
+  });
+  function loadColumns(collectionId) {
+    keySelect.innerHTML = '<option value="">— column —</option>';
+    if (!collectionId || !baseUrl) return Promise.resolve();
+    return fetch(baseUrl + '/collections/' + encodeURIComponent(collectionId) + '/queryables', { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.ok ? r.json() : Promise.reject(new Error('Failed to load columns')); })
+      .then(function(data) {
+        var keys = (data && data.properties && Array.isArray(data.properties)) ? data.properties : [];
+        keySelect.innerHTML = '<option value="">— column —</option>' + keys.map(function(k) { return '<option value="' + esc(k) + '">' + esc(k) + '</option>'; }).join('');
+      })
+      .catch(function() {});
+  }
+  window.geofastFilterBuilderSetCollection = window.geofastFilterBuilderSetCollection || {};
+  window.geofastFilterBuilderSetCollection[{{ builder_id | tojson }}] = function(collectionId) {
+    root.setAttribute('data-collection-id', collectionId || '');
+    return loadColumns(collectionId || '');
+  };
+  var cid = root.getAttribute('data-collection-id');
+  if (cid && baseUrl) loadColumns(cid);
+})();
+</script>
+{% endmacro %}

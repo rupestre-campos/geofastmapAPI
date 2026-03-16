@@ -74,9 +74,9 @@ async def list_collections(
                 bbox_tuple = (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
             except ValueError:
                 pass
-    # HTML: default limit for pagination
+    # HTML: default limit for pagination (smaller for faster first load; use Search to change)
     if wants_html(request) and limit is None:
-        limit = 100
+        limit = 20
     items_list, number_matched = await collections_crud.list_collections(
         db,
         q=q.strip() if q and q.strip() else None,

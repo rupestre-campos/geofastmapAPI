@@ -93,6 +93,7 @@
     <div id="map" class="map-container collection-edit-map">
       <div class="map-controls">
         {% include '_basemap_selector.html' %}
+        <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
       </div>
     </div>
     <details id="layer-style-details" class="layer-style-collapsible" style="display:none">
@@ -372,6 +373,7 @@
       map = new maplibregl.Map({ container: 'map', style: mapStyle, center: [0, 20], zoom: 2, renderWorldCopies: false });
       GeofastMapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
       map.on('load', function() {
+        GeofastMapUtils.setupFullscreenForMap(map);
         map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
         try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) sel.value = s; } catch(e) {}
         applyBasemapFromSelect();
