@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Style editor – GeoFast API{% endblock %}
 {% block head %}
+  {% include "_map_popup_css.html" %}
   <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
   {% include "_style_editor_styles.html" %}
@@ -250,6 +251,7 @@
             styleEditorState.activeEditTarget = entry.sourceId;
             if (styleEditorState.applySpecToForm) styleEditorState.applySpecToForm(entry.styleSpec || defaultSpec);
             if (styleEditorState.applyVectorStyle) styleEditorState.applyVectorStyle();
+            if (styleEditorState.refreshRuleFields) styleEditorState.refreshRuleFields();
             renderLayersTable();
           };
           removeBtn.onclick = function(e) {
@@ -265,6 +267,7 @@
               styleEditorState.activeEditTarget = 'editor';
               if (styleEditorState.applySpecToForm) styleEditorState.applySpecToForm(defaultSpec);
               if (styleEditorState.applyVectorStyle) styleEditorState.applyVectorStyle();
+              if (styleEditorState.refreshRuleFields) styleEditorState.refreshRuleFields();
             }
             renderLayersTable();
           };
@@ -297,6 +300,102 @@
       styleEditorState.applySpecToForm = window.GeofastStyleEditor.applySpecToForm;
       styleEditorState.getCurrentSpec = window.GeofastStyleEditor.getCurrentSpec;
       styleEditorState.renderLayersTable = renderLayersTable;
+
+      // ---- Schema keys for rule field suggestions (load from one feature via /queryables) ----
+      var _schemaKeysCache = {};
+      function _activeCollectionIdOrNull() {
+        if (styleEditorState.activeEditTarget === 'editor') return null;
+        var entry = styleEditorState.layersOnMap.filter(function(l) { return l.sourceId === styleEditorState.activeEditTarget; })[0];
+        return entry ? entry.collectionId : null;
+      }
+      function _setRuleFieldOptionsForCollection(collectionId) {
+        if (!collectionId || !window.GeofastStyleEditor || !window.GeofastStyleEditor.setRuleFieldOptions) return;
+        if (_schemaKeysCache[collectionId]) {
+          window.GeofastStyleEditor.setRuleFieldOptions(_schemaKeysCache[collectionId]);
+          return;
+        }
+        function setKeys(keys) {
+          keys = (Array.isArray(keys) ? keys : []).filter(Boolean);
+          _schemaKeysCache[collectionId] = keys;
+          window.GeofastStyleEditor.setRuleFieldOptions(keys);
+        }
+        // Prefer /queryables (fast), but fall back to reading one feature's properties if needed.
+        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/queryables', { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(data) {
+            var keys = (data && data.properties && Array.isArray(data.properties)) ? data.properties : [];
+            if (keys && keys.length) {
+              setKeys(keys);
+              return;
+            }
+            return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=1', { headers: { 'Accept': 'application/json' } })
+              .then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(fc) {
+                var feat = fc && fc.features && fc.features[0];
+                var props = feat && feat.properties && typeof feat.properties === 'object' ? feat.properties : {};
+                var ks = Object.keys(props || {}).sort();
+                setKeys(ks);
+              });
+          })
+          .catch(function() { window.GeofastStyleEditor.setRuleFieldOptions([]); });
+      }
+      styleEditorState.refreshRuleFields = function() {
+        var cid = _activeCollectionIdOrNull();
+        if (cid) _setRuleFieldOptionsForCollection(cid);
+        else if (window.GeofastStyleEditor && window.GeofastStyleEditor.setRuleFieldOptions) window.GeofastStyleEditor.setRuleFieldOptions([]);
+      };
+
+      // ---- Popups for fast data inspection ----
+      var popup = null;
+      function _esc(s) { return (s + '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+      function showPopup(lngLat, feature) {
+        if (!feature) return;
+        // Prefer shared popup rendering so it matches other pages (readable colors, consistent layout)
+        if (window.GeofastMapUtils && window.GeofastMapUtils.popupHtmlForFeature) {
+          try {
+            var html2 = window.GeofastMapUtils.popupHtmlForFeature(feature, base, null);
+            if (html2) {
+              try { if (popup) popup.remove(); } catch(e) {}
+              popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '420px' })
+                .setLngLat(lngLat)
+                .setHTML(html2)
+                .addTo(map);
+              return;
+            }
+          } catch(e) {}
+        }
+        var props = feature.properties || {};
+        var keys = Object.keys(props || {}).sort();
+        var rows = keys.map(function(k) {
+          var v = props[k];
+          var vs = (v == null) ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+          if (vs.length > 500) vs = vs.slice(0, 500) + '…';
+          return '<div class="map-popup-row"><strong>' + _esc(k) + '</strong>' + _esc(vs) + '</div>';
+        }).join('');
+        var html = '<div class="map-popup"><div class="map-popup-id"><strong>Feature</strong></div>' + rows + '</div>';
+        try { if (popup) popup.remove(); } catch(e) {}
+        popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '420px' })
+          .setLngLat(lngLat)
+          .setHTML(html)
+          .addTo(map);
+      }
+      function bindPopupForLayer(layerId) {
+        if (!layerId) return;
+        try {
+          map.on('click', layerId, function(e) {
+            if (!e || !e.features || !e.features.length) return;
+            showPopup(e.lngLat, e.features[0]);
+          });
+          // Use mousemove to reliably show pointer cursor on fills (not just borders).
+          map.on('mousemove', layerId, function() { map.getCanvas().style.cursor = 'pointer'; });
+          map.on('mouseleave', layerId, function() { map.getCanvas().style.cursor = ''; });
+        } catch(e) {}
+      }
+      styleEditorState.bindPopupForLayer = bindPopupForLayer;
+      // Editor layers popups too
+      bindPopupForLayer('editor-fill');
+      bindPopupForLayer('editor-line');
+      bindPopupForLayer('editor-circle');
 
       function publicStylesUrl() { return base + '/styles'; }
       function collectionStylesUrl(cid) { return base + '/collections/' + encodeURIComponent(cid) + '/styles'; }
@@ -632,19 +731,16 @@
       var name = collectionName || collectionId;
       function addLayerWithSpec(styleSpec) {
         var s = styleSpec || defaultSpec;
-        var fillColor = s.fillColor || '#58a6ff';
-        var fillOpacity = s.fillOpacity != null ? s.fillOpacity : 0.6;
-        var lineColor = s.lineColor || '#58a6ff';
-        var lineWidth = Math.max(0.5, s.lineWidth != null ? s.lineWidth : 1);
-        var lineOpacity = s.lineOpacity != null ? s.lineOpacity : 1;
-        var fillVisible = s.fillEnabled !== false;
-        var lineVisible = s.lineEnabled !== false;
-        var pointVisible = s.pointEnabled !== false;
-        var lineDash = LINE_DASH[s.linePattern || 'solid'] || LINE_DASH.solid;
-        var zoomStopsToExpression = window.GeofastStyleEditor && window.GeofastStyleEditor.zoomStopsToExpression ? window.GeofastStyleEditor.zoomStopsToExpression : function(stops) { if (!stops || stops.length < 2) return null; var flat = []; stops.forEach(function(s) { flat.push(Number(s[0]), Number(s[1])); }); return ['interpolate', ['linear'], ['zoom']].concat(flat); };
-        var fillOpacityPaint = (s.fillOpacityZoom && s.fillOpacityZoom.length >= 2) ? zoomStopsToExpression(s.fillOpacityZoom) : fillOpacity;
-        var lineWidthPaint = (s.lineWidthZoom && s.lineWidthZoom.length >= 2) ? zoomStopsToExpression(s.lineWidthZoom) : lineWidth;
-        var lineOpacityPaint = (s.lineOpacityZoom && s.lineOpacityZoom.length >= 2) ? zoomStopsToExpression(s.lineOpacityZoom) : lineOpacity;
+        var p = (window.GeofastMapUtils && window.GeofastMapUtils.specToPaint) ? window.GeofastMapUtils.specToPaint(s) : null;
+        var fillColor = p ? p.fillColor : (s.fillColor || '#58a6ff');
+        var fillOpacityPaint = p ? p.fillOpacity : (s.fillOpacity != null ? s.fillOpacity : 0.6);
+        var lineColor = p ? p.lineColor : (s.lineColor || '#58a6ff');
+        var lineWidthPaint = p ? p.lineWidth : Math.max(0.5, s.lineWidth != null ? s.lineWidth : 1);
+        var lineOpacityPaint = p ? p.lineOpacity : (s.lineOpacity != null ? s.lineOpacity : 1);
+        var fillVisible = p ? p.fillEnabled : (s.fillEnabled !== false);
+        var lineVisible = p ? p.lineEnabled : (s.lineEnabled !== false);
+        var pointVisible = p ? p.pointEnabled : (s.pointEnabled !== false);
+        var lineDash = p ? p.lineDash : (LINE_DASH[s.linePattern || 'solid'] || LINE_DASH.solid);
         fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles', { headers: { 'Accept': 'application/json' } })
           .then(function(r) { return r.json(); })
           .then(function(tilejson) {
@@ -656,14 +752,20 @@
               var layerId = tilejson.vector_layers && tilejson.vector_layers[0] ? tilejson.vector_layers[0].id : collectionId;
               var pointFilter = ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]];
               var notPointFilter = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
-              var ptColor = (s && s.pointColor) || defaultSpec.pointColor || '#58a6ff';
-              var ptSize = (s && s.pointSize != null) ? s.pointSize : (defaultSpec.pointSize != null ? defaultSpec.pointSize : 8);
+              var ptColor = p ? p.pointColor : ((s && s.pointColor) || defaultSpec.pointColor || '#58a6ff');
+              var ptSize = p ? p.pointRadius : ((s && s.pointSize != null) ? s.pointSize : (defaultSpec.pointSize != null ? defaultSpec.pointSize : 8));
               map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, 'editor-fill');
               map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, 'editor-line');
               map.addLayer({ id: sourceId + '-circle', type: 'circle', source: sourceId, 'source-layer': layerId, filter: pointFilter, layout: { visibility: pointVisible ? 'visible' : 'none' }, paint: { 'circle-color': ptColor, 'circle-radius': ptSize, 'circle-opacity': 0.9 } });
+              if (styleEditorState.bindPopupForLayer) {
+                styleEditorState.bindPopupForLayer(sourceId + '-fill');
+                styleEditorState.bindPopupForLayer(sourceId + '-line');
+                styleEditorState.bindPopupForLayer(sourceId + '-circle');
+              }
               styleEditorState.activeEditTarget = sourceId;
               if (styleEditorState.applySpecToForm) styleEditorState.applySpecToForm(s);
               if (styleEditorState.applyVectorStyle) styleEditorState.applyVectorStyle();
+              if (styleEditorState.refreshRuleFields) styleEditorState.refreshRuleFields();
               if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
               if (styleEditorState.loadStylesList) styleEditorState.loadStylesList();
             } else {
@@ -674,14 +776,20 @@
                 .then(function(fc) {
                   if (!fc.features || fc.features.length === 0) return;
                   map.addSource(sourceId, { type: 'geojson', data: fc });
-                  var ptColorGeo = (s && s.pointColor) || defaultSpec.pointColor || '#58a6ff';
-                  var ptSizeGeo = (s && s.pointSize != null) ? s.pointSize : (defaultSpec.pointSize != null ? defaultSpec.pointSize : 8);
+                  var ptColorGeo = p ? p.pointColor : ((s && s.pointColor) || defaultSpec.pointColor || '#58a6ff');
+                  var ptSizeGeo = p ? p.pointRadius : ((s && s.pointSize != null) ? s.pointSize : (defaultSpec.pointSize != null ? defaultSpec.pointSize : 8));
                   map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, filter: notPointFilterGeo, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, 'editor-fill');
                   map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, filter: notPointFilterGeo, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, 'editor-line');
                   map.addLayer({ id: sourceId + '-circle', type: 'circle', source: sourceId, filter: pointFilterGeo, layout: { visibility: pointVisible ? 'visible' : 'none' }, paint: { 'circle-color': ptColorGeo, 'circle-radius': ptSizeGeo, 'circle-opacity': 0.9 } });
+                  if (styleEditorState.bindPopupForLayer) {
+                    styleEditorState.bindPopupForLayer(sourceId + '-fill');
+                    styleEditorState.bindPopupForLayer(sourceId + '-line');
+                    styleEditorState.bindPopupForLayer(sourceId + '-circle');
+                  }
                   styleEditorState.activeEditTarget = sourceId;
                   if (styleEditorState.applySpecToForm) styleEditorState.applySpecToForm(s);
                   if (styleEditorState.applyVectorStyle) styleEditorState.applyVectorStyle();
+                  if (styleEditorState.refreshRuleFields) styleEditorState.refreshRuleFields();
                   if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
                   if (styleEditorState.loadStylesList) styleEditorState.loadStylesList();
                 })

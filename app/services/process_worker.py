@@ -230,7 +230,13 @@ def _insert_features_sync(session: Session, result_id: str, features: list[tuple
     """Insert (shapely_geom, properties) into features for result_id. Geometries subdivided with ST_Subdivide (≤256 vertices per row)."""
     from uuid6 import uuid7
 
-    from app.utils.feature_subdivide import insert_feature_subdivided_sql
+    from app.utils.feature_subdivide import (
+    MAX_COORDS_FOR_DB_SUBDIVIDE,
+    _coord_count,
+    insert_feature_parts_batched,
+    insert_feature_subdivided_sql,
+    subdivide_geometry_by_vertices,
+)
     from shapely.geometry import GeometryCollection, MultiPoint, MultiLineString, MultiPolygon, Point, LineString, Polygon
     from shapely.ops import unary_union
     from shapely.validation import make_valid
@@ -282,9 +288,16 @@ def _insert_features_sync(session: Session, result_id: str, features: list[tuple
                 if geom is None or geom.is_empty:
                     continue
                 fid = str(uuid7())
-                wkt = geom.wkt
-                sql, params = insert_feature_subdivided_sql(fid, result_id, wkt, props, now, max_vertices)
-                session.execute(text(sql), params)
+                if _coord_count(geom) > MAX_COORDS_FOR_DB_SUBDIVIDE:
+                    parts = subdivide_geometry_by_vertices(geom, max_vertices)
+                    wkt_list = [p.wkt for p in parts if p is not None and not p.is_empty]
+                    if wkt_list:
+                        for sql, params in insert_feature_parts_batched(fid, result_id, wkt_list, props, now):
+                            session.execute(text(sql), params)
+                else:
+                    wkt = geom.wkt
+                    sql, params = insert_feature_subdivided_sql(fid, result_id, wkt, props, now, max_vertices)
+                    session.execute(text(sql), params)
         session.commit()
 
 
@@ -751,6 +764,77 @@ def _process_erase_batch(
     return out
 
 
+def _process_buffer_batch(
+    batch_a: list[tuple[str, bytes | None, dict]],
+    distance_degrees: float,
+) -> list[tuple[Any, dict]]:
+    """Process one batch of features: buffer each geometry by distance_degrees. Returns list of (shapely_geom, props)."""
+    if distance_degrees <= 0:
+        return []
+    out: list[tuple[Any, dict]] = []
+    for fid, geom_wkb, props in batch_a:
+        if geom_wkb is None:
+            continue
+        try:
+            shp = wkb.loads(geom_wkb)
+        except Exception:
+            continue
+        if shp is None or shp.is_empty:
+            continue
+        try:
+            buf = shp.buffer(distance_degrees)
+        except Exception:
+            continue
+        if buf is None or buf.is_empty:
+            continue
+        if not buf.is_valid:
+            try:
+                buf = buf.buffer(0)
+            except Exception:
+                continue
+        props_out = dict(props or {})
+        props_out.setdefault("_buffer_degrees", distance_degrees)
+        props_out.setdefault("_source_id", fid)
+        out.append((buf, props_out))
+    return out
+
+
+def _process_explode_batch(
+    batch_a: list[tuple[str, bytes | None, dict]],
+) -> list[tuple[Any, dict]]:
+    """Process one batch of features: explode multi/collection geometries into single-part features."""
+    from shapely.geometry import GeometryCollection, MultiPoint, MultiLineString, MultiPolygon
+
+    out: list[tuple[Any, dict]] = []
+    for fid, geom_wkb, props in batch_a:
+        if geom_wkb is None:
+            continue
+        try:
+            shp = wkb.loads(geom_wkb)
+        except Exception:
+            continue
+        if shp is None or shp.is_empty:
+            continue
+        geom_list: list[Any] = []
+        if isinstance(shp, (MultiPoint, MultiLineString, MultiPolygon, GeometryCollection)):
+            for part in shp.geoms:
+                if part is None or part.is_empty:
+                    continue
+                geom_list.append(part)
+        else:
+            geom_list.append(shp)
+        if not geom_list:
+            continue
+        for idx, g in enumerate(geom_list):
+            if g is None or g.is_empty:
+                continue
+            props_out = dict(props or {})
+            props_out.setdefault("_parent_id", fid)
+            props_out.setdefault("_part_index", idx)
+            out.append((g, props_out))
+    return out
+
+
 def _run_erase_sync(
     engine: Engine,
     result_id: str,
@@ -905,7 +989,86 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
         result_id = _default_result_collection_id(
             payload.process_id, payload.collection_id_a, payload.collection_id_b
         )
-    title = f"{payload.process_id.title()} of {payload.collection_id_a} and {payload.collection_id_b}"
+    # Measure tool updates properties in-place; do not create/clear collections.
+    if payload.process_id == "measure":
+        try:
+            # Require in-place update target (collection_id_a == result_id in typical usage).
+            target_cid = result_id
+            field_name = (payload.measure_field or "").strip()
+            op = (payload.measure_op or "").strip().lower()
+            unit = (payload.measure_unit or "").strip().lower()
+            if not field_name:
+                engine.dispose()
+                return ("measure_field is required (properties key to write).", 0, 0, "")
+            if op not in ("area", "length", "perimeter"):
+                engine.dispose()
+                return ("measure_op must be one of: area, length, perimeter.", 0, 0, "")
+            # Unit conversion factor (base units: meters for length/perimeter, m^2 for area)
+            if op == "area":
+                factors = {"m2": 1.0, "sqm": 1.0, "ha": 1.0 / 10_000.0, "hectare": 1.0 / 10_000.0, "ac": 1.0 / 4046.8564224, "acre": 1.0 / 4046.8564224, "km2": 1.0 / 1_000_000.0, "sqkm": 1.0 / 1_000_000.0}
+            else:
+                factors = {"m": 1.0, "meter": 1.0, "km": 1.0 / 1000.0, "kilometer": 1.0 / 1000.0}
+            factor = factors.get(unit)
+            if factor is None:
+                engine.dispose()
+                return (f"Unsupported measure_unit for {op}: {unit}", 0, 0, "")
+            # Optional filter by feature ids (match UI behavior of other single-layer tools)
+            ids = list(payload.feature_ids or [])
+            update_job(payload.job_id, status="running", message=f"Computing {op}…")
+            with engine.connect() as conn:
+                params: dict[str, Any] = {"cid": target_cid, "field": field_name, "factor": float(factor), "now": datetime.now(timezone.utc)}
+                ids_clause = ""
+                if ids:
+                    ids_clause = " AND id = ANY(:ids)"
+                    params["ids"] = ids
+                # Compute per logical feature id using unioned geometry, then update all part rows for that id.
+                sql = f"""
+                    WITH u AS (
+                        SELECT id, ST_UnaryUnion(ST_Collect(geometry)) AS g
+                        FROM features
+                        WHERE collection_id = :cid AND geometry IS NOT NULL {ids_clause}
+                        GROUP BY id
+                    ),
+                    m AS (
+                        SELECT id,
+                            CASE
+                                WHEN :op = 'area' THEN ST_Area(g::geography)
+                                WHEN :op = 'length' THEN ST_Length(g::geography)
+                                ELSE (
+                                    CASE
+                                        WHEN GeometryType(g) = 'POLYGON' THEN ST_Length(ST_ExteriorRing(g)::geography)
+                                        WHEN GeometryType(g) = 'MULTIPOLYGON' THEN (
+                                            SELECT COALESCE(SUM(ST_Length(ST_ExteriorRing((d).geom)::geography)), 0)
+                                            FROM ST_Dump(g) AS d
+                                        )
+                                        ELSE ST_Length(g::geography)
+                                    END
+                                )
+                            END AS v
+                        FROM u
+                    )
+                    UPDATE features f
+                    SET properties = jsonb_set(COALESCE(f.properties, '{{}}'::jsonb), ARRAY[:field], to_jsonb((m.v * :factor)::double precision), true),
+                        updated_at = :now
+                    FROM m
+                    WHERE f.collection_id = :cid AND f.id = m.id
+                """
+                params["op"] = op
+                res = conn.execute(text(sql), params)
+                conn.commit()
+                updated_rows = int(getattr(res, "rowcount", 0) or 0)
+            # Rowcount is parts updated; report logical features updated (distinct ids)
+            items_in = len(ids) if ids else 0
+            update_job(payload.job_id, status="running", message=f"Updated {field_name} for {updated_rows} rows.")
+            engine.dispose()
+            return (None, updated_rows, items_in, target_cid)
+        except Exception as e:
+            engine.dispose()
+            return (str(e), 0, 0, "")
+    if payload.process_id == "buffer":
+        title = f"Buffer of {payload.collection_id_a}"
+    else:
+        title = f"{payload.process_id.title()} of {payload.collection_id_a} and {payload.collection_id_b}"
 
     try:
         if not payload.update_existing:
@@ -1004,6 +1167,263 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
             finally:
                 insert_session.close()
             count = items_out
+        elif payload.process_id == "buffer":
+            SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+            insert_session = SessionLocal()
+            try:
+                session = SessionLocal()
+                try:
+                    params: dict[str, Any] = {"cid": payload.collection_id_a}
+                    sql = """
+                        SELECT id, geometry, properties
+                        FROM features
+                        WHERE collection_id = :cid AND geometry IS NOT NULL
+                    """
+                    if payload.feature_ids:
+                        sql += " AND id = ANY(:ids)"
+                        params["ids"] = payload.feature_ids
+                    result = session.execute(
+                        text(sql),
+                        params,
+                        execution_options={"stream_results": True},
+                    )
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        pending: set = set()
+                        max_pending = max(max_workers * 2, 4)
+                        for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows):
+                            if not batch_a:
+                                continue
+                            items_in += len(batch_a)
+                            maybe_update("Computing buffer…")
+                            while len(pending) >= max_pending:
+                                done = [f for f in pending if f.done()]
+                                for f in done:
+                                    pending.discard(f)
+                                    chunk_results = f.result()
+                                    if chunk_results:
+                                        _insert_features_sync(insert_session, result_id, chunk_results)
+                                        items_out += len(chunk_results)
+                                        maybe_update("Writing results…")
+                            fut = executor.submit(_process_buffer_batch, batch_a, float(payload.buffer_distance_degrees or 0.0))
+                            pending.add(fut)
+                        for fut in as_completed(pending):
+                            chunk_results = fut.result()
+                            if chunk_results:
+                                _insert_features_sync(insert_session, result_id, chunk_results)
+                                items_out += len(chunk_results)
+                                maybe_update("Writing results…")
+                finally:
+                    session.close()
+            finally:
+                insert_session.close()
+            count = items_out
+        elif payload.process_id == "explode":
+            SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+            insert_session = SessionLocal()
+            try:
+                session = SessionLocal()
+                try:
+                    params: dict[str, Any] = {"cid": payload.collection_id_a}
+                    sql = """
+                        SELECT id, geometry, properties
+                        FROM features
+                        WHERE collection_id = :cid AND geometry IS NOT NULL
+                    """
+                    if payload.feature_ids:
+                        sql += " AND id = ANY(:ids)"
+                        params["ids"] = payload.feature_ids
+                    result = session.execute(
+                        text(sql),
+                        params,
+                        execution_options={"stream_results": True},
+                    )
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        pending: set = set()
+                        max_pending = max(max_workers * 2, 4)
+                        for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows):
+                            if not batch_a:
+                                continue
+                            items_in += len(batch_a)
+                            maybe_update("Exploding geometries…")
+                            while len(pending) >= max_pending:
+                                done = [f for f in pending if f.done()]
+                                for f in done:
+                                    pending.discard(f)
+                                    chunk_results = f.result()
+                                    if chunk_results:
+                                        _insert_features_sync(insert_session, result_id, chunk_results)
+                                        items_out += len(chunk_results)
+                                        maybe_update("Writing results…")
+                            fut = executor.submit(_process_explode_batch, batch_a)
+                            pending.add(fut)
+                        for fut in as_completed(pending):
+                            chunk_results = fut.result()
+                            if chunk_results:
+                                _insert_features_sync(insert_session, result_id, chunk_results)
+                                items_out += len(chunk_results)
+                                maybe_update("Writing results…")
+                finally:
+                    session.close()
+            finally:
+                insert_session.close()
+            count = items_out
+        elif payload.process_id == "union":
+            # Single-layer union (dissolve). Aggregate per batch in SQL, then merge into result table.
+            # One UPDATE per group per batch (not per feature) to avoid 20GB+ disk bloat from MVCC.
+            union_batch_size = max(1, getattr(settings, "process_union_batch_size", 2000))
+            # Union removes overlaps. Then we explode into individual simple geometries and insert each
+            # as its own feature to keep items/tiles responsive (avoid one massive logical feature).
+            # For extremely large parts, slice in Python down to MAX_COORDS_FOR_DB_SUBDIVIDE before insert,
+            # then let the DB do its own ST_Subdivide work (≤ max_vertices).
+            from app.utils.feature_subdivide import (
+                MAX_COORDS_FOR_DB_SUBDIVIDE,
+                _coord_count,
+                subdivide_geometry_by_vertices,
+            )
+            SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+            insert_session = SessionLocal()
+            try:
+                with engine.connect() as conn:
+                    safe_id = payload.job_id.replace("-", "_")
+                    tmp_table = f"tmp_union_{safe_id}"
+                    batch_tmp = f"tmp_union_batch_{safe_id}"
+                    conn.execute(text(
+                        f"CREATE TEMP TABLE {tmp_table} (group_val text PRIMARY KEY, geom geometry(Geometry,4326))"
+                    ))
+                    conn.execute(text(
+                        f"CREATE TEMP TABLE {batch_tmp} (group_val text, geom geometry(Geometry,4326))"
+                    ))
+                    conn.commit()
+                    params: dict[str, Any] = {"cid": payload.collection_id_a}
+                    sql = """
+                        SELECT id, ST_AsBinary(geometry) AS geom_wkb, properties
+                        FROM features
+                        WHERE collection_id = :cid AND geometry IS NOT NULL
+                    """
+                    if payload.feature_ids:
+                        sql += " AND id = ANY(:ids)"
+                        params["ids"] = payload.feature_ids
+                    offset = 0
+                    while True:
+                        batch_sql = sql + f" ORDER BY id, part_index LIMIT {union_batch_size} OFFSET {offset}"
+                        rows_batch = conn.execute(text(batch_sql), params).fetchall()
+                        if not rows_batch:
+                            break
+                        conn.execute(text(f"TRUNCATE {batch_tmp}"))
+                        batch_has_rows = False
+                        for row in rows_batch:
+                            props = getattr(row, "properties", None) or row[2] or {}
+                            gval = "_all"
+                            if payload.group_by_property:
+                                v = (props or {}).get(payload.group_by_property)
+                                gval = "" if v is None else str(v)
+                            raw = getattr(row, "geom_wkb", None) or row[1]
+                            if raw is None:
+                                continue
+                            # Normalize to bytes: driver may return bytes, memoryview, or hex str (e.g. \x0103...)
+                            if isinstance(raw, (memoryview, bytearray)):
+                                gbytes = bytes(raw)
+                            elif isinstance(raw, str):
+                                s = raw.strip()
+                                if s.startswith("\\x") or s.startswith("\\\\x"):
+                                    gbytes = bytes.fromhex(s.replace("\\x", "").replace("\\\\x", ""))
+                                else:
+                                    try:
+                                        gbytes = wkb.loads(s, hex=True).wkb
+                                    except Exception:
+                                        continue
+                            else:
+                                gbytes = raw if isinstance(raw, bytes) else None
+                            if not gbytes or len(gbytes) == 0:
+                                continue
+                            conn.execute(
+                                text(f"INSERT INTO {batch_tmp} (group_val, geom) VALUES (:g, ST_GeomFromWKB(:ggeom, 4326))"),
+                                {"g": gval, "ggeom": gbytes},
+                            )
+                            items_in += 1
+                            batch_has_rows = True
+                        # One union per group for this batch, then merge into tmp_table (one UPDATE per group).
+                        if not batch_has_rows:
+                            offset += union_batch_size
+                            if len(rows_batch) < union_batch_size:
+                                break
+                            continue
+                        conn.execute(text(f"""
+                            WITH batch_union AS (
+                                SELECT group_val, ST_UnaryUnion(ST_Collect(geom)) AS geom
+                                FROM {batch_tmp}
+                                GROUP BY group_val
+                            ),
+                            merged AS (
+                                UPDATE {tmp_table} t
+                                SET geom = ST_UnaryUnion(ST_Collect(t.geom, b.geom))
+                                FROM batch_union b
+                                WHERE t.group_val = b.group_val
+                                RETURNING t.group_val
+                            )
+                            INSERT INTO {tmp_table} (group_val, geom)
+                            SELECT b.group_val, b.geom
+                            FROM batch_union b
+                            WHERE b.group_val NOT IN (SELECT group_val FROM merged)
+                        """))
+                        maybe_update("Computing union (dissolve)…")
+                        conn.commit()
+                        offset += union_batch_size
+                        if len(rows_batch) < union_batch_size:
+                            break
+                    rows = conn.execute(text(f"SELECT group_val, ST_AsBinary(geom) FROM {tmp_table}")).fetchall()
+                union_feats = []
+                for row in rows:
+                    gval = row[0]
+                    geom_wkb = row[1]
+                    if not geom_wkb:
+                        continue
+                    try:
+                        if isinstance(geom_wkb, str):
+                            s = geom_wkb.strip().replace("\\x", "").replace("\\\\x", "")
+                            shp = wkb.loads(s, hex=True)
+                        else:
+                            b = bytes(geom_wkb) if isinstance(geom_wkb, (memoryview, bytearray)) else geom_wkb
+                            shp = wkb.loads(b)
+                    except Exception:
+                        continue
+                    if shp is None or shp.is_empty:
+                        continue
+                    props_out: dict[str, Any] = {}
+                    if payload.group_by_property and gval != "":
+                        props_out[payload.group_by_property] = gval
+                    # Explode multiparts/collections into individual geometries (one feature per geom).
+                    exploded: list[Any] = []
+                    try:
+                        if getattr(shp, "geom_type", None) in ("MultiPolygon", "MultiLineString", "MultiPoint", "GeometryCollection"):
+                            exploded = [g for g in getattr(shp, "geoms", []) if g is not None and not g.is_empty]
+                        else:
+                            exploded = [shp]
+                    except Exception:
+                        exploded = [shp]
+                    # If any single geometry is still too large for safe DB-side handling, slice it down first
+                    # so downstream queries never have to materialize an enormous geometry.
+                    for geom_piece in exploded:
+                        if geom_piece is None or geom_piece.is_empty:
+                            continue
+                        if _coord_count(geom_piece) > MAX_COORDS_FOR_DB_SUBDIVIDE:
+                            sliced = subdivide_geometry_by_vertices(geom_piece, MAX_COORDS_FOR_DB_SUBDIVIDE)
+                            for s in sliced:
+                                if s is None or s.is_empty:
+                                    continue
+                                union_feats.append((s, props_out))
+                        else:
+                            union_feats.append((geom_piece, props_out))
+                if union_feats:
+                    _insert_features_sync(insert_session, result_id, union_feats)
+                    items_out += len(union_feats)
+                    maybe_update("Writing results…")
+                count = items_out
+            finally:
+                try:
+                    insert_session.close()
+                except Exception:
+                    pass
         else:
             engine.dispose()
             return (f"Unknown process: {payload.process_id}", 0, 0, "")

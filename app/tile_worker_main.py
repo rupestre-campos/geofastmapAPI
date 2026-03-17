@@ -5,13 +5,29 @@ from __future__ import annotations
 import sys
 from app.core.config import get_settings
 from app.services.dynamic_tile_cache import invalidate_collection_cache
+from app.services.job_store import list_all_jobs
 from app.services.tile_build_queue import (
     TILE_BUILD_QUEUE_KEY,
     TileBuildPayload,
     clear_pending,
+    get_latest_tile_build_job,
+    get_tile_build_job,
     update_tile_build_job,
 )
-from app.services.tile_builder import build_pmtiles_sync
+from app.services.tile_builder import BUILD_CANCELLED, build_pmtiles_sync
+
+
+def _recover_orphaned_tile_builds() -> None:
+    """Mark any tile build jobs stuck in 'running' as failed (worker restarted; build no longer active)."""
+    for job in list_all_jobs(limit=300):
+        if job.status != "running":
+            continue
+        latest = get_latest_tile_build_job(job.collection_id)
+        if latest is None or latest.job_id != job.job_id:
+            continue
+        update_tile_build_job(job.job_id, status="failed", message="Worker restarted; build interrupted.")
+        clear_pending(job.collection_id)
+        print(f"Recovered orphaned tile build job {job.job_id} ({job.collection_id})", flush=True)
 
 
 def main() -> None:
@@ -19,6 +35,7 @@ def main() -> None:
     if settings.bulk_queue_type != "redis":
         print("Set BULK_QUEUE_TYPE=redis for tile worker.", file=sys.stderr)
         sys.exit(1)
+    _recover_orphaned_tile_builds()
     import redis
     r = redis.from_url(settings.redis_url, decode_responses=True)
     print("Tile worker started. Waiting for build jobs...", flush=True)
@@ -34,10 +51,27 @@ def main() -> None:
             continue
         cid = payload.collection_id
         job_id = payload.job_id
+        job = get_tile_build_job(job_id)
+        if job and job.status == "cancelled":
+            print(f"Skipping cancelled tile build for {cid} (job_id={job_id})", flush=True)
+            clear_pending(cid)
+            continue
         print(f"Building tiles for {cid} (job_id={job_id})...", flush=True)
         update_tile_build_job(job_id, status="building")
-        err = build_pmtiles_sync(cid, options=payload.options)
+
+        def stop_check() -> bool:
+            j = get_tile_build_job(job_id)
+            return j is not None and j.status == "cancelled"
+
+        err = build_pmtiles_sync(cid, options=payload.options, stop_check=stop_check)
         clear_pending(cid)
+        if err == BUILD_CANCELLED:
+            print(f"Tile build for {cid} was cancelled; intermediate files cleaned up", flush=True)
+            continue
+        job = get_tile_build_job(job_id)
+        if job and job.status == "cancelled":
+            print(f"Tile build for {cid} was cancelled; not marking completed", flush=True)
+            continue
         if err:
             update_tile_build_job(job_id, status="failed", message=err)
             print(f"Build FAILED for {cid}: {err}", file=sys.stderr, flush=True)

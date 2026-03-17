@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="static/favicon.svg" alt="GeoFast API logo" width="140" />
+</div>
+
 # GeoFast API
 
 **Fast, OGC-compliant geo API for vector tiles, PostGIS, and web maps.**

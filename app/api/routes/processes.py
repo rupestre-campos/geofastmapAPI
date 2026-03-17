@@ -34,6 +34,21 @@ PROCESSES = [
         "title": "Erase",
         "description": "Compute geometry difference (A minus B). Result collection id: erase_{id_a}_{id_b}.",
     },
+    {
+        "id": "buffer",
+        "title": "Buffer (single layer)",
+        "description": "Buffer features in a single collection by a distance in degrees (WGS84). Result collection id: buffer_{id}_{id}.",
+    },
+    {
+        "id": "explode",
+        "title": "Explode (single layer)",
+        "description": "Explode multi-part and collection geometries in a single collection into single-part features. Result collection id: explode_{id}_{id}.",
+    },
+    {
+        "id": "measure",
+        "title": "Measure (single layer, in-place)",
+        "description": "Compute area/length/perimeter for each feature and write it into properties (in-place update).",
+    },
 ]
 
 
@@ -46,6 +61,8 @@ class ProcessExecutionInput(BaseModel):
     collection_id_b: str = Field(..., description="Second collection (layer B).")
     result_collection_id: str | None = Field(None, description="Result collection name (create new). If omitted, uses process + hash of layer ids.")
     update_existing: bool = Field(False, description="If true, write result into existing collection (result_collection_id must be set).")
+    queue_compute_tiles: bool = Field(True, description="If true (default), queue a static tile build for the result collection after the process completes.")
+    tile_build_options: dict | None = Field(None, description="Optional tile build options (same fields as POST /collections/{id}/tiles/build).")
 
 
 class FeatureReference(BaseModel):
@@ -67,6 +84,92 @@ class ProcessFeatureExecutionInput(BaseModel):
     collection_ids: list[str] = Field(..., min_length=1, description="List of collection (layer) ids to run the process against.")
     result_collection_id: str | None = Field(None, description="Result collection name (create new), or existing id when update_existing. Default: process + hash(feature_id + sorted layers).")
     update_existing: bool = Field(False, description="If true, write result into existing collection (result_collection_id must be set).")
+    queue_compute_tiles: bool = Field(True, description="If true (default), queue a static tile build for the result collection after the process completes.")
+    tile_build_options: dict | None = Field(None, description="Optional tile build options (same fields as POST /collections/{id}/tiles/build).")
+
+
+class BufferExecutionInput(BaseModel):
+    """Single-layer buffer: buffer all features or a subset of features in one collection by a distance in degrees."""
+    collection_id: str = Field(..., description="Collection (layer) id to buffer.")
+    distance_degrees: float = Field(..., gt=0, description="Buffer distance in degrees (WGS84).")
+    feature_ids: list[str] | None = Field(
+        None,
+        description="Optional list of feature ids to buffer; if omitted or empty, buffers all features in the collection.",
+    )
+    result_collection_id: str | None = Field(
+        None,
+        description="Result collection name (create new) or existing id when update_existing. Default: process + hash(layer id).",
+    )
+    update_existing: bool = Field(
+        False,
+        description="If true, write result into existing collection (result_collection_id must be set).",
+    )
+    queue_compute_tiles: bool = Field(True, description="If true (default), queue a static tile build for the result collection after the process completes.")
+    tile_build_options: dict | None = Field(None, description="Optional tile build options (same fields as POST /collections/{id}/tiles/build).")
+
+
+class ExplodeExecutionInput(BaseModel):
+    """Single-layer explode: normalize multi-part and collection geometries into single-part features."""
+    collection_id: str = Field(..., description="Collection (layer) id to explode.")
+    feature_ids: list[str] | None = Field(
+        None,
+        description="Optional list of feature ids to explode; if omitted or empty, explodes all features in the collection.",
+    )
+    result_collection_id: str | None = Field(
+        None,
+        description="Result collection name (create new) or existing id when update_existing. Default: process + hash(layer id).",
+    )
+    update_existing: bool = Field(
+        False,
+        description="If true, write result into existing collection (result_collection_id must be set).",
+    )
+    queue_compute_tiles: bool = Field(True, description="If true (default), queue a static tile build for the result collection after the process completes.")
+    tile_build_options: dict | None = Field(None, description="Optional tile build options (same fields as POST /collections/{id}/tiles/build).")
+
+
+class UnionLayerExecutionInput(BaseModel):
+    """Single-layer union (dissolve): merge features, optionally grouped by an attribute."""
+    collection_id: str = Field(..., description="Collection (layer) id to union (dissolve).")
+    feature_ids: list[str] | None = Field(
+        None,
+        description="Optional list of feature ids to include; if omitted or empty, uses all features in the collection.",
+    )
+    group_by_property: str | None = Field(
+        None,
+        description="Optional property name to dissolve by (features with the same value are merged). Leave empty for full layer union.",
+    )
+    result_collection_id: str | None = Field(
+        None,
+        description="Result collection name (create new) or existing id when update_existing. Default: process + hash(layer id).",
+    )
+    update_existing: bool = Field(
+        False,
+        description="If true, write result into existing collection (result_collection_id must be set).",
+    )
+    result_collection_id: str | None = Field(
+        None,
+        description="Result collection name (create new) or existing id when update_existing. Default: process + hash(layer id).",
+    )
+    update_existing: bool = Field(
+        False,
+        description="If true, write result into existing collection (result_collection_id must be set).",
+    )
+    queue_compute_tiles: bool = Field(True, description="If true (default), queue a static tile build for the result collection after the process completes.")
+    tile_build_options: dict | None = Field(None, description="Optional tile build options (same fields as POST /collections/{id}/tiles/build).")
+
+
+class MeasureLayerExecutionInput(BaseModel):
+    """Single-layer measure: compute metric per feature and update properties in-place."""
+    collection_id: str = Field(..., description="Collection (layer) id to update in-place.")
+    feature_ids: list[str] | None = Field(
+        None,
+        description="Optional list of feature ids to measure; if omitted or empty, measures all features in the collection.",
+    )
+    measure_op: str = Field(..., description="Metric: area | length | perimeter")
+    measure_unit: str = Field(..., description="Unit: for area: m2|ha|ac|km2; for length/perimeter: m|km")
+    measure_field: str = Field(..., description="Properties key to write, e.g. area_m2 or perimeter_km")
+    queue_compute_tiles: bool = Field(False, description="If true, queue a static tile build after updating properties. Default false.")
+    tile_build_options: dict | None = Field(None, description="Optional tile build options (same fields as POST /collections/{id}/tiles/build).")
 
 
 @router.get(
@@ -106,7 +209,7 @@ async def list_processes(
 )
 async def get_default_result_name(
     mode: str = Query(..., description="collection or feature"),
-    process_id: str = Query(..., description="intersection or erase"),
+    process_id: str = Query(..., description="intersection, erase, buffer, explode, or union"),
     collection_id_a: str = Query("", description="Layer A (collection mode)."),
     collection_id_b: str = Query("", description="Layer B (collection mode)."),
     feature_id: str = Query("", description="Feature id (feature mode; use 'geojson' for GeoJSON input)."),
@@ -201,6 +304,8 @@ async def _execute_process(
         collection_id_b=payload.collection_id_b,
         result_collection_id=payload.result_collection_id or None,
         update_existing=payload.update_existing,
+        queue_compute_tiles=payload.queue_compute_tiles,
+        tile_build_options=payload.tile_build_options,
     )
     if not enqueue_process_job(pl):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Failed to enqueue process job.")
@@ -306,6 +411,8 @@ async def _execute_process_feature(
         collection_ids=collection_ids,
         result_collection_id=payload.result_collection_id or None,
         update_existing=payload.update_existing,
+        queue_compute_tiles=payload.queue_compute_tiles,
+        tile_build_options=payload.tile_build_options,
     )
     if not enqueue_process_job(pl):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Failed to enqueue process job.")
@@ -349,3 +456,247 @@ async def execute_erase_feature(
     db: AsyncSession = Depends(get_db),
 ):
     return await _execute_process_feature(request, "erase", payload, db)
+
+
+@router.post(
+    "/buffer/execution",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Execute buffer (single layer)",
+    description="Queue buffer for all features (or a subset of feature ids) in a single collection. Distance is in degrees (WGS84).",
+)
+async def execute_buffer(
+    request: Request,
+    payload: BufferExecutionInput,
+    db: AsyncSession = Depends(get_db),
+):
+    collection = await collections_crud.get_collection(db, payload.collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Collection not found: {payload.collection_id}")
+    if payload.update_existing:
+        if not payload.result_collection_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="update_existing requires result_collection_id (existing collection to update).",
+            )
+        existing = await collections_crud.get_collection(db, payload.result_collection_id)
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Collection to update not found: {payload.result_collection_id}",
+            )
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if settings.process_queue_type != "redis":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Process execution requires Redis (PROCESS_QUEUE_TYPE=redis). Run a process worker.",
+        )
+    job = create_job(payload.collection_id)
+    feature_ids = list(payload.feature_ids or [])
+    pl = ProcessJobPayload(
+        job_id=job.job_id,
+        process_id="buffer",
+        collection_id_a=payload.collection_id,
+        collection_id_b=payload.collection_id,
+        feature_ids=feature_ids,
+        buffer_distance_degrees=payload.distance_degrees,
+        result_collection_id=payload.result_collection_id or None,
+        update_existing=payload.update_existing,
+        queue_compute_tiles=payload.queue_compute_tiles,
+        tile_build_options=payload.tile_build_options,
+    )
+    if not enqueue_process_job(pl):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Failed to enqueue process job.")
+    base = _base_url(request)
+    approx_m = int(round(payload.distance_degrees * 111_320))
+    result_msg = f"Result: {payload.result_collection_id}" if payload.result_collection_id else "Result collection name will be process + hash of layer id."
+    if payload.update_existing:
+        result_msg = f"Updating existing collection: {payload.result_collection_id}"
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "job_id": job.job_id,
+            "status_url": f"{base}/jobs/{job.job_id}",
+            "message": f"Process buffer queued (distance {payload.distance_degrees}° ≈ {approx_m} m at equator). {result_msg}",
+        },
+    )
+
+
+@router.post(
+    "/explode/execution",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Execute explode (single layer)",
+    description="Queue explode for all features (or a subset of feature ids) in a single collection.",
+)
+async def execute_explode(
+    request: Request,
+    payload: ExplodeExecutionInput,
+    db: AsyncSession = Depends(get_db),
+):
+    collection = await collections_crud.get_collection(db, payload.collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Collection not found: {payload.collection_id}")
+    if payload.update_existing:
+        if not payload.result_collection_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="update_existing requires result_collection_id (existing collection to update).",
+            )
+        existing = await collections_crud.get_collection(db, payload.result_collection_id)
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Collection to update not found: {payload.result_collection_id}",
+            )
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if settings.process_queue_type != "redis":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Process execution requires Redis (PROCESS_QUEUE_TYPE=redis). Run a process worker.",
+        )
+    job = create_job(payload.collection_id)
+    feature_ids = list(payload.feature_ids or [])
+    pl = ProcessJobPayload(
+        job_id=job.job_id,
+        process_id="explode",
+        collection_id_a=payload.collection_id,
+        collection_id_b=payload.collection_id,
+        feature_ids=feature_ids,
+        result_collection_id=payload.result_collection_id or None,
+        update_existing=payload.update_existing,
+        queue_compute_tiles=payload.queue_compute_tiles,
+        tile_build_options=payload.tile_build_options,
+    )
+    if not enqueue_process_job(pl):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Failed to enqueue process job.")
+    base = _base_url(request)
+    result_msg = f"Result: {payload.result_collection_id}" if payload.result_collection_id else "Result collection name will be process + hash of layer id."
+    if payload.update_existing:
+        result_msg = f"Updating existing collection: {payload.result_collection_id}"
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "job_id": job.job_id,
+            "status_url": f"{base}/jobs/{job.job_id}",
+            "message": f"Process explode queued. {result_msg}",
+        },
+    )
+
+
+@router.post(
+    "/union-layer/execution",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Execute union (single layer, dissolve)",
+    description="Queue union (dissolve) for all features (or a subset of feature ids) in a single collection. Optionally group by a property so features with the same value are merged.",
+)
+async def execute_union_layer(
+    request: Request,
+    payload: UnionLayerExecutionInput,
+    db: AsyncSession = Depends(get_db),
+):
+    collection = await collections_crud.get_collection(db, payload.collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Collection not found: {payload.collection_id}")
+    if payload.update_existing:
+        if not payload.result_collection_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="update_existing requires result_collection_id (existing collection to update).",
+            )
+        existing = await collections_crud.get_collection(db, payload.result_collection_id)
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Collection to update not found: {payload.result_collection_id}",
+            )
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if settings.process_queue_type != "redis":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Process execution requires Redis (PROCESS_QUEUE_TYPE=redis). Run a process worker.",
+        )
+    job = create_job(payload.collection_id)
+    feature_ids = list(payload.feature_ids or [])
+    pl = ProcessJobPayload(
+        job_id=job.job_id,
+        process_id="union",
+        collection_id_a=payload.collection_id,
+        collection_id_b=payload.collection_id,
+        feature_ids=feature_ids,
+        group_by_property=payload.group_by_property or None,
+        result_collection_id=payload.result_collection_id or None,
+        update_existing=payload.update_existing,
+        queue_compute_tiles=payload.queue_compute_tiles,
+        tile_build_options=payload.tile_build_options,
+    )
+    if not enqueue_process_job(pl):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Failed to enqueue process job.")
+    base = _base_url(request)
+    result_msg = f"Result: {payload.result_collection_id}" if payload.result_collection_id else "Result collection name will be process + hash of layer id."
+    if payload.update_existing:
+        result_msg = f"Updating existing collection: {payload.result_collection_id}"
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "job_id": job.job_id,
+            "status_url": f"{base}/jobs/{job.job_id}",
+            "message": f"Process union (dissolve) queued. {result_msg}",
+        },
+    )
+
+
+@router.post(
+    "/measure-layer/execution",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Execute measure (single layer, in-place)",
+    description="Queue an in-place update that computes area/length/perimeter per feature and writes it to properties as a new field.",
+)
+async def execute_measure_layer(
+    request: Request,
+    payload: MeasureLayerExecutionInput,
+    db: AsyncSession = Depends(get_db),
+):
+    collection = await collections_crud.get_collection(db, payload.collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Collection not found: {payload.collection_id}")
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if settings.process_queue_type != "redis":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Process execution requires Redis (PROCESS_QUEUE_TYPE=redis). Run a process worker.",
+        )
+    job = create_job(payload.collection_id)
+    feature_ids = list(payload.feature_ids or [])
+    pl = ProcessJobPayload(
+        job_id=job.job_id,
+        process_id="measure",
+        collection_id_a=payload.collection_id,
+        collection_id_b=payload.collection_id,
+        feature_ids=feature_ids,
+        measure_op=payload.measure_op,
+        measure_unit=payload.measure_unit,
+        measure_field=payload.measure_field,
+        # Force in-place update of the same collection.
+        result_collection_id=payload.collection_id,
+        update_existing=True,
+        queue_compute_tiles=payload.queue_compute_tiles,
+        tile_build_options=payload.tile_build_options,
+    )
+    if not enqueue_process_job(pl):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Failed to enqueue process job.")
+    base = _base_url(request)
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "job_id": job.job_id,
+            "status_url": f"{base}/jobs/{job.job_id}",
+            "message": f"Measure queued: {payload.measure_op} → {payload.measure_field} ({payload.measure_unit}). Updating {payload.collection_id} in place.",
+        },
+    )

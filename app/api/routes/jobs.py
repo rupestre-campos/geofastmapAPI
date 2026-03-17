@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from app.core.html import html_response, wants_html
 from app.services.job_store import get_job, list_all_jobs, list_jobs_for_collection, update_job
+from app.services.tile_build_queue import get_latest_tile_build_job
 
 router = APIRouter()
 
@@ -37,6 +38,10 @@ async def list_jobs(
                 d["collection_ids"] = meta.get("collection_ids")
                 d["feature_source"] = meta.get("feature_source")
                 d["result_collection_id"] = meta.get("result_collection_id")
+                d["is_tile_build"] = False
+            else:
+                latest = get_latest_tile_build_job(j.collection_id)
+                d["is_tile_build"] = latest is not None and latest.job_id == j.job_id
             jobs_for_page.append(d)
         base = _base_url(request)
         return html_response("jobs_list.html", base=base, jobs=jobs_for_page)
@@ -57,6 +62,9 @@ async def list_jobs(
             d["collection_ids"] = meta.get("collection_ids")
             d["feature_source"] = meta.get("feature_source")
             d["result_collection_id"] = meta.get("result_collection_id") or d.get("result_collection_id")
+        else:
+            latest = get_latest_tile_build_job(j.collection_id)
+            d["is_tile_build"] = latest is not None and latest.job_id == j.job_id
         jobs_out.append(d)
     return {"jobs": jobs_out}
 
@@ -90,6 +98,14 @@ async def get_job_status(request: Request, job_id: str):
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     if wants_html(request):
+        # Tile builds are cancelled via /collections/{collection_id}/tiles/build/cancel and can be cancelled
+        # even while "running". Detect if this job is the latest tile build for the collection.
+        is_tile_build = False
+        try:
+            latest = get_latest_tile_build_job(job.collection_id)
+            is_tile_build = latest is not None and latest.job_id == job.job_id
+        except Exception:
+            is_tile_build = False
         base = _base_url(request)
         return html_response(
             "job.html",
@@ -97,6 +113,7 @@ async def get_job_status(request: Request, job_id: str):
             job_id=job.job_id,
             collection_id=job.collection_id,
             status=job.status,
+            is_tile_build=is_tile_build,
             message=job.message or "",
             items_in=job.items_in,
             items_created=job.items_created,

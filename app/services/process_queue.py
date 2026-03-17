@@ -14,15 +14,32 @@ PROCESS_JOB_META_PREFIX = "geofast:process_job_meta:"
 
 @dataclass
 class ProcessJobPayload:
-    """Collection vs collection: collection_id_a, collection_id_b. Single feature vs layers: feature_ref or feature_geojson + collection_ids."""
+    """Process jobs for OGC API - Processes.
+
+    Modes:
+    - Collection vs collection: collection_id_a, collection_id_b.
+    - Single feature vs layers: feature_ref or feature_geojson + collection_ids.
+    - Single-layer tools (e.g. buffer): collection_id_a (+ optional feature_ids, distance).
+    """
     job_id: str
-    process_id: str  # "intersection" | "erase"
+    process_id: str  # e.g. "intersection", "erase", "buffer"
     collection_id_a: str = ""
     collection_id_b: str = ""
     # Single-feature vs layers mode
     feature_ref: dict | None = None  # {"collection_id": "...", "feature_id": "..."}
     feature_geojson: dict | None = None  # GeoJSON Feature or FeatureCollection
     collection_ids: list[str] = field(default_factory=list)
+    # Single-layer tools
+    feature_ids: list[str] = field(default_factory=list)
+    buffer_distance_degrees: float | None = None
+    group_by_property: str | None = None
+    # Single-layer measure tool (update properties in-place)
+    measure_op: str | None = None  # "area" | "length" | "perimeter"
+    measure_unit: str | None = None  # e.g. "m2", "ha", "ac", "km2", "m", "km"
+    measure_field: str | None = None  # properties key to write (e.g. "area_m2")
+    # Optional: enqueue static tile build after process completes
+    queue_compute_tiles: bool = True
+    tile_build_options: dict | None = None  # matches TileBuildOptions.to_dict()
     # Result: optional explicit name; if update_existing, result_collection_id is existing collection to overwrite
     result_collection_id: str | None = None
     update_existing: bool = False
@@ -40,6 +57,22 @@ class ProcessJobPayload:
                 out["feature_ref"] = self.feature_ref
             if self.feature_geojson:
                 out["feature_geojson"] = self.feature_geojson
+        if self.feature_ids:
+            out["feature_ids"] = self.feature_ids
+        if self.buffer_distance_degrees is not None:
+            out["buffer_distance_degrees"] = self.buffer_distance_degrees
+        if self.group_by_property is not None:
+            out["group_by_property"] = self.group_by_property
+        if self.measure_op is not None:
+            out["measure_op"] = self.measure_op
+        if self.measure_unit is not None:
+            out["measure_unit"] = self.measure_unit
+        if self.measure_field is not None:
+            out["measure_field"] = self.measure_field
+        if self.queue_compute_tiles is False:
+            out["queue_compute_tiles"] = False
+        if self.tile_build_options:
+            out["tile_build_options"] = self.tile_build_options
         if self.result_collection_id:
             out["result_collection_id"] = self.result_collection_id
         if self.update_existing:
@@ -57,6 +90,14 @@ class ProcessJobPayload:
             feature_ref=d.get("feature_ref"),
             feature_geojson=d.get("feature_geojson"),
             collection_ids=d.get("collection_ids") or [],
+            feature_ids=d.get("feature_ids") or [],
+            buffer_distance_degrees=d.get("buffer_distance_degrees"),
+            group_by_property=d.get("group_by_property"),
+            measure_op=d.get("measure_op"),
+            measure_unit=d.get("measure_unit"),
+            measure_field=d.get("measure_field"),
+            queue_compute_tiles=d.get("queue_compute_tiles", True),
+            tile_build_options=d.get("tile_build_options"),
             result_collection_id=d.get("result_collection_id"),
             update_existing=d.get("update_existing", False),
         )

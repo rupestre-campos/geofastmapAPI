@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.crud import collection_tiles as tiles_crud
+from app.services.tile_build_queue import get_latest_tile_build_job
 from app.utils.geo import mvt_layer_name
 from app.crud import collections as collections_crud
 from app.crud import styles as styles_crud
@@ -198,6 +199,12 @@ async def get_collection_edit_form(
     static_maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
     out = CollectionRead.model_validate(collection)
     default_style = await styles_crud.get_default_style(db, collection_id)
+    tile_build_job = None
+    if settings.bulk_queue_type == "redis":
+        tile_build_job = get_latest_tile_build_job(collection_id)
+    show_cancel_tile_build = (
+        tile_build_job is not None and tile_build_job.status in ("pending", "running")
+    )
     return html_response(
         "collection_edit.html",
         base=base,
@@ -211,6 +218,7 @@ async def get_collection_edit_form(
         google_maps_api_key=settings.google_maps_api_key or "",
         default_style={"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec} if default_style else None,
         collection_styles_url=f"{base}/collections/{collection_id}/styles",
+        show_cancel_tile_build=show_cancel_tile_build,
     )
 
 

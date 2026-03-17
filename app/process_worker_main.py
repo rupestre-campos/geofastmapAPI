@@ -142,8 +142,17 @@ def main() -> None:
                 items_in=items_in,
                 items_created=count,
             )
-            tile_job = create_tile_build_job(result_id)
-            enqueue_tile_build(result_id, tile_job.job_id)
+            if getattr(payload, "queue_compute_tiles", True):
+                try:
+                    from app.services.tile_build_queue import TileBuildOptions, update_tile_build_job
+                    opts = None
+                    if getattr(payload, "tile_build_options", None):
+                        opts = TileBuildOptions.from_dict(payload.tile_build_options)
+                    tile_job = create_tile_build_job(result_id)
+                    update_tile_build_job(tile_job.job_id, message="Tile build")
+                    enqueue_tile_build(result_id, tile_job.job_id, options=opts)
+                except Exception:
+                    pass
             print(f"Process completed. Result: {result_id} ({count} features)", flush=True)
 
 

@@ -18,6 +18,8 @@
     [data-theme="dark"] .process-jobs-table .status-running { background: rgba(88, 166, 255, 0.2); color: #58a6ff; }
     .process-jobs-empty { color: var(--text-secondary); font-size: 0.9rem; padding: var(--space-lg); text-align: center; }
     .process-result-link { font-weight: 500; }
+    #jobs-wrap { max-height: 60vh; overflow-y: auto; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    #jobs-wrap table { margin: 0; }
   </style>
 {% endblock %}
 {% block content %}
@@ -81,6 +83,51 @@
             {% endfor %}
           </select>
         </div>
+        <details class="form-row" style="margin-top: 0.25rem;">
+          <summary class="meta" style="cursor: pointer;">Tiles after processing (optional)</summary>
+          <div style="margin-top: 0.5rem;">
+            <label style="display:block; margin-bottom: 0.35rem;">
+              <input type="checkbox" id="proc-tiles-enabled" checked> Build static tiles after job completes
+            </label>
+            <div style="display:flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end;">
+              <div>
+                <label for="proc-tiles-min-zoom">Min zoom</label>
+                <input type="number" id="proc-tiles-min-zoom" min="0" max="24" step="1" placeholder="(default)" style="width: 120px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+              </div>
+              <div>
+                <label for="proc-tiles-max-zoom">Max zoom</label>
+                <input type="number" id="proc-tiles-max-zoom" min="0" max="24" step="1" placeholder="(default)" style="width: 120px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+              </div>
+            </div>
+            <div class="form-row" style="margin-top: 0.75rem;">
+              <label>Tile size pressure options</label>
+              <div style="display:flex; gap: 1.25rem; flex-wrap: wrap;">
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><span class="meta">Densest</span>
+                  <select id="proc-tiles-densest" style="width: 200px;">
+                    <option value="drop" selected>Drop densest as needed</option>
+                    <option value="coalesce">Coalesce densest as needed</option>
+                  </select>
+                </label>
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><span class="meta">Smallest</span>
+                  <select id="proc-tiles-smallest" style="width: 200px;">
+                    <option value="drop" selected>Drop smallest as needed</option>
+                    <option value="coalesce">Coalesce smallest as needed</option>
+                  </select>
+                </label>
+              </div>
+              <div style="margin-top: 0.6rem; display:flex; flex-direction: column; gap: 0.4rem;">
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-no-line-simplification"> No line simplification (-ps)</label>
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-simplify-only-low-zooms"> Simplify only at low zooms (-pS)</label>
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-no-shared-nodes"> No simplification of shared nodes (-pn)</label>
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-no-tiny-polygon"> No tiny polygon reduction (-pt)</label>
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-no-point-dropping"> No point dropping at low zooms (-r1)</label>
+              </div>
+              <div class="meta" style="margin-top: 0.5rem;">
+                Attributes include/exclude can be controlled later on the Build Tiles page.
+              </div>
+            </div>
+          </div>
+        </details>
         <button type="submit" class="btn btn-primary" id="submit-btn">Queue job</button>
         <span id="form-message" class="meta" style="margin-left: 0.5rem; display: none;"></span>
       </form>
@@ -143,17 +190,195 @@
             {% endfor %}
           </select>
         </div>
+        <details class="form-row" style="margin-top: 0.25rem;">
+          <summary class="meta" style="cursor: pointer;">Tiles after processing (optional)</summary>
+          <div style="margin-top: 0.5rem;">
+            <label style="display:block; margin-bottom: 0.35rem;">
+              <input type="checkbox" id="proc-tiles-enabled-feature" checked> Build static tiles after job completes
+            </label>
+            <div style="display:flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end;">
+              <div>
+                <label for="proc-tiles-min-zoom-feature">Min zoom</label>
+                <input type="number" id="proc-tiles-min-zoom-feature" min="0" max="24" step="1" placeholder="(default)" style="width: 120px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+              </div>
+              <div>
+                <label for="proc-tiles-max-zoom-feature">Max zoom</label>
+                <input type="number" id="proc-tiles-max-zoom-feature" min="0" max="24" step="1" placeholder="(default)" style="width: 120px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+              </div>
+            </div>
+            <div class="form-row" style="margin-top: 0.75rem;">
+              <label>Tile size pressure options</label>
+              <div style="display:flex; gap: 1.25rem; flex-wrap: wrap;">
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><span class="meta">Densest</span>
+                  <select id="proc-tiles-densest-feature" style="width: 200px;">
+                    <option value="drop" selected>Drop densest as needed</option>
+                    <option value="coalesce">Coalesce densest as needed</option>
+                  </select>
+                </label>
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><span class="meta">Smallest</span>
+                  <select id="proc-tiles-smallest-feature" style="width: 200px;">
+                    <option value="drop" selected>Drop smallest as needed</option>
+                    <option value="coalesce">Coalesce smallest as needed</option>
+                  </select>
+                </label>
+              </div>
+              <div style="margin-top: 0.6rem; display:flex; flex-direction: column; gap: 0.4rem;">
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-no-line-simplification-feature"> No line simplification (-ps)</label>
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-simplify-only-low-zooms-feature"> Simplify only at low zooms (-pS)</label>
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-no-shared-nodes-feature"> No simplification of shared nodes (-pn)</label>
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-no-tiny-polygon-feature"> No tiny polygon reduction (-pt)</label>
+                <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-no-point-dropping-feature"> No point dropping at low zooms (-r1)</label>
+              </div>
+              <div class="meta" style="margin-top: 0.5rem;">
+                Attributes include/exclude can be controlled later on the Build Tiles page.
+              </div>
+            </div>
+          </div>
+        </details>
         <button type="submit" class="btn btn-primary" id="submit-btn-feature">Queue job</button>
         <span id="form-message-feature" class="meta" style="margin-left: 0.5rem; display: none;"></span>
       </form>
     </div>
   </div>
 
+  <div class="card" style="margin-top: var(--space-lg);">
+    <h2 class="card-title">Single-layer tools</h2>
+    <p class="meta" style="margin-bottom: var(--space);">
+      Run tools on a single layer: buffer (distance in degrees) or explode multi-part/collection geometries into single-part features. At the equator, 1° ≈ 111,320 m.
+    </p>
+    <form class="processing-form" id="processing-form-buffer">
+      <div class="form-row">
+        <label for="layer-tool-op">Tool</label>
+        <select id="layer-tool-op">
+          <option value="buffer">Buffer (distance in degrees)</option>
+          <option value="explode">Explode multi-part geometries</option>
+          <option value="union">Union (dissolve)</option>
+          <option value="measure">Measure (area/length/perimeter → properties)</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="buffer-layer">Layer (collection)</label>
+        <select id="buffer-layer" name="collection_id">
+          <option value="">— Select collection —</option>
+          {% for c in collections %}
+          <option value="{{ c.id }}">{{ c.title or c.id }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="buffer-feature-ids">Feature ids (optional)</label>
+        <input type="text" id="buffer-feature-ids" placeholder="Comma-separated feature ids; empty = all features" style="width: 100%; max-width: 420px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+      </div>
+      <div class="form-row" id="union-groupby-row" style="display: none;">
+        <label for="union-groupby">Group by property (optional)</label>
+        <select id="union-groupby" style="width: 100%; max-width: 320px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+          <option value="">— None (union all) —</option>
+        </select>
+      </div>
+      <div class="form-row" id="measure-op-row" style="display: none;">
+        <label for="measure-op">Metric</label>
+        <select id="measure-op" style="width: 100%; max-width: 320px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+          <option value="area">Area (polygons)</option>
+          <option value="length">Length (lines)</option>
+          <option value="perimeter">Perimeter (polygons outer ring)</option>
+        </select>
+      </div>
+      <div class="form-row" id="measure-unit-row" style="display: none;">
+        <label for="measure-unit">Unit</label>
+        <select id="measure-unit" style="width: 100%; max-width: 320px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+          <option value="m2">m²</option>
+          <option value="ha">hectares</option>
+          <option value="ac">acres</option>
+          <option value="km2">km²</option>
+          <option value="m">meters</option>
+          <option value="km">kilometers</option>
+        </select>
+        <span class="meta" style="margin-left: 0.5rem;">(unit is validated by metric)</span>
+      </div>
+      <div class="form-row" id="measure-field-row" style="display: none;">
+        <label for="measure-field">Write to properties field</label>
+        <input type="text" id="measure-field" placeholder="e.g. area_m2 or perimeter_km" style="width: 100%; max-width: 420px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+        <span class="meta" style="margin-left: 0.5rem;">Updates the selected layer in-place.</span>
+      </div>
+      <details class="form-row" id="tiles-after-singlelayer" style="margin-top: 0.25rem;">
+        <summary class="meta" style="cursor: pointer;">Tiles after tool completes (optional)</summary>
+        <div style="margin-top: 0.5rem;">
+          <label style="display:block; margin-bottom: 0.35rem;">
+            <input type="checkbox" id="proc-tiles-enabled-single" checked> Build static tiles after job completes
+          </label>
+          <div style="display:flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end;">
+            <div>
+              <label for="proc-tiles-min-zoom-single">Min zoom</label>
+              <input type="number" id="proc-tiles-min-zoom-single" min="0" max="24" step="1" placeholder="(default)" style="width: 120px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+            </div>
+            <div>
+              <label for="proc-tiles-max-zoom-single">Max zoom</label>
+              <input type="number" id="proc-tiles-max-zoom-single" min="0" max="24" step="1" placeholder="(default)" style="width: 120px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+            </div>
+          </div>
+          <div class="form-row" style="margin-top: 0.75rem;">
+            <label>Tile size pressure options</label>
+            <div style="display:flex; gap: 1.25rem; flex-wrap: wrap;">
+              <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><span class="meta">Densest</span>
+                <select id="proc-tiles-densest-single" style="width: 200px;">
+                  <option value="drop" selected>Drop densest as needed</option>
+                  <option value="coalesce">Coalesce densest as needed</option>
+                </select>
+              </label>
+              <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><span class="meta">Smallest</span>
+                <select id="proc-tiles-smallest-single" style="width: 200px;">
+                  <option value="drop" selected>Drop smallest as needed</option>
+                  <option value="coalesce">Coalesce smallest as needed</option>
+                </select>
+              </label>
+            </div>
+            <div style="margin-top: 0.6rem; display:flex; flex-direction: column; gap: 0.4rem;">
+              <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-no-line-simplification-single"> No line simplification (-ps)</label>
+              <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-simplify-only-low-zooms-single"> Simplify only at low zooms (-pS)</label>
+              <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-no-shared-nodes-single"> No simplification of shared nodes (-pn)</label>
+              <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-no-tiny-polygon-single"> No tiny polygon reduction (-pt)</label>
+              <label style="display:inline-flex; align-items:center; gap: 0.4rem;"><input type="checkbox" id="proc-tiles-no-point-dropping-single"> No point dropping at low zooms (-r1)</label>
+            </div>
+            <div class="meta" style="margin-top: 0.5rem;">
+              Attributes include/exclude can be controlled later on the Build Tiles page.
+            </div>
+          </div>
+        </div>
+      </details>
+      <div class="form-row" id="buffer-distance-row">
+        <label for="buffer-distance">Distance (degrees)</label>
+        <input type="number" id="buffer-distance" step="0.0001" min="0" placeholder="e.g. 0.01" style="width: 160px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+        <span class="meta" id="buffer-distance-hint" style="margin-left: 0.5rem;"></span>
+      </div>
+      <div class="form-row" id="buffer-result-row">
+        <label>Result</label>
+        <label><input type="radio" name="result-dest-buffer" value="new" checked> Create new collection</label>
+        <label style="margin-left: 1rem;"><input type="radio" name="result-dest-buffer" value="update"> Update existing collection</label>
+      </div>
+      <div id="result-new-buffer" class="form-row">
+        <label for="result-name-buffer">Result collection name</label>
+        <input type="text" id="result-name-buffer" placeholder="Default: (select tool and layer)" style="width: 100%; max-width: 360px; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+        <button type="button" class="btn" id="default-name-buffer" style="margin-left: 0.5rem;">Use default name</button>
+      </div>
+      <div id="result-update-buffer" class="form-row" style="display: none;">
+        <label for="result-select-buffer">Collection to update</label>
+        <select id="result-select-buffer" style="min-width: 280px;">
+          <option value="">— Select collection —</option>
+          {% for c in collections %}
+          <option value="{{ c.id }}">{{ c.title or c.id }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary" id="submit-btn-buffer">Queue job</button>
+      <span id="form-message-buffer" class="meta" style="margin-left: 0.5rem; display: none;"></span>
+    </form>
+  </div>
+
   <div class="card">
     <h2 class="card-title">Process jobs</h2>
     <p id="jobs-loading" class="meta">Loading…</p>
     <p id="jobs-empty" class="process-jobs-empty" style="display: none;">No process jobs yet. Queue one above.</p>
-    <div id="jobs-wrap" style="display: none; overflow-x: auto;">
+    <div id="jobs-wrap" style="display: none;">
       <table class="process-jobs-table" id="jobs-table">
         <thead>
           <tr>
@@ -186,6 +411,66 @@
   var jobsEmpty = document.getElementById('jobs-empty');
   var jobsWrap = document.getElementById('jobs-wrap');
   var jobsTable = document.getElementById('jobs-table');
+
+  function _tilesOptionsCollection() {
+    function id(s) { return document.getElementById(s); }
+    var enabled = !!(id('proc-tiles-enabled') && id('proc-tiles-enabled').checked);
+    var opts = {};
+    var minRaw = ((id('proc-tiles-min-zoom') && id('proc-tiles-min-zoom').value) || '').trim();
+    var maxRaw = ((id('proc-tiles-max-zoom') && id('proc-tiles-max-zoom').value) || '').trim();
+    var minV = minRaw === '' ? null : parseInt(minRaw, 10);
+    var maxV = maxRaw === '' ? null : parseInt(maxRaw, 10);
+    if (minV !== null && !isNaN(minV)) opts.min_zoom = minV;
+    if (maxV !== null && !isNaN(maxV)) opts.max_zoom = maxV;
+    if (id('proc-tiles-densest') && id('proc-tiles-densest').value) opts.densest = id('proc-tiles-densest').value;
+    if (id('proc-tiles-smallest') && id('proc-tiles-smallest').value) opts.smallest = id('proc-tiles-smallest').value;
+    opts.no_line_simplification = !!(id('proc-tiles-no-line-simplification') && id('proc-tiles-no-line-simplification').checked);
+    opts.simplify_only_low_zooms = !!(id('proc-tiles-simplify-only-low-zooms') && id('proc-tiles-simplify-only-low-zooms').checked);
+    opts.no_shared_node_simplification = !!(id('proc-tiles-no-shared-nodes') && id('proc-tiles-no-shared-nodes').checked);
+    opts.no_tiny_polygon_reduction = !!(id('proc-tiles-no-tiny-polygon') && id('proc-tiles-no-tiny-polygon').checked);
+    opts.no_point_dropping = !!(id('proc-tiles-no-point-dropping') && id('proc-tiles-no-point-dropping').checked);
+    return { enabled: enabled, options: opts };
+  }
+
+  function _tilesOptionsFeature() {
+    function id(s) { return document.getElementById(s); }
+    var enabled = !!(id('proc-tiles-enabled-feature') && id('proc-tiles-enabled-feature').checked);
+    var opts = {};
+    var minRaw = ((id('proc-tiles-min-zoom-feature') && id('proc-tiles-min-zoom-feature').value) || '').trim();
+    var maxRaw = ((id('proc-tiles-max-zoom-feature') && id('proc-tiles-max-zoom-feature').value) || '').trim();
+    var minV = minRaw === '' ? null : parseInt(minRaw, 10);
+    var maxV = maxRaw === '' ? null : parseInt(maxRaw, 10);
+    if (minV !== null && !isNaN(minV)) opts.min_zoom = minV;
+    if (maxV !== null && !isNaN(maxV)) opts.max_zoom = maxV;
+    if (id('proc-tiles-densest-feature') && id('proc-tiles-densest-feature').value) opts.densest = id('proc-tiles-densest-feature').value;
+    if (id('proc-tiles-smallest-feature') && id('proc-tiles-smallest-feature').value) opts.smallest = id('proc-tiles-smallest-feature').value;
+    opts.no_line_simplification = !!(id('proc-tiles-no-line-simplification-feature') && id('proc-tiles-no-line-simplification-feature').checked);
+    opts.simplify_only_low_zooms = !!(id('proc-tiles-simplify-only-low-zooms-feature') && id('proc-tiles-simplify-only-low-zooms-feature').checked);
+    opts.no_shared_node_simplification = !!(id('proc-tiles-no-shared-nodes-feature') && id('proc-tiles-no-shared-nodes-feature').checked);
+    opts.no_tiny_polygon_reduction = !!(id('proc-tiles-no-tiny-polygon-feature') && id('proc-tiles-no-tiny-polygon-feature').checked);
+    opts.no_point_dropping = !!(id('proc-tiles-no-point-dropping-feature') && id('proc-tiles-no-point-dropping-feature').checked);
+    return { enabled: enabled, options: opts };
+  }
+
+  function _tilesOptionsSingle() {
+    function id(s) { return document.getElementById(s); }
+    var enabled = !!(id('proc-tiles-enabled-single') && id('proc-tiles-enabled-single').checked);
+    var opts = {};
+    var minRaw = ((id('proc-tiles-min-zoom-single') && id('proc-tiles-min-zoom-single').value) || '').trim();
+    var maxRaw = ((id('proc-tiles-max-zoom-single') && id('proc-tiles-max-zoom-single').value) || '').trim();
+    var minV = minRaw === '' ? null : parseInt(minRaw, 10);
+    var maxV = maxRaw === '' ? null : parseInt(maxRaw, 10);
+    if (minV !== null && !isNaN(minV)) opts.min_zoom = minV;
+    if (maxV !== null && !isNaN(maxV)) opts.max_zoom = maxV;
+    if (id('proc-tiles-densest-single') && id('proc-tiles-densest-single').value) opts.densest = id('proc-tiles-densest-single').value;
+    if (id('proc-tiles-smallest-single') && id('proc-tiles-smallest-single').value) opts.smallest = id('proc-tiles-smallest-single').value;
+    opts.no_line_simplification = !!(id('proc-tiles-no-line-simplification-single') && id('proc-tiles-no-line-simplification-single').checked);
+    opts.simplify_only_low_zooms = !!(id('proc-tiles-simplify-only-low-zooms-single') && id('proc-tiles-simplify-only-low-zooms-single').checked);
+    opts.no_shared_node_simplification = !!(id('proc-tiles-no-shared-nodes-single') && id('proc-tiles-no-shared-nodes-single').checked);
+    opts.no_tiny_polygon_reduction = !!(id('proc-tiles-no-tiny-polygon-single') && id('proc-tiles-no-tiny-polygon-single').checked);
+    opts.no_point_dropping = !!(id('proc-tiles-no-point-dropping-single') && id('proc-tiles-no-point-dropping-single').checked);
+    return { enabled: enabled, options: opts };
+  }
   var tbody = document.getElementById('jobs-tbody');
   var REFRESH_MS = 4000;
 
@@ -338,6 +623,25 @@
     });
   }
 
+  function fetchDefaultResultNameBuffer() {
+    var layer = document.getElementById('buffer-layer').value;
+    var op = document.getElementById('layer-tool-op').value || 'buffer';
+    if (!layer) return Promise.resolve(null);
+    var q = 'mode=collection&process_id=' + encodeURIComponent(op) + '&collection_id_a=' + encodeURIComponent(layer) + '&collection_id_b=' + encodeURIComponent(layer);
+    return fetch(base + '/processes/default-result-name?' + q, { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(j) { return j && j.result_collection_id ? j.result_collection_id : null; })
+      .catch(function() { return null; });
+  }
+
+  function updateDefaultNameBuffer() {
+    fetchDefaultResultNameBuffer().then(function(name) {
+      var el = document.getElementById('result-name-buffer');
+      if (name) el.placeholder = 'Default: ' + name;
+      else el.placeholder = 'Default: (select tool and layer)';
+    });
+  }
+
   document.getElementById('layer-a').addEventListener('change', updateDefaultNameCollection);
   document.getElementById('layer-b').addEventListener('change', updateDefaultNameCollection);
   document.getElementById('operation').addEventListener('change', updateDefaultNameCollection);
@@ -404,6 +708,9 @@
     var url = base + '/processes/' + op + '/execution';
     var payload = { collection_id_a: layerA, collection_id_b: layerB, update_existing: updateExisting };
     if (resultId) payload.result_collection_id = resultId;
+    var t = _tilesOptionsCollection();
+    payload.queue_compute_tiles = !!t.enabled;
+    if (t.enabled) payload.tile_build_options = t.options;
     submitBtn.disabled = true;
     formMessage.textContent = 'Queuing…';
     formMessage.style.display = 'inline';
@@ -483,6 +790,9 @@
     var urlFeature = base + '/processes/' + opFeature + '-feature/execution';
     var payloadFeature = { feature: featurePayload, collection_ids: collectionIds, update_existing: updateExistingFeature };
     if (resultIdFeature) payloadFeature.result_collection_id = resultIdFeature;
+    var tf = _tilesOptionsFeature();
+    payloadFeature.queue_compute_tiles = !!tf.enabled;
+    if (tf.enabled) payloadFeature.tile_build_options = tf.options;
     submitBtnFeature.disabled = true;
     formMessageFeature.textContent = 'Queuing…';
     formMessageFeature.style.display = 'inline';
@@ -503,6 +813,207 @@
         formMessageFeature.className = 'meta';
       })
       .finally(function() { submitBtnFeature.disabled = false; });
+  });
+
+  // Buffer form
+  var formBuffer = document.getElementById('processing-form-buffer');
+  var submitBtnBuffer = document.getElementById('submit-btn-buffer');
+  var formMessageBuffer = document.getElementById('form-message-buffer');
+  var bufferDistanceInput = document.getElementById('buffer-distance');
+  var bufferDistanceHint = document.getElementById('buffer-distance-hint');
+  var unionGroupByInput = document.getElementById('union-groupby');
+  var bufferLayerSelect = document.getElementById('buffer-layer');
+  var measureOp = document.getElementById('measure-op');
+  var measureUnit = document.getElementById('measure-unit');
+  var measureField = document.getElementById('measure-field');
+
+  function updateBufferHint() {
+    var v = parseFloat(bufferDistanceInput.value || '');
+    if (!isFinite(v) || v <= 0) {
+      bufferDistanceHint.textContent = '';
+      return;
+    }
+    var meters = Math.round(v * 111320);
+    bufferDistanceHint.textContent = '≈ ' + meters.toLocaleString() + ' m at equator';
+  }
+
+  bufferDistanceInput.addEventListener('input', updateBufferHint);
+
+  var layerToolOp = document.getElementById('layer-tool-op');
+  function syncLayerToolUi() {
+    var op = layerToolOp.value || 'buffer';
+    var isBuffer = op === 'buffer';
+    var isUnion = op === 'union';
+    var isMeasure = op === 'measure';
+    document.getElementById('buffer-distance-row').style.display = isBuffer ? 'flex' : 'none';
+    document.getElementById('union-groupby-row').style.display = isUnion ? 'block' : 'none';
+    document.getElementById('measure-op-row').style.display = isMeasure ? 'block' : 'none';
+    document.getElementById('measure-unit-row').style.display = isMeasure ? 'flex' : 'none';
+    document.getElementById('measure-field-row').style.display = isMeasure ? 'flex' : 'none';
+    document.getElementById('buffer-result-row').style.display = isMeasure ? 'none' : 'flex';
+    if (isMeasure) {
+      // Force in-place update semantics in UI.
+      try { document.querySelector('input[name="result-dest-buffer"][value="update"]').checked = true; } catch(e) {}
+      document.getElementById('result-new-buffer').style.display = 'none';
+      document.getElementById('result-update-buffer').style.display = 'none';
+    }
+    if (!isBuffer) {
+      bufferDistanceHint.textContent = '';
+      bufferDistanceInput.value = '';
+    }
+    if (isUnion && bufferLayerSelect.value) loadUnionGroupByOptions();
+    updateDefaultNameBuffer();
+  }
+  layerToolOp.addEventListener('change', syncLayerToolUi);
+  syncLayerToolUi();
+
+  var unionGroupByAbort = null;
+  function loadUnionGroupByOptions() {
+    var cid = bufferLayerSelect.value;
+    if (unionGroupByAbort) {
+      unionGroupByAbort.abort();
+      unionGroupByAbort = null;
+    }
+    if (!cid) {
+      unionGroupByInput.innerHTML = '<option value=\"\">— None (union all) —</option>';
+      unionGroupByInput.disabled = false;
+      return;
+    }
+    unionGroupByInput.innerHTML = '<option value=\"\">Loading…</option>';
+    unionGroupByInput.disabled = true;
+    var requestedCid = cid;
+    unionGroupByAbort = new AbortController();
+    fetch(base + '/collections/' + encodeURIComponent(cid) + '/queryables', {
+      headers: { 'Accept': 'application/json' },
+      signal: unionGroupByAbort.signal,
+    })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if (requestedCid !== bufferLayerSelect.value) return;
+        var keys = (data && data.properties && Array.isArray(data.properties)) ? data.properties : [];
+        var html = '<option value=\"\">— None (union all) —</option>' + keys.map(function(k) {
+          var esc = (k + '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\"/g,'&quot;');
+          return '<option value=\"' + esc + '\">' + esc + '</option>';
+        }).join('');
+        unionGroupByInput.innerHTML = html;
+        unionGroupByInput.disabled = false;
+      })
+      .catch(function(err) {
+        if (err && err.name === 'AbortError') return;
+        if (requestedCid !== bufferLayerSelect.value) return;
+        unionGroupByInput.innerHTML = '<option value=\"\">— None (union all) —</option>';
+        unionGroupByInput.disabled = false;
+      });
+  }
+
+  bufferLayerSelect.addEventListener('change', loadUnionGroupByOptions);
+  bufferLayerSelect.addEventListener('change', updateDefaultNameBuffer);
+
+  document.getElementById('default-name-buffer').addEventListener('click', function() {
+    fetchDefaultResultNameBuffer().then(function(name) {
+      if (name) document.getElementById('result-name-buffer').value = name;
+    });
+  });
+
+  document.querySelectorAll('input[name="result-dest-buffer"]').forEach(function(radio) {
+    radio.addEventListener('change', function() {
+      var isNew = document.querySelector('input[name="result-dest-buffer"]:checked').value === 'new';
+      document.getElementById('result-new-buffer').style.display = isNew ? 'block' : 'none';
+      document.getElementById('result-update-buffer').style.display = isNew ? 'none' : 'block';
+    });
+  });
+
+  formBuffer.addEventListener('submit', function(e) {
+    e.preventDefault();
+    var op = layerToolOp.value || 'buffer';
+    var layer = document.getElementById('buffer-layer').value;
+    if (!layer) {
+      formMessageBuffer.textContent = 'Select a layer.';
+      formMessageBuffer.style.display = 'inline';
+      formMessageBuffer.className = 'meta';
+      return;
+    }
+    var distStr = (bufferDistanceInput.value || '').trim();
+    var dist = parseFloat(distStr);
+    if (op === 'buffer') {
+      if (!distStr || !isFinite(dist) || dist <= 0) {
+        formMessageBuffer.textContent = 'Enter a positive distance in degrees.';
+        formMessageBuffer.style.display = 'inline';
+        formMessageBuffer.className = 'meta';
+        return;
+      }
+    }
+    var idsText = (document.getElementById('buffer-feature-ids').value || '').trim();
+    var featureIds = idsText ? idsText.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+    var updateExisting = false;
+    var resultId = '';
+    if (op !== 'measure') {
+      var resultDest = document.querySelector('input[name="result-dest-buffer"]:checked').value;
+      updateExisting = resultDest === 'update';
+      resultId = updateExisting
+        ? document.getElementById('result-select-buffer').value
+        : (document.getElementById('result-name-buffer').value || '').trim();
+      if (updateExisting && !resultId) {
+        formMessageBuffer.textContent = 'Select a collection to update.';
+        formMessageBuffer.style.display = 'inline';
+        formMessageBuffer.className = 'meta';
+        return;
+      }
+    }
+    var url;
+    var payload;
+    if (op === 'buffer') {
+      url = base + '/processes/buffer/execution';
+      payload = { collection_id: layer, distance_degrees: dist, update_existing: updateExisting };
+    } else if (op === 'explode') {
+      url = base + '/processes/explode/execution';
+      payload = { collection_id: layer, update_existing: updateExisting };
+    } else if (op === 'measure') {
+      url = base + '/processes/measure-layer/execution';
+      var mf = (measureField.value || '').trim();
+      if (!mf) {
+        formMessageBuffer.textContent = 'Enter a properties field name (e.g. area_m2).';
+        formMessageBuffer.style.display = 'inline';
+        formMessageBuffer.className = 'meta';
+        return;
+      }
+      payload = {
+        collection_id: layer,
+        measure_op: (measureOp.value || 'area'),
+        measure_unit: (measureUnit.value || 'm2'),
+        measure_field: mf
+      };
+    } else {
+      url = base + '/processes/union-layer/execution';
+      var gb = (unionGroupByInput.value || '').trim();
+      payload = { collection_id: layer, update_existing: updateExisting };
+      if (gb) payload.group_by_property = gb;
+    }
+    var ts = _tilesOptionsSingle();
+    payload.queue_compute_tiles = !!ts.enabled;
+    if (ts.enabled) payload.tile_build_options = ts.options;
+    if (featureIds.length) payload.feature_ids = featureIds;
+    if (resultId) payload.result_collection_id = resultId;
+    submitBtnBuffer.disabled = true;
+    formMessageBuffer.textContent = 'Queuing…';
+    formMessageBuffer.style.display = 'inline';
+    formMessageBuffer.className = 'meta';
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+      .then(function(r) { return r.json().then(function(j) { if (!r.ok) return Promise.reject(j); return j; }); })
+      .then(function(j) {
+        formMessageBuffer.textContent = 'Job queued: ' + (j.job_id || '').substring(0, 8) + '…';
+        formMessageBuffer.className = 'meta';
+        loadJobs();
+      })
+      .catch(function(err) {
+        formMessageBuffer.textContent = 'Error: ' + (err.detail || err.message || JSON.stringify(err));
+        formMessageBuffer.className = 'meta';
+      })
+      .finally(function() { submitBtnBuffer.disabled = false; });
   });
 
   function applyUrlParams() {
@@ -526,6 +1037,7 @@
   applyUrlParams();
   updateDefaultNameCollection();
   updateDefaultNameFeature();
+  updateDefaultNameBuffer();
   var refreshTimer = setInterval(loadJobs, REFRESH_MS);
 })();
 </script>

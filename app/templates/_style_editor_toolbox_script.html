@@ -98,6 +98,64 @@
     return ['interpolate', ['linear'], ['zoom']].concat(flat);
   }
 
+  function _toNumberOrNull(s) {
+    var n = parseFloat(s);
+    return isNaN(n) ? null : n;
+  }
+
+  function _ruleCondition(rule) {
+    if (!rule || !rule.when) return null;
+    var field = (rule.when.field || '').trim();
+    var op = (rule.when.op || 'eq').toLowerCase();
+    var valueRaw = rule.when.value;
+    if (!field) return null;
+    var getVal = ['get', field];
+    var cond = null;
+    if (op === 'eq' || op === 'ne') {
+      var v = valueRaw == null ? '' : String(valueRaw);
+      var cmp = ['==', ['to-string', getVal], v];
+      cond = op === 'ne' ? ['!', cmp] : cmp;
+    } else if (op === 'in') {
+      var list = (valueRaw == null ? '' : String(valueRaw)).split(',').map(function(x) { return x.trim(); }).filter(Boolean);
+      cond = ['in', ['to-string', getVal], ['literal', list]];
+    } else if (op === 'contains') {
+      var s = valueRaw == null ? '' : String(valueRaw);
+      cond = ['>=', ['index-of', s, ['to-string', getVal]], 0];
+    } else if (op === 'gt' || op === 'gte' || op === 'lt' || op === 'lte') {
+      var num = _toNumberOrNull(valueRaw);
+      if (num == null) return null;
+      var left = ['to-number', getVal];
+      if (op === 'gt') cond = ['>', left, num];
+      if (op === 'gte') cond = ['>=', left, num];
+      if (op === 'lt') cond = ['<', left, num];
+      if (op === 'lte') cond = ['<=', left, num];
+    } else {
+      return null;
+    }
+    var parts = [cond];
+    if (rule.minzoom != null && rule.minzoom !== '') parts.push(['>=', ['zoom'], Number(rule.minzoom)]);
+    if (rule.maxzoom != null && rule.maxzoom !== '') parts.push(['<=', ['zoom'], Number(rule.maxzoom)]);
+    return parts.length === 1 ? parts[0] : ['all'].concat(parts);
+  }
+
+  function _applyRulesToPaintValue(baseValue, rules, pickValueFn) {
+    if (!rules || !rules.length) return baseValue;
+    var expr = ['case'];
+    var any = false;
+    for (var i = 0; i < rules.length; i++) {
+      var r = rules[i];
+      var v = pickValueFn(r);
+      if (v === undefined || v === null || v === '') continue;
+      var c = _ruleCondition(r);
+      if (!c) continue;
+      expr.push(c, v);
+      any = true;
+    }
+    if (!any) return baseValue;
+    expr.push(baseValue);
+    return expr;
+  }
+
   function applyVectorStyleToLayers(map, layerIds, spec, formEls) {
     if (!map || !spec) return;
     spec = spec || {};
@@ -107,6 +165,7 @@
     var pointSizeNum = Math.max(1, Math.min(40, spec.pointSize != null ? spec.pointSize : 8));
     var pointSizeVal = spec.pointSizeZoom && spec.pointSizeZoom.length >= 2 ? zoomStopsToExpression(spec.pointSizeZoom) : pointSizeNum;
     var pointOpacityValExpr = spec.pointOpacityZoom && spec.pointOpacityZoom.length >= 2 ? zoomStopsToExpression(spec.pointOpacityZoom) : (spec.pointOpacity != null ? spec.pointOpacity : 1);
+    var rules = Array.isArray(spec.rules) ? spec.rules : [];
     function applyPaintValue(layerId, property, valueOrExpression) {
       try {
         if (Array.isArray(valueOrExpression)) map.setPaintProperty(layerId, property, valueOrExpression);
@@ -116,30 +175,44 @@
     var fillId = layerIds.fill, lineId = layerIds.line, circleId = layerIds.circle, symbolId = layerIds.symbol;
     if (fillId && map.getLayer(fillId)) {
       map.setLayoutProperty(fillId, 'visibility', spec.fillEnabled !== false ? 'visible' : 'none');
-      map.setPaintProperty(fillId, 'fill-color', spec.fillColor || '#58a6ff');
-      applyPaintValue(fillId, 'fill-opacity', fillOpacityVal);
+      var fillColorBase = spec.fillColor || '#58a6ff';
+      var fillColorVal = _applyRulesToPaintValue(fillColorBase, rules, function(r) { return r && r.paint ? r.paint.fillColor : null; });
+      var fillOpacityRule = _applyRulesToPaintValue(fillOpacityVal, rules, function(r) { return r && r.paint ? r.paint.fillOpacity : null; });
+      map.setPaintProperty(fillId, 'fill-color', fillColorVal);
+      applyPaintValue(fillId, 'fill-opacity', fillOpacityRule);
     }
     if (lineId && map.getLayer(lineId)) {
       map.setLayoutProperty(lineId, 'visibility', spec.lineEnabled !== false ? 'visible' : 'none');
-      map.setPaintProperty(lineId, 'line-color', spec.lineColor || '#58a6ff');
-      applyPaintValue(lineId, 'line-width', lineWidthVal);
-      applyPaintValue(lineId, 'line-opacity', lineOpacityVal);
+      var lineColorBase = spec.lineColor || '#58a6ff';
+      var lineColorVal = _applyRulesToPaintValue(lineColorBase, rules, function(r) { return r && r.paint ? r.paint.lineColor : null; });
+      var lineWidthRule = _applyRulesToPaintValue(lineWidthVal, rules, function(r) { return r && r.paint ? r.paint.lineWidth : null; });
+      var lineOpacityRule = _applyRulesToPaintValue(lineOpacityVal, rules, function(r) { return r && r.paint ? r.paint.lineOpacity : null; });
+      map.setPaintProperty(lineId, 'line-color', lineColorVal);
+      applyPaintValue(lineId, 'line-width', lineWidthRule);
+      applyPaintValue(lineId, 'line-opacity', lineOpacityRule);
       map.setPaintProperty(lineId, 'line-dasharray', LINE_DASH[spec.linePattern] || LINE_DASH.solid);
     }
     var pointOn = spec.pointEnabled !== false;
     if (circleId && map.getLayer(circleId)) {
       map.setLayoutProperty(circleId, 'visibility', pointOn && spec.pointIcon === 'circle' ? 'visible' : 'none');
-      map.setPaintProperty(circleId, 'circle-color', spec.pointColor || '#58a6ff');
-      applyPaintValue(circleId, 'circle-radius', pointSizeVal);
-      applyPaintValue(circleId, 'circle-opacity', pointOpacityValExpr);
+      var pointColorBase = spec.pointColor || '#58a6ff';
+      var pointColorVal = _applyRulesToPaintValue(pointColorBase, rules, function(r) { return r && r.paint ? r.paint.pointColor : null; });
+      var pointSizeRule = _applyRulesToPaintValue(pointSizeVal, rules, function(r) { return r && r.paint ? r.paint.pointSize : null; });
+      var pointOpacityRule = _applyRulesToPaintValue(pointOpacityValExpr, rules, function(r) { return r && r.paint ? r.paint.pointOpacity : null; });
+      map.setPaintProperty(circleId, 'circle-color', pointColorVal);
+      applyPaintValue(circleId, 'circle-radius', pointSizeRule);
+      applyPaintValue(circleId, 'circle-opacity', pointOpacityRule);
     }
     if (symbolId && map.getLayer(symbolId)) {
       try {
         map.setLayoutProperty(symbolId, 'visibility', pointOn && (spec.pointIcon === 'pin' || spec.pointIcon === 'marker') ? 'visible' : 'none');
         if (spec.pointSizeZoom && spec.pointSizeZoom.length >= 2 && Array.isArray(pointSizeVal)) map.setLayoutProperty(symbolId, 'icon-size', ['/', zoomStopsToExpression(spec.pointSizeZoom), 12]);
         else map.setLayoutProperty(symbolId, 'icon-size', pointSizeNum / 12);
-        map.setPaintProperty(symbolId, 'icon-color', spec.pointColor || '#58a6ff');
-        applyPaintValue(symbolId, 'icon-opacity', pointOpacityValExpr);
+        var iconColorBase = spec.pointColor || '#58a6ff';
+        var iconColorVal = _applyRulesToPaintValue(iconColorBase, rules, function(r) { return r && r.paint ? r.paint.pointColor : null; });
+        var iconOpacityRule = _applyRulesToPaintValue(pointOpacityValExpr, rules, function(r) { return r && r.paint ? r.paint.pointOpacity : null; });
+        map.setPaintProperty(symbolId, 'icon-color', iconColorVal);
+        applyPaintValue(symbolId, 'icon-opacity', iconOpacityRule);
       } catch (e) {}
     }
   }
@@ -173,6 +246,9 @@
       if (ptSizeByZoom && ptSizeByZoom.checked) { stops = getStopsFromContainer('point-size-zoom-stops'); if (stops.length >= 2) spec.pointSizeZoom = stops; }
       var ptOpByZoom = document.getElementById('point-opacity-by-zoom');
       if (ptOpByZoom && ptOpByZoom.checked) { stops = getStopsFromContainer('point-opacity-zoom-stops'); if (stops.length >= 2) spec.pointOpacityZoom = stops; }
+      if (window.GeofastStyleEditor && window.GeofastStyleEditor.getRulesSpec) {
+        try { spec.rules = window.GeofastStyleEditor.getRulesSpec() || []; } catch (e) {}
+      }
       return spec;
     };
   }
@@ -214,6 +290,9 @@
       if (ptSizeZoom) { ptSizeZoom.checked = !!(s.pointSizeZoom && s.pointSizeZoom.length >= 2); document.getElementById('point-size-zoom-stops').style.display = ptSizeZoom.checked ? '' : 'none'; renderZoomStops('point-size-zoom-stops', s.pointSizeZoom, refresh); }
       var ptOpZoom = document.getElementById('point-opacity-by-zoom');
       if (ptOpZoom) { ptOpZoom.checked = !!(s.pointOpacityZoom && s.pointOpacityZoom.length >= 2); document.getElementById('point-opacity-zoom-stops').style.display = ptOpZoom.checked ? '' : 'none'; renderZoomStops('point-opacity-zoom-stops', s.pointOpacityZoom, refresh); }
+      if (window.GeofastStyleEditor && window.GeofastStyleEditor.setRulesSpec) {
+        try { window.GeofastStyleEditor.setRulesSpec(Array.isArray(s.rules) ? s.rules : []); } catch (e) {}
+      }
       applyVectorStyleToLayers(map, getLayerIds(), getCurrentSpec(), formEls);
       updateStyleLegend(getCurrentSpec());
       if (onAfterApply) onAfterApply(getCurrentSpec());
@@ -266,6 +345,157 @@
       applyVectorStyleToLayers(map, getLayerIds(), spec, formEls);
       updateStyleLegend(spec, legendElId);
       if (onAfterApply) onAfterApply(spec);
+    };
+
+    // ----- Rules UI -----
+    var rulesListEl = document.getElementById('vector-rules-list');
+    var addRuleBtn = document.getElementById('btn-add-rule');
+    var _rules = [];
+    var _ruleFieldKeys = [];
+
+    function _escHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;');
+    }
+
+    function _attachFieldDropdown(inputEl) {
+      if (!inputEl || inputEl._fieldDropdownBound) return;
+      inputEl._fieldDropdownBound = true;
+      // Wrap input so we can position the menu
+      var wrap = document.createElement('span');
+      wrap.className = 'vector-rule-field-wrap';
+      inputEl.parentNode.insertBefore(wrap, inputEl);
+      wrap.appendChild(inputEl);
+      var menu = document.createElement('div');
+      menu.className = 'vector-rule-field-menu';
+      wrap.appendChild(menu);
+
+      function renderMenu() {
+        var q = (inputEl.value || '').toLowerCase();
+        var list = _ruleFieldKeys || [];
+        if (q) list = list.filter(function(k) { return String(k).toLowerCase().indexOf(q) !== -1; });
+        var html = list.slice(0, 300).map(function(k) {
+          return '<div class="vector-rule-field-item" data-val="' + _escHtml(k) + '">' + _escHtml(k) + '</div>';
+        }).join('');
+        menu.innerHTML = html || '<div class="vector-rule-field-item" style="cursor:default;color:var(--text-secondary);">No matches</div>';
+        menu.querySelectorAll('.vector-rule-field-item[data-val]').forEach(function(item) {
+          item.onclick = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            inputEl.value = item.getAttribute('data-val') || '';
+            menu.classList.remove('open');
+            inputEl.dispatchEvent(new Event('input'));
+            inputEl.dispatchEvent(new Event('change'));
+          };
+        });
+      }
+
+      function openMenu() {
+        renderMenu();
+        menu.classList.add('open');
+      }
+      function closeMenu() { menu.classList.remove('open'); }
+
+      inputEl.addEventListener('focus', function() { openMenu(); });
+      inputEl.addEventListener('click', function(e) { e.stopPropagation(); openMenu(); });
+      inputEl.addEventListener('input', function() { if (menu.classList.contains('open')) renderMenu(); });
+      document.addEventListener('click', function() { closeMenu(); });
+      inputEl.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') { closeMenu(); }
+      });
+    }
+
+    function _renderRules() {
+      if (!rulesListEl) return;
+      rulesListEl.innerHTML = '';
+      _rules.forEach(function(r, idx) {
+        var card = document.createElement('div');
+        card.className = 'vector-rule-card';
+        var when = r.when || {};
+        var paint = r.paint || {};
+        card.innerHTML =
+          '<div class="vector-rule-row">' +
+            '<span class="rule-mini">IF</span>' +
+            '<label>Field <input type="text" class="rule-field" list="vector-rule-fields" value="' + (when.field || '') + '" placeholder="e.g. test1"></label>' +
+            '<label>Op <select class="rule-op">' +
+              '<option value="eq">=</option><option value="ne">≠</option><option value="in">in</option><option value="contains">contains</option>' +
+              '<option value="gt">&gt;</option><option value="gte">&ge;</option><option value="lt">&lt;</option><option value="lte">&le;</option>' +
+            '</select></label>' +
+            '<label>Value <input type="text" class="rule-value" value="' + (when.value == null ? '' : String(when.value)) + '" placeholder="YES"></label>' +
+            '<label class="rule-mini">Zoom</label>' +
+            '<label>min <input type="number" class="rule-minzoom" min="0" max="22" value="' + (r.minzoom == null ? '' : String(r.minzoom)) + '" placeholder="0"></label>' +
+            '<label>max <input type="number" class="rule-maxzoom" min="0" max="22" value="' + (r.maxzoom == null ? '' : String(r.maxzoom)) + '" placeholder="22"></label>' +
+            '<span class="vector-rule-actions">' +
+              '<button type="button" class="btn btn-sm btn-danger rule-remove">Remove</button>' +
+            '</span>' +
+          '</div>' +
+          '<div class="vector-rule-row" style="margin-top:8px;">' +
+            '<span class="rule-mini">THEN</span>' +
+            '<label>Fill <input type="color" class="rule-fill-color" value="' + (paint.fillColor || '#000000') + '"></label>' +
+            '<label>Line <input type="color" class="rule-line-color" value="' + (paint.lineColor || '#000000') + '"></label>' +
+            '<label>Point <input type="color" class="rule-point-color" value="' + (paint.pointColor || '#000000') + '"></label>' +
+            '<label>Width <input type="number" class="rule-line-width" min="0.5" max="20" step="0.5" value="' + (paint.lineWidth == null ? '' : String(paint.lineWidth)) + '" placeholder="(no change)"></label>' +
+            '<label>Opacity <input type="number" class="rule-line-opacity" min="0" max="1" step="0.05" value="' + (paint.lineOpacity == null ? '' : String(paint.lineOpacity)) + '" placeholder="(no change)"></label>' +
+          '</div>';
+        rulesListEl.appendChild(card);
+        var opSel = card.querySelector('.rule-op');
+        if (opSel) opSel.value = (when.op || 'eq');
+        var fieldInput = card.querySelector('.rule-field');
+        _attachFieldDropdown(fieldInput);
+        function syncFromInputs() {
+          var field = (card.querySelector('.rule-field').value || '').trim();
+          var op = (card.querySelector('.rule-op').value || 'eq');
+          var val = (card.querySelector('.rule-value').value || '');
+          var minz = card.querySelector('.rule-minzoom').value;
+          var maxz = card.querySelector('.rule-maxzoom').value;
+          var fc = card.querySelector('.rule-fill-color').value;
+          var lc = card.querySelector('.rule-line-color').value;
+          var pc = card.querySelector('.rule-point-color').value;
+          var lw = card.querySelector('.rule-line-width').value;
+          var lo = card.querySelector('.rule-line-opacity').value;
+          var rr = _rules[idx];
+          rr.when = { field: field, op: op, value: val };
+          rr.minzoom = minz === '' ? null : parseFloat(minz);
+          rr.maxzoom = maxz === '' ? null : parseFloat(maxz);
+          rr.paint = rr.paint || {};
+          // Only apply colors when checkbox-like intent: user changed away from default black OR we already had a value
+          rr.paint.fillColor = fc;
+          rr.paint.lineColor = lc;
+          rr.paint.pointColor = pc;
+          rr.paint.lineWidth = lw === '' ? null : parseFloat(lw);
+          rr.paint.lineOpacity = lo === '' ? null : parseFloat(lo);
+          refreshStyle();
+        }
+        card.querySelectorAll('input, select').forEach(function(el) {
+          el.oninput = el.onchange = syncFromInputs;
+        });
+        var rm = card.querySelector('.rule-remove');
+        if (rm) rm.onclick = function() { _rules.splice(idx, 1); _renderRules(); refreshStyle(); };
+      });
+    }
+    if (addRuleBtn) {
+      addRuleBtn.onclick = function() {
+        _rules.push({ when: { field: '', op: 'eq', value: '' }, paint: { fillColor: '#ff0000', lineColor: '#ff0000', pointColor: '#ff0000' }, minzoom: null, maxzoom: null });
+        _renderRules();
+        refreshStyle();
+      };
+    }
+    window.GeofastStyleEditor.getRulesSpec = function() { return _rules.slice(); };
+    window.GeofastStyleEditor.setRulesSpec = function(rules) { _rules = Array.isArray(rules) ? rules.slice() : []; _renderRules(); };
+    window.GeofastStyleEditor.setRuleFieldOptions = function(keys) {
+      var dl = document.getElementById('vector-rule-fields');
+      if (!dl) return;
+      _ruleFieldKeys = (Array.isArray(keys) ? keys : []).slice();
+      dl.innerHTML = '';
+      (Array.isArray(keys) ? keys : []).forEach(function(k) {
+        if (!k) return;
+        var opt = document.createElement('option');
+        opt.value = String(k);
+        dl.appendChild(opt);
+      });
     };
 
     applySpecToForm(defaultSpec);

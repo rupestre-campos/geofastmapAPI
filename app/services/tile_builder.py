@@ -7,13 +7,18 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from queue import Queue
+from typing import Callable
 
 import orjson
 
 from app.core.config import get_settings
 from app.services.tile_build_queue import TileBuildOptions
 from app.utils.geo import mvt_layer_name
+
+# Returned by build_pmtiles_sync when build was cancelled via stop_check (worker should not mark failed/completed).
+BUILD_CANCELLED = "__cancelled__"
 
 # Chunk size for DB streaming and queue between producer/consumer
 _EXPORT_CHUNK_SIZE = 50_000
@@ -52,12 +57,14 @@ def _consumer(queue: Queue, file_handle) -> None:
 def build_pmtiles_sync(
     collection_id: str,
     options: TileBuildOptions | None = None,
+    stop_check: Callable[[], bool] | None = None,
 ) -> str | None:
     """
     Export collection to GeoJSONSeq (streaming, producer-consumer), run tippecanoe, save and register.
-    Returns error message or None on success.
+    Returns error message, None on success, or BUILD_CANCELLED when stop_check() returned True (caller should cleanup job state).
     Uses sync DB; run in thread/worker process.
     options: optional overrides for min/max zoom, attributes, densest/smallest strategy; None = use config defaults.
+    stop_check: optional callable; when it returns True, abort and cleanup intermediate/partial files, return BUILD_CANCELLED.
     """
     from datetime import datetime, timezone
     from sqlalchemy import create_engine, text
@@ -109,7 +116,11 @@ def build_pmtiles_sync(
     def row_data(r):
         return (r.id, r.geometry, dict(r.properties) if r.properties else None)
 
+    def stopped() -> bool:
+        return stop_check is not None and stop_check()
+
     fd, geojsonl_path = tempfile.mkstemp(suffix=".geojsonl")
+    tippecanoe_started = False
     try:
         with os.fdopen(fd, "wb") as f:
             queue: Queue = Queue(maxsize=_QUEUE_MAX_SIZE)
@@ -117,6 +128,7 @@ def build_pmtiles_sync(
             consumer_thread.start()
 
             total_features = 0
+            export_cancelled = False
             with SessionLocal() as session:
                 result = session.execute(
                     text(
@@ -128,12 +140,17 @@ def build_pmtiles_sync(
                     execution_options={"stream_results": True},
                 )
                 for partition in result.partitions(_EXPORT_CHUNK_SIZE):
+                    if stopped():
+                        export_cancelled = True
+                        break
                     chunk = [row_data(r) for r in partition]
                     queue.put(chunk)
                     total_features += len(chunk)
             queue.put(None)
             queue.join()
             consumer_thread.join()
+            if export_cancelled:
+                return BUILD_CANCELLED
 
         # Use sanitized layer name so it matches TileJSON vector_layers.id and frontend source-layer.
         layer_name = mvt_layer_name(collection_id)
@@ -187,16 +204,41 @@ def build_pmtiles_sync(
                     cmd.extend(["-x", attr])
             # Never exclude "id" so popup links use the real feature id (UUID)
         print(f"[tile_builder] Running tippecanoe for {collection_id} ({total_features} features)...", file=sys.stderr, flush=True)
-        # Stream stdout/stderr to process FDs so Docker logs show tippecanoe output in real time
-        proc = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, text=True)
+        tippecanoe_started = True
+        proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, text=True)
+        while proc.poll() is None:
+            time.sleep(1)
+            if stopped():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                if os.path.exists(out_path):
+                    try:
+                        os.unlink(out_path)
+                    except OSError:
+                        pass
+                return BUILD_CANCELLED
         if proc.returncode != 0:
             print("[tile_builder] tippecanoe failed (see above for details)", file=sys.stderr, flush=True)
+            if os.path.exists(out_path):
+                try:
+                    os.unlink(out_path)
+                except OSError:
+                    pass
             return "tippecanoe failed"
     finally:
         try:
             os.unlink(geojsonl_path)
         except OSError:
             pass
+        if tippecanoe_started and stopped() and os.path.exists(out_path):
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
 
     # Delete old file if it was at a different path; then upsert new path
     with SessionLocal() as session:

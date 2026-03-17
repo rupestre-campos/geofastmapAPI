@@ -66,6 +66,13 @@
     </div>
   </div>
   <div class="style-toolbox-section">
+    <h3>Rules (by attribute)</h3>
+    <p class="meta" style="margin-top:-6px; margin-bottom: 10px;">Override colors/width/opacity when a feature matches a property value (optionally only within a zoom range). First match wins.</p>
+    <datalist id="vector-rule-fields"></datalist>
+    <div id="vector-rules-list" style="display:flex; flex-direction: column; gap: 10px;"></div>
+    <button type="button" class="btn btn-sm" id="btn-add-rule">Add rule</button>
+  </div>
+  <div class="style-toolbox-section">
     <h3>Load &amp; save</h3>
     <div class="form-row style-toolbox-save-collection-row"><label><span class="label-text">Collection</span> <select id="load-style-collection" title="Optional: show styles from this collection"><option value="">— None —</option></select></label></div>
     <div class="form-row">

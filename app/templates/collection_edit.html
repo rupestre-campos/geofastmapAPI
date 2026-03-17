@@ -77,6 +77,9 @@
         <a href="{{ base }}/collections?f=html" class="btn">Back to collections</a>
         <a href="{{ base }}/collections/{{ collection_id }}/items/new?f=html" class="btn">Add feature</a>
         <a href="{{ base }}/collections/{{ collection_id }}/tiles/build?f=html" class="btn">Build static tiles</a>
+        {% if show_cancel_tile_build %}
+        <button type="button" class="btn btn-danger" id="btn-cancel-tile-build">Cancel build tiles</button>
+        {% endif %}
         <button type="button" class="btn btn-danger" id="btn-delete-tiles" style="display:none">Delete static tiles</button>
         <button type="button" class="btn" id="btn-invalidate-cache" title="Clear Redis cache for this collection (dynamic tiles / search cache) so map shows fresh data">Invalidate tile cache</button>
         <button type="button" class="btn" id="btn-recompute-extent">Recompute extent</button>
@@ -1011,6 +1014,18 @@
             .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); btn.disabled = false; });
         });
       };
+      var cancelTileBuildBtn = document.getElementById('btn-cancel-tile-build');
+      if (cancelTileBuildBtn) {
+        cancelTileBuildBtn.onclick = function() {
+          if (!confirm('Cancel the tile build for this collection? The worker will stop and clean up intermediate files.')) return;
+          var btn = this;
+          btn.disabled = true;
+          fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/build/cancel', { method: 'POST', headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.ok ? r.json() : r.json().then(function(j) { throw j; }); })
+            .then(function() { location.reload(); })
+            .catch(function(e) { alert('Error: ' + (e.detail || e.message || JSON.stringify(e))); btn.disabled = false; });
+        };
+      }
       document.getElementById('btn-invalidate-cache').onclick = function() {
         var btn = this;
         var resultEl = document.getElementById('tile-build-result');

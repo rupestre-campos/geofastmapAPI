@@ -413,15 +413,16 @@
         var sid = sourceId(layerKey(layer));
         if (map.getSource(sid)) { applyLayerStyleToMap(index); return Promise.resolve(sid + '-fill'); }
         var s = styleSpec || DEFAULT_SPEC;
-        var fillColor = s.fillColor || DEFAULT_SPEC.fillColor;
-        var fillOpacity = paintValue(s, 'fillOpacity', DEFAULT_SPEC.fillOpacity);
-        var lineColor = s.lineColor || DEFAULT_SPEC.lineColor;
-        var lineWidth = paintValue(s, 'lineWidth', 1);
+        var p = (window.GeofastMapUtils && window.GeofastMapUtils.specToPaint) ? window.GeofastMapUtils.specToPaint(s) : null;
+        var fillColor = p ? p.fillColor : (s.fillColor || DEFAULT_SPEC.fillColor);
+        var fillOpacity = p ? p.fillOpacity : paintValue(s, 'fillOpacity', DEFAULT_SPEC.fillOpacity);
+        var lineColor = p ? p.lineColor : (s.lineColor || DEFAULT_SPEC.lineColor);
+        var lineWidth = p ? p.lineWidth : paintValue(s, 'lineWidth', 1);
         if (typeof lineWidth === 'number') lineWidth = Math.max(0.5, lineWidth);
-        var lineOpacity = paintValue(s, 'lineOpacity', 1);
-        var fillVisible = s.fillEnabled !== false;
-        var lineVisible = s.lineEnabled !== false;
-        var lineDash = LINE_DASH[s.linePattern] || LINE_DASH.solid;
+        var lineOpacity = p ? p.lineOpacity : paintValue(s, 'lineOpacity', 1);
+        var fillVisible = p ? p.fillEnabled : (s.fillEnabled !== false);
+        var lineVisible = p ? p.lineEnabled : (s.lineEnabled !== false);
+        var lineDash = p ? p.lineDash : (LINE_DASH[s.linePattern] || LINE_DASH.solid);
         function addLayers(vlId) {
           map.addLayer({ id: sid + '-fill', type: 'fill', source: sid, 'source-layer': vlId, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } }, beforeId);
           map.addLayer({ id: sid + '-line', type: 'line', source: sid, 'source-layer': vlId, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } }, beforeId);
@@ -484,15 +485,16 @@
         if (!layer || !map.getSource) return;
         var sid = sourceId(layerKey(layer));
         var s = layer.style_spec || DEFAULT_SPEC;
-        var fillColor = s.fillColor || DEFAULT_SPEC.fillColor;
-        var fillOpacity = paintValue(s, 'fillOpacity', DEFAULT_SPEC.fillOpacity);
-        var lineColor = s.lineColor || DEFAULT_SPEC.lineColor;
-        var lineWidth = paintValue(s, 'lineWidth', 1);
+        var p = (window.GeofastMapUtils && window.GeofastMapUtils.specToPaint) ? window.GeofastMapUtils.specToPaint(s) : null;
+        var fillColor = p ? p.fillColor : (s.fillColor || DEFAULT_SPEC.fillColor);
+        var fillOpacity = p ? p.fillOpacity : paintValue(s, 'fillOpacity', DEFAULT_SPEC.fillOpacity);
+        var lineColor = p ? p.lineColor : (s.lineColor || DEFAULT_SPEC.lineColor);
+        var lineWidth = p ? p.lineWidth : paintValue(s, 'lineWidth', 1);
         if (typeof lineWidth === 'number') lineWidth = Math.max(0.5, lineWidth);
-        var lineOpacity = paintValue(s, 'lineOpacity', 1);
-        var fillVisible = s.fillEnabled !== false;
-        var lineVisible = s.lineEnabled !== false;
-        var lineDash = LINE_DASH[s.linePattern] || LINE_DASH.solid;
+        var lineOpacity = p ? p.lineOpacity : paintValue(s, 'lineOpacity', 1);
+        var fillVisible = p ? p.fillEnabled : (s.fillEnabled !== false);
+        var lineVisible = p ? p.lineEnabled : (s.lineEnabled !== false);
+        var lineDash = p ? p.lineDash : (LINE_DASH[s.linePattern] || LINE_DASH.solid);
         var fillId = sid + '-fill', lineId = sid + '-line';
         if (map.getLayer(fillId)) {
           map.setLayoutProperty(fillId, 'visibility', fillVisible ? 'visible' : 'none');
@@ -506,12 +508,12 @@
           map.setPaintProperty(lineId, 'line-opacity', lineOpacity);
           map.setPaintProperty(lineId, 'line-dasharray', lineDash);
         }
-        var ptColor = s.pointColor || DEFAULT_SPEC.pointColor;
-        var ptSize = paintValue(s, 'pointSize', 8);
+        var ptColor = p ? p.pointColor : (s.pointColor || DEFAULT_SPEC.pointColor);
+        var ptSize = p ? p.pointRadius : paintValue(s, 'pointSize', 8);
         var ptSizeNum = Math.max(1, Math.min(40, typeof ptSize === 'number' ? ptSize : 8));
-        var ptOpacity = paintValue(s, 'pointOpacity', 1);
+        var ptOpacity = p ? p.pointOpacity : paintValue(s, 'pointOpacity', 1);
         var ptIcon = s.pointIcon || 'circle';
-        var pointOn = s.pointEnabled !== false;
+        var pointOn = p ? p.pointEnabled : (s.pointEnabled !== false);
         if (map.getLayer(sid + '-circle')) {
           map.setPaintProperty(sid + '-circle', 'circle-color', ptColor);
           map.setPaintProperty(sid + '-circle', 'circle-radius', typeof ptSize === 'number' ? ptSizeNum : ptSize);

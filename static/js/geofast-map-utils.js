@@ -251,6 +251,64 @@
     setBasemapTransformRequest(map, maxZ, basemapConfig.tiles);
   }
 
+  function _toNumberOrNull(v) {
+    var n = parseFloat(v);
+    return isNaN(n) ? null : n;
+  }
+
+  function _ruleCondition(rule) {
+    if (!rule || !rule.when) return null;
+    var field = (rule.when.field || '').trim();
+    var op = (rule.when.op || 'eq').toLowerCase();
+    var valueRaw = rule.when.value;
+    if (!field) return null;
+    var getVal = ['get', field];
+    var cond = null;
+    if (op === 'eq' || op === 'ne') {
+      var v = valueRaw == null ? '' : String(valueRaw);
+      var cmp = ['==', ['to-string', getVal], v];
+      cond = op === 'ne' ? ['!', cmp] : cmp;
+    } else if (op === 'in') {
+      var list = (valueRaw == null ? '' : String(valueRaw)).split(',').map(function(x) { return x.trim(); }).filter(Boolean);
+      cond = ['in', ['to-string', getVal], ['literal', list]];
+    } else if (op === 'contains') {
+      var s = valueRaw == null ? '' : String(valueRaw);
+      cond = ['>=', ['index-of', s, ['to-string', getVal]], 0];
+    } else if (op === 'gt' || op === 'gte' || op === 'lt' || op === 'lte') {
+      var num = _toNumberOrNull(valueRaw);
+      if (num == null) return null;
+      var left = ['to-number', getVal];
+      if (op === 'gt') cond = ['>', left, num];
+      if (op === 'gte') cond = ['>=', left, num];
+      if (op === 'lt') cond = ['<', left, num];
+      if (op === 'lte') cond = ['<=', left, num];
+    } else {
+      return null;
+    }
+    var parts = [cond];
+    if (rule.minzoom != null && rule.minzoom !== '') parts.push(['>=', ['zoom'], Number(rule.minzoom)]);
+    if (rule.maxzoom != null && rule.maxzoom !== '') parts.push(['<=', ['zoom'], Number(rule.maxzoom)]);
+    return parts.length === 1 ? parts[0] : ['all'].concat(parts);
+  }
+
+  function _applyRulesToPaintValue(baseValue, rules, pickValueFn) {
+    if (!rules || !rules.length) return baseValue;
+    var expr = ['case'];
+    var any = false;
+    for (var i = 0; i < rules.length; i++) {
+      var r = rules[i];
+      var v = pickValueFn(r);
+      if (v === undefined || v === null || v === '') continue;
+      var c = _ruleCondition(r);
+      if (!c) continue;
+      expr.push(c, v);
+      any = true;
+    }
+    if (!any) return baseValue;
+    expr.push(baseValue);
+    return expr;
+  }
+
   /**
    * Convert a style_spec (from API or form) to paint values for fill/line/point layers.
    * Returns scalars or MapLibre expressions for zoom-based rules.
@@ -276,12 +334,16 @@
     var fillEnabled = spec.fillEnabled !== false;
     var lineEnabled = spec.lineEnabled !== false;
     var pointEnabled = spec.pointEnabled !== false;
+    var rules = Array.isArray(spec.rules) ? spec.rules : [];
+    var fillColorBase = spec.fillColor || DEFAULT_STYLE_SPEC.fillColor;
+    var lineColorBase = spec.lineColor || DEFAULT_STYLE_SPEC.lineColor;
+    var pointColorBase = spec.pointColor || spec.lineColor || DEFAULT_STYLE_SPEC.pointColor;
     return {
-      fillColor: spec.fillColor || DEFAULT_STYLE_SPEC.fillColor,
-      lineColor: spec.lineColor || DEFAULT_STYLE_SPEC.lineColor,
-      fillOpacity: fillOpacity,
-      lineOpacity: lineOpacity,
-      lineWidth: lineWidth,
+      fillColor: _applyRulesToPaintValue(fillColorBase, rules, function(r) { return r && r.paint ? r.paint.fillColor : null; }),
+      lineColor: _applyRulesToPaintValue(lineColorBase, rules, function(r) { return r && r.paint ? r.paint.lineColor : null; }),
+      fillOpacity: _applyRulesToPaintValue(fillOpacity, rules, function(r) { return r && r.paint ? r.paint.fillOpacity : null; }),
+      lineOpacity: _applyRulesToPaintValue(lineOpacity, rules, function(r) { return r && r.paint ? r.paint.lineOpacity : null; }),
+      lineWidth: _applyRulesToPaintValue(lineWidth, rules, function(r) { return r && r.paint ? r.paint.lineWidth : null; }),
       lineDash: LINE_DASH[spec.linePattern || 'solid'] || LINE_DASH.solid,
       fillEnabled: fillEnabled,
       fillVisible: fillEnabled,
@@ -289,9 +351,9 @@
       lineVisible: lineEnabled,
       pointEnabled: pointEnabled,
       pointVisible: pointEnabled,
-      pointColor: spec.pointColor || spec.lineColor || DEFAULT_STYLE_SPEC.pointColor,
-      pointRadius: pointRadius,
-      pointOpacity: pointOpacity,
+      pointColor: _applyRulesToPaintValue(pointColorBase, rules, function(r) { return r && r.paint ? r.paint.pointColor : null; }),
+      pointRadius: _applyRulesToPaintValue(pointRadius, rules, function(r) { return r && r.paint ? r.paint.pointSize : null; }),
+      pointOpacity: _applyRulesToPaintValue(pointOpacity, rules, function(r) { return r && r.paint ? r.paint.pointOpacity : null; }),
       pointIcon: spec.pointIcon || DEFAULT_STYLE_SPEC.pointIcon
     };
   }

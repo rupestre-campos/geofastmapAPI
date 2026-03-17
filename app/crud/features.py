@@ -19,7 +19,13 @@ from app.models.collection import Collection
 from app.models.feature import Feature
 from app.schemas.feature import FeatureCreate, FeaturePatch, FeatureReplace
 from app.utils.geo import geojson_to_wkt_element
-from app.utils.feature_subdivide import insert_feature_subdivided_sql
+from app.utils.feature_subdivide import (
+    MAX_COORDS_FOR_DB_SUBDIVIDE,
+    _coord_count,
+    insert_feature_parts_batched,
+    insert_feature_subdivided_sql,
+    subdivide_geometry_by_vertices,
+)
 from app.utils.property_filter import property_value_to_like_pattern
 from app.utils.property_filters import PropertyFilter, PropertyOp, safe_json_key
 
@@ -622,19 +628,26 @@ async def create_feature(db: AsyncSession, data: FeatureCreate) -> Feature:
     from shapely.validation import make_valid
 
     geom_dict = data.geometry.model_dump() if data.geometry else None
-    wkt = None
+    geom = None
     if geom_dict:
         geom = shape(geom_dict)
         if not geom.is_valid:
             geom = make_valid(geom)
-        if not geom.is_empty:
-            wkt = geom.wkt
+        if geom.is_empty:
+            geom = None
     props = _properties_without_readonly(data.properties)
     fid = str(uuid7())
     max_vertices = get_settings().features_subdivide_max_vertices
     now = datetime.now(timezone.utc)
-    sql, params = insert_feature_subdivided_sql(fid, data.collection_id, wkt, props, now, max_vertices)
-    await db.execute(text(sql), params)
+    if geom is not None and _coord_count(geom) > MAX_COORDS_FOR_DB_SUBDIVIDE:
+        parts = subdivide_geometry_by_vertices(geom, max_vertices)
+        wkt_list = [p.wkt for p in parts if p is not None and not p.is_empty]
+        for sql, params in insert_feature_parts_batched(fid, data.collection_id, wkt_list, props, now):
+            await db.execute(text(sql), params)
+    else:
+        wkt = geom.wkt if geom is not None else None
+        sql, params = insert_feature_subdivided_sql(fid, data.collection_id, wkt, props, now, max_vertices)
+        await db.execute(text(sql), params)
     await db.execute(
         update(Collection)
         .where(Collection.id == data.collection_id)
@@ -658,18 +671,25 @@ async def replace_feature(
     from shapely.geometry import shape
     from shapely.validation import make_valid
 
-    wkt = None
+    geom = None
     if geom_dict:
         geom = shape(geom_dict)
         if not geom.is_valid:
             geom = make_valid(geom)
-        if not geom.is_empty:
-            wkt = geom.wkt
+        if geom.is_empty:
+            geom = None
     props = _properties_without_readonly(data.properties)
     max_vertices = get_settings().features_subdivide_max_vertices
     now = datetime.now(timezone.utc)
-    sql, params = insert_feature_subdivided_sql(feature_id, collection_id, wkt, props, now, max_vertices)
-    await db.execute(text(sql), params)
+    if geom is not None and _coord_count(geom) > MAX_COORDS_FOR_DB_SUBDIVIDE:
+        parts = subdivide_geometry_by_vertices(geom, max_vertices)
+        wkt_list = [p.wkt for p in parts if p is not None and not p.is_empty]
+        for sql, params in insert_feature_parts_batched(feature_id, collection_id, wkt_list, props, now):
+            await db.execute(text(sql), params)
+    else:
+        wkt = geom.wkt if geom is not None else None
+        sql, params = insert_feature_subdivided_sql(feature_id, collection_id, wkt, props, now, max_vertices)
+        await db.execute(text(sql), params)
     await db.commit()
     return True
 
@@ -695,18 +715,25 @@ async def update_feature(
     from shapely.geometry import shape
     from shapely.validation import make_valid
 
-    wkt = None
+    geom = None
     if geom_dict:
         geom = shape(geom_dict)
         if not geom.is_valid:
             geom = make_valid(geom)
-        if not geom.is_empty:
-            wkt = geom.wkt
+        if geom.is_empty:
+            geom = None
     await db.execute(text("DELETE FROM features WHERE collection_id = :cid AND id = :fid"), {"cid": collection_id, "fid": feature_id})
     max_vertices = get_settings().features_subdivide_max_vertices
     now = datetime.now(timezone.utc)
-    sql, params = insert_feature_subdivided_sql(feature_id, collection_id, wkt, props, now, max_vertices)
-    await db.execute(text(sql), params)
+    if geom is not None and _coord_count(geom) > MAX_COORDS_FOR_DB_SUBDIVIDE:
+        parts = subdivide_geometry_by_vertices(geom, max_vertices)
+        wkt_list = [p.wkt for p in parts if p is not None and not p.is_empty]
+        for sql, params in insert_feature_parts_batched(feature_id, collection_id, wkt_list, props, now):
+            await db.execute(text(sql), params)
+    else:
+        wkt = geom.wkt if geom is not None else None
+        sql, params = insert_feature_subdivided_sql(feature_id, collection_id, wkt, props, now, max_vertices)
+        await db.execute(text(sql), params)
     await db.commit()
     return await get_feature(db, collection_id, feature_id)
 

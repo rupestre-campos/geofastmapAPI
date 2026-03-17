@@ -41,6 +41,33 @@
   .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
   .save-style-form .vector-style-label { font-weight: 600; margin-right: 4px; }
   .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+  .vector-rule-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); padding: 8px 10px; }
+  .vector-rule-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .vector-rule-row label { display: inline-flex; align-items: center; gap: 6px; }
+  .vector-rule-row input[type="text"] { padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); }
+  .vector-rule-row input[type="number"] { width: 5.5em; }
+  .vector-rule-row .rule-mini { font-size: 0.8rem; color: var(--text-secondary); }
+  .vector-rule-actions { margin-left: auto; display: inline-flex; gap: 8px; }
+  .vector-rule-field-wrap { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+  .vector-rule-field-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 2px;
+    min-width: 220px;
+    max-width: 360px;
+    max-height: 240px;
+    overflow: auto;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    z-index: 2000;
+    display: none;
+  }
+  .vector-rule-field-menu.open { display: block; }
+  .vector-rule-field-item { padding: 6px 8px; cursor: pointer; font-size: 0.85rem; }
+  .vector-rule-field-item:hover { background: var(--bg-elevated); }
   /* Items page: hide collection picker in Load & save */
   .style-toolbox-items-page .style-toolbox-save-collection-row { display: none; }
 </style>

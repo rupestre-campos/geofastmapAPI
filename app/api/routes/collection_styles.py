@@ -63,8 +63,16 @@ def _normalize_spec(spec: dict | None) -> dict:
     for k in d:
         if k in spec:
             d[k] = spec[k]
-    # Preserve zoom-based interpolation arrays and pointOpacity so load/save round-trip works
-    for key in ("pointOpacity", "fillOpacityZoom", "lineWidthZoom", "lineOpacityZoom", "pointSizeZoom", "pointOpacityZoom"):
+    # Preserve extended keys so load/save round-trip works (zoom stops, pointOpacity, and advanced rules).
+    for key in (
+        "pointOpacity",
+        "fillOpacityZoom",
+        "lineWidthZoom",
+        "lineOpacityZoom",
+        "pointSizeZoom",
+        "pointOpacityZoom",
+        "rules",
+    ):
         if key in spec and spec[key] is not None:
             d[key] = spec[key]
     return d

@@ -17,7 +17,13 @@ from uuid6 import uuid7
 from app.core.config import get_settings
 from app.models.collection import Collection
 from app.models.feature import Feature
-from app.utils.feature_subdivide import insert_feature_subdivided_sql
+from app.utils.feature_subdivide import (
+    MAX_COORDS_FOR_DB_SUBDIVIDE,
+    _coord_count,
+    insert_feature_parts_batched,
+    insert_feature_subdivided_sql,
+    subdivide_geometry_by_vertices,
+)
 
 # Driver for fiona by file extension (lowercase). No shapefile (would require sidecar files).
 # .geojsonseq is the same format as .geojsonl (GeoJSON Seq / newline-delimited GeoJSON).
@@ -134,14 +140,20 @@ def _import_one_source(
                 else:
                     geoms = [None]
                 for geom in geoms:
-                    wkt = None
-                    if geom is not None and not geom.is_empty:
-                        wkt = geom.wkt
                     fid = str(uuid7())
-                    sql, params = insert_feature_subdivided_sql(
-                        fid, collection_id, wkt, props if props else None, now, max_vertices
-                    )
-                    session.execute(text(sql), params)
+                    if geom is not None and not geom.is_empty and _coord_count(geom) > MAX_COORDS_FOR_DB_SUBDIVIDE:
+                        parts = subdivide_geometry_by_vertices(geom, max_vertices)
+                        wkt_list = [p.wkt for p in parts if p is not None and not p.is_empty]
+                        for sql, params in insert_feature_parts_batched(
+                            fid, collection_id, wkt_list, props if props else None, now
+                        ):
+                            session.execute(text(sql), params)
+                    else:
+                        wkt = geom.wkt if (geom is not None and not geom.is_empty) else None
+                        sql, params = insert_feature_subdivided_sql(
+                            fid, collection_id, wkt, props if props else None, now, max_vertices
+                        )
+                        session.execute(text(sql), params)
                     created += 1
             except Exception:
                 failed += 1
