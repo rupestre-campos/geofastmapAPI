@@ -59,8 +59,8 @@
           {% for m in maps %}
           <tr>
             <td>
-              <strong>{{ m.name }}</strong>
-              <div class="meta">{{ m.id }}</div>
+              <strong><a href="{{ base }}/maps/{{ m.id }}?f=html">{{ m.name }}</a></strong>
+              <div class="meta"><a href="{{ base }}/maps/{{ m.id }}?f=html">{{ m.id }}</a></div>
               {% if m.description %}<div class="meta">{{ m.description }}</div>{% endif %}
             </td>
             <td class="meta">
@@ -112,7 +112,7 @@
           {% for c in collections %}
           <tr>
             <td>
-              <strong>{{ c.id }}</strong>
+              <strong><a href="{{ base }}/collections/{{ c.id }}?f=html">{{ c.id }}</a></strong>
               {% if c.title %}<div class="meta">{{ c.title }}</div>{% endif %}
             </td>
             <td class="meta">{{ c.feature_count }}</td>
