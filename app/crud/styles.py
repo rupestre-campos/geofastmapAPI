@@ -72,6 +72,8 @@ async def create_style(
     title: str | None = None,
     collection_id: str = PUBLIC_COLLECTION_ID,
     set_default: bool = False,
+    owner_id: int | None = None,
+    visibility: str = "private",
 ) -> Style:
     """Create a style. For collection styles, optionally set as default."""
     if collection_id and set_default:
@@ -82,6 +84,8 @@ async def create_style(
         title=title,
         style_spec=style_spec,
         is_default=set_default,
+        owner_id=owner_id,
+        visibility=visibility,
     )
     db.add(style)
     await db.commit()
@@ -119,8 +123,10 @@ async def patch_style(
     title: str | None = None,
     style_spec: dict | None = None,
     set_default: bool | None = None,
+    visibility: str | None = None,
 ) -> Style | None:
     """Patch a collection style."""
+    from app.models.collection import VISIBILITY_LOGGED, VISIBILITY_PRIVATE, VISIBILITY_PUBLIC
     style = await get_collection_style(db, collection_id, style_id)
     if style is None or style.collection_id != collection_id:
         return None
@@ -132,6 +138,8 @@ async def patch_style(
         if set_default:
             await _unset_default_for_collection(db, collection_id)
         style.is_default = set_default
+    if visibility is not None and visibility in (VISIBILITY_PRIVATE, VISIBILITY_LOGGED, VISIBILITY_PUBLIC):
+        style.visibility = visibility
     await db.commit()
     await db.refresh(style)
     return style
@@ -160,8 +168,10 @@ async def patch_public_style(
     *,
     title: str | None = None,
     style_spec: dict | None = None,
+    visibility: str | None = None,
 ) -> Style | None:
     """Patch a public style."""
+    from app.models.collection import VISIBILITY_LOGGED, VISIBILITY_PRIVATE, VISIBILITY_PUBLIC
     style = await get_public_style(db, style_id)
     if style is None:
         return None
@@ -169,6 +179,8 @@ async def patch_public_style(
         style.title = title
     if style_spec is not None:
         style.style_spec = style_spec
+    if visibility is not None and visibility in (VISIBILITY_PRIVATE, VISIBILITY_LOGGED, VISIBILITY_PUBLIC):
+        style.visibility = visibility
     await db.commit()
     await db.refresh(style)
     return style

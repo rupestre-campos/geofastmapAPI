@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit user' if user else 'New user' }} – GeoFast API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>{{ 'Edit user' if user and user.id else 'New user' }}</h1>
+    {% if user and user.username %}
+    <p class="meta">Username: {{ user.username }}</p>
+    {% endif %}
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">{{ 'Update user' if user and user.id else 'Create user' }}</h2>
+    {% if error %}
+    <p class="meta" style="color: var(--danger); margin-bottom: 1rem;">{{ error }}</p>
+    {% endif %}
+    {% if user and user.id %}
+    <form method="post" action="{{ base }}/auth/users/{{ user.id }}" class="js-auth-password-hash">
+      <div class="form-row">
+        <label>Username</label>
+        <input type="text" value="{{ user.username }}" disabled>
+      </div>
+      <div class="form-row">
+        <label class="checkbox-inline">
+          <input type="checkbox" name="is_admin" {{ 'checked' if user.is_admin else '' }}> Admin
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="checkbox-inline">
+          <input type="checkbox" name="must_change_password" {{ 'checked' if user.must_change_password else '' }}> Must change password on next login
+        </label>
+      </div>
+      <div class="form-row">
+        <label for="new_password">New password (leave blank to keep current)</label>
+        <div class="password-wrap">
+          <input type="password" id="new_password" name="new_password" autocomplete="new-password">
+          <button type="button" class="password-toggle js-password-toggle" aria-label="Show password">
+            <svg class="icon-eye" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="icon-eye-off" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <a href="{{ base }}/auth/users?f=html" class="btn">Cancel</a>
+      </div>
+    </form>
+    {% else %}
+    <form method="post" action="{{ base }}/auth/users" class="js-auth-password-hash">
+      <div class="form-row">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" value="{{ user.username if user else '' }}" required autocomplete="username">
+      </div>
+      <div class="form-row">
+        <label for="password">Password</label>
+        <div class="password-wrap">
+          <input type="password" id="password" name="password" required autocomplete="new-password">
+          <button type="button" class="password-toggle js-password-toggle" aria-label="Show password">
+            <svg class="icon-eye" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="icon-eye-off" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="form-row">
+        <label class="checkbox-inline">
+          <input type="checkbox" name="is_admin" {{ 'checked' if user and user.is_admin else '' }}> Admin
+        </label>
+      </div>
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary">Create user</button>
+        <a href="{{ base }}/auth/users?f=html" class="btn">Cancel</a>
+      </div>
+    </form>
+    {% endif %}
+  </div>
+  <p class="meta">Passwords are hashed (SHA-256) in the browser before sending.</p>
+{% endblock %}
+{% block script %}
+  <script src="{{ base }}/static/js/auth-hash.js"></script>
+  <script src="{{ base }}/static/js/password-toggle.js"></script>
+{% endblock %}

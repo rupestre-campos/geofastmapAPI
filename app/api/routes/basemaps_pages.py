@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_user_optional, get_current_user_required
 from app.core.html import html_response, wants_html
 from app.crud import basemaps as basemaps_crud
 from app.db.session import get_db
@@ -23,8 +24,9 @@ def _base_url(request: Request) -> str:
 async def list_basemaps_page(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ):
-    """List all basemaps with links to edit and create."""
+    """List all basemaps with links to edit and create (add/edit/delete only when logged in)."""
     if not wants_html(request):
         return RedirectResponse(url=_base_url(request) + "/basemaps?f=html", status_code=302)
     items = await basemaps_crud.list_basemaps(db)
@@ -45,11 +47,17 @@ async def list_basemaps_page(
         "basemaps.html",
         base=_base_url(request),
         basemaps=basemaps,
+        can_edit_basemaps=current_user is not None,
+        username=current_user.username if current_user else None,
+        is_admin=current_user.is_admin if current_user else False,
     )
 
 
 @router.get("/new", summary="New basemap form (HTML)")
-async def new_basemap_page(request: Request):
+async def new_basemap_page(
+    request: Request,
+    current_user=Depends(get_current_user_required),
+):
     if not wants_html(request):
         return RedirectResponse(url=_base_url(request) + "/basemaps/new?f=html", status_code=302)
     return html_response(
@@ -57,6 +65,8 @@ async def new_basemap_page(request: Request):
         base=_base_url(request),
         basemap=None,
         is_new=True,
+        username=current_user.username,
+        is_admin=current_user.is_admin,
     )
 
 
@@ -65,6 +75,7 @@ async def edit_basemap_page(
     request: Request,
     basemap_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_required),
 ):
     if not wants_html(request):
         return RedirectResponse(url=_base_url(request) + f"/basemaps/{basemap_id}/edit?f=html", status_code=302)
@@ -86,6 +97,8 @@ async def edit_basemap_page(
         base=_base_url(request),
         basemap=basemap,
         is_new=False,
+        username=current_user.username,
+        is_admin=current_user.is_admin,
     )
 
 
@@ -105,6 +118,7 @@ def _parse_tiles(tiles_str: str) -> list[str]:
 async def create_basemap_form(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_required),
     id: str = Form(..., alias="id"),
     name: str = Form(...),
     copyright: str = Form(""),
@@ -143,6 +157,7 @@ async def update_basemap_form(
     request: Request,
     basemap_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_required),
     name: str = Form(...),
     copyright: str = Form(""),
     min_zoom: int = Form(0),
@@ -177,6 +192,7 @@ async def delete_basemap_form(
     request: Request,
     basemap_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_required),
 ):
     """Delete basemap and redirect to list."""
     base = _base_url(request)

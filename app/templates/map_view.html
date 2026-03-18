@@ -19,6 +19,12 @@
     .map-view-meta { margin-top: var(--space); font-size: 0.9rem; color: var(--text-secondary); }
     #map-search-results-card .table-scroll-wrap { overflow: auto; max-height: 50vh; margin-top: 8px; }
     #map-search-results-card .collections-table { width: 100%; }
+    #map-search-results-details summary { display: flex; align-items: center; gap: 6px; }
+    #map-search-results-details summary .details-arrow { display: inline-block; width: 0; height: 0; border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-left: 8px solid currentColor; transition: transform 0.2s; flex-shrink: 0; }
+    #map-search-results-details[open] summary .details-arrow { transform: rotate(90deg); }
+    .map-legend-row.map-legend-search { border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 4px; }
+    .map-legend-search .map-legend-icon { box-shadow: 0 0 0 2px rgba(0,0,0,0.35); }
+    #map-search-form .search-bar-msg { margin-top: 6px; font-size: 0.9rem; color: var(--text-secondary); }
   </style>
 {% endblock %}
 {% block content %}
@@ -35,7 +41,9 @@
       <h2 class="card-title">Actions</h2>
       <div class="card-actions">
         <a href="{{ base }}/maps?f=html" class="btn">Back to maps</a>
+        {% if can_edit_map | default(false) %}
         <a href="{{ base }}/maps/{{ map_id }}/edit?f=html" class="btn btn-primary">Edit map</a>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -52,16 +60,20 @@
           {% set seen = [] %}
           {% for lyr in (map_definition.layers or []) %}
           {% set cid = lyr.collection_id or lyr.collectionId %}
-          {% if cid and cid not in seen %}
+          {% set lid = lyr.layer_id or '' %}
+          {# Exclude single-feature layers (layer_id "item-<id>"); only full collection layers (static or "items-<cid>") are searchable #}
+          {% set single_feature = lid.startswith('item-') and not lid.startswith('items-') %}
+          {% if cid and cid not in seen and not single_feature %}
           {% set _ = seen.append(cid) %}
           <option value="{{ cid }}">{{ cid }}</option>
           {% endif %}
           {% endfor %}
         </select>
-        <input type="text" id="map-search-q" name="q" class="search-bar-input" placeholder="Search in properties…" autocomplete="off">
+        <input type="text" id="map-search-q" name="q" class="search-bar-input" placeholder="Search in properties… (min. 4 characters)" autocomplete="off">
         <button type="submit" class="btn btn-primary">Search</button>
         <button type="button" class="btn" id="map-search-clear-btn">Clear search</button>
       </div>
+      <div id="map-search-q-msg" class="search-bar-msg" style="display: none;" role="alert" aria-live="polite"></div>
       <div class="search-bar-advanced-toggle-wrap">
         <button type="button" class="btn btn-sm search-bar-advanced-toggle" id="map-search-advanced-toggle" aria-expanded="false" aria-controls="map-search-advanced">Advanced search</button>
       </div>
@@ -111,8 +123,9 @@
   <div class="card" id="map-search-results-card" style="display:none;">
     <details id="map-search-results-details">
       <summary class="card-header" style="list-style:none; cursor:pointer;">
+        <span class="details-arrow" aria-hidden="true"></span>
         <h2 class="card-title" style="margin:0; display:inline-block;">Search results</h2>
-        <span class="meta" id="map-search-results-count" style="margin-left:8px;"></span>
+        <span class="meta" id="map-search-results-count" style="margin-left:4px;"></span>
       </summary>
       <div class="pagination" id="map-search-pagination" style="margin-top:8px; margin-bottom:8px; display:none;" data-offset="0" data-limit="10" data-number-matched="0">
         <span class="btn btn-disabled" aria-disabled="true">← Previous</span>
@@ -307,12 +320,50 @@
         return window.location.origin + rootPath;
       }
 
+      var MAP_SEARCH_LAYER_IDS = ['map-search-circle', 'map-search-line', 'map-search-fill', 'map-search-glow-circle', 'map-search-glow-line', 'map-search-glow-fill'];
+
       function removeSearchLayers() {
         currentSearchCollectionId = null;
-        ['map-search-line', 'map-search-fill', 'map-search-circle'].forEach(function(id) {
+        MAP_SEARCH_LAYER_IDS.forEach(function(id) {
           if (map.getLayer(id)) map.removeLayer(id);
         });
         if (map.getSource('map-search-tiles')) map.removeSource('map-search-tiles');
+        updateLegendForSearch(false);
+      }
+
+      function setSearchLayersVisibility(visible) {
+        var v = visible ? 'visible' : 'none';
+        MAP_SEARCH_LAYER_IDS.forEach(function(id) {
+          if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v);
+        });
+      }
+
+      function updateLegendForSearch(hasSearch) {
+        var list = document.getElementById('map-legend-list');
+        if (!list) return;
+        var existing = list.querySelector('.map-legend-row.map-legend-search');
+        if (existing) existing.remove();
+        if (!hasSearch) return;
+        var row = document.createElement('div');
+        row.className = 'map-legend-row map-legend-search';
+        row.dataset.collectionId = '__search__';
+        var icon = document.createElement('span');
+        icon.className = 'map-legend-icon';
+        icon.style.backgroundColor = 'var(--accent)';
+        icon.style.borderColor = 'rgba(0,0,0,0.4)';
+        var label = document.createElement('span');
+        label.className = 'map-legend-label';
+        label.textContent = 'Search result';
+        label.title = 'Highlighted search results (toggle to show/hide)';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = true;
+        cb.title = 'Toggle search result visibility';
+        cb.onchange = function() { setSearchLayersVisibility(cb.checked); };
+        row.appendChild(icon);
+        row.appendChild(label);
+        row.appendChild(cb);
+        list.insertBefore(row, list.firstChild);
       }
 
       function getMapSearchParams(overrides) {
@@ -346,37 +397,38 @@
         var p = getMapSearchParams({ limit: limit, offset: offset });
         var query = p.params.length ? ('?' + p.params.join('&')) : '';
         var tileUrl = apiBaseUrlMaps() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/dynamic/{z}/{x}/{y}.pbf' + query;
+        var glowColor = 'rgba(0,0,0,0.65)';
+        var glowWidth = 5;
+        var glowLineWidth = (style.lineWidth != null ? Math.max(1, style.lineWidth) : 1.5) + 4;
+        var ptRadius = style.pointRadius != null ? style.pointRadius : 8;
+        var glowPtRadius = ptRadius + 4;
+        function addAllSearchLayers() {
+          if (!map.getSource('map-search-tiles')) return;
+          map.addLayer({ id: 'map-search-glow-fill', type: 'line', source: 'map-search-tiles', 'source-layer': collectionId, filter: notPointFilter, paint: { 'line-color': glowColor, 'line-width': glowWidth, 'line-opacity': 1 } });
+          map.addLayer({ id: 'map-search-glow-line', type: 'line', source: 'map-search-tiles', 'source-layer': collectionId, filter: notPointFilter, paint: { 'line-color': glowColor, 'line-width': glowLineWidth, 'line-opacity': 1 } });
+          map.addLayer({ id: 'map-search-glow-circle', type: 'circle', source: 'map-search-tiles', 'source-layer': collectionId, filter: pointFilter, paint: { 'circle-color': glowColor, 'circle-radius': glowPtRadius, 'circle-opacity': 1, 'circle-stroke-width': 0 } });
+          var fillColor = style.fillColor;
+          var lineColor = style.lineColor;
+          var fillOpacity = style.fillOpacity;
+          var lineOpacity = style.lineOpacity;
+          var lineWidth = style.lineWidth;
+          var lineDash = style.lineDash;
+          map.addLayer({ id: 'map-search-fill', type: 'fill', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } });
+          map.addLayer({ id: 'map-search-line', type: 'line', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } });
+          map.addLayer({ id: 'map-search-circle', type: 'circle', source: 'map-search-tiles', 'source-layer': collectionId, filter: pointFilter, paint: { 'circle-color': style.pointColor || lineColor || '#58a6ff', 'circle-radius': ptRadius, 'circle-opacity': style.pointOpacity != null ? style.pointOpacity : 0.9 } });
+          updateLegendForSearch(true);
+        }
         fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles', { headers: { 'Accept': 'application/json' } })
           .then(function(r) { return r.json(); })
           .then(function(tj) {
             var minz = tj.minzoom != null ? tj.minzoom : 0;
             var maxz = tj.maxzoom != null ? tj.maxzoom : 14;
             map.addSource('map-search-tiles', { type: 'vector', tiles: [tileUrl], minzoom: minz, maxzoom: maxz });
-            var fillColor = style.fillColor;
-            var lineColor = style.lineColor;
-            var fillOpacity = style.fillOpacity;
-            var lineOpacity = style.lineOpacity;
-            var lineWidth = style.lineWidth;
-            var lineDash = style.lineDash;
-            map.addLayer({ id: 'map-search-fill', type: 'fill', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } });
-            map.addLayer({ id: 'map-search-line', type: 'line', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } });
-            var ptRadius = style.pointRadius != null ? style.pointRadius : 8;
-            var ptOpacity = style.pointOpacity != null ? style.pointOpacity : 0.9;
-            map.addLayer({ id: 'map-search-circle', type: 'circle', source: 'map-search-tiles', 'source-layer': collectionId, filter: pointFilter, paint: { 'circle-color': style.pointColor || lineColor || '#58a6ff', 'circle-radius': ptRadius, 'circle-opacity': ptOpacity } });
+            addAllSearchLayers();
           })
           .catch(function() {
             map.addSource('map-search-tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
-            var fillColor = style.fillColor;
-            var lineColor = style.lineColor;
-            var fillOpacity = style.fillOpacity;
-            var lineOpacity = style.lineOpacity;
-            var lineWidth = style.lineWidth;
-            var lineDash = style.lineDash;
-            map.addLayer({ id: 'map-search-fill', type: 'fill', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } });
-            map.addLayer({ id: 'map-search-line', type: 'line', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } });
-            var ptRadius = style.pointRadius != null ? style.pointRadius : 8;
-            var ptOpacity = style.pointOpacity != null ? style.pointOpacity : 0.9;
-            map.addLayer({ id: 'map-search-circle', type: 'circle', source: 'map-search-tiles', 'source-layer': collectionId, filter: pointFilter, paint: { 'circle-color': style.pointColor || lineColor || '#58a6ff', 'circle-radius': ptRadius, 'circle-opacity': ptOpacity } });
+            addAllSearchLayers();
           });
       }
 
@@ -420,6 +472,7 @@
       function renderSearchTable(collectionId, data) {
         var tableCard = document.getElementById('map-search-results-card');
         if (!tableCard) return;
+        var detailsEl = document.getElementById('map-search-results-details');
         var tbody = document.getElementById('map-search-results-tbody');
         var theadRow = document.getElementById('map-search-results-thead');
         var countSpan = document.getElementById('map-search-results-count');
@@ -434,6 +487,7 @@
           document.getElementById('map-search-pagination-info').textContent = '0 of ' + nMatched;
           paginationEl.style.display = 'none';
           tableCard.style.display = '';
+          if (detailsEl) detailsEl.open = true;
           return;
         }
         var keys = [];
@@ -487,6 +541,7 @@
         document.getElementById('map-search-pagination').innerHTML = prevHtml + '<span class="pagination-info" id="map-search-pagination-info">' + infoText + '</span>' + nextHtml;
         document.getElementById('map-search-pagination').style.display = 'block';
         tableCard.style.display = '';
+        if (detailsEl) detailsEl.open = true;
       }
 
       function runLayerSearch(collectionId, options) {
@@ -721,6 +776,8 @@
 
       function clearMapSearch() {
         document.getElementById('map-search-q').value = '';
+        var msg = document.getElementById('map-search-q-msg');
+        if (msg) msg.style.display = 'none';
         document.getElementById('map-search-limit').value = '10';
         document.getElementById('map-search-offset').value = '0';
         document.getElementById('map-search-bbox').value = '';
@@ -741,6 +798,14 @@
       if (searchForm) {
         searchForm.addEventListener('submit', function(e) {
           e.preventDefault();
+          var qVal = (document.getElementById('map-search-q').value || '').trim();
+          if (qVal.length > 0 && qVal.length < 4) {
+            var msg = document.getElementById('map-search-q-msg');
+            if (msg) { msg.textContent = 'Full-text search requires at least 4 characters.'; msg.style.display = ''; }
+            return;
+          }
+          var msg = document.getElementById('map-search-q-msg');
+          if (msg) msg.style.display = 'none';
           var select = document.getElementById('map-search-layer');
           var cid = select && select.value ? select.value : '';
           if (!cid) return;

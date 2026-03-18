@@ -1,0 +1,193 @@
+{# Visibility & sharing card. Requires: visibility, shares, shares_url, patch_url. Optional: resource_label, viewer_can_edit, show_viewer_edit (true for collection/map so they can choose view-only vs edit for all viewers) #}
+<div class="card sharing-card" id="sharing-card">
+  <h2 class="card-title">Visibility &amp; sharing</h2>
+  <p class="meta">Control who can see {{ resource_label | default("this resource") }}: only you (private), any logged-in user, or everyone (public). You can also share with specific users by username.</p>
+  <div class="form-row">
+    <span class="label-text">Visibility</span>
+    <div class="radio-group" id="sharing-visibility-group">
+      <label><input type="radio" name="sharing_visibility" value="private" {{ 'checked' if visibility == 'private' else '' }}> Private (only you)</label>
+      <label><input type="radio" name="sharing_visibility" value="logged" {{ 'checked' if visibility == 'logged' else '' }}> All logged-in users</label>
+      <label><input type="radio" name="sharing_visibility" value="public" {{ 'checked' if visibility == 'public' else '' }}> Public (including anonymous)</label>
+    </div>
+  </div>
+  {% if show_viewer_edit | default(false) %}
+  <div class="form-row" id="sharing-viewer-edit-wrap" style="display:none;" data-enabled="1">
+    <span class="label-text">Who can edit</span>
+    <div class="radio-group">
+      <label><input type="radio" name="sharing_viewer_edit" value="view" {{ 'checked' if not (viewer_can_edit | default(false)) else '' }}> View only (add users below for editor access)</label>
+      <label><input type="radio" name="sharing_viewer_edit" value="edit" {{ 'checked' if (viewer_can_edit | default(false)) else '' }}> All viewers can edit</label>
+    </div>
+    <p class="meta" style="margin-top:4px;">When &quot;View only&quot;, only you and users you add as editors can edit. When &quot;All viewers can edit&quot;, everyone who can see {{ resource_label | default("this resource") }} can also edit.</p>
+  </div>
+  {% endif %}
+  <div class="form-row">
+    <span class="label-text">Share with user</span>
+    <div class="sharing-add-wrap" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+      <input type="text" id="sharing-username" placeholder="Username" class="sharing-username-input" style="width:140px;">
+      <select id="sharing-role" style="width:100px;">
+        <option value="viewer">Viewer</option>
+        <option value="editor">Editor</option>
+      </select>
+      <button type="button" class="btn btn-sm btn-primary" id="sharing-add-btn">Add</button>
+    </div>
+    <p id="sharing-add-message" class="meta" style="margin:4px 0 0;color:var(--danger);display:none;"></p>
+  </div>
+  <div class="form-row" id="sharing-list-wrap">
+    <span class="label-text">Shared with</span>
+    <ul id="sharing-list" class="sharing-list" style="list-style:none;padding:0;margin:0;">
+      {% for s in shares %}
+      <li class="sharing-list-item" data-username="{{ s.username | e }}">
+        <span>{{ s.username }}</span> <span class="meta">({{ s.role }})</span>
+        <button type="button" class="btn btn-sm sharing-remove-btn" data-username="{{ s.username | e }}">Remove</button>
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="meta sharing-empty-msg" id="sharing-empty-private" data-visibility="private" style="display:none;">Not shared with anyone yet. Add users below to grant access.</p>
+    <p class="meta sharing-empty-msg" id="sharing-empty-logged" data-visibility="logged" style="display:none;">All logged-in users can view. Add users below to grant editor access.</p>
+    <p class="meta sharing-empty-msg" id="sharing-empty-public" data-visibility="public" style="display:none;">Everyone can view (public). Add users below to grant editor access.</p>
+  </div>
+  <div class="btn-group" style="margin-top: var(--space);">
+    <button type="button" class="btn btn-primary" id="sharing-save-btn">Save visibility &amp; sharing</button>
+  </div>
+</div>
+<script>
+(function() {
+  var card = document.getElementById('sharing-card');
+  if (!card) return;
+  var sharesUrl = {{ shares_url | tojson }};
+  var patchUrl = {{ patch_url | tojson }};
+  var visibilityGroup = document.getElementById('sharing-visibility-group');
+  var viewerEditWrap = document.getElementById('sharing-viewer-edit-wrap');
+  var usernameInput = document.getElementById('sharing-username');
+  var roleSelect = document.getElementById('sharing-role');
+  var addBtn = document.getElementById('sharing-add-btn');
+  var addMessage = document.getElementById('sharing-add-message');
+  var listEl = document.getElementById('sharing-list');
+  var emptyMsgs = card.querySelectorAll('.sharing-empty-msg');
+  var saveBtn = document.getElementById('sharing-save-btn');
+
+  function visibilityForViewerEdit() {
+    var radio = card.querySelector('input[name="sharing_visibility"]:checked');
+    return (radio && radio.value) || 'private';
+  }
+
+  function updateViewerEditVisibility() {
+    var vis = visibilityForViewerEdit();
+    if (viewerEditWrap) viewerEditWrap.style.display = (viewerEditWrap.dataset.enabled === '1' && (vis === 'logged' || vis === 'public')) ? 'block' : 'none';
+  }
+
+  function updateEmptyMessage() {
+    var hasItems = listEl && listEl.querySelectorAll('.sharing-list-item').length > 0;
+    var vis = visibilityForViewerEdit();
+    emptyMsgs.forEach(function(p) {
+      p.style.display = hasItems ? 'none' : (p.getAttribute('data-visibility') === vis ? 'block' : 'none');
+    });
+  }
+
+  function fetchOpts(method, body) {
+    var opts = { method: method, credentials: 'same-origin', headers: { 'Accept': 'application/json' } };
+    if (body) { opts.headers = opts.headers || {}; opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    return opts;
+  }
+
+  function showAddMessage(msg, isError) {
+    addMessage.textContent = msg || '';
+    addMessage.style.display = msg ? 'block' : 'none';
+    addMessage.style.color = isError ? 'var(--danger)' : 'var(--success)';
+  }
+
+  function saveVisibility() {
+    var visRadio = document.querySelector('#sharing-card input[name="sharing_visibility"]:checked');
+    if (!visRadio) return;
+    var viewerEditRadio = document.querySelector('#sharing-card input[name="sharing_viewer_edit"]:checked');
+    var viewerCanEdit = viewerEditRadio && viewerEditRadio.value === 'edit';
+    var body = { visibility: visRadio.value };
+    if (visRadio.value === 'logged' || visRadio.value === 'public') body.viewer_can_edit = viewerCanEdit;
+    if (saveBtn) saveBtn.disabled = true;
+    fetch(patchUrl, fetchOpts('PATCH', body))
+      .then(function(r) {
+        if (!r.ok) {
+          return r.json().then(function(data) {
+            var detail = data && data.detail;
+            var msg = (detail && (typeof detail === 'string' ? detail : detail.message)) || r.statusText;
+            var blocking = detail && detail.collections_blocking;
+            if (blocking && blocking.length) {
+              var base = patchUrl.indexOf('/maps/') >= 0 ? patchUrl.split('/maps/')[0] : (patchUrl.split('/collections/')[0] || '');
+              var links = blocking.map(function(c) { return '<a href="' + base + '/collections/' + encodeURIComponent(c.id) + '/edit?f=html">' + String(c.title || c.id).replace(/</g, '&lt;') + '</a>'; }).join(', ');
+              addMessage.innerHTML = msg + ' ' + (blocking.length === 1 ? 'Collection:' : 'Collections:') + ' ' + links;
+              addMessage.style.display = 'block';
+              addMessage.style.color = 'var(--danger)';
+            } else {
+              showAddMessage('Failed to save: ' + msg, true);
+            }
+          }).catch(function() { showAddMessage('Failed to save: ' + r.statusText, true); });
+          return;
+        }
+        showAddMessage('Saved.', false);
+        if (patchUrl.indexOf('/maps/') >= 0 && visRadio.value === 'public') {
+          var suggestHeader = r.headers.get('X-Suggest-Make-Public-Collections');
+          if (suggestHeader) {
+            try {
+              var suggest = JSON.parse(suggestHeader);
+              if (suggest && suggest.length) {
+                var base = patchUrl.split('/maps/')[0] || '';
+                var linkList = suggest.map(function(c) { return '<a href="' + base + '/collections/' + encodeURIComponent(c.id) + '/edit?f=html">' + (c.title || c.id).replace(/</g, '&lt;') + '</a>'; }).join(', ');
+                addMessage.innerHTML = 'Map is now public. For consistency, consider making these collections public too: ' + linkList;
+                addMessage.style.display = 'block';
+                addMessage.style.color = 'var(--success)';
+              }
+            } catch (err) { /* ignore */ }
+          }
+        }
+      })
+      .catch(function(e) { showAddMessage('Failed to save: ' + (e.message || 'Unknown'), true); })
+      .finally(function() { if (saveBtn) saveBtn.disabled = false; });
+  }
+
+  if (saveBtn) {
+    saveBtn.addEventListener('click', saveVisibility);
+  }
+
+  if (visibilityGroup) {
+    visibilityGroup.addEventListener('change', function() { updateViewerEditVisibility(); updateEmptyMessage(); });
+  }
+  card.querySelectorAll('input[name="sharing_viewer_edit"]').forEach(function(inp) {
+    inp.addEventListener('change', updateEmptyMessage);
+  });
+  updateViewerEditVisibility();
+  updateEmptyMessage();
+
+  function addShareRow(username, role) {
+    var li = document.createElement('li');
+    li.className = 'sharing-list-item';
+    li.setAttribute('data-username', username);
+    li.innerHTML = '<span>' + (username.replace(/</g, '&lt;')) + '</span> <span class="meta">(' + (role || 'viewer') + ')</span> <button type="button" class="btn btn-sm sharing-remove-btn" data-username="' + (username.replace(/"/g, '&quot;')) + '">Remove</button>';
+    listEl.appendChild(li);
+    li.querySelector('.sharing-remove-btn').addEventListener('click', function() { removeShare(username, li); });
+    updateEmptyMessage();
+  }
+
+  function removeShare(username, liEl) {
+    fetch(sharesUrl + '/' + encodeURIComponent(username), fetchOpts('DELETE'))
+      .then(function(r) { if (!r.ok) throw new Error(r.statusText); if (liEl) liEl.remove(); updateEmptyMessage(); })
+      .catch(function(e) { showAddMessage('Failed to remove share: ' + (e.message || 'Unknown'), true); });
+  }
+
+  listEl.querySelectorAll('.sharing-remove-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() { removeShare(btn.getAttribute('data-username'), btn.closest('li')); });
+  });
+
+  if (addBtn && usernameInput) {
+    addBtn.addEventListener('click', function() {
+      var username = (usernameInput.value || '').trim();
+      if (!username) { showAddMessage('Enter a username.', true); return; }
+      var role = (roleSelect && roleSelect.value) || 'viewer';
+      showAddMessage('');
+      fetch(sharesUrl, fetchOpts('POST', { username: username, role: role }))
+        .then(function(r) { return r.json().then(function(data) { if (!r.ok) throw data; return data; }); })
+        .then(function(data) { addShareRow(data.username, data.role); usernameInput.value = ''; })
+        .catch(function(e) { showAddMessage(e.detail || e.message || 'Failed to add share', true); });
+    });
+  }
+})();
+</script>

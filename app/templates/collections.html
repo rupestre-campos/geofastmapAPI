@@ -13,7 +13,9 @@
     <div class="card-header">
       <h2 class="card-title">Actions</h2>
       <div class="card-actions">
+        {% if username is defined and username %}
         <a href="{{ base }}/collections/edit?f=html" class="btn btn-primary">Edit collections</a>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -80,6 +82,8 @@
             <th>Items</th>
             <th>Title</th>
             <th>Description</th>
+            <th>Owner</th>
+            <th class="col-actions">Edit</th>
           </tr>
         </thead>
         <tbody id="collections-tbody">
@@ -91,6 +95,8 @@
             <td>{{ c.feature_count if c.feature_count is not none else '—' }}</td>
             <td>{{ c.title or '—' }}</td>
             <td>{{ (c.description or '—')[:80] }}{% if (c.description or '')|length > 80 %}…{% endif %}</td>
+            <td>{{ c.owner_username or '—' }}</td>
+            <td class="col-actions">{% if c.can_edit %}<a href="{{ base }}/collections/{{ c.id }}/edit?f=html" class="btn btn-sm">Edit</a>{% else %}—{% endif %}</td>
           </tr>
           {% endfor %}
         </tbody>

@@ -5,8 +5,10 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_user_required
 from app.crud import basemaps as basemaps_crud
 from app.db.session import get_db
+from app.models.user import User
 from app.schemas.basemap import BasemapCreate, BasemapList, BasemapRead, BasemapUpdate
 
 router = APIRouter(include_in_schema=False)
@@ -58,6 +60,7 @@ async def get_basemap(
 async def create_basemap(
     payload: BasemapCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_required),
 ) -> BasemapRead:
     """Create a new basemap."""
     _validate_basemap_id(payload.id)
@@ -86,6 +89,7 @@ async def update_basemap(
     basemap_id: str,
     payload: BasemapUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_required),
 ) -> BasemapRead:
     """Replace basemap (all fields). For partial update use PATCH."""
     b = await basemaps_crud.get_basemap(db, basemap_id)
@@ -118,6 +122,7 @@ async def patch_basemap(
     basemap_id: str,
     payload: BasemapUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_required),
 ) -> BasemapRead:
     """Partially update a basemap."""
     b = await basemaps_crud.get_basemap(db, basemap_id)
@@ -141,6 +146,7 @@ async def patch_basemap(
 async def delete_basemap(
     basemap_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_required),
 ):
     """Delete a basemap."""
     deleted = await basemaps_crud.delete_basemap(db, basemap_id)

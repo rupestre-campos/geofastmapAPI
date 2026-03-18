@@ -47,6 +47,8 @@ class MapUpdate(BaseModel):
     description: str | None = Field(None, max_length=10000)
     thumbnail: str | None = Field(None, max_length=2000)
     definition: MapDefinition | None = None
+    visibility: str | None = None  # private | logged | public
+    viewer_can_edit: bool | None = None  # when True, everyone who can view can edit
 
 
 class MapRead(BaseModel):

@@ -1,0 +1,7 @@
+{# Shared edit/add actions for collection-scoped pages. Use can_edit_collection from route context. #}
+{% if can_edit_collection | default(false) %}
+<a href="{{ base }}/collections/{{ collection_id }}/edit?f=html" class="btn btn-primary">Edit collection</a>
+{% if show_add_feature | default(false) %}
+<a href="{{ base }}/collections/{{ collection_id }}/items/new?f=html" class="btn">Add feature</a>
+{% endif %}
+{% endif %}

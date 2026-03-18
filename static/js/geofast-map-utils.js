@@ -285,10 +285,13 @@
     } else {
       return null;
     }
-    var parts = [cond];
-    if (rule.minzoom != null && rule.minzoom !== '') parts.push(['>=', ['zoom'], Number(rule.minzoom)]);
-    if (rule.maxzoom != null && rule.maxzoom !== '') parts.push(['<=', ['zoom'], Number(rule.maxzoom)]);
-    return parts.length === 1 ? parts[0] : ['all'].concat(parts);
+    // NOTE: We intentionally do NOT include zoom-based constraints here.
+    // MapLibre GL's style validation restricts ["zoom"] usage to be an input of a
+    // top-level "step" or "interpolate" expression, so using it inside "case/all"
+    // conditions can raise validation errors even if rendering seems to work.
+    // Zoom-based styling is supported via *Zoom stops* (e.g. lineWidthZoom) which
+    // compile to interpolate(["zoom"], ...).
+    return cond;
   }
 
   function _applyRulesToPaintValue(baseValue, rules, pickValueFn) {

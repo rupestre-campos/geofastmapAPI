@@ -83,6 +83,8 @@ class CollectionPatch(BaseModel):
     title: str | None = None
     description: str | None = None
     extent: Extent | None = None
+    visibility: str | None = None  # private | logged | public
+    viewer_can_edit: bool | None = None  # when True, everyone who can view can edit
 
 
 class CollectionRead(CollectionBase):

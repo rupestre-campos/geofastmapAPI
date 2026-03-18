@@ -17,8 +17,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_user_optional
 from app.core.config import get_settings
 from app.core.html import html_response, wants_html
+from app.core.permissions import can_edit_collection, can_see_collection
 from app.utils.datetime_parse import parse_datetime_param
 from app.utils.geo import mvt_layer_name
 from app.utils.property_filters import PropertyFilter, parse_filter_param
@@ -75,12 +77,15 @@ async def get_tile_build_page(
     request: Request,
     collection_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ):
     if not wants_html(request):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html for the tile build options page")
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     settings = get_settings()
     base = _base_url(request)
     return html_response(
@@ -103,6 +108,7 @@ async def build_tiles(
     request: Request,
     collection_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
     body: TileBuildRequestBody | None = None,
 ):
     collection = await collections_crud.get_collection(db, collection_id)
@@ -179,7 +185,7 @@ async def build_tiles(
             no_tiny_polygon_reduction=body.no_tiny_polygon_reduction,
             no_point_dropping=body.no_point_dropping,
         )
-    job = create_tile_build_job(collection_id)
+    job = create_tile_build_job(collection_id, owner_id=current_user.id if current_user else None)
     update_tile_build_job(job.job_id, message="Tile build")
     enqueued = enqueue_tile_build(collection_id, job.job_id, options=options)
     if not enqueued:
@@ -294,9 +300,12 @@ async def get_tiles_tilejson(
     request: Request,
     collection_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ):
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     base = _base_url(request)
     settings = get_settings()
@@ -477,6 +486,7 @@ async def get_tiles_dynamic(
     x: int,
     y: int,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
     limit: int | None = Query(None, ge=1, le=10000, description="Max features (same as GET items)."),
     offset: int = Query(0, ge=0),
     sortby: str | None = Query(None),
@@ -495,6 +505,8 @@ async def get_tiles_dynamic(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_see_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     settings = get_settings()
     cache_headers = {"Cache-Control": "public, max-age=60"}
     cache_hit_headers = {**cache_headers, "X-From-Cache": "true"}
@@ -505,6 +517,9 @@ async def get_tiles_dynamic(
     props_include: list[str] | None = None
     if properties:
         props_include = [p.strip() for p in properties.split(",") if p.strip()]
+    # Full-text search (q) requires at least 4 characters; ignore short q to avoid slow queries.
+    if q and q.strip() and len(q.strip()) < 4:
+        q = None
 
     has_query_params = (
         limit is not None
@@ -694,7 +709,7 @@ async def get_tiles_dynamic(
             dt_start, dt_end = parse_datetime_param(datetime_param)
         filter_list = [x for s in (filter_param or []) for x in s.strip().split("\n") if x.strip()]
         structured_filters = parse_filter_param(filter_list) if filter_list else []
-        fulltext_q = q.strip() if q and q.strip() else None
+        fulltext_q = q.strip() if (q and q.strip() and len(q.strip()) >= 4) else None
         page_limit = min(limit or settings.items_default_limit, settings.items_max_limit)
         order_sql, order_params = _order_by_sql(sortby, sortdesc)
         extra_where, extra_params = _build_dynamic_tile_where(
@@ -894,6 +909,7 @@ async def get_tiles_static_zxy(
     x: int,
     y: int,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ):
     if z < 0 or z > 22:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid z")
@@ -901,6 +917,8 @@ async def get_tiles_static_zxy(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid x or y for zoom")
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     if not rec or not rec.pmtiles_path:

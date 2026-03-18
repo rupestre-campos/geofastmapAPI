@@ -62,6 +62,7 @@ class StylePatch(BaseModel):
     title: str | None = None
     style_spec: dict | None = None
     set_default: bool | None = None
+    visibility: str | None = None  # private | logged | public
 
 
 class StyleRead(BaseModel):
@@ -70,6 +71,7 @@ class StyleRead(BaseModel):
     collection_id: str | None = Field(default=None, description="Empty or null = public style")
     is_default: bool
     style_spec: dict
+    visibility: str | None = Field(default=None, description="private | logged | public")
     created_at: datetime
     updated_at: datetime
     links: list[Link] | None = None

@@ -3,7 +3,6 @@
 {% block head %}
   <style>
     .basemaps-map-wrap .map-container { min-height: 320px; height: 320px; width: 100%; box-sizing: border-box; }
-    .basemaps-map-wrap .map-controls { position: absolute; top: 8px; left: 8px; z-index: 10; }
   </style>
 {% endblock %}
 {% block content %}
@@ -17,7 +16,9 @@
     <div class="card-header">
       <h2 class="card-title">Actions</h2>
       <div class="card-actions">
+        {% if can_edit_basemaps | default(false) %}
         <a href="{{ base }}/basemaps/new?f=html" class="btn btn-primary">Add basemap</a>
+        {% endif %}
         <a href="{{ base }}/styles/basemaps" class="btn" target="_blank" rel="noopener">View API (JSON)</a>
       </div>
     </div>
@@ -27,15 +28,16 @@
   <div class="card basemaps-map-wrap">
     <h2 class="card-title">Preview</h2>
     <p class="meta">Select a basemap to see it on the map.</p>
-    <div class="map-controls">
-      <select id="map-basemap" title="Basemap">
-        {% for b in basemaps %}
-        <option value="{{ b.id }}">{{ b.name }}</option>
-        {% endfor %}
-      </select>
-      <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
+    <div id="map" class="map-container">
+      <div class="map-controls">
+        <select id="map-basemap" title="Basemap">
+          {% for b in basemaps %}
+          <option value="{{ b.id }}">{{ b.name }}</option>
+          {% endfor %}
+        </select>
+        <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
+      </div>
     </div>
-    <div id="map" class="map-container"></div>
     <p class="meta" style="margin-top:8px;"><span id="map-basemap-copyright" class="meta"></span></p>
   </div>
   {% endif %}
@@ -63,17 +65,21 @@
           <td>{{ b.min_zoom }}–{{ b.max_zoom }}</td>
           <td>{{ b.sort_order }}</td>
           <td>
+            {% if can_edit_basemaps | default(false) %}
             <a href="{{ base }}/basemaps/{{ b.id }}/edit?f=html" class="btn btn-sm">Edit</a>
             <form method="post" action="{{ base }}/basemaps/{{ b.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete this basemap?');">
               <button type="submit" class="btn btn-sm btn-danger">Delete</button>
             </form>
+            {% else %}
+            —
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
     {% else %}
-    <p class="meta">No basemaps yet. <a href="{{ base }}/basemaps/new?f=html">Add one</a> or run migrations to seed defaults.</p>
+    <p class="meta">No basemaps yet.{% if can_edit_basemaps | default(false) %} <a href="{{ base }}/basemaps/new?f=html">Add one</a> or{% endif %} run migrations to seed defaults.</p>
     {% endif %}
   </div>
 {% endblock %}

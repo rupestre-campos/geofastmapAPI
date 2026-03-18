@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Users – GeoFast API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>User management</h1>
+    <p class="meta">Admin only. Create and edit users, set passwords, and assign admin role.</p>
+  </header>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Users</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/auth/users/new?f=html" class="btn btn-primary">Add user</a>
+      </div>
+    </div>
+    {% if users %}
+    <div class="table-scroll-wrap">
+      <table class="collections-table">
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Admin</th>
+            <th>Must change password</th>
+            <th class="col-actions">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td>{{ u.username }}</td>
+            <td>{{ 'Yes' if u.is_admin else 'No' }}</td>
+            <td>{{ 'Yes' if u.must_change_password else 'No' }}</td>
+            <td class="col-actions">
+              <a href="{{ base }}/auth/users/{{ u.id }}/edit?f=html" class="btn btn-sm">Edit</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="meta">No users yet.</p>
+    {% endif %}
+  </div>
+  <style>
+    .collections-table { width: 100%; border-collapse: collapse; }
+    .collections-table th { text-align: left; padding: 8px 10px; font-weight: 600; font-size: 0.85rem; color: var(--text-secondary); border-bottom: 1px solid var(--border); }
+    .collections-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    .collections-table .col-actions { width: 10em; }
+  </style>
+{% endblock %}

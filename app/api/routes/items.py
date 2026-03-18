@@ -12,6 +12,8 @@ from app.core.config import get_settings
 from app.core.html import html_response, wants_html
 from app.crud import collection_tiles as tiles_crud
 from app.utils.geo import mvt_layer_name
+from app.api.deps import get_current_user_optional
+from app.core.permissions import can_edit_collection, can_see_collection
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.crud import styles as styles_crud
@@ -82,6 +84,7 @@ async def list_items(
     request: Request,
     collection_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
     limit: int | None = Query(None, ge=1, le=get_settings().items_max_limit, description="Max features per page (OGC limit)."),
     offset: int = Query(0, ge=0, description="Number of features to skip (OGC offset)."),
     bbox: str | None = Query(None, description="Bounding box: minx,miny,maxx,maxy (WGS84)."),
@@ -95,6 +98,11 @@ async def list_items(
 ):
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found",
+        )
+    if not await can_see_collection(db, collection, current_user):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
@@ -121,6 +129,14 @@ async def list_items(
     if filter_param:
         filter_param = [x for s in filter_param for x in s.strip().split("\n") if x.strip()]
     structured_filters = parse_filter_param(filter_param) if filter_param else []
+    # Full-text search (q) requires at least 4 characters to avoid slow queries on trigram index.
+    FULLTEXT_MIN_LENGTH = 4
+    if q and q.strip():
+        if len(q.strip()) < FULLTEXT_MIN_LENGTH:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Full-text search (q) requires at least {FULLTEXT_MIN_LENGTH} characters.",
+            )
     fulltext_q = q.strip() if q and q.strip() else None
 
     # Legacy attribute filters: any query param not reserved (name=value, * for partial)
@@ -253,10 +269,14 @@ async def list_items(
             else None
         )
         has_static_tiles = bool(rec and rec.pmtiles_path and PathLib(rec.pmtiles_path).exists())
+        can_edit = await can_edit_collection(db, collection, current_user)
         return html_response(
             "items.html",
             base=base,
+            username=current_user.username if current_user else None,
+            is_admin=current_user.is_admin if current_user else False,
             collection_id=collection_id,
+            can_edit_collection=can_edit,
             features=read_list,
             features_geojson=features_geojson,
             extent_bbox=extent_bbox,
@@ -299,10 +319,13 @@ async def list_items(
 async def get_collection_queryables(
     collection_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ):
     """Return distinct property keys for the collection (for building filter lines)."""
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     keys = await features_crud.get_collection_property_keys(db, collection_id)
     return {"properties": keys}
@@ -328,10 +351,13 @@ async def bulk_import_items(
         description="If true (default), queue a static tile build for this collection after the bulk import completes.",
     ),
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ):
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
 
     if mode not in ("append", "replace"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="mode must be 'append' or 'replace'")
@@ -339,7 +365,7 @@ async def bulk_import_items(
     settings = get_settings()
     batch = batch_size if batch_size is not None else settings.bulk_import_batch_size
 
-    job = create_job(collection_id)
+    job = create_job(collection_id, owner_id=current_user.id if current_user else None)
     suffix = PathLib(file.filename or "upload").suffix.lower()
     if suffix not in (".kml", ".gpkg", ".geojson", ".json", ".geojsonl", ".geojsonseq", ".jsonl", ".zip"):
         suffix = ".geojson"
@@ -399,12 +425,15 @@ async def new_item_form(
     request: Request,
     collection_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ):
     if not wants_html(request):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html for the add-feature form.")
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     base = _base_url(request)
     default_style = await styles_crud.get_default_style(db, collection_id)
     default_style_dict = (
@@ -417,6 +446,8 @@ async def new_item_form(
     return html_response(
         "add_feature.html",
         base=base,
+        username=current_user.username if current_user else None,
+        is_admin=current_user.is_admin if current_user else False,
         collection_id=collection_id,
         default_style=default_style_dict,
         has_static_tiles=has_static_tiles,
@@ -457,6 +488,11 @@ async def download_items_data(
     if filter_param:
         filter_param = [x for s in filter_param for x in s.strip().split("\n") if x.strip()]
     structured_filters = parse_filter_param(filter_param) if filter_param else []
+    if q and q.strip() and len(q.strip()) < 4:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Full-text search (q) requires at least 4 characters.",
+        )
     fulltext_q = q.strip() if q and q.strip() else None
     property_filters: dict[str, str] = {}
     if request.query_params:
@@ -533,6 +569,7 @@ async def get_item(
     feature_id: str = Path(..., description="Identifier of the feature."),
     bbox_only: bool = Query(False, description="If true, return only { bbox } for this feature's geometry."),
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ):
     feature = await features_crud.get_feature(db, collection_id, feature_id)
     if not feature:
@@ -540,6 +577,11 @@ async def get_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Feature not found",
         )
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_see_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feature not found")
     geom_dict = geometry_to_geojson(feature.geometry)
     if bbox_only:
         bbox = bbox_from_geometries([geom_dict])
@@ -567,10 +609,14 @@ async def get_item(
         )
         rec = await tiles_crud.get_collection_tiles(db, collection_id)
         has_static_tiles = bool(rec and rec.pmtiles_path and PathLib(rec.pmtiles_path).exists())
+        can_edit = await can_edit_collection(db, collection, current_user)
         return html_response(
             "item.html",
             base=base,
+            username=current_user.username if current_user else None,
+            is_admin=current_user.is_admin if current_user else False,
             collection_id=collection_id,
+            can_edit_collection=can_edit,
             feature=feat_geojson,
             feature_geojson=feat_geojson.model_dump(),
             properties_json=json.dumps(feat_geojson.properties or {}, indent=2),
@@ -592,9 +638,15 @@ async def get_item_edit(
     collection_id: str,
     feature_id: str = Path(..., description="Identifier of the feature."),
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ):
     if not wants_html(request):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html for the edit page.")
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     feature = await features_crud.get_feature(db, collection_id, feature_id)
     if not feature:
         raise HTTPException(
@@ -624,6 +676,8 @@ async def get_item_edit(
     return html_response(
         "item_edit.html",
         base=base,
+        username=current_user.username if current_user else None,
+        is_admin=current_user.is_admin if current_user else False,
         collection_id=collection_id,
         feature=feat_geojson,
         feature_geojson=feat_geojson.model_dump(),
@@ -646,6 +700,7 @@ async def replace_item(
     feature_id: str = Path(..., description="Identifier of the feature."),
     payload: FeatureReplace = ...,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ) -> Response:
     if payload.id != feature_id:
         raise HTTPException(
@@ -658,6 +713,8 @@ async def replace_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     updated = await features_crud.replace_feature(db, collection_id, feature_id, payload)
     if not updated:
         raise HTTPException(
@@ -680,7 +737,13 @@ async def patch_item(
     feature_id: str = Path(..., description="Identifier of the feature."),
     payload: FeaturePatch = ...,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ) -> FeatureGeoJSON:
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     feature = await features_crud.update_feature(db, collection_id, feature_id, payload)
     if not feature:
         raise HTTPException(
@@ -712,6 +775,7 @@ async def create_item(
     collection_id: str,
     payload: FeatureCreate,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ) -> FeatureRead:
     # Ensure path and body collection_id match
     if payload.collection_id != collection_id:
@@ -726,6 +790,8 @@ async def create_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
 
     feature = await features_crud.create_feature(db, payload)
     return _feature_to_read(feature)
@@ -740,7 +806,13 @@ async def delete_item(
     collection_id: str,
     feature_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ) -> Response:
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     deleted = await features_crud.delete_feature(db, collection_id, feature_id)
     if not deleted:
         raise HTTPException(

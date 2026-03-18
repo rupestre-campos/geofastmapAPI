@@ -1,9 +1,12 @@
 """OGC API - Features root: landing page and conformance."""
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_user_optional
 from app.core.config import get_settings
 from app.core.html import html_response, wants_html
 from app.crud import api_landing as api_landing_crud
@@ -31,6 +34,13 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@router.get("/favicon.ico", include_in_schema=False)
+async def favicon_ico() -> FileResponse:
+    """Serve the single favicon at .ico URL so pages only request favicon.ico (no .svg)."""
+    path = Path(__file__).resolve().parent.parent.parent.parent / "static" / "favicon.svg"
+    return FileResponse(path, media_type="image/svg+xml")
+
+
 def _base_url(request: Request) -> str:
     """Return API base URL without trailing slash."""
     return str(request.base_url).rstrip("/")
@@ -56,7 +66,11 @@ def _landing_links(base: str) -> list:
     summary="Landing page",
     description="OGC API - Features landing page (root). Use ?f=html or Accept: text/html for HTML.",
 )
-async def landing_page(request: Request, db: AsyncSession = Depends(get_db)):
+async def landing_page(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
     """OGC API - Features §7.2: Landing page at root. Title/description/contact from DB (user-editable)."""
     base = _base_url(request)
     links = _landing_links(base)
@@ -70,6 +84,8 @@ async def landing_page(request: Request, db: AsyncSession = Depends(get_db)):
             api_description=info.description or "",
             api_contact=info.contact or "",
             links=link_dicts,
+            username=current_user.username if current_user else None,
+            is_admin=current_user.is_admin if current_user else False,
         )
     return LandingPage(
         title=info.title,
@@ -83,7 +99,11 @@ async def landing_page(request: Request, db: AsyncSession = Depends(get_db)):
     summary="Edit API info (HTML form)",
     description="Form to edit landing page title, description, and contact. Use ?f=html.",
 )
-async def api_info_edit_page(request: Request, db: AsyncSession = Depends(get_db)):
+async def api_info_edit_page(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
     """Serve the edit-API-info form. HTML only."""
     if not wants_html(request):
         return RedirectResponse(url=_base_url(request) + "/api-info/edit?f=html", status_code=302)
@@ -94,6 +114,8 @@ async def api_info_edit_page(request: Request, db: AsyncSession = Depends(get_db
         api_title=info.title,
         api_description=info.description or "",
         api_contact=info.contact or "",
+        username=current_user.username if current_user else None,
+        is_admin=current_user.is_admin if current_user else False,
     )
 
 
@@ -102,7 +124,10 @@ async def api_info_edit_page(request: Request, db: AsyncSession = Depends(get_db
     summary="Style editor (HTML)",
     description="Map with draw tools, basemaps, and style editor to test, load, save, delete styles or import JSON.",
 )
-async def style_editor_page(request: Request):
+async def style_editor_page(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
     """Serve the style editor page. HTML only."""
     if not wants_html(request):
         return RedirectResponse(url=_base_url(request) + "/style-editor?f=html", status_code=302)
@@ -112,6 +137,10 @@ async def style_editor_page(request: Request):
         "style_editor.html",
         base=base,
         google_maps_api_key=settings.google_maps_api_key or "",
+        can_save_styles=current_user is not None,
+        can_save_public_styles=current_user is not None,
+        username=current_user.username if current_user else None,
+        is_admin=current_user.is_admin if current_user else False,
     )
 
 
@@ -153,7 +182,10 @@ async def openapi_at_api(request: Request) -> JSONResponse:
     summary="Conformance declaration",
     description="Declares which OGC API conformance classes this API implements. Use ?f=html for HTML.",
 )
-async def conformance(request: Request):
+async def conformance(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
     """OGC API - Features §7.4: Conformance declaration."""
     conforms_to = [
         CONFORMANCE_CORE,
@@ -169,5 +201,7 @@ async def conformance(request: Request):
             "conformance.html",
             base=_base_url(request),
             conforms_to=conforms_to,
+            username=current_user.username if current_user else None,
+            is_admin=current_user.is_admin if current_user else False,
         )
     return Conformance(conformsTo=conforms_to)

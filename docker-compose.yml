@@ -7,6 +7,12 @@ services:
       POSTGRES_DB: geofast
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "psql -U postgres -d geofast -c 'select 1' -q || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     ports:
       - "5434:5432"
     volumes:
@@ -24,8 +30,10 @@ services:
     build: .
     container_name: geofast_api
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 5s
@@ -47,15 +55,22 @@ services:
       - geofast_bulk_uploads:/data/bulk-uploads
       - geofast_tiles:/data/tiles
     command: >
-      sh -c "alembic upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+      sh -c "for i in 1 2 3 4 5 6 7 8 9 10; do
+               if alembic upgrade head; then exec uvicorn app.main:app --host 0.0.0.0 --port 8000; fi;
+               echo 'Waiting for database...';
+               sleep 2;
+             done;
+             echo 'Database not ready after retries';
+             exit 1"
 
   worker:
     build: .
     container_name: geofast_worker
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofast
       REDIS_URL: redis://redis:6379/0
@@ -71,8 +86,10 @@ services:
     build: .
     container_name: geofast_tile_worker
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofast
       REDIS_URL: redis://redis:6379/0
@@ -100,8 +117,10 @@ services:
     build: .
     container_name: geofast_process_worker
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofast
       REDIS_URL: redis://redis:6379/0

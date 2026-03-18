@@ -139,6 +139,10 @@
     </div>
   </div>
 
+  {% if patch_url is defined and shares_url is defined %}
+  {% include "_sharing_card.html" with context %}
+  {% endif %}
+
   <div class="card">
     <h2 class="card-title">Bulk upload</h2>
     <p class="meta">Import from GeoJSON, GeoJSONSeq, KML, GPKG, or .zip (single or multiple shapefiles; all .shp inside the zip, including in subfolders, are imported into this collection). Runs in the background.</p>

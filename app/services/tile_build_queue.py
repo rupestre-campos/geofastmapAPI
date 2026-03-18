@@ -111,10 +111,10 @@ def _pending_key(collection_id: str) -> str:
     return f"{TILE_BUILD_PENDING_PREFIX}{collection_id}"
 
 
-def create_tile_build_job(collection_id: str) -> "JobInfo":
+def create_tile_build_job(collection_id: str, owner_id: int | None = None) -> "JobInfo":
     """Create a tile build job in job_store and set as latest for this collection. Caller must enqueue."""
     from app.services.job_store import create_job
-    job = create_job(collection_id)
+    job = create_job(collection_id, owner_id=owner_id)
     r = _redis()
     r.set(_latest_key(collection_id), job.job_id, ex=TILE_BUILD_JOB_TTL)
     return job

@@ -38,6 +38,7 @@
           <tr>
             <th>Status</th>
             <th>Type</th>
+            {% if is_admin %}<th>Owner</th>{% endif %}
             <th>Collection / Input</th>
             <th>Result</th>
             <th>Items</th>
@@ -52,6 +53,7 @@
           <tr>
             <td><span class="status-badge status-{{ j.status }}">{{ j.status }}</span></td>
             <td>{{ j.process_id and (j.process_id == 'erase' and 'Erase' or 'Intersection') or 'Import / Tiles' }}</td>
+            {% if is_admin %}<td class="meta">{{ j.owner_username or '—' }}</td>{% endif %}
             <td>
               {% if j.collection_ids %}
                 <span class="meta">{{ j.feature_source or 'feature' }}</span> + {{ j.collection_ids | join(', ') }}
@@ -90,6 +92,7 @@
 <script>
 (function() {
   var base = {{ base | tojson }};
+  var is_admin = {{ is_admin | tojson }};
   var REFRESH_MS = 4000;
   var tbody = document.getElementById('jobs-tbody');
   var jobsEmpty = document.getElementById('jobs-empty');
@@ -151,14 +154,17 @@
     }
     if (jobsWrap) jobsWrap.style.display = 'block';
     if (jobsEmpty) jobsEmpty.style.display = 'none';
+    var showOwner = (typeof is_admin !== 'undefined' && is_admin) || (jobs.length && jobs[0].owner_username !== undefined);
     tbody.innerHTML = jobs.map(function(j) {
       var showCancel = j.status === 'pending' || (j.status === 'running' || j.status === 'replacing') && j.is_tile_build;
       var cancelBtn = showCancel
         ? '<button type="button" class="btn btn-danger btn-cancel" data-job-id="' + esc(j.job_id) + '" data-collection-id="' + esc(j.collection_id || '') + '" data-is-tile-build="' + (j.is_tile_build ? '1' : '') + '">Cancel</button>'
         : '';
+      var ownerCell = showOwner ? '<td class="meta">' + esc(j.owner_username || '—') + '</td>' : '';
       return '<tr>' +
         '<td><span class="status-badge ' + statusClass(j.status) + '">' + esc(j.status) + '</span></td>' +
         '<td>' + esc(typeLabel(j)) + '</td>' +
+        ownerCell +
         '<td>' + cellCollection(j) + '</td>' +
         '<td>' + cellResult(j) + '</td>' +
         '<td>' + esc((j.items_in || 0) + ' → ' + (j.items_created || 0)) + '</td>' +

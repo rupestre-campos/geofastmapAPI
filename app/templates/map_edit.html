@@ -109,6 +109,10 @@
     {% endif %}
   </div>
 
+  {% if map_id and patch_url is defined and shares_url is defined %}
+  {% include "_sharing_card.html" with context %}
+  {% endif %}
+
   <div class="card">
     <h2 class="card-title">Map</h2>
     <p class="meta">Only collections with static tiles built are listed. Click the search bar to list them; type to search. Add a collection to see it on the map (it gets a default style). Edit a layer's style in the Style editor below; styles are saved with the map, not with the collection.</p>

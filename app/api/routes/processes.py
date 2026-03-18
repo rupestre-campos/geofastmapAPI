@@ -1,14 +1,20 @@
 """OGC API - Processes: geometric operations (intersection, erase) between two collections."""
 from __future__ import annotations
 
+from typing import Annotated
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_user_optional, get_current_user_required
 from app.core.html import html_response, wants_html
 from app.crud import collections as collections_crud
+from app.crud import user as user_crud
 from app.db.session import get_db
+from app.models.user import User
 from app.services.job_store import create_job, get_job
 from app.services.process_queue import (
     ProcessJobPayload,
@@ -175,20 +181,26 @@ class MeasureLayerExecutionInput(BaseModel):
 @router.get(
     "",
     summary="List processes",
-    description="OGC API - Processes: list available process identifiers (intersection, erase). Use ?f=html for the processing page.",
+    description="OGC API - Processes: list available process identifiers (intersection, erase). Use ?f=html for the processing page. HTML page and job submission require login.",
 )
 async def list_processes(
     request: Request,
+    current_user: Annotated[User | None, Depends(get_current_user_optional)],
     db: AsyncSession = Depends(get_db),
 ):
     base = _base_url(request)
     if wants_html(request):
+        if not current_user:
+            login_url = f"{base}/auth/login?f=html&next={quote(str(request.url), safe='')}"
+            return RedirectResponse(url=login_url, status_code=status.HTTP_302_FOUND)
         collections, _ = await collections_crud.list_collections(db, limit=500)
         collection_items = [{"id": c.id, "title": c.title or c.id} for c in collections]
         return html_response(
             "processing.html",
             base=base,
             collections=collection_items,
+            username=current_user.username,
+            is_admin=current_user.is_admin,
         )
     items = []
     for p in PROCESSES:
@@ -233,20 +245,26 @@ async def get_default_result_name(
 @router.get(
     "/jobs",
     summary="List process jobs",
-    description="Returns recent process jobs (intersection/erase) with status, layers, and result collection.",
+    description="Returns recent process jobs (own only; admins see all and owner). Requires login.",
 )
 async def list_process_jobs(
     request: Request,
+    current_user: Annotated[User, Depends(get_current_user_required)],
+    db: Annotated[AsyncSession, Depends(get_db)],
     limit: int = Query(30, ge=1, le=100),
 ):
     base = _base_url(request)
-    job_ids = list_process_job_ids(limit=limit)
+    job_ids = list_process_job_ids(limit=limit * 2)
     jobs = []
     for jid in job_ids:
         job = get_job(jid)
-        meta = get_process_job_meta(jid)
         if not job:
             continue
+        if job.owner_id is None and not current_user.is_admin:
+            continue
+        if job.owner_id is not None and job.owner_id != current_user.id and not current_user.is_admin:
+            continue
+        meta = get_process_job_meta(jid)
         d = job.to_dict()
         d["status_url"] = f"{base}/jobs/{jid}"
         if meta:
@@ -255,6 +273,16 @@ async def list_process_jobs(
             d["collection_id_b"] = meta.get("collection_id_b")
             d["result_collection_id"] = meta.get("result_collection_id")
         jobs.append(d)
+        if len(jobs) >= limit:
+            break
+    if current_user.is_admin and jobs:
+        owner_ids = [j.get("owner_id") for j in jobs if j.get("owner_id") is not None]
+        owner_names = await user_crud.get_usernames_by_ids(db, list(set(owner_ids))) if owner_ids else {}
+        for d in jobs:
+            if d.get("owner_id") is not None:
+                d["owner_username"] = owner_names.get(d["owner_id"])
+            else:
+                d["owner_username"] = "(admin/legacy)"
     return {"jobs": jobs}
 
 
@@ -274,6 +302,7 @@ async def _execute_process(
     process_id: str,
     payload: ProcessExecutionInput,
     db: AsyncSession,
+    current_user: User,
 ):
     if process_id not in ("intersection", "erase"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Process not found")
@@ -296,7 +325,7 @@ async def _execute_process(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Process execution requires Redis (PROCESS_QUEUE_TYPE=redis). Run a process worker.",
         )
-    job = create_job(payload.collection_id_a)
+    job = create_job(payload.collection_id_a, owner_id=current_user.id)
     pl = ProcessJobPayload(
         job_id=job.job_id,
         process_id=process_id,
@@ -332,9 +361,10 @@ async def _execute_process(
 async def execute_intersection(
     request: Request,
     payload: ProcessExecutionInput,
+    current_user: Annotated[User, Depends(get_current_user_required)],
     db: AsyncSession = Depends(get_db),
 ):
-    return await _execute_process(request, "intersection", payload, db)
+    return await _execute_process(request, "intersection", payload, db, current_user)
 
 
 @router.post(
@@ -346,9 +376,10 @@ async def execute_intersection(
 async def execute_erase(
     request: Request,
     payload: ProcessExecutionInput,
+    current_user: Annotated[User, Depends(get_current_user_required)],
     db: AsyncSession = Depends(get_db),
 ):
-    return await _execute_process(request, "erase", payload, db)
+    return await _execute_process(request, "erase", payload, db, current_user)
 
 
 async def _execute_process_feature(
@@ -356,6 +387,7 @@ async def _execute_process_feature(
     process_id: str,
     payload: ProcessFeatureExecutionInput,
     db: AsyncSession,
+    current_user: User,
 ) -> JSONResponse:
     """Validate feature + collection_ids, create job, enqueue feature-vs-layers process."""
     feat = payload.feature
@@ -402,7 +434,7 @@ async def _execute_process_feature(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Process execution requires Redis (PROCESS_QUEUE_TYPE=redis). Run a process worker.",
         )
-    job = create_job(collection_ids[0] if feature_ref else "feature")
+    job = create_job(collection_ids[0] if feature_ref else "feature", owner_id=current_user.id)
     pl = ProcessJobPayload(
         job_id=job.job_id,
         process_id=process_id,
@@ -439,9 +471,10 @@ async def _execute_process_feature(
 async def execute_intersection_feature(
     request: Request,
     payload: ProcessFeatureExecutionInput,
+    current_user: Annotated[User, Depends(get_current_user_required)],
     db: AsyncSession = Depends(get_db),
 ):
-    return await _execute_process_feature(request, "intersection", payload, db)
+    return await _execute_process_feature(request, "intersection", payload, db, current_user)
 
 
 @router.post(
@@ -453,9 +486,10 @@ async def execute_intersection_feature(
 async def execute_erase_feature(
     request: Request,
     payload: ProcessFeatureExecutionInput,
+    current_user: Annotated[User, Depends(get_current_user_required)],
     db: AsyncSession = Depends(get_db),
 ):
-    return await _execute_process_feature(request, "erase", payload, db)
+    return await _execute_process_feature(request, "erase", payload, db, current_user)
 
 
 @router.post(
@@ -467,6 +501,7 @@ async def execute_erase_feature(
 async def execute_buffer(
     request: Request,
     payload: BufferExecutionInput,
+    current_user: Annotated[User, Depends(get_current_user_required)],
     db: AsyncSession = Depends(get_db),
 ):
     collection = await collections_crud.get_collection(db, payload.collection_id)
@@ -492,7 +527,7 @@ async def execute_buffer(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Process execution requires Redis (PROCESS_QUEUE_TYPE=redis). Run a process worker.",
         )
-    job = create_job(payload.collection_id)
+    job = create_job(payload.collection_id, owner_id=current_user.id)
     feature_ids = list(payload.feature_ids or [])
     pl = ProcessJobPayload(
         job_id=job.job_id,
@@ -532,6 +567,7 @@ async def execute_buffer(
 async def execute_explode(
     request: Request,
     payload: ExplodeExecutionInput,
+    current_user: Annotated[User, Depends(get_current_user_required)],
     db: AsyncSession = Depends(get_db),
 ):
     collection = await collections_crud.get_collection(db, payload.collection_id)
@@ -557,7 +593,7 @@ async def execute_explode(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Process execution requires Redis (PROCESS_QUEUE_TYPE=redis). Run a process worker.",
         )
-    job = create_job(payload.collection_id)
+    job = create_job(payload.collection_id, owner_id=current_user.id)
     feature_ids = list(payload.feature_ids or [])
     pl = ProcessJobPayload(
         job_id=job.job_id,
@@ -595,6 +631,7 @@ async def execute_explode(
 async def execute_union_layer(
     request: Request,
     payload: UnionLayerExecutionInput,
+    current_user: Annotated[User, Depends(get_current_user_required)],
     db: AsyncSession = Depends(get_db),
 ):
     collection = await collections_crud.get_collection(db, payload.collection_id)
@@ -620,7 +657,7 @@ async def execute_union_layer(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Process execution requires Redis (PROCESS_QUEUE_TYPE=redis). Run a process worker.",
         )
-    job = create_job(payload.collection_id)
+    job = create_job(payload.collection_id, owner_id=current_user.id)
     feature_ids = list(payload.feature_ids or [])
     pl = ProcessJobPayload(
         job_id=job.job_id,
@@ -659,6 +696,7 @@ async def execute_union_layer(
 async def execute_measure_layer(
     request: Request,
     payload: MeasureLayerExecutionInput,
+    current_user: Annotated[User, Depends(get_current_user_required)],
     db: AsyncSession = Depends(get_db),
 ):
     collection = await collections_crud.get_collection(db, payload.collection_id)
@@ -672,7 +710,7 @@ async def execute_measure_layer(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Process execution requires Redis (PROCESS_QUEUE_TYPE=redis). Run a process worker.",
         )
-    job = create_job(payload.collection_id)
+    job = create_job(payload.collection_id, owner_id=current_user.id)
     feature_ids = list(payload.feature_ids or [])
     pl = ProcessJobPayload(
         job_id=job.job_id,

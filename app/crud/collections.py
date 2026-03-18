@@ -3,17 +3,25 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from typing import Any, Tuple
+from typing import TYPE_CHECKING, Any, Tuple
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import exists, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import collection_tiles as tiles_crud
 from app.crud import styles as styles_crud
 from app.db.features_partitions import ensure_features_partition
-from app.models.collection import Collection
+from app.models.collection import (
+    Collection,
+    VISIBILITY_LOGGED,
+    VISIBILITY_PUBLIC,
+)
 from app.models.collection_tiles import CollectionTiles
+from app.models.resource_share import ResourceShare
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
+
+if TYPE_CHECKING:
+    from app.models.user import User
 
 
 def _like_escape(value: str) -> str:
@@ -44,11 +52,13 @@ async def list_collections(
     limit: int | None = None,
     offset: int = 0,
     has_static_tiles: bool = False,
+    current_user: "User | None" = None,
 ) -> Tuple[Sequence[Collection], int]:
     """
     List collections with optional full-text search (id, title, description),
     bbox filter (collections whose extent intersects bbox), sort, and pagination.
     When has_static_tiles=True, only collections that have static tiles built are returned.
+    Admin sees all; otherwise visibility and sharing apply.
     Returns (collections, total_count).
     """
     base = select(Collection)
@@ -60,6 +70,28 @@ async def list_collections(
         )
         base = base.where(Collection.id.in_(static_ids))
         count_base = count_base.where(Collection.id.in_(static_ids))
+
+    # Visibility: admin sees all; anon sees public; logged sees public+logged+owned+shared
+    if current_user is not None and current_user.is_admin:
+        pass
+    elif current_user is None:
+        base = base.where(Collection.visibility == VISIBILITY_PUBLIC)
+        count_base = count_base.where(Collection.visibility == VISIBILITY_PUBLIC)
+    else:
+        from app.models.resource_share import RESOURCE_TYPE_COLLECTION
+        share_exists = (
+            select(1)
+            .where(ResourceShare.resource_type == RESOURCE_TYPE_COLLECTION)
+            .where(ResourceShare.resource_id == Collection.id)
+            .where(ResourceShare.username == current_user.username)
+        )
+        visible = or_(
+            Collection.visibility.in_([VISIBILITY_PUBLIC, VISIBILITY_LOGGED]),
+            Collection.owner_id == current_user.id,
+            exists(share_exists),
+        )
+        base = base.where(visible)
+        count_base = count_base.where(visible)
 
     if q and q.strip():
         pattern = f"%{_like_escape(q.strip())}%"
@@ -161,13 +193,19 @@ async def get_collections_bboxes(db: AsyncSession) -> dict[str, Extent]:
 
 
 async def create_collection(
-    db: AsyncSession, data: CollectionCreate
+    db: AsyncSession,
+    data: CollectionCreate,
+    *,
+    owner_id: int | None = None,
+    visibility: str = "private",
 ) -> Collection:
     collection = Collection(
         id=data.id,
         title=data.title,
         description=data.description,
         extent=data.extent.model_dump() if data.extent else None,
+        owner_id=owner_id,
+        visibility=visibility,
     )
     db.add(collection)
     await db.commit()
@@ -202,6 +240,12 @@ async def patch_collection(
         collection.description = data.description
     if "extent" in data.model_fields_set:
         collection.extent = data.extent.model_dump() if data.extent else None
+    if "visibility" in data.model_fields_set and data.visibility is not None:
+        from app.models.collection import VISIBILITY_LOGGED, VISIBILITY_PRIVATE, VISIBILITY_PUBLIC
+        if data.visibility in (VISIBILITY_PRIVATE, VISIBILITY_LOGGED, VISIBILITY_PUBLIC):
+            collection.visibility = data.visibility
+    if "viewer_can_edit" in data.model_fields_set and data.viewer_can_edit is not None:
+        collection.viewer_can_edit = data.viewer_can_edit
     await db.commit()
     await db.refresh(collection)
     return collection

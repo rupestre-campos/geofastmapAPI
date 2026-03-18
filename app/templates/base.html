@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}GeoFast API{% endblock %}</title>
-  <link rel="icon" href="{{ base|default('') }}/static/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="{{ base|default('') }}/favicon.ico" type="image/svg+xml">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.css" crossorigin="">
   <script>
     (function() {
@@ -85,6 +85,41 @@
     nav a:not(.brand) { color: var(--text-secondary); font-size: 0.9rem; }
     nav a:not(.brand):hover { color: var(--text); }
     .nav-spacer { flex: 1; }
+    .nav-user { color: var(--text-secondary); font-size: 0.9rem; }
+    .nav-dropdown { position: relative; display: inline-block; }
+    .nav-config-btn {
+      padding: 0.35rem 0.6rem;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    .nav-config-btn:hover { color: var(--text); border-color: var(--text-secondary); }
+    .nav-dropdown-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 2px;
+      min-width: 160px;
+      padding: 0.35rem 0;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 100;
+    }
+    .nav-dropdown-menu[aria-hidden="false"] { display: block; }
+    .nav-dropdown-menu a {
+      display: block;
+      padding: 0.5rem 1rem;
+      color: var(--text);
+      font-size: 0.9rem;
+      text-decoration: none;
+    }
+    .nav-dropdown-menu a:hover { background: var(--bg-elevated); color: var(--accent); }
     .theme-toggle {
       display: inline-flex;
       align-items: center;
@@ -173,6 +208,14 @@
       box-shadow: 0 0 0 2px rgba(47, 129, 247, 0.2);
     }
     form input[type="file"] { max-width: 100%; }
+    .password-wrap { position: relative; display: inline-block; width: 100%; max-width: 420px; }
+    .password-wrap input { width: 100%; padding-right: 2.5rem; }
+    .password-toggle {
+      position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%);
+      background: none; border: none; cursor: pointer; padding: 0.25rem;
+      color: var(--text-secondary); border-radius: var(--radius-sm);
+    }
+    .password-toggle:hover { color: var(--text); }
     .radio-group { display: flex; gap: 1rem; flex-wrap: wrap; }
     .radio-group label { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; margin: 0; font-weight: normal; color: var(--text); }
     .radio-group input { width: auto; margin: 0; }
@@ -239,6 +282,7 @@
     .search-bar-advanced-toggle:hover { color: var(--accent); }
     .search-bar-advanced { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
     .search-bar-advanced .form-row { margin-bottom: var(--space); }
+    .search-bar-msg { margin-top: 6px; font-size: 0.9rem; color: var(--text-secondary); }
     .alert { padding: 0.75rem 1rem; border-radius: var(--radius-sm); margin-top: 0.5rem; font-size: 0.85rem; }
     .alert-success { background: rgba(63, 185, 80, 0.15); color: var(--success); border: 1px solid rgba(63, 185, 80, 0.3); }
 
@@ -264,6 +308,21 @@
     <a href="{{ base }}/basemaps?f=html">Basemaps</a>
     <a href="{{ base }}/docs">API docs</a>
     <span class="nav-spacer"></span>
+    {% if username is defined and username %}
+    <span class="nav-user">{{ username }}</span>
+    <div class="nav-dropdown">
+      <button type="button" class="nav-config-btn" id="nav-config-btn" aria-haspopup="true" aria-expanded="false" title="Settings">Config</button>
+      <div class="nav-dropdown-menu" id="nav-config-menu" aria-hidden="true">
+        <a href="{{ base }}/auth/change-password?f=html">Change password</a>
+      </div>
+    </div>
+    {% if is_admin is defined and is_admin %}
+    <a href="{{ base }}/auth/users?f=html">Users</a>
+    {% endif %}
+    <a href="{{ base }}/auth/logout">Logout</a>
+    {% else %}
+    <a href="{{ base }}/auth/login?f=html">Login</a>
+    {% endif %}
     <button type="button" class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode" aria-label="Toggle light/dark mode">
       <span class="theme-toggle-icon theme-icon-sun" aria-hidden="true">☀</span>
       <span class="theme-toggle-icon theme-icon-moon" aria-hidden="true">🌙</span>
@@ -290,6 +349,21 @@
           updateLabel();
         });
         updateLabel();
+      }
+
+      var configBtn = document.getElementById('nav-config-btn');
+      var configMenu = document.getElementById('nav-config-menu');
+      if (configBtn && configMenu) {
+        configBtn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          var open = configMenu.getAttribute('aria-hidden') !== 'false';
+          configMenu.setAttribute('aria-hidden', open ? 'false' : 'true');
+          configBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+        document.addEventListener('click', function() {
+          configMenu.setAttribute('aria-hidden', 'true');
+          configBtn.setAttribute('aria-expanded', 'false');
+        });
       }
     })();
   </script>

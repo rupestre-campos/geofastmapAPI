@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     tippecanoe_maxzoom: int = 16
     google_maps_api_key: str = ""  # optional; for Google Satellite/Hybrid basemaps in HTML
 
+    # Auth: session signing key (set in production); empty = no session auth
+    auth_secret_key: str = ""
+    # Default admin credentials for first-time seed (change after first login)
+    auth_default_admin_username: str = "admin"
+    auth_default_admin_password: str = "admin"
+
     @property
     def database_sync_url(self) -> str:
         """URL for sync SQLAlchemy (background threads). Replaces asyncpg with psycopg2."""

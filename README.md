@@ -98,6 +98,13 @@ Create a collection, add data (upload or API), then use **View items**, **Build 
 | `GET /jobs/{job_id}` | Job status (bulk, tiles, process); cancel supported for process jobs |
 | `GET /maps` | List saved maps |
 | `GET /maps/{id}` | Map view (HTML or JSON) |
+| `GET /auth/login` | Login form (HTML; requires `AUTH_SECRET_KEY`) |
+| `POST /auth/login` | Submit login (form); redirects to `next` or change-password if required |
+| `GET /auth/logout` | Clear session, redirect to landing |
+| `GET /auth/change-password` | Change own password (requires login) |
+| `GET /auth/users` | List users (admin only, HTML) |
+
+Visibility: **public** (anyone), **logged** (authenticated users), **private** (owner/shared only). Admins see all collections, maps, and styles. Use HTTP Basic Auth for API clients (e.g. QGIS).
 
 Most list/detail endpoints support **`?f=html`** or **`Accept: text/html`** for the web UI (maps, forms, style editor).
 
@@ -130,6 +137,12 @@ Key settings (env vars or `.env`; see `app/core/config.py`):
 - **TILES_STORAGE_PATH** — Where static MBTiles/PMTiles are stored (default `/data/tiles`).
 - **BULK_STORAGE_PATH** — Where uploaded files go (default `/data/bulk-uploads`).
 - **database_pool_size** / **database_pool_max_overflow** — Tune for concurrent tile/export load.
+
+**Auth (users, roles, visibility):**
+
+- **AUTH_SECRET_KEY** — Secret key for session signing. If set, HTML login/logout and session auth are enabled; if empty, only HTTP Basic Auth works for API access.
+- **AUTH_DEFAULT_ADMIN_USERNAME** / **AUTH_DEFAULT_ADMIN_PASSWORD** — Used only when the DB has no users (first run): a default `admin` user is created and must change password on first login.
+- **Passwords:** Stored as bcrypt(salt + secret) on the server. The web UI hashes passwords with SHA-256 in the browser before sending; the backend then bcrypts that value. API/HTTP Basic can send either the same SHA-256 hex or plaintext (server hashes plaintext with SHA-256 before bcrypt).
 
 Optional:
 

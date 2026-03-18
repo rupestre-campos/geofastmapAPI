@@ -11,7 +11,7 @@
     <div class="card-header">
       <h2 class="card-title">Actions</h2>
       <div class="card-actions">
-        <a href="{{ base }}/collections/{{ collection.id }}/edit?f=html" class="btn btn-primary">Edit collection</a>
+        {% set collection_id = collection.id %}{% set show_add_feature = false %}{% include '_collection_edit_actions.html' with context %}
         <a href="{{ base }}/collections/{{ collection.id }}/items?f=html" class="btn">View items</a>
         <a href="{{ base }}/collections/{{ collection.id }}/items/data" class="btn" download>Download GeoJSONL</a>
       </div>

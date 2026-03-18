@@ -6,6 +6,7 @@
     <input type="text" name="q" value="{{ q_value or '' }}" placeholder="{{ q_placeholder }}" class="search-bar-input" aria-label="Search" autocomplete="off">
     <button type="submit" class="btn btn-primary">{{ submit_label }}</button>
   </div>
+  <div id="{{ form_id }}-q-msg" class="search-bar-msg" style="display: none;" role="alert" aria-live="polite"></div>
   <div class="search-bar-advanced-toggle-wrap">
     <button type="button" class="btn btn-sm search-bar-advanced-toggle" aria-expanded="false" data-target="{{ form_id }}-advanced" aria-controls="{{ form_id }}-advanced">Advanced search</button>
   </div>

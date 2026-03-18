@@ -384,6 +384,7 @@
           <tr>
             <th>Status</th>
             <th>Operation</th>
+            <th>Owner</th>
             <th>Layer A / Feature</th>
             <th>Layer B / Layers</th>
             <th>Input</th>
@@ -537,6 +538,7 @@
       return '<tr>' +
         '<td><span class="status-badge ' + statusClass(j.status) + '">' + esc(j.status) + '</span></td>' +
         '<td>' + esc(opLabel) + '</td>' +
+        '<td class="meta">' + esc(j.owner_username != null ? j.owner_username : '—') + '</td>' +
         '<td>' + cellA + '</td>' +
         '<td>' + cellB + '</td>' +
         '<td>' + esc((j.items_in || 0).toString()) + '</td>' +

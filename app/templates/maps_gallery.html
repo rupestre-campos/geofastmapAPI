@@ -21,8 +21,10 @@
   </header>
 
   <div class="maps-gallery-header">
-    <p class="meta" style="margin:0;">User-created maps. Create a map to combine collections with custom colors and order.</p>
+    <p class="meta" style="margin:0;">User-created maps.{% if username %} Create a map to combine collections with custom colors and order.{% endif %}</p>
+    {% if username %}
     <a href="{{ base }}/maps/new?f=html" class="btn btn-primary">Create map</a>
+    {% endif %}
   </div>
 
   {% if maps %}
@@ -41,9 +43,14 @@
         {% else %}
         <p class="map-card-desc meta">No description</p>
         {% endif %}
+        {% if m.owner_username is defined and m.owner_username %}
+        <p class="meta" style="margin:0 0 0.35rem; font-size:0.8rem;">Owner: {{ m.owner_username }}</p>
+        {% endif %}
         <div class="map-card-actions">
           <a href="{{ base }}/maps/{{ m.id }}?f=html" class="btn btn-primary">View</a>
+          {% if m.can_edit %}
           <a href="{{ base }}/maps/{{ m.id }}/edit?f=html" class="btn">Edit</a>
+          {% endif %}
         </div>
       </div>
     </article>
@@ -51,7 +58,7 @@
   </div>
   {% else %}
   <div class="card">
-    <p class="meta">No maps yet. <a href="{{ base }}/maps/new?f=html">Create your first map</a> to add collections, set colors and order, and save.</p>
+    <p class="meta">No maps yet.{% if username %} <a href="{{ base }}/maps/new?f=html">Create your first map</a> to add collections, set colors and order, and save.{% endif %}</p>
   </div>
   {% endif %}
 {% endblock %}

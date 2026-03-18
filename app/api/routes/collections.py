@@ -7,14 +7,19 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_user_optional
 from app.core.config import get_settings
+from app.core.permissions import can_edit_collection, can_see_collection
 from app.crud import collection_tiles as tiles_crud
+from app.crud import user as user_crud
 from app.services.tile_build_queue import get_latest_tile_build_job
 from app.utils.geo import mvt_layer_name
 from app.crud import collections as collections_crud
+from app.crud import resource_share as resource_share_crud
 from app.crud import styles as styles_crud
 from app.core.html import html_response, wants_html
 from app.db.session import get_db
+from app.models.resource_share import RESOURCE_TYPE_COLLECTION
 from app.schemas.collection import (
     CollectionCreate,
     CollectionPatch,
@@ -25,6 +30,7 @@ from app.schemas.collection import (
     clamp_bbox,
 )
 from app.schemas.ogc import Link
+from app.schemas.resource_share import ShareAdd, ShareRead
 
 router = APIRouter()
 
@@ -58,6 +64,7 @@ def _collection_links(base: str, collection_id: str, default_style_id: str | Non
 async def list_collections(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
     q: str | None = Query(None, description="Full-text search in id, title, description."),
     bbox: str | None = Query(None, description="Bounding box minx,miny,maxx,maxy (WGS84). Collections whose extent intersects this bbox."),
     sortby: str | None = Query(None, description="Sort by: id, title, description, created_at."),
@@ -87,6 +94,7 @@ async def list_collections(
         limit=limit,
         offset=offset,
         has_static_tiles=has_static_tiles,
+        current_user=current_user,
     )
     collections_out = []
     for item in items_list:
@@ -125,17 +133,26 @@ async def list_collections(
         q_params.pop("f", None)
         collections_url_json = base_path + ("?" + urlencode(sorted(q_params.items())) if q_params else "")
 
+        owner_ids = [c.owner_id for c in items_list if getattr(c, "owner_id", None) is not None]
+        owner_names = await user_crud.get_usernames_by_ids(db, owner_ids) if owner_ids else {}
+        can_edit_list = []
+        for c in items_list:
+            can_edit_list.append(await can_edit_collection(db, c, current_user))
         return html_response(
             "collections.html",
             base=base,
+            username=current_user.username if current_user else None,
+            is_admin=current_user.is_admin if current_user else False,
             collections=[
                 {
                     "id": c.id,
                     "title": c.title,
                     "description": c.description,
                     "feature_count": c.feature_count,
+                    "owner_username": owner_names.get(c.owner_id) if getattr(c, "owner_id", None) else None,
+                    "can_edit": can_edit_list[i],
                 }
-                for c in collections_out
+                for i, c in enumerate(items_list)
             ],
             collections_with_bbox=collections_with_bbox,
             number_matched=number_matched,
@@ -164,12 +181,17 @@ async def list_collections(
     summary="Edit collections (HTML): create new collection",
     description="HTML page with form to create a new collection. Use ?f=html. Path is /collections/edit to avoid conflicting with collection id.",
 )
-async def edit_collections_form(request: Request):
-    """Serve the edit-collections page (create collection form)."""
+async def edit_collections_form(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
+    """Serve the edit-collections page (create collection form). Requires login."""
     if not wants_html(request):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="HTML only")
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Login required to create a collection")
     base = _base_url(request)
-    return html_response("collections_edit.html", base=base)
+    return html_response("collections_edit.html", base=base, username=current_user.username, is_admin=current_user.is_admin)
 
 
 @router.get(
@@ -181,6 +203,7 @@ async def get_collection_edit_form(
     request: Request,
     collection_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ):
     """Serve the collection edit page: map with GeoEditor for bbox, attributes (title, description, bbox inputs)."""
     collection = await collections_crud.get_collection(db, collection_id)
@@ -189,6 +212,8 @@ async def get_collection_edit_form(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     base = _base_url(request)
     if not wants_html(request):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="HTML only")
@@ -205,9 +230,12 @@ async def get_collection_edit_form(
     show_cancel_tile_build = (
         tile_build_job is not None and tile_build_job.status in ("pending", "running")
     )
+    shares = await resource_share_crud.list_shares(db, RESOURCE_TYPE_COLLECTION, collection_id)
     return html_response(
         "collection_edit.html",
         base=base,
+        username=current_user.username if current_user else None,
+        is_admin=current_user.is_admin if current_user else False,
         collection_id=collection_id,
         collection={"id": out.id, "title": out.title, "description": out.description},
         extent_geojson=out.extent.model_dump() if out.extent else None,
@@ -219,6 +247,13 @@ async def get_collection_edit_form(
         default_style={"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec} if default_style else None,
         collection_styles_url=f"{base}/collections/{collection_id}/styles",
         show_cancel_tile_build=show_cancel_tile_build,
+        visibility=getattr(collection, "visibility", "private"),
+        viewer_can_edit=getattr(collection, "viewer_can_edit", False),
+        shares=[{"username": u, "role": r} for u, r in shares],
+        shares_url=f"{base}/collections/{collection_id}/shares",
+        patch_url=f"{base}/collections/{collection_id}",
+        resource_label="this collection",
+        show_viewer_edit=True,
     )
 
 
@@ -231,9 +266,15 @@ async def get_collection(
     request: Request,
     collection_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ):
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collection not found",
+        )
+    if not await can_see_collection(db, collection, current_user):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
@@ -248,10 +289,17 @@ async def get_collection(
         static_minzoom = rec.minzoom if (rec and rec.minzoom is not None) else 0
         static_maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
         settings = get_settings()
+        owner_username = None
+        if getattr(collection, "owner_id", None):
+            owner_username = (await user_crud.get_usernames_by_ids(db, [collection.owner_id])).get(collection.owner_id)
+        can_edit = await can_edit_collection(db, collection, current_user)
         return html_response(
             "collection.html",
             base=base,
+            username=current_user.username if current_user else None,
+            is_admin=current_user.is_admin if current_user else False,
             collection={"id": out.id, "title": out.title, "description": out.description},
+            owner_username=owner_username,
             extent_geojson=out.extent.model_dump() if out.extent else None,
             has_static_tiles=has_static_tiles,
             static_minzoom=static_minzoom,
@@ -260,6 +308,7 @@ async def get_collection(
             google_maps_api_key=settings.google_maps_api_key or "",
             default_style={"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec} if default_style else None,
             collection_styles_url=f"{base}/collections/{collection_id}/styles",
+            can_edit_collection=can_edit,
         )
     return out.model_copy(
         update={
@@ -279,7 +328,13 @@ async def replace_collection(
     collection_id: str,
     payload: CollectionReplace,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ) -> CollectionRead:
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     collection = await collections_crud.replace_collection(db, collection_id, payload)
     if not collection:
         raise HTTPException(
@@ -301,7 +356,13 @@ async def patch_collection(
     collection_id: str,
     payload: CollectionPatch,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ) -> CollectionRead:
+    coll = await collections_crud.get_collection(db, collection_id)
+    if not coll:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, coll, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     collection = await collections_crud.patch_collection(db, collection_id, payload)
     if not collection:
         raise HTTPException(
@@ -313,6 +374,69 @@ async def patch_collection(
     return out.model_copy(update={"links": _collection_links(base, collection_id)})
 
 
+@router.get(
+    "/{collection_id}/shares",
+    response_model=list[ShareRead],
+    summary="List shares for a collection",
+)
+async def list_collection_shares(
+    collection_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    coll = await collections_crud.get_collection(db, collection_id)
+    if not coll:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, coll, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    shares = await resource_share_crud.list_shares(db, RESOURCE_TYPE_COLLECTION, collection_id)
+    return [ShareRead(username=u, role=r) for u, r in shares]
+
+
+@router.post(
+    "/{collection_id}/shares",
+    response_model=ShareRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add share for a collection",
+)
+async def add_collection_share(
+    collection_id: str,
+    payload: ShareAdd,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    coll = await collections_crud.get_collection(db, collection_id)
+    if not coll:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, coll, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    share = await resource_share_crud.add_share(
+        db, RESOURCE_TYPE_COLLECTION, collection_id, payload.username, payload.role
+    )
+    if not share:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return ShareRead(username=share.username, role=share.role)
+
+
+@router.delete(
+    "/{collection_id}/shares/{username:path}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove share for a collection",
+)
+async def remove_collection_share(
+    collection_id: str,
+    username: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    coll = await collections_crud.get_collection(db, collection_id)
+    if not coll:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, coll, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    await resource_share_crud.remove_share(db, RESOURCE_TYPE_COLLECTION, collection_id, username)
+
+
 @router.post(
     "",
     response_model=CollectionRead,
@@ -322,7 +446,10 @@ async def patch_collection(
 async def create_collection(
     payload: CollectionCreate,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ) -> CollectionRead:
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Login required to create a collection")
     if payload.id == COLLECTION_ID_RESERVED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -334,7 +461,9 @@ async def create_collection(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Collection with this id already exists",
         )
-    collection = await collections_crud.create_collection(db, payload)
+    collection = await collections_crud.create_collection(
+        db, payload, owner_id=current_user.id, visibility="private"
+    )
     return CollectionRead.model_validate(collection)
 
 
@@ -347,13 +476,13 @@ async def create_collection(
 async def recompute_collection_extent(
     collection_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ) -> ExtentRecomputeResponse:
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Collection not found",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     extent = await collections_crud.recompute_and_update_collection_extent(db, collection_id)
     return ExtentRecomputeResponse(extent=extent)
 
@@ -366,7 +495,13 @@ async def recompute_collection_extent(
 async def delete_collection(
     collection_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ) -> Response:
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     deleted = await collections_crud.delete_collection(db, collection_id)
     if not deleted:
         raise HTTPException(

@@ -76,6 +76,34 @@
       </div>
     </div>
     {% include "_style_toolbox.html" %}
+    <div class="card" id="style-sharing-wrap" style="display:none; margin-top: var(--space-lg);">
+      <h2 class="card-title">Visibility &amp; sharing</h2>
+      <p class="meta">Control who can see this style. Only shown when a style is loaded.</p>
+      <div class="form-row">
+        <span class="label-text">Visibility</span>
+        <div class="radio-group" id="style-sharing-visibility">
+          <label><input type="radio" name="style_sharing_visibility" value="private"> Private (only you)</label>
+          <label><input type="radio" name="style_sharing_visibility" value="logged"> All logged-in users</label>
+          <label><input type="radio" name="style_sharing_visibility" value="public"> Public (including anonymous)</label>
+        </div>
+      </div>
+      <div class="form-row">
+        <span class="label-text">Share with user</span>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+          <input type="text" id="style-sharing-username" placeholder="Username" style="width:140px;">
+          <select id="style-sharing-role" style="width:100px;"><option value="viewer">Viewer</option><option value="editor">Editor</option></select>
+          <button type="button" class="btn btn-sm btn-primary" id="style-sharing-add">Add</button>
+        </div>
+        <p id="style-sharing-msg" class="meta" style="margin:4px 0 0;color:var(--danger);display:none;"></p>
+      </div>
+      <div class="form-row">
+        <span class="label-text">Shared with</span>
+        <ul id="style-sharing-list" style="list-style:none;padding:0;margin:0;"></ul>
+        <p class="meta style-sharing-empty-msg" id="style-sharing-empty-private" data-visibility="private" style="display:none;">Not shared with anyone yet. Add users below to grant access.</p>
+        <p class="meta style-sharing-empty-msg" id="style-sharing-empty-logged" data-visibility="logged" style="display:none;">All logged-in users can view. Add users below to grant editor access.</p>
+        <p class="meta style-sharing-empty-msg" id="style-sharing-empty-public" data-visibility="public" style="display:none;">Everyone can view (public). Add users below to grant editor access.</p>
+      </div>
+    </div>
     <p class="meta" style="margin-top:8px;"><span id="layer-style-legend" class="layer-style-legend" aria-hidden="true" style="display:inline-block;vertical-align:middle;"></span> Current style preview</p>
   </div>
 {% endblock %}
@@ -86,6 +114,8 @@
   <script>
     const base = {{ base | tojson }};
     const googleKey = {{ google_maps_api_key | tojson }};
+    const canSaveStyles = {{ (can_save_styles | default(false)) | lower }};
+    const canSavePublicStyles = {{ (can_save_public_styles | default(false)) | lower }};
 
     var BASEMAPS;
     var basemapList;
@@ -126,6 +156,10 @@
 
     function initStyleEditorMap() {
       var sel = document.getElementById('map-basemap');
+      if (!sel) {
+        console.warn('map-basemap select not found');
+        return;
+      }
       GeofastMapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
       var initialId = null;
       try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch(e) {}
@@ -143,7 +177,9 @@
         map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
         try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) sel.value = s; } catch(e) {}
         applyBasemapFromSelect();
-        sel.onchange = function() { try { localStorage.setItem('geofast-basemap', this.value); } catch(e) {} applyBasemapFromSelect(); };
+        if (sel) {
+          sel.onchange = function() { try { localStorage.setItem('geofast-basemap', this.value); } catch(e) {} applyBasemapFromSelect(); };
+        }
 
         map.addSource('editor-features', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       editorSource = map.getSource('editor-features');
@@ -567,7 +603,97 @@
       document.getElementById('save-style-collection').onchange = function() { populateReplaceDropdown(); };
       document.getElementById('save-style-collection').closest('label').style.display = 'none';
 
+      if (!canSavePublicStyles) {
+        var sel = document.getElementById('save-style-to');
+        for (var i = sel.options.length - 1; i >= 0; i--) {
+          if (sel.options[i].value === 'public') { sel.remove(i); break; }
+        }
+        sel.value = 'collection';
+      }
+
       loadStylesList();
+
+      var currentStyleSharing = null;
+      function updateStyleSharingEmptyMessage() {
+        var listEl = document.getElementById('style-sharing-list');
+        var wrap = document.getElementById('style-sharing-wrap');
+        if (!wrap || wrap.style.display === 'none') return;
+        var hasItems = listEl && listEl.querySelectorAll('li').length > 0;
+        var radio = document.querySelector('input[name="style_sharing_visibility"]:checked');
+        var vis = (radio && radio.value) || 'private';
+        wrap.querySelectorAll('.style-sharing-empty-msg').forEach(function(p) {
+          p.style.display = hasItems ? 'none' : (p.getAttribute('data-visibility') === vis ? 'block' : 'none');
+        });
+      }
+      function showStyleSharing(collectionId, styleId, visibility, styleUrl) {
+        var sharesUrl, patchUrl;
+        if (collectionId) {
+          sharesUrl = base + '/collections/' + encodeURIComponent(collectionId) + '/styles/' + encodeURIComponent(styleId) + '/shares';
+          patchUrl = base + '/collections/' + encodeURIComponent(collectionId) + '/styles/' + encodeURIComponent(styleId);
+        } else {
+          sharesUrl = base + '/styles/' + encodeURIComponent(styleId) + '/shares';
+          patchUrl = base + '/styles/' + encodeURIComponent(styleId);
+        }
+        currentStyleSharing = { sharesUrl: sharesUrl, patchUrl: patchUrl };
+        var wrap = document.getElementById('style-sharing-wrap');
+        var visEl = document.getElementById('style-sharing-visibility');
+        if (visEl) {
+          var radio = visEl.querySelector('input[value="' + (visibility || 'private') + '"]');
+          if (radio) radio.checked = true;
+        }
+        wrap.style.display = 'block';
+        var listEl = document.getElementById('style-sharing-list');
+        listEl.innerHTML = '';
+        fetch(sharesUrl, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.ok ? r.json() : []; })
+          .then(function(arr) {
+            listEl.innerHTML = '';
+            (arr || []).forEach(function(s) {
+              var li = document.createElement('li');
+              li.style.marginBottom = '6px';
+              li.innerHTML = '<span>' + (s.username || '').replace(/</g, '&lt;') + '</span> <span class="meta">(' + (s.role || 'viewer') + ')</span> <button type="button" class="btn btn-sm style-sharing-remove" data-username="' + (s.username || '').replace(/"/g, '&quot;') + '">Remove</button>';
+              listEl.appendChild(li);
+            });
+            updateStyleSharingEmptyMessage();
+          })
+          .catch(function() { updateStyleSharingEmptyMessage(); });
+      }
+      document.getElementById('style-sharing-visibility').addEventListener('change', function() {
+        updateStyleSharingEmptyMessage();
+        if (!currentStyleSharing) return;
+        var val = document.querySelector('input[name="style_sharing_visibility"]:checked');
+        if (!val) return;
+        fetch(currentStyleSharing.patchUrl, { method: 'PATCH', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({ visibility: val.value }) })
+          .then(function(r) { if (!r.ok) throw new Error(r.statusText); })
+          .catch(function(e) { document.getElementById('style-sharing-msg').textContent = 'Failed to save visibility'; document.getElementById('style-sharing-msg').style.display = 'block'; });
+      });
+      document.getElementById('style-sharing-add').addEventListener('click', function() {
+        if (!currentStyleSharing) return;
+        var username = (document.getElementById('style-sharing-username').value || '').trim();
+        if (!username) { document.getElementById('style-sharing-msg').textContent = 'Enter a username'; document.getElementById('style-sharing-msg').style.display = 'block'; return; }
+        var role = (document.getElementById('style-sharing-role').value) || 'viewer';
+        document.getElementById('style-sharing-msg').style.display = 'none';
+        fetch(currentStyleSharing.sharesUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({ username: username, role: role }) })
+          .then(function(r) { return r.json().then(function(d) { if (!r.ok) throw d; return d; }); })
+          .then(function(d) {
+            var listEl = document.getElementById('style-sharing-list');
+            var li = document.createElement('li');
+            li.style.marginBottom = '6px';
+            li.innerHTML = '<span>' + (d.username || '').replace(/</g, '&lt;') + '</span> <span class="meta">(' + (d.role || 'viewer') + ')</span> <button type="button" class="btn btn-sm style-sharing-remove" data-username="' + (d.username || '').replace(/"/g, '&quot;') + '">Remove</button>';
+            listEl.appendChild(li);
+            updateStyleSharingEmptyMessage();
+            document.getElementById('style-sharing-username').value = '';
+          })
+          .catch(function(e) { document.getElementById('style-sharing-msg').textContent = e.detail || e.message || 'Failed to add'; document.getElementById('style-sharing-msg').style.display = 'block'; });
+      });
+      document.getElementById('style-sharing-list').addEventListener('click', function(e) {
+        if (!e.target.classList.contains('style-sharing-remove') || !currentStyleSharing) return;
+        var username = e.target.getAttribute('data-username');
+        if (!username) return;
+        fetch(currentStyleSharing.sharesUrl + '/' + encodeURIComponent(username), { method: 'DELETE', credentials: 'same-origin' })
+          .then(function(r) { if (!r.ok) throw new Error(); e.target.closest('li').remove(); updateStyleSharingEmptyMessage(); })
+          .catch(function() { document.getElementById('style-sharing-msg').textContent = 'Failed to remove'; document.getElementById('style-sharing-msg').style.display = 'block'; });
+      });
 
       document.getElementById('vector-style-select').onchange = function() {
         var val = this.value;
@@ -575,19 +701,22 @@
         var isPublic = val.indexOf('p:') === 0;
         var url;
         var collectionIdForLayer = null;
+        var styleIdForSharing, collectionIdForSharing;
         if (isPublic) {
-          url = publicStylesUrl() + '/' + encodeURIComponent(val.slice(2));
+          styleIdForSharing = val.slice(2);
+          collectionIdForSharing = null;
+          url = publicStylesUrl() + '/' + encodeURIComponent(styleIdForSharing);
         } else if (val.indexOf('c:') === 0) {
           var rest = val.slice(2);
           var colon = rest.indexOf(':');
-          var cid = colon >= 0 ? rest.slice(0, colon) : rest;
-          var styleId = colon >= 0 ? rest.slice(colon + 1) : rest;
-          url = collectionStylesUrl(cid) + '/' + encodeURIComponent(styleId);
-          collectionIdForLayer = cid;
+          collectionIdForSharing = colon >= 0 ? rest.slice(0, colon) : rest;
+          styleIdForSharing = colon >= 0 ? rest.slice(colon + 1) : rest;
+          url = collectionStylesUrl(collectionIdForSharing) + '/' + encodeURIComponent(styleIdForSharing);
+          collectionIdForLayer = collectionIdForSharing;
         } else {
           return;
         }
-        fetch(url, { headers: { 'Accept': 'application/json' } })
+        fetch(url, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
           .then(function(r) { return r.json(); })
           .then(function(s) {
             if (s.style_spec) window.GeofastStyleEditor.applySpecToForm(s.style_spec);
@@ -600,15 +729,17 @@
               }
             }
             updateLoadStyleTrigger();
+            showStyleSharing(collectionIdForSharing, styleIdForSharing, s.visibility || 'private', url);
           })
           .catch(function() {});
       };
 
       document.getElementById('btn-save-style').onclick = function() {
         document.getElementById('save-style-form').style.display = 'flex';
-        document.getElementById('save-style-to').value = 'public';
-        document.getElementById('save-style-default-wrap').style.display = 'none';
-        document.getElementById('save-style-collection').closest('label').style.display = 'none';
+        var saveToSel = document.getElementById('save-style-to');
+        saveToSel.value = (canSavePublicStyles && saveToSel.querySelector('option[value="public"]')) ? 'public' : 'collection';
+        document.getElementById('save-style-default-wrap').style.display = saveToSel.value === 'collection' ? '' : 'none';
+        document.getElementById('save-style-collection').closest('label').style.display = saveToSel.value === 'collection' ? '' : 'none';
         populateReplaceDropdown();
       };
       document.getElementById('btn-save-style-cancel').onclick = function() {
@@ -654,10 +785,13 @@
       styleEditorState.loadStylesList = loadStylesList;
     });
 
-    document.getElementById('map-basemap').onchange = function() {
-      applyBasemapFromSelect();
-      try { localStorage.setItem('geofast-basemap', document.getElementById('map-basemap').value); } catch(e) {}
-    };
+    var basemapSelectEl = document.getElementById('map-basemap');
+    if (basemapSelectEl) {
+      basemapSelectEl.onchange = function() {
+        applyBasemapFromSelect();
+        try { localStorage.setItem('geofast-basemap', basemapSelectEl.value); } catch(e) {}
+      };
+    }
 
     var collectionSearchTimeout = null;
 
@@ -725,7 +859,11 @@
     };
 
     function addCollectionLayerToMap(collectionId, collectionName) {
-      if (!map.getSource) return;
+      if (!map || typeof map.getSource !== 'function') return;
+      if (typeof map.loaded === 'function' && !map.loaded()) {
+        map.once('load', function() { addCollectionLayerToMap(collectionId, collectionName); });
+        return;
+      }
       var sourceId = 'collection-' + collectionId.replace(/[^a-zA-Z0-9_-]/g, '_');
       if (map.getSource(sourceId)) return;
       var name = collectionName || collectionId;
@@ -745,17 +883,22 @@
           .then(function(r) { return r.json(); })
           .then(function(tilejson) {
             var tiles = tilejson.tiles || [];
-            var hasStatic = tiles.length > 0 && tiles[0].indexOf('static') !== -1;
+            var hasStatic = tiles.some(function(t) { return (t || '').indexOf('/tiles/static/') !== -1; });
             if (hasStatic) {
-              var tileUrl = tiles[0].indexOf('{z}') !== -1 ? tiles[0] : (base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf');
+              var staticTileUrl = tiles.filter(function(t) { return (t || '').indexOf('/tiles/static/') !== -1; })[0];
+              var tileUrl = staticTileUrl && staticTileUrl.indexOf('{z}') !== -1
+                ? staticTileUrl
+                : (base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf');
               map.addSource(sourceId, { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
               var layerId = tilejson.vector_layers && tilejson.vector_layers[0] ? tilejson.vector_layers[0].id : collectionId;
               var pointFilter = ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]];
               var notPointFilter = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
               var ptColor = p ? p.pointColor : ((s && s.pointColor) || defaultSpec.pointColor || '#58a6ff');
               var ptSize = p ? p.pointRadius : ((s && s.pointSize != null) ? s.pointSize : (defaultSpec.pointSize != null ? defaultSpec.pointSize : 8));
-              map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, 'editor-fill');
-              map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, 'editor-line');
+              var beforeFill = map.getLayer('editor-fill') ? 'editor-fill' : undefined;
+              var beforeLine = map.getLayer('editor-line') ? 'editor-line' : undefined;
+              map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, beforeFill);
+              map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, beforeLine);
               map.addLayer({ id: sourceId + '-circle', type: 'circle', source: sourceId, 'source-layer': layerId, filter: pointFilter, layout: { visibility: pointVisible ? 'visible' : 'none' }, paint: { 'circle-color': ptColor, 'circle-radius': ptSize, 'circle-opacity': 0.9 } });
               if (styleEditorState.bindPopupForLayer) {
                 styleEditorState.bindPopupForLayer(sourceId + '-fill');
@@ -778,8 +921,10 @@
                   map.addSource(sourceId, { type: 'geojson', data: fc });
                   var ptColorGeo = p ? p.pointColor : ((s && s.pointColor) || defaultSpec.pointColor || '#58a6ff');
                   var ptSizeGeo = p ? p.pointRadius : ((s && s.pointSize != null) ? s.pointSize : (defaultSpec.pointSize != null ? defaultSpec.pointSize : 8));
-                  map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, filter: notPointFilterGeo, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, 'editor-fill');
-                  map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, filter: notPointFilterGeo, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, 'editor-line');
+                  var beforeFillGeo = map.getLayer('editor-fill') ? 'editor-fill' : undefined;
+                  var beforeLineGeo = map.getLayer('editor-line') ? 'editor-line' : undefined;
+                  map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, filter: notPointFilterGeo, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, beforeFillGeo);
+                  map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, filter: notPointFilterGeo, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, beforeLineGeo);
                   map.addLayer({ id: sourceId + '-circle', type: 'circle', source: sourceId, filter: pointFilterGeo, layout: { visibility: pointVisible ? 'visible' : 'none' }, paint: { 'circle-color': ptColorGeo, 'circle-radius': ptSizeGeo, 'circle-opacity': 0.9 } });
                   if (styleEditorState.bindPopupForLayer) {
                     styleEditorState.bindPopupForLayer(sourceId + '-fill');
@@ -795,8 +940,11 @@
                 })
                 .catch(function(e) { console.warn('Load items failed', e); });
             }
-            styleEditorState.layersOnMap.push({ sourceId: sourceId, collectionId: collectionId, name: name, styleSpec: s });
-            if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
+            // Only register the layer after it is actually added to the map.
+            if (map.getSource(sourceId)) {
+              styleEditorState.layersOnMap.push({ sourceId: sourceId, collectionId: collectionId, name: name, styleSpec: s });
+              if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
+            }
           })
           .catch(function(e) { console.warn('TileJSON failed', e); });
       }
@@ -853,5 +1001,16 @@
       basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
       initStyleEditorMap();
     });
+
+    // Anonymous users can play with the editor, but cannot save styles.
+    (function() {
+      if (canSaveStyles) return;
+      var btn = document.getElementById('btn-save-style');
+      var form = document.getElementById('save-style-form');
+      if (btn) btn.style.display = 'none';
+      if (form) form.style.display = 'none';
+      var shareWrap = document.getElementById('style-sharing-wrap');
+      if (shareWrap) shareWrap.style.display = 'none';
+    })();
   </script>
 {% endblock %}

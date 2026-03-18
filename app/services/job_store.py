@@ -24,9 +24,10 @@ class JobInfo:
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     finished_at: datetime | None = None  # set when status becomes completed, failed, or cancelled
+    owner_id: int | None = None  # user id; None = legacy (only admin can see)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "job_id": self.job_id,
             "collection_id": self.collection_id,
             "status": self.status,
@@ -38,6 +39,9 @@ class JobInfo:
             "updated_at": self.updated_at.isoformat() + "Z",
             "finished_at": self.finished_at.isoformat() + "Z" if self.finished_at else None,
         }
+        if self.owner_id is not None:
+            out["owner_id"] = self.owner_id
+        return out
 
 
 # ----- In-memory backend -----
@@ -45,9 +49,9 @@ _mem_lock = threading.Lock()
 _mem_jobs: dict[str, JobInfo] = {}
 
 
-def _create_job_memory(collection_id: str) -> JobInfo:
+def _create_job_memory(collection_id: str, owner_id: int | None = None) -> JobInfo:
     job_id = str(uuid.uuid4())
-    job = JobInfo(job_id=job_id, collection_id=collection_id, status="pending")
+    job = JobInfo(job_id=job_id, collection_id=collection_id, status="pending", owner_id=owner_id)
     with _mem_lock:
         _mem_jobs[job_id] = job
     return job
@@ -100,14 +104,14 @@ def _jobs_by_collection_key(collection_id: str) -> str:
     return f"geofast:jobs_by_collection:{collection_id}"
 
 
-def _create_job_redis(collection_id: str) -> JobInfo:
+def _create_job_redis(collection_id: str, owner_id: int | None = None) -> JobInfo:
     import redis
     settings = get_settings()
     r = redis.from_url(settings.redis_url, decode_responses=True)
     job_id = str(uuid.uuid4())
-    job = JobInfo(job_id=job_id, collection_id=collection_id, status="pending")
+    job = JobInfo(job_id=job_id, collection_id=collection_id, status="pending", owner_id=owner_id)
     key = _redis_key(job_id)
-    mapping = {
+    mapping: dict[str, str] = {
         "job_id": job_id,
         "collection_id": collection_id,
         "status": job.status,
@@ -120,6 +124,8 @@ def _create_job_redis(collection_id: str) -> JobInfo:
     }
     if job.finished_at is not None:
         mapping["finished_at"] = job.finished_at.isoformat() + "Z"
+    if owner_id is not None:
+        mapping["owner_id"] = str(owner_id)
     r.hset(key, mapping=mapping)
     r.expire(key, 86400 * 7)  # 7 days
     coll_key = _jobs_by_collection_key(collection_id)
@@ -140,6 +146,12 @@ def _get_job_redis(job_id: str) -> JobInfo | None:
     finished_at = None
     if raw.get("finished_at"):
         finished_at = datetime.fromisoformat(raw["finished_at"].replace("Z", "+00:00"))
+    owner_id = None
+    if raw.get("owner_id"):
+        try:
+            owner_id = int(raw["owner_id"])
+        except ValueError:
+            pass
     return JobInfo(
         job_id=raw["job_id"],
         collection_id=raw["collection_id"],
@@ -151,6 +163,7 @@ def _get_job_redis(job_id: str) -> JobInfo | None:
         created_at=datetime.fromisoformat(raw["created_at"].replace("Z", "+00:00")),
         updated_at=datetime.fromisoformat(raw["updated_at"].replace("Z", "+00:00")),
         finished_at=finished_at,
+        owner_id=owner_id,
     )
 
 
@@ -193,11 +206,11 @@ def _update_job_redis(
 
 
 # ----- Public API (config-driven) -----
-def create_job(collection_id: str) -> JobInfo:
+def create_job(collection_id: str, owner_id: int | None = None) -> JobInfo:
     settings = get_settings()
     if settings.bulk_queue_type == "redis":
-        return _create_job_redis(collection_id)
-    return _create_job_memory(collection_id)
+        return _create_job_redis(collection_id, owner_id=owner_id)
+    return _create_job_memory(collection_id, owner_id=owner_id)
 
 
 def get_job(job_id: str) -> JobInfo | None:
@@ -223,12 +236,18 @@ def update_job(
     return _update_job_memory(job_id, status=status, message=message, items_in=items_in, items_created=items_created, items_failed=items_failed, finished_at=finished_at)
 
 
-def list_jobs_for_collection(collection_id: str, limit: int = 20) -> list[JobInfo]:
-    """Return recent jobs for a collection (ongoing and recently completed), newest first."""
+def list_jobs_for_collection(
+    collection_id: str, limit: int = 20, owner_id: int | None = None
+) -> list[JobInfo]:
+    """Return recent jobs for a collection. If owner_id is set, only that user's jobs; if None (admin), all."""
     settings = get_settings()
     if settings.bulk_queue_type == "redis":
-        return _list_jobs_for_collection_redis(collection_id, limit=limit)
-    return _list_jobs_for_collection_memory(collection_id, limit=limit)
+        raw = _list_jobs_for_collection_redis(collection_id, limit=limit * 2 if owner_id is not None else limit)
+    else:
+        raw = _list_jobs_for_collection_memory(collection_id, limit=limit * 2 if owner_id is not None else limit)
+    if owner_id is not None:
+        raw = [j for j in raw if j.owner_id == owner_id]
+    return raw[:limit]
 
 
 def _list_jobs_for_collection_memory(collection_id: str, limit: int) -> list[JobInfo]:
@@ -253,12 +272,16 @@ def _list_jobs_for_collection_redis(collection_id: str, limit: int) -> list[JobI
     return jobs[:limit]
 
 
-def list_all_jobs(limit: int = 100) -> list[JobInfo]:
-    """Return all recent jobs (all types, all collections), newest first. For Redis uses SCAN on job keys."""
+def list_all_jobs(limit: int = 100, owner_id: int | None = None) -> list[JobInfo]:
+    """Return recent jobs. If owner_id is set, only that user's jobs; if None (admin), all. Legacy (owner_id None) only when admin."""
     settings = get_settings()
     if settings.bulk_queue_type == "redis":
-        return _list_all_jobs_redis(limit=limit)
-    return _list_all_jobs_memory(limit=limit)
+        raw = _list_all_jobs_redis(limit=limit * 2 if owner_id is not None else limit)
+    else:
+        raw = _list_all_jobs_memory(limit=limit * 2 if owner_id is not None else limit)
+    if owner_id is not None:
+        raw = [j for j in raw if j.owner_id == owner_id]
+    return raw[:limit]
 
 
 def _list_all_jobs_memory(limit: int) -> list[JobInfo]:
