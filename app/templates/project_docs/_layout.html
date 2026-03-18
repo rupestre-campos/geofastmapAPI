@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block head %}
+  <style>
+    .docs-wrap { display: grid; grid-template-columns: 260px 1fr; gap: var(--space-lg); align-items: start; }
+    .docs-nav {
+      position: sticky;
+      top: 72px;
+      width: 260px;
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--card);
+      padding: var(--space);
+      max-height: calc(100vh - 92px);
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+    /* One link per row, keep text horizontal (no character wrapping). */
+    .docs-nav a {
+      display: block !important;
+      width: 100%;
+      padding: 6px 8px;
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      text-decoration: none;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .docs-nav a:hover { background: var(--bg-elevated); }
+    .docs-nav .meta { margin: 0 0 6px; }
+    .docs-nav code { white-space: normal; }
+    .docs-content .card { margin-top: 0; }
+    .docs-content h1 { margin-top: 0; }
+    .docs-content h2 { margin-top: 1.2rem; margin-bottom: 0.5rem; }
+    .docs-content h3 { margin-top: 1rem; margin-bottom: 0.4rem; font-size: 1rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+    .docs-content code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.9em; }
+    .docs-content .callout { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); padding: 10px 12px; }
+    .docs-content ul { margin: 0.4rem 0 0.8rem 1.2rem; }
+    .docs-content li { margin: 0.2rem 0; }
+    @media (max-width: 900px) {
+      .docs-wrap { grid-template-columns: 1fr; }
+      .docs-nav { position: static; max-height: none; }
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <h1>Project documentation</h1>
+    <p class="meta">Human-oriented docs about GeoFast features, design, and trade-offs.</p>
+  </header>
+
+  <div class="docs-wrap">
+    <aside class="docs-nav" aria-label="Project documentation">
+      <p class="meta"><strong>Sections</strong></p>
+      <a href="{{ base }}/project-docs?f=html">Overview</a>
+      <a href="{{ base }}/project-docs/collections-items?f=html">Collections &amp; items</a>
+      <a href="{{ base }}/project-docs/tiles?f=html">Tiles (static &amp; dynamic)</a>
+      <a href="{{ base }}/project-docs/jobs?f=html">Jobs &amp; workers</a>
+      <a href="{{ base }}/project-docs/style-editor?f=html">Style editor</a>
+      <hr style="border:none;border-top:1px solid var(--border); margin:10px 0;">
+      <p class="meta">Tip: edit these pages in <code>app/templates/project_docs/</code>.</p>
+    </aside>
+
+    <div class="docs-content">
+      {% block docs_content %}{% endblock %}
+    </div>
+  </div>
+{% endblock %}
+

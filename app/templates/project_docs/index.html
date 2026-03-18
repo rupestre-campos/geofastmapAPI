@@ -1,0 +1,36 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Documentation – GeoFast API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">What is GeoFast?</h2>
+    <p class="meta">
+      GeoFast is an OGC API - Features server with extra tooling for fast browsing and styling:
+      collections, item search, dynamic vector tiles, optional static (prebuilt) tiles, styles, maps, and job tracking.
+    </p>
+
+    <h3>How to read these docs</h3>
+    <ul>
+      <li><strong>API docs</strong> live at <code>/docs</code> (auto-generated OpenAPI).</li>
+      <li><strong>Project docs</strong> (this section) explain <em>how things work</em>, limitations, and operational guidance.</li>
+      <li>These pages are HTML-only and are not listed in OpenAPI, by design.</li>
+    </ul>
+
+    <h3>Core building blocks</h3>
+    <ul>
+      <li><strong>FastAPI + Jinja templates</strong>: API + HTML UI pages.</li>
+      <li><strong>PostgreSQL/PostGIS</strong>: features and metadata storage; features are partitioned by <code>collection_id</code>.</li>
+      <li><strong>Redis</strong>: queues + job store (and some caching).</li>
+      <li><strong>MapLibre GL JS</strong>: rendering in the browser (style editor, map viewer).</li>
+    </ul>
+
+    <div class="callout">
+      <strong>Best starting points:</strong>
+      <ul>
+        <li><a href="{{ base }}/project-docs/tiles?f=html">Tiles (static &amp; dynamic)</a></li>
+        <li><a href="{{ base }}/project-docs/jobs?f=html">Jobs &amp; workers</a></li>
+      </ul>
+    </div>
+  </div>
+{% endblock %}
+

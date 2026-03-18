@@ -12,7 +12,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.core.html import wants_html
 
-from app.api.routes import auth, basemaps_api, basemaps_pages, collection_styles, collections, items, jobs, maps, processes, root, styles, tiles
+from app.api.routes import auth, basemaps_api, basemaps_pages, collection_styles, collections, items, jobs, maps, processes, project_docs, root, styles, tiles
 from app.core.config import get_settings
 from app.services.bulk_queue import start_memory_consumer
 from app.services.bulk_worker import process_bulk_job
@@ -102,6 +102,8 @@ def create_app() -> FastAPI:
     app.include_router(processes.router, prefix="/processes", tags=["processes"])
     app.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
     app.include_router(maps.router, prefix="/maps", tags=["maps"])
+    # Human docs (HTML-only; excluded from OpenAPI)
+    app.include_router(project_docs.router, tags=["project-docs"])
 
     static_dir = Path(__file__).resolve().parent.parent / "static"
     if static_dir.is_dir():

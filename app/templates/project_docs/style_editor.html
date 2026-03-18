@@ -1,0 +1,31 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Style editor – Documentation – GeoFast API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Style editor</h2>
+    <p class="meta">
+      The style editor lets you preview and build MapLibre-compatible paint rules for layers and save them as styles.
+    </p>
+
+    <h3>What you can do</h3>
+    <ul>
+      <li>Add collections to the map (static tiles if available; otherwise a sample of features).</li>
+      <li>Edit fill/line/point styling and create attribute-based rules.</li>
+      <li>Load styles (public styles + styles saved for collections).</li>
+    </ul>
+
+    <h3>Anonymous vs logged-in</h3>
+    <ul>
+      <li>Anonymous users can experiment but can’t save styles.</li>
+      <li>Visibility/sharing controls are hidden for anonymous users.</li>
+    </ul>
+
+    <h3>Advanced styling rules</h3>
+    <ul>
+      <li>Zoom-based styling uses top-level <code>interpolate</code>/<code>step</code> expressions (MapLibre validation requirement).</li>
+      <li>Attribute-based rules are applied via <code>case</code> expressions layered into zoom stops when needed.</li>
+    </ul>
+  </div>
+{% endblock %}
+

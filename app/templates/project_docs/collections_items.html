@@ -1,0 +1,38 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Collections & Items – Documentation – GeoFast API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Collections &amp; items (features)</h2>
+    <p class="meta">
+      A <strong>collection</strong> is a dataset (layer). Each collection has <strong>items</strong> (features) with geometry and properties.
+    </p>
+
+    <h3>Storage model</h3>
+    <ul>
+      <li>Features live in Postgres and are partitioned by <code>collection_id</code> for performance.</li>
+      <li>Collections keep a cached <code>feature_count</code> for fast listing.</li>
+    </ul>
+
+    <h3>Importing data</h3>
+    <ul>
+      <li>Bulk import runs asynchronously (job-based).</li>
+      <li>Optionally you can queue a static tile build after import completes.</li>
+    </ul>
+
+    <h3>Visibility &amp; sharing</h3>
+    <ul>
+      <li><strong>private</strong>: only owner (and explicit shares) can see.</li>
+      <li><strong>logged</strong>: any authenticated user can see.</li>
+      <li><strong>public</strong>: anyone can see (including anonymous).</li>
+      <li>Editor shares grant edit access without changing visibility.</li>
+    </ul>
+
+    <h3>Search & filtering</h3>
+    <ul>
+      <li>Item listing supports bbox, structured filters, and (in some contexts) full-text search across properties.</li>
+      <li>Short full-text queries can be expensive; minimum lengths may be enforced to protect performance.</li>
+    </ul>
+  </div>
+{% endblock %}
+

@@ -1,0 +1,42 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Tiles – Documentation – GeoFast API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Vector tiles: static vs dynamic</h2>
+    <p class="meta">
+      GeoFast supports two ways to serve MapLibre-compatible vector tiles: <strong>static</strong> tiles (prebuilt, fast)
+      and <strong>dynamic</strong> tiles (computed on demand, flexible).
+    </p>
+
+    <h3>Static tiles (prebuilt)</h3>
+    <ul>
+      <li><strong>What</strong>: a tile file is generated for a collection and served repeatedly.</li>
+      <li><strong>When to use</strong>: large datasets, repeated access, production “browse” use cases.</li>
+      <li><strong>How it’s built</strong>: a background job runs a tile builder with your chosen options (zoom levels, simplification strategy, attribute selection, etc.).</li>
+      <li><strong>Where configured</strong>: the “Build static tiles” page for a collection.</li>
+    </ul>
+
+    <h3>Dynamic tiles (query-time)</h3>
+    <ul>
+      <li><strong>What</strong>: tiles are generated per request from Postgres queries.</li>
+      <li><strong>When to use</strong>: ad-hoc filtering, interactive exploration, small-to-medium datasets, or when you cannot prebuild tiles.</li>
+      <li><strong>Trade-offs</strong>: more CPU/DB load; performance depends heavily on filters, indexes, and request patterns.</li>
+    </ul>
+
+    <h3>Tile build options (what they mean)</h3>
+    <ul>
+      <li><strong>Min/Max zoom</strong>: controls tile resolution. Higher max zoom increases output size and build time.</li>
+      <li><strong>Attributes include/exclude</strong>: controlling properties reduces tile size and improves render performance.</li>
+      <li><strong>Simplification</strong>: reduces geometry complexity at low zooms; improves speed and size but can reduce precision.</li>
+    </ul>
+
+    <h3>Limitations &amp; operational notes</h3>
+    <ul>
+      <li>Static tiles must be rebuilt when data changes to reflect updates.</li>
+      <li>Dynamic tiles should avoid expensive full-text queries for very short strings (we enforce a minimum length where needed).</li>
+      <li>Very large collections may require tuning database and worker resources.</li>
+    </ul>
+  </div>
+{% endblock %}
+

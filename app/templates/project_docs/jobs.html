@@ -1,0 +1,30 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Jobs – Documentation – GeoFast API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Jobs &amp; workers</h2>
+    <p class="meta">
+      Long-running tasks (bulk import, tile building, processing) run as <strong>jobs</strong>. Jobs are visible to the owner; admins can see all.
+    </p>
+
+    <h3>Job lifecycle</h3>
+    <ul>
+      <li><strong>pending</strong> → <strong>running</strong> → <strong>completed</strong> (or <strong>failed</strong>)</li>
+      <li>Some jobs can be cancelled (e.g. pending tile builds).</li>
+    </ul>
+
+    <h3>Queues and storage</h3>
+    <ul>
+      <li>Redis is used for worker queues and durable job metadata in production-like setups.</li>
+      <li>A memory queue may be used in development (single process).</li>
+    </ul>
+
+    <h3>Ownership</h3>
+    <ul>
+      <li>Jobs created from UI actions should carry the user’s <code>owner_id</code>.</li>
+      <li>Legacy jobs without an owner are treated as admin-only for safety.</li>
+    </ul>
+  </div>
+{% endblock %}
+
