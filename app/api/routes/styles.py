@@ -6,7 +6,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user_required
+from app.api.deps import get_current_user_optional, get_current_user_required
+from app.core.permissions import can_see_style
 from app.crud import resource_share as resource_share_crud
 from app.crud import styles as styles_crud
 from app.db.session import get_db
@@ -103,11 +104,17 @@ def _normalize_spec(spec: dict | None) -> dict:
 async def list_styles(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ) -> StyleList:
     base = _base_url(request)
     items = await styles_crud.list_public_styles(db)
+    # Public styles are readable by everyone when their visibility allows it.
+    visible: list[Style] = []
+    for s in items:
+        if await can_see_style(db, getattr(s, "owner_id", None), getattr(s, "visibility", "private"), styles_crud.PUBLIC_COLLECTION_ID, s.id, current_user):
+            visible.append(s)
     return StyleList(
-        styles=[_style_to_read(base, s) for s in items],
+        styles=[_style_to_read(base, s) for s in visible],
         links=[
             Link(href=f"{base}/styles", rel="self", type="application/json"),
         ],
@@ -123,9 +130,12 @@ async def get_style(
     request: Request,
     style_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ) -> StyleRead:
     style_obj = await styles_crud.get_public_style(db, style_id)
     if not style_obj:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Style not found")
+    if not await can_see_style(db, getattr(style_obj, "owner_id", None), getattr(style_obj, "visibility", "private"), styles_crud.PUBLIC_COLLECTION_ID, style_id, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Style not found")
     return _style_to_read(_base_url(request), style_obj)
 
@@ -158,7 +168,7 @@ async def create_style(
         collection_id=styles_crud.PUBLIC_COLLECTION_ID,
         set_default=False,
         owner_id=current_user.id,
-        visibility="private",
+        visibility="public",
     )
     return _style_to_read(_base_url(request), style_obj)
 

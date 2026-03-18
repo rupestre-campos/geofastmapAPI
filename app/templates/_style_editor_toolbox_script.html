@@ -98,6 +98,18 @@
     return ['interpolate', ['linear'], ['zoom']].concat(flat);
   }
 
+  function _applyRulesToZoomStops(stops, rules, pickValueFn) {
+    if (!stops || stops.length < 2) return null;
+    var flat = [];
+    stops.forEach(function(s) {
+      var z = Number(s[0]);
+      var v = Number(s[1]);
+      if (!isFinite(z) || !isFinite(v)) return;
+      flat.push(z, _applyRulesToPaintValue(v, rules, pickValueFn));
+    });
+    return ['interpolate', ['linear'], ['zoom']].concat(flat);
+  }
+
   function _toNumberOrNull(s) {
     var n = parseFloat(s);
     return isNaN(n) ? null : n;
@@ -132,10 +144,9 @@
     } else {
       return null;
     }
-    var parts = [cond];
-    if (rule.minzoom != null && rule.minzoom !== '') parts.push(['>=', ['zoom'], Number(rule.minzoom)]);
-    if (rule.maxzoom != null && rule.maxzoom !== '') parts.push(['<=', ['zoom'], Number(rule.maxzoom)]);
-    return parts.length === 1 ? parts[0] : ['all'].concat(parts);
+    // Do not use ["zoom"] inside rule conditions; MapLibre style validation restricts it.
+    // Zoom-based styling is handled via the *Zoom stops* fields which compile to a top-level interpolate(["zoom"], ...).
+    return cond;
   }
 
   function _applyRulesToPaintValue(baseValue, rules, pickValueFn) {
@@ -177,7 +188,9 @@
       map.setLayoutProperty(fillId, 'visibility', spec.fillEnabled !== false ? 'visible' : 'none');
       var fillColorBase = spec.fillColor || '#58a6ff';
       var fillColorVal = _applyRulesToPaintValue(fillColorBase, rules, function(r) { return r && r.paint ? r.paint.fillColor : null; });
-      var fillOpacityRule = _applyRulesToPaintValue(fillOpacityVal, rules, function(r) { return r && r.paint ? r.paint.fillOpacity : null; });
+      var fillOpacityRule = (spec.fillOpacityZoom && spec.fillOpacityZoom.length >= 2)
+        ? _applyRulesToZoomStops(spec.fillOpacityZoom, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.fillOpacity) : null; })
+        : _applyRulesToPaintValue(fillOpacityVal, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.fillOpacity) : null; });
       map.setPaintProperty(fillId, 'fill-color', fillColorVal);
       applyPaintValue(fillId, 'fill-opacity', fillOpacityRule);
     }
@@ -185,8 +198,12 @@
       map.setLayoutProperty(lineId, 'visibility', spec.lineEnabled !== false ? 'visible' : 'none');
       var lineColorBase = spec.lineColor || '#58a6ff';
       var lineColorVal = _applyRulesToPaintValue(lineColorBase, rules, function(r) { return r && r.paint ? r.paint.lineColor : null; });
-      var lineWidthRule = _applyRulesToPaintValue(lineWidthVal, rules, function(r) { return r && r.paint ? r.paint.lineWidth : null; });
-      var lineOpacityRule = _applyRulesToPaintValue(lineOpacityVal, rules, function(r) { return r && r.paint ? r.paint.lineOpacity : null; });
+      var lineWidthRule = (spec.lineWidthZoom && spec.lineWidthZoom.length >= 2)
+        ? _applyRulesToZoomStops(spec.lineWidthZoom, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.lineWidth) : null; })
+        : _applyRulesToPaintValue(lineWidthVal, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.lineWidth) : null; });
+      var lineOpacityRule = (spec.lineOpacityZoom && spec.lineOpacityZoom.length >= 2)
+        ? _applyRulesToZoomStops(spec.lineOpacityZoom, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.lineOpacity) : null; })
+        : _applyRulesToPaintValue(lineOpacityVal, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.lineOpacity) : null; });
       map.setPaintProperty(lineId, 'line-color', lineColorVal);
       applyPaintValue(lineId, 'line-width', lineWidthRule);
       applyPaintValue(lineId, 'line-opacity', lineOpacityRule);
@@ -197,8 +214,12 @@
       map.setLayoutProperty(circleId, 'visibility', pointOn && spec.pointIcon === 'circle' ? 'visible' : 'none');
       var pointColorBase = spec.pointColor || '#58a6ff';
       var pointColorVal = _applyRulesToPaintValue(pointColorBase, rules, function(r) { return r && r.paint ? r.paint.pointColor : null; });
-      var pointSizeRule = _applyRulesToPaintValue(pointSizeVal, rules, function(r) { return r && r.paint ? r.paint.pointSize : null; });
-      var pointOpacityRule = _applyRulesToPaintValue(pointOpacityValExpr, rules, function(r) { return r && r.paint ? r.paint.pointOpacity : null; });
+      var pointSizeRule = (spec.pointSizeZoom && spec.pointSizeZoom.length >= 2)
+        ? _applyRulesToZoomStops(spec.pointSizeZoom, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.pointSize) : null; })
+        : _applyRulesToPaintValue(pointSizeVal, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.pointSize) : null; });
+      var pointOpacityRule = (spec.pointOpacityZoom && spec.pointOpacityZoom.length >= 2)
+        ? _applyRulesToZoomStops(spec.pointOpacityZoom, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.pointOpacity) : null; })
+        : _applyRulesToPaintValue(pointOpacityValExpr, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.pointOpacity) : null; });
       map.setPaintProperty(circleId, 'circle-color', pointColorVal);
       applyPaintValue(circleId, 'circle-radius', pointSizeRule);
       applyPaintValue(circleId, 'circle-opacity', pointOpacityRule);
@@ -210,7 +231,7 @@
         else map.setLayoutProperty(symbolId, 'icon-size', pointSizeNum / 12);
         var iconColorBase = spec.pointColor || '#58a6ff';
         var iconColorVal = _applyRulesToPaintValue(iconColorBase, rules, function(r) { return r && r.paint ? r.paint.pointColor : null; });
-        var iconOpacityRule = _applyRulesToPaintValue(pointOpacityValExpr, rules, function(r) { return r && r.paint ? r.paint.pointOpacity : null; });
+        var iconOpacityRule = _applyRulesToPaintValue(pointOpacityValExpr, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.pointOpacity) : null; });
         map.setPaintProperty(symbolId, 'icon-color', iconColorVal);
         applyPaintValue(symbolId, 'icon-opacity', iconOpacityRule);
       } catch (e) {}

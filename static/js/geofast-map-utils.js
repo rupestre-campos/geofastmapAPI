@@ -312,6 +312,24 @@
     return expr;
   }
 
+  function _applyRulesToZoomStops(stops, rules, pickValueFn) {
+    if (!stops || stops.length < 2) return null;
+    var flat = [];
+    for (var i = 0; i < stops.length; i++) {
+      var z = Number(stops[i][0]);
+      var v = Number(stops[i][1]);
+      if (!isFinite(z) || !isFinite(v)) continue;
+      flat.push(z, _applyRulesToPaintValue(v, rules, pickValueFn));
+    }
+    return ['interpolate', ['linear'], ['zoom']].concat(flat);
+  }
+
+  function _toNumberOrNull(v) {
+    if (v === undefined || v === null || v === '') return null;
+    var n = (typeof v === 'number') ? v : parseFloat(v);
+    return isFinite(n) ? n : null;
+  }
+
   /**
    * Convert a style_spec (from API or form) to paint values for fill/line/point layers.
    * Returns scalars or MapLibre expressions for zoom-based rules.
@@ -319,21 +337,6 @@
    */
   function specToPaint(spec) {
     spec = spec || {};
-    var fillOpacity = (spec.fillOpacityZoom && spec.fillOpacityZoom.length >= 2)
-      ? zoomStopsToExpression(spec.fillOpacityZoom)
-      : (spec.fillOpacity != null ? spec.fillOpacity : DEFAULT_STYLE_SPEC.fillOpacity);
-    var lineWidth = (spec.lineWidthZoom && spec.lineWidthZoom.length >= 2)
-      ? zoomStopsToExpression(spec.lineWidthZoom)
-      : Math.max(0.5, spec.lineWidth != null ? spec.lineWidth : DEFAULT_STYLE_SPEC.lineWidth);
-    var lineOpacity = (spec.lineOpacityZoom && spec.lineOpacityZoom.length >= 2)
-      ? zoomStopsToExpression(spec.lineOpacityZoom)
-      : (spec.lineOpacity != null ? spec.lineOpacity : DEFAULT_STYLE_SPEC.lineOpacity);
-    var pointRadius = (spec.pointSizeZoom && spec.pointSizeZoom.length >= 2)
-      ? zoomStopsToExpression(spec.pointSizeZoom)
-      : Math.max(1, Math.min(40, spec.pointSize != null ? spec.pointSize : DEFAULT_STYLE_SPEC.pointSize));
-    var pointOpacity = (spec.pointOpacityZoom && spec.pointOpacityZoom.length >= 2)
-      ? zoomStopsToExpression(spec.pointOpacityZoom)
-      : (spec.pointOpacity != null ? spec.pointOpacity : DEFAULT_STYLE_SPEC.pointOpacity);
     var fillEnabled = spec.fillEnabled !== false;
     var lineEnabled = spec.lineEnabled !== false;
     var pointEnabled = spec.pointEnabled !== false;
@@ -341,12 +344,33 @@
     var fillColorBase = spec.fillColor || DEFAULT_STYLE_SPEC.fillColor;
     var lineColorBase = spec.lineColor || DEFAULT_STYLE_SPEC.lineColor;
     var pointColorBase = spec.pointColor || spec.lineColor || DEFAULT_STYLE_SPEC.pointColor;
+    var fillOpacityBase = (spec.fillOpacityZoom && spec.fillOpacityZoom.length >= 2)
+      ? zoomStopsToExpression(spec.fillOpacityZoom)
+      : (spec.fillOpacity != null ? spec.fillOpacity : DEFAULT_STYLE_SPEC.fillOpacity);
+    var lineWidthBase = (spec.lineWidthZoom && spec.lineWidthZoom.length >= 2)
+      ? zoomStopsToExpression(spec.lineWidthZoom)
+      : Math.max(0.5, spec.lineWidth != null ? spec.lineWidth : DEFAULT_STYLE_SPEC.lineWidth);
+    var lineOpacityBase = (spec.lineOpacityZoom && spec.lineOpacityZoom.length >= 2)
+      ? zoomStopsToExpression(spec.lineOpacityZoom)
+      : (spec.lineOpacity != null ? spec.lineOpacity : DEFAULT_STYLE_SPEC.lineOpacity);
+    var pointRadiusBase = (spec.pointSizeZoom && spec.pointSizeZoom.length >= 2)
+      ? zoomStopsToExpression(spec.pointSizeZoom)
+      : Math.max(1, Math.min(40, spec.pointSize != null ? spec.pointSize : DEFAULT_STYLE_SPEC.pointSize));
+    var pointOpacityBase = (spec.pointOpacityZoom && spec.pointOpacityZoom.length >= 2)
+      ? zoomStopsToExpression(spec.pointOpacityZoom)
+      : (spec.pointOpacity != null ? spec.pointOpacity : DEFAULT_STYLE_SPEC.pointOpacity);
     return {
       fillColor: _applyRulesToPaintValue(fillColorBase, rules, function(r) { return r && r.paint ? r.paint.fillColor : null; }),
       lineColor: _applyRulesToPaintValue(lineColorBase, rules, function(r) { return r && r.paint ? r.paint.lineColor : null; }),
-      fillOpacity: _applyRulesToPaintValue(fillOpacity, rules, function(r) { return r && r.paint ? r.paint.fillOpacity : null; }),
-      lineOpacity: _applyRulesToPaintValue(lineOpacity, rules, function(r) { return r && r.paint ? r.paint.lineOpacity : null; }),
-      lineWidth: _applyRulesToPaintValue(lineWidth, rules, function(r) { return r && r.paint ? r.paint.lineWidth : null; }),
+      fillOpacity: (spec.fillOpacityZoom && spec.fillOpacityZoom.length >= 2)
+        ? _applyRulesToZoomStops(spec.fillOpacityZoom, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.fillOpacity) : null; })
+        : _applyRulesToPaintValue(fillOpacityBase, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.fillOpacity) : null; }),
+      lineOpacity: (spec.lineOpacityZoom && spec.lineOpacityZoom.length >= 2)
+        ? _applyRulesToZoomStops(spec.lineOpacityZoom, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.lineOpacity) : null; })
+        : _applyRulesToPaintValue(lineOpacityBase, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.lineOpacity) : null; }),
+      lineWidth: (spec.lineWidthZoom && spec.lineWidthZoom.length >= 2)
+        ? _applyRulesToZoomStops(spec.lineWidthZoom, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.lineWidth) : null; })
+        : _applyRulesToPaintValue(lineWidthBase, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.lineWidth) : null; }),
       lineDash: LINE_DASH[spec.linePattern || 'solid'] || LINE_DASH.solid,
       fillEnabled: fillEnabled,
       fillVisible: fillEnabled,
@@ -355,8 +379,12 @@
       pointEnabled: pointEnabled,
       pointVisible: pointEnabled,
       pointColor: _applyRulesToPaintValue(pointColorBase, rules, function(r) { return r && r.paint ? r.paint.pointColor : null; }),
-      pointRadius: _applyRulesToPaintValue(pointRadius, rules, function(r) { return r && r.paint ? r.paint.pointSize : null; }),
-      pointOpacity: _applyRulesToPaintValue(pointOpacity, rules, function(r) { return r && r.paint ? r.paint.pointOpacity : null; }),
+      pointRadius: (spec.pointSizeZoom && spec.pointSizeZoom.length >= 2)
+        ? _applyRulesToZoomStops(spec.pointSizeZoom, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.pointSize) : null; })
+        : _applyRulesToPaintValue(pointRadiusBase, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.pointSize) : null; }),
+      pointOpacity: (spec.pointOpacityZoom && spec.pointOpacityZoom.length >= 2)
+        ? _applyRulesToZoomStops(spec.pointOpacityZoom, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.pointOpacity) : null; })
+        : _applyRulesToPaintValue(pointOpacityBase, rules, function(r) { return r && r.paint ? _toNumberOrNull(r.paint.pointOpacity) : null; }),
       pointIcon: spec.pointIcon || DEFAULT_STYLE_SPEC.pointIcon
     };
   }

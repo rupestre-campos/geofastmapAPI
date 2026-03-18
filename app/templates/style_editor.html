@@ -485,37 +485,48 @@
         var sel = document.getElementById('vector-style-select');
         var listEl = document.getElementById('vector-style-load-list');
         if (!sel) return Promise.resolve();
+        var loadCollSelect = document.getElementById('load-style-collection');
+        var selectedCollectionId = loadCollSelect ? (loadCollSelect.value || '') : '';
         styleListCache = { '': null };
         while (sel.firstChild) sel.removeChild(sel.firstChild);
         if (listEl) listEl.innerHTML = '';
 
         addItemToList(sel, listEl, '', 'Current', window.GeofastStyleEditor.getCurrentSpec());
 
-        return fetch(publicStylesUrl(), { headers: { 'Accept': 'application/json' } })
-          .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
-          .then(function(data) {
-            var list = data.styles || [];
-            if (list.length && listEl) {
-              var gl = document.createElement('div');
-              gl.className = 'vector-style-load-group-label';
-              gl.textContent = 'Public styles';
-              listEl.appendChild(gl);
-            }
-            list.forEach(function(s) {
-              var val = 'p:' + s.id;
-              addItemToList(sel, listEl, val, s.title || s.id, s.style_spec);
+        var publicPromise = Promise.resolve();
+        // Only show the "Public styles" group when the selector is set to Public styles.
+        if (!selectedCollectionId) {
+          publicPromise = fetch(publicStylesUrl(), { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
+            .then(function(data) {
+              var list = data.styles || [];
+              if (list.length && listEl) {
+                var gl = document.createElement('div');
+                gl.className = 'vector-style-load-group-label';
+                gl.textContent = 'Public styles';
+                listEl.appendChild(gl);
+              }
+              list.forEach(function(s) {
+                var val = 'p:' + s.id;
+                addItemToList(sel, listEl, val, s.title || s.id, s.style_spec);
+              });
             });
-            return fetch(base + '/collections', { headers: { 'Accept': 'application/json' } });
-          })
+        }
+
+        return publicPromise.then(function() {
+          return fetch(base + '/collections', { headers: { 'Accept': 'application/json' } });
+        })
           .then(function(r) { return r.ok ? r.json() : { collections: [] }; })
           .then(function(data) {
             var colls = data.collections || [];
-            var loadCollSelect = document.getElementById('load-style-collection');
+            var prevLoadVal = loadCollSelect ? loadCollSelect.value : '';
             if (loadCollSelect) {
               while (loadCollSelect.options.length > 1) loadCollSelect.remove(1);
               colls.forEach(function(c) {
                 loadCollSelect.add(new Option(c.id || c.title || c.id, c.id));
               });
+              // Preserve selection across refreshes (otherwise it resets to "Public styles")
+              loadCollSelect.value = prevLoadVal || '';
             }
             var saveCollSelect = document.getElementById('save-style-collection');
             if (saveCollSelect) {
@@ -524,17 +535,20 @@
                 saveCollSelect.add(new Option(c.id || c.title || c.id, c.id));
               });
             }
+            // Which collection styles to show in the Load dropdown:
+            // - If "Public styles" is selected (value=""), show styles for layers currently on the map (if any).
+            // - If a collection is selected, show that collection's styles (plus any layers on the map).
             var collectionsToFetch = [];
+            var seen2 = {};
             if (styleEditorState.layersOnMap && styleEditorState.layersOnMap.length > 0) {
-              var seen = {};
               styleEditorState.layersOnMap.forEach(function(e) {
-                if (!seen[e.collectionId]) {
-                  seen[e.collectionId] = e.name || e.collectionId;
-                  collectionsToFetch.push({ id: e.collectionId, name: seen[e.collectionId] });
+                if (e && e.collectionId && !seen2[e.collectionId]) {
+                  seen2[e.collectionId] = e.name || e.collectionId;
+                  collectionsToFetch.push({ id: e.collectionId, name: seen2[e.collectionId] });
                 }
               });
             }
-            if (collectionsToFetch.length === 0 && loadCollSelect && loadCollSelect.value) {
+            if (loadCollSelect && loadCollSelect.value && !seen2[loadCollSelect.value]) {
               var opt = loadCollSelect.options[loadCollSelect.selectedIndex];
               collectionsToFetch.push({ id: loadCollSelect.value, name: opt ? opt.text : loadCollSelect.value });
             }
@@ -568,11 +582,35 @@
       var loadTrigger = document.getElementById('vector-style-load-trigger');
       var loadList = document.getElementById('vector-style-load-list');
       if (loadTrigger && loadList) {
+        function positionLoadStyleDropdown() {
+          if (!loadList.classList.contains('open')) return;
+          var r = loadTrigger.getBoundingClientRect();
+          var vh = window.innerHeight || document.documentElement.clientHeight || 0;
+          var spaceBelow = Math.max(0, vh - r.bottom - 8);
+          var spaceAbove = Math.max(0, r.top - 8);
+          var openUp = spaceBelow < 180 && spaceAbove > spaceBelow;
+          if (openUp) {
+            loadList.style.top = 'auto';
+            loadList.style.bottom = '100%';
+            loadList.style.marginTop = '0';
+            loadList.style.marginBottom = '2px';
+            loadList.style.maxHeight = Math.max(120, Math.min(360, spaceAbove)) + 'px';
+          } else {
+            loadList.style.bottom = 'auto';
+            loadList.style.top = '100%';
+            loadList.style.marginBottom = '0';
+            loadList.style.marginTop = '2px';
+            loadList.style.maxHeight = Math.max(120, Math.min(360, spaceBelow)) + 'px';
+          }
+        }
         loadTrigger.onclick = function(e) {
           e.stopPropagation();
           loadList.classList.toggle('open');
           loadTrigger.setAttribute('aria-expanded', loadList.classList.contains('open'));
+          positionLoadStyleDropdown();
         };
+        window.addEventListener('resize', positionLoadStyleDropdown);
+        window.addEventListener('scroll', positionLoadStyleDropdown, true);
         document.addEventListener('click', function() {
           loadList.classList.remove('open');
           loadTrigger.setAttribute('aria-expanded', 'false');
@@ -626,6 +664,11 @@
         });
       }
       function showStyleSharing(collectionId, styleId, visibility, styleUrl) {
+        if (!canSaveStyles) {
+          var w = document.getElementById('style-sharing-wrap');
+          if (w) w.style.display = 'none';
+          return;
+        }
         var sharesUrl, patchUrl;
         if (collectionId) {
           sharesUrl = base + '/collections/' + encodeURIComponent(collectionId) + '/styles/' + encodeURIComponent(styleId) + '/shares';

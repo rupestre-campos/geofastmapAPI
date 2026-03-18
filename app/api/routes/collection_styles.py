@@ -102,10 +102,15 @@ async def list_collection_styles(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     base = _base_url(request)
     items = await styles_crud.list_collection_styles(db, collection_id)
-    visible = []
-    for s in items:
-        if await can_see_style(db, getattr(s, "owner_id", None), getattr(s, "visibility", "private"), collection_id, s.id, current_user):
-            visible.append(s)
+    # If the collection is visible to anonymous users, then its styles list is readable too.
+    # (We already checked can_see_collection above; for anonymous users that implies public visibility.)
+    if current_user is None:
+        visible = list(items)
+    else:
+        visible = []
+        for s in items:
+            if await can_see_style(db, getattr(s, "owner_id", None), getattr(s, "visibility", "private"), collection_id, s.id, current_user):
+                visible.append(s)
     return StyleList(
         styles=[_style_to_read(base, s, collection_id) for s in visible],
         links=[
@@ -130,11 +135,15 @@ async def get_collection_style(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_see_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     style_obj = await styles_crud.get_collection_style(db, collection_id, style_id)
     if not style_obj:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Style not found")
-    if not await can_see_style(db, getattr(style_obj, "owner_id", None), getattr(style_obj, "visibility", "private"), collection_id, style_id, current_user):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Style not found")
+    # If anonymous can see the collection, it can read its styles too.
+    if current_user is not None:
+        if not await can_see_style(db, getattr(style_obj, "owner_id", None), getattr(style_obj, "visibility", "private"), collection_id, style_id, current_user):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Style not found")
     base = _base_url(request)
     cid = style_obj.collection_id or collection_id
     return _style_to_read(base, style_obj, cid)

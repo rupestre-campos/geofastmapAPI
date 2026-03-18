@@ -1,4 +1,12 @@
-"""Auth: login, logout, change password, admin user management."""
+"""Auth: login, logout, change password, admin user management.
+
+Includes basic brute-force protection for login attempts (per IP).
+"""
+
+from __future__ import annotations
+
+import threading
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
@@ -13,6 +21,107 @@ from app.models.user import User
 from app.schemas.user import PasswordChange, UserCreate, UserUpdate, UserRead
 
 router = APIRouter()
+
+_LOGIN_ATTEMPTS_LOCK = threading.Lock()
+_LOGIN_ATTEMPTS_MEM: dict[str, list[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    # Prefer X-Forwarded-For when behind a proxy (first IP).
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    host = getattr(getattr(request, "client", None), "host", None)
+    return host or "unknown"
+
+
+def _attempts_key(ip: str) -> str:
+    return f"geofast:auth:login_fail:{ip}"
+
+
+def _prune_attempts(ts: list[float], now: float, window_s: int) -> list[float]:
+    cutoff = now - window_s
+    return [t for t in ts if t >= cutoff]
+
+
+def _is_blocked_and_register_failure(request: Request, *, register_failure: bool) -> tuple[bool, int]:
+    """
+    Returns (blocked, retry_after_seconds).
+    Uses Redis if configured, else in-memory.
+    """
+    settings = get_settings()
+    ip = _client_ip(request)
+    now = time.time()
+    window_s = 60
+    max_failures = 8
+    block_s = 300  # 5 minutes
+
+    if settings.bulk_queue_type == "redis" and settings.redis_url:
+        try:
+            import redis
+
+            r = redis.from_url(settings.redis_url, decode_responses=True)
+            key = _attempts_key(ip)
+            # If blocked marker exists, block.
+            blocked_key = key + ":blocked"
+            ttl = r.ttl(blocked_key)
+            if ttl and ttl > 0:
+                return True, int(ttl)
+            # Keep a rolling window list of timestamps.
+            # Use a Redis list: LPUSH now, LTRIM, then remove old by scanning a small list.
+            # We'll store as float seconds strings.
+            if register_failure:
+                r.lpush(key, str(now))
+                r.ltrim(key, 0, max_failures * 2)
+                r.expire(key, window_s + block_s)
+            raw = r.lrange(key, 0, max_failures * 2)
+            ts = []
+            for s in raw:
+                try:
+                    ts.append(float(s))
+                except Exception:
+                    pass
+            ts = [t for t in ts if t >= now - window_s]
+            if len(ts) >= max_failures:
+                r.set(blocked_key, "1", ex=block_s)
+                return True, block_s
+            return False, 0
+        except Exception:
+            # Fall back to in-memory
+            pass
+
+    with _LOGIN_ATTEMPTS_LOCK:
+        ts = _LOGIN_ATTEMPTS_MEM.get(ip, [])
+        ts = _prune_attempts(ts, now, window_s)
+        if register_failure:
+            ts.append(now)
+        _LOGIN_ATTEMPTS_MEM[ip] = ts
+        if len(ts) >= max_failures:
+            # Record block as a timestamp in the future (store as negative marker).
+            _LOGIN_ATTEMPTS_MEM[ip] = [now + block_s]
+            return True, block_s
+        # If we stored a single future timestamp marker, block until it passes.
+        if len(ts) == 1 and ts[0] > now and (now + window_s) < ts[0]:
+            return True, int(ts[0] - now)
+    return False, 0
+
+
+def _clear_failures(request: Request) -> None:
+    settings = get_settings()
+    ip = _client_ip(request)
+    if settings.bulk_queue_type == "redis" and settings.redis_url:
+        try:
+            import redis
+
+            r = redis.from_url(settings.redis_url, decode_responses=True)
+            key = _attempts_key(ip)
+            r.delete(key)
+            r.delete(key + ":blocked")
+            return
+        except Exception:
+            pass
+    with _LOGIN_ATTEMPTS_LOCK:
+        _LOGIN_ATTEMPTS_MEM.pop(ip, None)
 
 
 def _base_url(request: Request) -> str:
@@ -35,6 +144,17 @@ async def login_post(
     db: AsyncSession = Depends(get_db),
 ):
     """Process login: set session and redirect. Form fields: username, password, next."""
+    blocked, retry_after = _is_blocked_and_register_failure(request, register_failure=False)
+    if blocked:
+        # Keep response generic; do not reveal anything about username validity.
+        return html_response(
+            "login.html",
+            base=_base_url(request),
+            next_url=request.query_params.get("next", ""),
+            error=f"Too many login attempts. Try again in {retry_after}s.",
+            username=None,
+            is_admin=False,
+        )
     form = await request.form()
     username = (form.get("username") or "").strip()
     password = form.get("password") or ""
@@ -46,10 +166,13 @@ async def login_post(
         return html_response("login.html", base=base, next_url=next_url, error="Username required", username=None, is_admin=False)
     user = await user_crud.get_user_by_username(db, username)
     if not user:
+        _is_blocked_and_register_failure(request, register_failure=True)
         return html_response("login.html", base=base, next_url=next_url, error="Invalid username or password", username=None, is_admin=False)
     from app.core.auth import verify_password
     if not verify_password(password, user.password_hash):
+        _is_blocked_and_register_failure(request, register_failure=True)
         return html_response("login.html", base=base, next_url=next_url, error="Invalid username or password", username=None, is_admin=False)
+    _clear_failures(request)
     session = request.scope.get("session")
     if session is not None:
         session["username"] = user.username
