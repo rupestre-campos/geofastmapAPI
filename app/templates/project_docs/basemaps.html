@@ -1,0 +1,26 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Basemaps – Documentation – GeoFast API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Basemaps</h2>
+    <p class="meta">
+      Basemaps are background tile sources (raster or vector) used in the UI for context (OSM, satellite, etc.).
+      GeoFast manages a basemap catalog and exposes it to the frontend.
+    </p>
+
+    <h3>What a basemap definition includes</h3>
+    <ul>
+      <li><strong>Name</strong> and optional attribution/labels.</li>
+      <li><strong>Tile URLs</strong> and zoom range.</li>
+      <li><strong>Optional API keys</strong> depending on the provider.</li>
+    </ul>
+
+    <h3>Operational notes</h3>
+    <ul>
+      <li>Basemap providers have rate limits and usage policies—ensure you comply.</li>
+      <li>For production, prefer stable providers and cache where allowed.</li>
+    </ul>
+  </div>
+{% endblock %}
+

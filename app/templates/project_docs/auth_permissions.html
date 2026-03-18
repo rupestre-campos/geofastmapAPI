@@ -1,0 +1,44 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Auth & Permissions – Documentation – GeoFast API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Authentication &amp; permissions</h2>
+    <p class="meta">
+      GeoFast supports HTML sessions for UI pages and HTTP Basic for API clients. Authorization is applied consistently across collections, maps, styles, and jobs.
+    </p>
+
+    <h3>Authentication modes</h3>
+    <ul>
+      <li><strong>Session (HTML)</strong>: login sets a session cookie and UI pages use it to render logged-in state.</li>
+      <li><strong>HTTP Basic (API)</strong>: API clients can send <code>Authorization: Basic ...</code>.</li>
+    </ul>
+
+    <h3>Visibility model</h3>
+    <ul>
+      <li><strong>private</strong>: only owner + explicit shares.</li>
+      <li><strong>logged</strong>: any authenticated user can see.</li>
+      <li><strong>public</strong>: anyone can see.</li>
+    </ul>
+
+    <h3>Sharing</h3>
+    <ul>
+      <li>Shares are stored in <code>resource_shares</code> with a <strong>role</strong>: <code>viewer</code> or <code>editor</code>.</li>
+      <li>Editors can modify the resource; viewers can only see it.</li>
+      <li>Admins are special: they can see and manage everything (and are intentionally excluded from editor lists in the UI).</li>
+    </ul>
+
+    <h3>Jobs ownership</h3>
+    <ul>
+      <li>Jobs are filtered by <code>owner_id</code> for non-admin users.</li>
+      <li>Jobs with <code>owner_id = NULL</code> are treated as admin-only to avoid leaking legacy jobs.</li>
+    </ul>
+
+    <h3>Security notes</h3>
+    <ul>
+      <li>Login has basic brute-force protection (rate limiting by IP).</li>
+      <li>Public endpoints should be evaluated for performance impact (especially dynamic tiles).</li>
+    </ul>
+  </div>
+{% endblock %}
+

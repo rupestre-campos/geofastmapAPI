@@ -1,0 +1,35 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Troubleshooting – Documentation – GeoFast API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Troubleshooting</h2>
+
+    <h3>“Job not found” (404) when opening a job</h3>
+    <ul>
+      <li>Non-admin users can only see jobs they own.</li>
+      <li>If a job was created with <code>owner_id = NULL</code>, it may appear admin-only.</li>
+      <li>Fix: ensure job creation paths pass <code>owner_id</code> (especially worker-created follow-up jobs like post-import tile builds).</li>
+    </ul>
+
+    <h3>Jobs stuck in “pending”</h3>
+    <ul>
+      <li>Worker process is down or not consuming the queue.</li>
+      <li>Redis connection issues or misconfiguration.</li>
+    </ul>
+
+    <h3>Style editor: layer appears but console shows MapLibre expression errors</h3>
+    <ul>
+      <li>MapLibre requires <code>["zoom"]</code> to be input to a top-level <code>step</code>/<code>interpolate</code>.</li>
+      <li>Fix: keep zoom expressions top-level and apply attribute rules inside zoom-stop values.</li>
+    </ul>
+
+    <h3>Slow dynamic tiles</h3>
+    <ul>
+      <li>Check for unbounded filters or expensive full-text searches.</li>
+      <li>Prefer bbox + selective filters; add indexes where appropriate.</li>
+      <li>Consider switching to static tiles for heavy browse use.</li>
+    </ul>
+  </div>
+{% endblock %}
+

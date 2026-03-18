@@ -14,6 +14,12 @@
       <li>Some jobs can be cancelled (e.g. pending tile builds).</li>
     </ul>
 
+    <h3>Job storage</h3>
+    <ul>
+      <li>GeoFast stores job metadata either in Redis or in-memory depending on configuration.</li>
+      <li>In production, Redis is recommended so job status survives process restarts.</li>
+    </ul>
+
     <h3>Queues and storage</h3>
     <ul>
       <li>Redis is used for worker queues and durable job metadata in production-like setups.</li>
@@ -24,6 +30,13 @@
     <ul>
       <li>Jobs created from UI actions should carry the user’s <code>owner_id</code>.</li>
       <li>Legacy jobs without an owner are treated as admin-only for safety.</li>
+    </ul>
+
+    <h3>Common issues</h3>
+    <ul>
+      <li><strong>“Job not found” for a logged-in user</strong>: typically means the job has no owner_id or belongs to another user.</li>
+      <li><strong>Jobs stuck in pending</strong>: indicates the corresponding worker is down or not consuming its queue.</li>
+      <li><strong>Tile builds re-queued</strong>: safety logic may allow re-queue if a build appears stuck for too long.</li>
     </ul>
   </div>
 {% endblock %}

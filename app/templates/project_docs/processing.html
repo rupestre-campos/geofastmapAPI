@@ -1,0 +1,27 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Processing – Documentation – GeoFast API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Processing (OGC API - Processes)</h2>
+    <p class="meta">
+      Processing endpoints run geometry operations (intersection, erase, buffer, etc.) as asynchronous jobs.
+      Results are written into collections (new or existing, depending on the operation).
+    </p>
+
+    <h3>How it works</h3>
+    <ul>
+      <li>The UI submits a process request with input collection ids (and sometimes feature ids).</li>
+      <li>A job is created and enqueued.</li>
+      <li>The worker performs DB-side geometry work and writes results.</li>
+      <li>Optionally, a static tile build can be queued for the result collection.</li>
+    </ul>
+
+    <h3>Common limitations</h3>
+    <ul>
+      <li>Large geometry operations can be expensive; use bounding boxes and filtering when possible.</li>
+      <li>Result collections can be big—consider tile build settings and attribute selection.</li>
+    </ul>
+  </div>
+{% endblock %}
+

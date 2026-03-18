@@ -1,0 +1,27 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Maps – Documentation – GeoFast API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Maps</h2>
+    <p class="meta">
+      A “map” is a saved composition: it references one or more collections (layers) plus styling choices.
+      Maps are stored in the database and can be shared similarly to collections.
+    </p>
+
+    <h3>What a map contains</h3>
+    <ul>
+      <li><strong>Name/description</strong>: human metadata.</li>
+      <li><strong>Definition JSON</strong>: layer ordering and configuration (collection ids, styles, etc.).</li>
+      <li><strong>Visibility</strong>: private/logged/public.</li>
+      <li><strong>viewer_can_edit</strong>: when enabled, any user who can see the map can edit it (use with care).</li>
+    </ul>
+
+    <h3>Performance notes</h3>
+    <ul>
+      <li>Map performance depends on the underlying collections’ tiles (static recommended for heavy use).</li>
+      <li>Keep the number of visible layers reasonable on initial load.</li>
+    </ul>
+  </div>
+{% endblock %}
+

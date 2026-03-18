@@ -13,15 +13,22 @@
     <ul>
       <li><strong>What</strong>: a tile file is generated for a collection and served repeatedly.</li>
       <li><strong>When to use</strong>: large datasets, repeated access, production “browse” use cases.</li>
-      <li><strong>How it’s built</strong>: a background job runs a tile builder with your chosen options (zoom levels, simplification strategy, attribute selection, etc.).</li>
-      <li><strong>Where configured</strong>: the “Build static tiles” page for a collection.</li>
+      <li><strong>How it’s built</strong>: a background job runs the tile builder with your chosen options (zoom levels, simplification strategy, attribute selection, etc.).</li>
+      <li><strong>Where configured</strong>: the “Build static tiles” page for a collection (<code>/collections/&lt;id&gt;/tiles/build?f=html</code>).</li>
+      <li><strong>What you get</strong>: consistent performance for map browsing and style-editor previews (tiles are just read from disk).</li>
     </ul>
 
     <h3>Dynamic tiles (query-time)</h3>
     <ul>
       <li><strong>What</strong>: tiles are generated per request from Postgres queries.</li>
       <li><strong>When to use</strong>: ad-hoc filtering, interactive exploration, small-to-medium datasets, or when you cannot prebuild tiles.</li>
-      <li><strong>Trade-offs</strong>: more CPU/DB load; performance depends heavily on filters, indexes, and request patterns.</li>
+      <li><strong>Trade-offs</strong>: more CPU/DB load; performance depends heavily on indexes, filter selectivity, and request patterns.</li>
+    </ul>
+
+    <h3>How requests flow</h3>
+    <ul>
+      <li><strong>Static</strong>: MapLibre requests <code>{z}/{x}/{y}</code> → GeoFast reads from the prebuilt tiles file → returns bytes.</li>
+      <li><strong>Dynamic</strong>: MapLibre requests <code>{z}/{x}/{y}</code> (+ query params) → GeoFast builds a SQL query → encodes features into MVT → returns bytes.</li>
     </ul>
 
     <h3>Tile build options (what they mean)</h3>
@@ -29,6 +36,13 @@
       <li><strong>Min/Max zoom</strong>: controls tile resolution. Higher max zoom increases output size and build time.</li>
       <li><strong>Attributes include/exclude</strong>: controlling properties reduces tile size and improves render performance.</li>
       <li><strong>Simplification</strong>: reduces geometry complexity at low zooms; improves speed and size but can reduce precision.</li>
+    </ul>
+
+    <h3>Practical guidance</h3>
+    <ul>
+      <li>Start with conservative zooms (e.g. max 12–14) and only increase if needed.</li>
+      <li>Prefer excluding large or low-value attributes (long strings, verbose JSON blobs) from tiles.</li>
+      <li>For polygons: simplification can greatly reduce size at low zooms without changing user-visible results much.</li>
     </ul>
 
     <h3>Limitations &amp; operational notes</h3>

@@ -16,12 +16,43 @@
       <li>These pages are HTML-only and are not listed in OpenAPI, by design.</li>
     </ul>
 
+    <h3>Architecture (high level)</h3>
+    <ul>
+      <li><strong>FastAPI</strong> serves both JSON endpoints and HTML pages (Jinja templates).</li>
+      <li><strong>PostgreSQL/PostGIS</strong> stores feature geometry + properties and most metadata (collections, maps, styles, shares).</li>
+      <li><strong>Redis</strong> powers worker queues and job metadata when configured (recommended for production).</li>
+      <li><strong>MapLibre GL JS</strong> renders vector tiles and applies styles in the browser.</li>
+    </ul>
+
+    <h3>Core concepts</h3>
+    <ul>
+      <li><strong>Collection</strong>: a dataset/layer identified by <code>collection_id</code>.</li>
+      <li><strong>Item/feature</strong>: one row with geometry + properties inside a collection.</li>
+      <li><strong>Style</strong>: a paint “spec” used by the style editor (plus advanced rules and zoom stops).</li>
+      <li><strong>Map</strong>: a saved composition referencing collections and styles.</li>
+      <li><strong>Job</strong>: asynchronous work (imports, tile builds, processing).</li>
+    </ul>
+
     <h3>Core building blocks</h3>
     <ul>
       <li><strong>FastAPI + Jinja templates</strong>: API + HTML UI pages.</li>
       <li><strong>PostgreSQL/PostGIS</strong>: features and metadata storage; features are partitioned by <code>collection_id</code>.</li>
       <li><strong>Redis</strong>: queues + job store (and some caching).</li>
       <li><strong>MapLibre GL JS</strong>: rendering in the browser (style editor, map viewer).</li>
+    </ul>
+
+    <h3>What we optimize for</h3>
+    <ul>
+      <li><strong>Fast browsing</strong> of large datasets via vector tiles.</li>
+      <li><strong>Predictable performance</strong> by pushing expensive work to background jobs when possible (static tiles).</li>
+      <li><strong>Simple sharing model</strong>: owner + visibility + explicit editor/viewer shares.</li>
+    </ul>
+
+    <h3>Common limits / footguns</h3>
+    <ul>
+      <li>Dynamic tiles can overload the DB if users do unbounded filtering or expensive searches.</li>
+      <li>Static tiles need rebuilds after large data updates.</li>
+      <li>Very large properties payloads inflate tile size (prefer attribute include/exclude).</li>
     </ul>
 
     <div class="callout">

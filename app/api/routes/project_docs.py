@@ -72,3 +72,63 @@ async def docs_style_editor(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html")
     return html_response("project_docs/style_editor.html", **_ctx(request, current_user))
 
+
+@router.get("/project-docs/auth-permissions", summary="Docs: auth & permissions")
+async def docs_auth_permissions(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html")
+    return html_response("project_docs/auth_permissions.html", **_ctx(request, current_user))
+
+
+@router.get("/project-docs/maps", summary="Docs: maps")
+async def docs_maps(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html")
+    return html_response("project_docs/maps.html", **_ctx(request, current_user))
+
+
+@router.get("/project-docs/basemaps", summary="Docs: basemaps")
+async def docs_basemaps(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html")
+    return html_response("project_docs/basemaps.html", **_ctx(request, current_user))
+
+
+@router.get("/project-docs/processing", summary="Docs: processing")
+async def docs_processing(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html")
+    return html_response("project_docs/processing.html", **_ctx(request, current_user))
+
+
+@router.get("/project-docs/deployment-performance", summary="Docs: deployment & performance")
+async def docs_deployment_performance(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html")
+    return html_response("project_docs/deployment_performance.html", **_ctx(request, current_user))
+
+
+@router.get("/project-docs/troubleshooting", summary="Docs: troubleshooting")
+async def docs_troubleshooting(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html")
+    return html_response("project_docs/troubleshooting.html", **_ctx(request, current_user))
+

@@ -12,12 +12,14 @@
     <ul>
       <li>Features live in Postgres and are partitioned by <code>collection_id</code> for performance.</li>
       <li>Collections keep a cached <code>feature_count</code> for fast listing.</li>
+      <li>Geometry is stored as PostGIS geometry; properties are stored as JSON.</li>
     </ul>
 
     <h3>Importing data</h3>
     <ul>
       <li>Bulk import runs asynchronously (job-based).</li>
       <li>Optionally you can queue a static tile build after import completes.</li>
+      <li>Import modes typically include <strong>append</strong> (add features) and <strong>replace</strong> (delete then import).</li>
     </ul>
 
     <h3>Visibility &amp; sharing</h3>
@@ -32,6 +34,14 @@
     <ul>
       <li>Item listing supports bbox, structured filters, and (in some contexts) full-text search across properties.</li>
       <li>Short full-text queries can be expensive; minimum lengths may be enforced to protect performance.</li>
+      <li>When performance matters, prefer filters on indexed properties and bounding boxes.</li>
+    </ul>
+
+    <h3>Operational tips</h3>
+    <ul>
+      <li>Use static tiles for “browse” and public maps; use dynamic tiles for ad-hoc filtering workflows.</li>
+      <li>After large imports, rebuild static tiles and recompute extents to keep UI fast and accurate.</li>
+      <li>Keep property payloads lean (especially on tiles); huge properties degrade both DB and client performance.</li>
     </ul>
   </div>
 {% endblock %}

@@ -1,0 +1,35 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Deployment & Performance – Documentation – GeoFast API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Deployment &amp; performance</h2>
+    <p class="meta">
+      This section focuses on practical knobs: what to scale, what to cache, and how to avoid common performance pitfalls.
+    </p>
+
+    <h3>Recommended production shape</h3>
+    <ul>
+      <li><strong>API</strong>: FastAPI behind a reverse proxy.</li>
+      <li><strong>DB</strong>: Postgres/PostGIS with adequate RAM and SSD storage.</li>
+      <li><strong>Redis</strong>: enabled for queues and job metadata.</li>
+      <li><strong>Workers</strong>: separate processes for bulk import and tile builds.</li>
+    </ul>
+
+    <h3>What to scale</h3>
+    <ul>
+      <li><strong>DB CPU/RAM</strong>: dynamic tiles and complex queries are DB-heavy.</li>
+      <li><strong>Worker CPU</strong>: tile builds and bulk imports are compute-heavy.</li>
+      <li><strong>I/O</strong>: static tiles are file reads; fast storage helps.</li>
+    </ul>
+
+    <h3>Performance best practices</h3>
+    <ul>
+      <li>Prefer <strong>static tiles</strong> for large datasets and public browsing.</li>
+      <li>Keep tile properties small (exclude large fields).</li>
+      <li>Enforce sane limits for expensive searches (e.g., min length for full-text search).</li>
+      <li>Use partitioning and indexes for predictable query performance.</li>
+    </ul>
+  </div>
+{% endblock %}
+
