@@ -91,6 +91,8 @@ async def get_tile_build_page(
     return html_response(
         "tile_build.html",
         base=base,
+        username=current_user.username if current_user else None,
+        is_admin=current_user.is_admin if current_user else False,
         collection_id=collection_id,
         collection_title=collection.title or collection_id,
         default_min_zoom=settings.tippecanoe_minzoom,

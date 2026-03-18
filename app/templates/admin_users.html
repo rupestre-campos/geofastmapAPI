@@ -21,15 +21,138 @@
             <th>Username</th>
             <th>Admin</th>
             <th>Must change password</th>
+            <th class="meta">Collections</th>
+            <th class="meta">Maps</th>
+            <th class="meta">Features</th>
+            <th class="meta">DB size</th>
+            <th class="meta">Tiles size</th>
             <th class="col-actions">Actions</th>
           </tr>
         </thead>
         <tbody>
           {% for u in users %}
           <tr>
-            <td>{{ u.username }}</td>
+            <td>
+              <details>
+                <summary style="cursor:pointer;">
+                  <strong>{{ u.username }}</strong>
+                </summary>
+                <div style="margin-top:10px;">
+                  <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom: 10px;">
+                    <form method="post" action="{{ base }}/auth/users/{{ u.id }}/reset-tiles" style="display:inline;">
+                      <button type="submit" class="btn btn-sm" onclick="return confirm('Delete static tiles for ALL collections owned by {{ u.username }}?');">Reset tiles</button>
+                    </form>
+                    <a href="{{ base }}/auth/users/{{ u.id }}/edit?f=html" class="btn btn-sm">Edit user</a>
+                    <form method="post" action="{{ base }}/auth/users/{{ u.id }}/delete" style="display:inline;">
+                      <button type="submit" class="btn btn-sm" style="border-color: rgba(248,81,73,0.6); color: var(--danger);" onclick="return confirm('Delete user {{ u.username }}?');">Delete user</button>
+                    </form>
+                  </div>
+
+                  <div class="layers-table-wrap" style="margin-bottom:10px;">
+                    <table>
+                      <thead>
+                        <tr><th colspan="3">Maps owned by {{ u.username }}</th></tr>
+                        <tr><th>Map</th><th class="meta">Visibility</th><th class="meta">Editors</th></tr>
+                      </thead>
+                      <tbody>
+                        {% for m in u.maps %}
+                        <tr>
+                          <td>
+                            <strong>{{ m.name }}</strong>
+                            <div class="meta">{{ m.id }}</div>
+                          </td>
+                          <td class="meta">
+                            {{ m.visibility }}
+                            {% if m.viewer_can_edit %}<div class="meta">viewer_can_edit</div>{% endif %}
+                          </td>
+                          <td>
+                            {% if m.editors and m.editors|length %}
+                            <form method="post" action="{{ base }}/auth/users/{{ u.id }}/maps/{{ m.id }}/editors/remove" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                              <select name="username">
+                                {% for eu in m.editors %}
+                                <option value="{{ eu }}">{{ eu }}</option>
+                                {% endfor %}
+                              </select>
+                              <button type="submit" class="btn btn-sm" onclick="return confirm('Remove editor access for selected user?');">Remove</button>
+                            </form>
+                            {% else %}
+                            <span class="meta">—</span>
+                            {% endif %}
+                          </td>
+                        </tr>
+                        {% endfor %}
+                        {% if not u.maps %}
+                        <tr><td colspan="3" class="meta">No maps owned.</td></tr>
+                        {% endif %}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div class="layers-table-wrap">
+                    <table>
+                      <thead>
+                        <tr><th colspan="7">Collections owned by {{ u.username }}</th></tr>
+                        <tr>
+                          <th>Collection</th>
+                          <th class="meta">Features</th>
+                          <th class="meta">Visibility</th>
+                          <th class="meta">Editors</th>
+                          <th class="meta">DB size</th>
+                          <th class="meta">Tiles size</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {% for c in u.collections %}
+                        <tr>
+                          <td><strong>{{ c.id }}</strong>{% if c.title %}<div class="meta">{{ c.title }}</div>{% endif %}</td>
+                          <td class="meta">{{ c.feature_count }}</td>
+                          <td class="meta">
+                            {{ c.visibility }}
+                            {% if c.viewer_can_edit %}<div class="meta">viewer_can_edit</div>{% endif %}
+                          </td>
+                          <td>
+                            {% if c.editors and c.editors|length %}
+                            <form method="post" action="{{ base }}/auth/users/{{ u.id }}/collections/{{ c.id }}/editors/remove" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                              <select name="username">
+                                {% for eu in c.editors %}
+                                <option value="{{ eu }}">{{ eu }}</option>
+                                {% endfor %}
+                              </select>
+                              <button type="submit" class="btn btn-sm" onclick="return confirm('Remove editor access for selected user?');">Remove</button>
+                            </form>
+                            {% else %}
+                            <span class="meta">—</span>
+                            {% endif %}
+                          </td>
+                          <td class="meta">{{ c.db_size_h }}</td>
+                          <td class="meta">{{ c.tiles_size_h }}</td>
+                          <td style="white-space:nowrap;">
+                            <form method="post" action="{{ base }}/auth/users/{{ u.id }}/collections/{{ c.id }}/delete-tiles" style="display:inline;">
+                              <button type="submit" class="btn btn-sm" onclick="return confirm('Delete static tiles for {{ c.id }}?');">Delete tiles</button>
+                            </form>
+                            <form method="post" action="{{ base }}/auth/users/{{ u.id }}/collections/{{ c.id }}/delete" style="display:inline;">
+                              <button type="submit" class="btn btn-sm" style="border-color: rgba(248,81,73,0.6); color: var(--danger);" onclick="return confirm('Delete collection {{ c.id }}? This can’t be undone.');">Delete layer</button>
+                            </form>
+                          </td>
+                        </tr>
+                        {% endfor %}
+                        {% if not u.collections %}
+                        <tr><td colspan="7" class="meta">No collections owned.</td></tr>
+                        {% endif %}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </details>
+            </td>
             <td>{{ 'Yes' if u.is_admin else 'No' }}</td>
             <td>{{ 'Yes' if u.must_change_password else 'No' }}</td>
+            <td class="meta">{{ u.summary.total_collections }}</td>
+            <td class="meta">{{ u.summary.total_maps }}</td>
+            <td class="meta">{{ u.summary.total_features }}</td>
+            <td class="meta">{{ u.summary.total_db_size_h }}</td>
+            <td class="meta">{{ u.summary.total_tiles_size_h }}</td>
             <td class="col-actions">
               <a href="{{ base }}/auth/users/{{ u.id }}/edit?f=html" class="btn btn-sm">Edit</a>
             </td>
@@ -47,5 +170,7 @@
     .collections-table th { text-align: left; padding: 8px 10px; font-weight: 600; font-size: 0.85rem; color: var(--text-secondary); border-bottom: 1px solid var(--border); }
     .collections-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
     .collections-table .col-actions { width: 10em; }
+    details > summary { list-style: none; }
+    details > summary::-webkit-details-marker { display: none; }
   </style>
 {% endblock %}

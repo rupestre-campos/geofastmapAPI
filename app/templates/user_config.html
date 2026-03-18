@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block title %}User config – GeoFast API{% endblock %}
+
+{% block content %}
+  <style>
+    /* Keep big tables contained inside the card (like other pages). */
+    .user-config-table-scroll {
+      overflow: auto;
+      max-height: min(60vh, 520px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      -webkit-overflow-scrolling: touch;
+    }
+    .user-config-table-scroll table { margin: 0; min-width: 100%; }
+    .user-config-table-scroll thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--card);
+      box-shadow: 0 1px 0 var(--border);
+    }
+  </style>
+
+  <header class="page-header">
+    <h1>User config</h1>
+    <p class="meta">Usage summary and maintenance tools for your owned collections.</p>
+  </header>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Summary</h2>
+    </div>
+    <div class="layers-table-wrap">
+      <table>
+        <tbody>
+          <tr><th>Total collections owned</th><td>{{ summary.total_collections }}</td></tr>
+          <tr><th>Total maps owned</th><td>{{ summary.total_maps }}</td></tr>
+          <tr><th>Total features (owned collections)</th><td>{{ summary.total_features }}</td></tr>
+          <tr><th>Total styles (in owned collections)</th><td>{{ summary.total_styles_in_owned_collections }}</td></tr>
+          <tr><th>Total DB size (owned collections)</th><td>{{ summary.total_db_size_h }}</td></tr>
+          <tr><th>Total tiles size (owned collections)</th><td>{{ summary.total_tiles_size_h }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Maps you own</h2>
+    <div class="layers-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Map</th>
+            <th class="meta">Visibility</th>
+            <th class="meta">Editors</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in maps %}
+          <tr>
+            <td>
+              <strong>{{ m.name }}</strong>
+              <div class="meta">{{ m.id }}</div>
+              {% if m.description %}<div class="meta">{{ m.description }}</div>{% endif %}
+            </td>
+            <td class="meta">
+              {{ m.visibility }}
+              {% if m.viewer_can_edit %}<div class="meta">viewer_can_edit</div>{% endif %}
+            </td>
+            <td>
+              {% if m.editors and m.editors|length %}
+              <form method="post" action="{{ base }}/auth/config/maps/{{ m.id }}/editors/remove" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <select name="username">
+                  {% for u in m.editors %}
+                  <option value="{{ u }}">{{ u }}</option>
+                  {% endfor %}
+                </select>
+                <button type="submit" class="btn btn-sm" onclick="return confirm('Remove editor access for selected user?');">Remove</button>
+              </form>
+              {% else %}
+              <span class="meta">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+          {% if not maps %}
+          <tr><td colspan="3" class="meta">You don’t own any maps.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Collections you own</h2>
+    <p class="meta">DB size is based on Postgres table sizes for the features partition. Tile size is based on the static tiles file path (if present).</p>
+
+    <div class="user-config-table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Collection</th>
+            <th class="meta">Features</th>
+            <th class="meta">Visibility</th>
+            <th class="meta">Editors</th>
+            <th class="meta">DB size</th>
+            <th class="meta">Tiles size</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in collections %}
+          <tr>
+            <td>
+              <strong>{{ c.id }}</strong>
+              {% if c.title %}<div class="meta">{{ c.title }}</div>{% endif %}
+            </td>
+            <td class="meta">{{ c.feature_count }}</td>
+            <td class="meta">
+              {{ c.visibility }}
+              {% if c.viewer_can_edit %}<div class="meta">viewer_can_edit</div>{% endif %}
+            </td>
+            <td>
+              {% if c.editors and c.editors|length %}
+              <form method="post" action="{{ base }}/auth/config/collections/{{ c.id }}/editors/remove" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <select name="username">
+                  {% for u in c.editors %}
+                  <option value="{{ u }}">{{ u }}</option>
+                  {% endfor %}
+                </select>
+                <button type="submit" class="btn btn-sm" onclick="return confirm('Remove editor access for selected user?');">Remove</button>
+              </form>
+              {% else %}
+              <span class="meta">—</span>
+              {% endif %}
+            </td>
+            <td class="meta">{{ c.db_size_h }}</td>
+            <td class="meta">{{ c.tiles_size_h }}</td>
+            <td style="white-space:nowrap;">
+              <form method="post" action="{{ base }}/auth/config/collections/{{ c.id }}/delete-tiles" style="display:inline;">
+                <button type="submit" class="btn btn-sm" onclick="return confirm('Delete static tiles for {{ c.id }}?');">Delete tiles</button>
+              </form>
+              <form method="post" action="{{ base }}/auth/config/collections/{{ c.id }}/delete" style="display:inline;">
+                <button type="submit" class="btn btn-sm" style="border-color: rgba(248,81,73,0.6); color: var(--danger);" onclick="return confirm('Delete collection {{ c.id }} (and its styles + tiles record)? This can’t be undone.');">Delete layer</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+          {% if not collections %}
+          <tr><td colspan="7" class="meta">You don’t own any collections.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}
+

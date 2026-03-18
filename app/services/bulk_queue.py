@@ -20,6 +20,7 @@ class BulkJobPayload:
     storage_key: str
     mode: str
     batch_size: int
+    owner_id: int | None = None
     queue_compute_tiles: bool = True
     zip_inner_shp_paths: list[str] | None = None
 
@@ -27,6 +28,7 @@ class BulkJobPayload:
         out = {
             "job_id": self.job_id,
             "collection_id": self.collection_id,
+            "owner_id": self.owner_id,
             "storage_key": self.storage_key,
             "mode": self.mode,
             "batch_size": self.batch_size,
@@ -50,6 +52,7 @@ class BulkJobPayload:
         return cls(
             job_id=d["job_id"],
             collection_id=d["collection_id"],
+            owner_id=d.get("owner_id"),
             storage_key=d["storage_key"],
             mode=d["mode"],
             batch_size=int(d["batch_size"]),

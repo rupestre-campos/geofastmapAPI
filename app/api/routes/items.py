@@ -397,6 +397,7 @@ async def bulk_import_items(
     enqueue(BulkJobPayload(
         job_id=job.job_id,
         collection_id=collection_id,
+        owner_id=current_user.id if current_user else None,
         storage_key=storage_key,
         mode=mode,
         batch_size=batch,

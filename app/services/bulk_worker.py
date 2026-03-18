@@ -87,7 +87,7 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
             )
             if payload.queue_compute_tiles and get_settings().bulk_queue_type == "redis":
                 try:
-                    tile_job = create_tile_build_job(payload.collection_id)
+                    tile_job = create_tile_build_job(payload.collection_id, owner_id=payload.owner_id)
                     update_tile_build_job(tile_job.job_id, message="Tile build")
                     enqueue_tile_build(payload.collection_id, tile_job.job_id)
                 except Exception:
