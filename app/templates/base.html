@@ -72,54 +72,117 @@
 
     .container { max-width: 900px; margin: 0 auto; padding: var(--space-lg); }
 
-    nav {
+    .nav-bar {
       background: var(--bg-elevated);
       border-bottom: 1px solid var(--border);
       padding: var(--space) var(--space-lg);
       display: flex;
       align-items: center;
-      gap: var(--space-lg);
+      gap: 0.5rem;
+      flex-wrap: nowrap;
+      min-width: 0;
     }
-    nav .brand { font-weight: 600; color: var(--text); }
-    nav .brand:hover { text-decoration: none; color: var(--accent-hover); }
-    nav a:not(.brand) { color: var(--text-secondary); font-size: 0.9rem; }
-    nav a:not(.brand):hover { color: var(--text); }
-    .nav-spacer { flex: 1; }
-    .nav-user { color: var(--text-secondary); font-size: 0.9rem; }
-    .nav-dropdown { position: relative; display: inline-block; }
-    .nav-config-btn {
-      padding: 0.35rem 0.6rem;
+    .nav-bar .brand { font-weight: 600; color: var(--text); white-space: nowrap; flex-shrink: 0; }
+    .nav-bar .brand:hover { text-decoration: none; color: var(--accent-hover); }
+    .nav-kebab, .nav-gear-btn {
+      padding: 0.4rem 0.6rem;
       border-radius: var(--radius-sm);
       border: 1px solid var(--border);
       background: var(--card);
-      color: var(--text-secondary);
-      font-size: 0.9rem;
+      color: var(--text);
+      font-size: 1.1rem;
       cursor: pointer;
+      flex-shrink: 0;
+      line-height: 1;
     }
-    .nav-config-btn:hover { color: var(--text); border-color: var(--text-secondary); }
-    .nav-dropdown-menu {
+    .nav-kebab:hover, .nav-gear-btn:hover { border-color: var(--text-secondary); color: var(--accent); }
+    .nav-spacer { flex: 1; min-width: 0.5rem; }
+    .nav-user { color: var(--text-secondary); font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+    .nav-user-menu-wrap { position: relative; display: inline-block; flex-shrink: 0; }
+    .nav-user-menu {
       display: none;
       position: absolute;
       top: 100%;
       right: 0;
       margin-top: 2px;
-      min-width: 160px;
+      min-width: 180px;
       padding: 0.35rem 0;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
       box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-      z-index: 100;
+      z-index: 101;
     }
-    .nav-dropdown-menu[aria-hidden="false"] { display: block; }
-    .nav-dropdown-menu a {
+    .nav-user-menu[aria-hidden="false"] { display: block; }
+    .nav-user-menu a {
       display: block;
       padding: 0.5rem 1rem;
       color: var(--text);
       font-size: 0.9rem;
       text-decoration: none;
     }
-    .nav-dropdown-menu a:hover { background: var(--bg-elevated); color: var(--accent); }
+    .nav-user-menu a:hover { background: var(--bg-elevated); color: var(--accent); }
+    .nav-bar .nav-login-link { color: var(--text-secondary); font-size: 0.9rem; white-space: nowrap; flex-shrink: 0; }
+    .nav-bar .nav-login-link:hover { color: var(--text); }
+
+    .nav-drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 998;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    .nav-drawer.is-open .nav-drawer-backdrop { opacity: 1; pointer-events: auto; }
+    .nav-drawer-panel {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 280px;
+      max-width: 85vw;
+      height: 100vh;
+      background: var(--card);
+      border-right: 1px solid var(--border);
+      z-index: 999;
+      transform: translateX(-100%);
+      transition: transform 0.25s ease;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+    .nav-drawer.is-open .nav-drawer-panel { transform: translateX(0); }
+    .nav-drawer-header {
+      padding: var(--space) var(--space-lg);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-drawer-header .brand { font-weight: 600; color: var(--text); }
+    .nav-drawer-close {
+      padding: 0.35rem 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    .nav-drawer-links {
+      padding: var(--space);
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .nav-drawer-links a {
+      display: block;
+      padding: 0.6rem 0.75rem;
+      color: var(--text);
+      text-decoration: none;
+      border-radius: var(--radius-sm);
+    }
+    .nav-drawer-links a:hover { background: var(--bg-elevated); color: var(--accent); }
     .theme-toggle {
       display: inline-flex;
       align-items: center;
@@ -131,12 +194,16 @@
       color: var(--text);
       font-size: 0.85rem;
       cursor: pointer;
+      flex-shrink: 0;
     }
     .theme-toggle:hover { border-color: var(--text-secondary); }
     .theme-toggle .theme-icon-moon { display: none; }
     .theme-toggle .theme-icon-sun { display: none; }
     [data-theme="dark"] .theme-toggle .theme-icon-sun { display: inline; }
     [data-theme="light"] .theme-toggle .theme-icon-moon { display: inline; }
+    @media (max-width: 480px) {
+      .theme-toggle .theme-toggle-label { display: none; }
+    }
 
     .page-header { margin-bottom: var(--space-lg); }
     .page-header h1 { font-size: 1.5rem; font-weight: 600; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
@@ -297,74 +364,115 @@
   {% block head %}{% endblock %}
 </head>
 <body>
-  <nav>
+  <header class="nav-bar">
     <a href="{{ base }}/?f=html" class="brand">GeoFast</a>
-    <a href="{{ base }}/?f=html">Home</a>
-    <a href="{{ base }}/collections?f=html">Collections</a>
-    <a href="{{ base }}/maps?f=html">Maps</a>
-    <a href="{{ base }}/jobs?f=html">Jobs</a>
-    <a href="{{ base }}/processes?f=html">Processing</a>
-    <a href="{{ base }}/style-editor?f=html">Style editor</a>
-    <a href="{{ base }}/basemaps?f=html">Basemaps</a>
-    <a href="{{ base }}/project-docs?f=html">Documentation</a>
-    <a href="{{ base }}/docs">API docs</a>
+    <button type="button" class="nav-kebab" id="nav-kebab" aria-label="Open menu" aria-expanded="false" title="Menu">&#9776;</button>
     <span class="nav-spacer"></span>
     {% if username is defined and username %}
-    <span class="nav-user">{{ username }}</span>
-    <div class="nav-dropdown">
-      <button type="button" class="nav-config-btn" id="nav-config-btn" aria-haspopup="true" aria-expanded="false" title="Settings">Config</button>
-      <div class="nav-dropdown-menu" id="nav-config-menu" aria-hidden="true">
+    <span class="nav-user" title="{{ username }}">{{ username }}</span>
+    <div class="nav-user-menu-wrap">
+      <button type="button" class="nav-gear-btn" id="nav-gear-btn" aria-haspopup="true" aria-expanded="false" title="Account &amp; settings" aria-label="Account menu">&#9881;</button>
+      <div class="nav-user-menu" id="nav-user-menu" aria-hidden="true">
         <a href="{{ base }}/auth/config?f=html">User config</a>
         <a href="{{ base }}/auth/change-password?f=html">Change password</a>
+        {% if is_admin is defined and is_admin %}
+        <a href="{{ base }}/auth/users?f=html">Users</a>
+        {% endif %}
+        <a href="{{ base }}/auth/logout">Logout</a>
       </div>
     </div>
-    {% if is_admin is defined and is_admin %}
-    <a href="{{ base }}/auth/users?f=html">Users</a>
-    {% endif %}
-    <a href="{{ base }}/auth/logout">Logout</a>
     {% else %}
-    <a href="{{ base }}/auth/login?f=html">Login</a>
+    <a href="{{ base }}/auth/login?f=html" class="nav-login-link">Login</a>
     {% endif %}
     <button type="button" class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode" aria-label="Toggle light/dark mode">
-      <span class="theme-toggle-icon theme-icon-sun" aria-hidden="true">☀</span>
-      <span class="theme-toggle-icon theme-icon-moon" aria-hidden="true">🌙</span>
+      <span class="theme-toggle-icon theme-icon-sun" aria-hidden="true">&#9728;</span>
+      <span class="theme-toggle-icon theme-icon-moon" aria-hidden="true">&#9789;</span>
       <span class="theme-toggle-label" id="theme-toggle-label">Dark</span>
     </button>
-  </nav>
+  </header>
+
+  <div class="nav-drawer" id="nav-drawer" aria-hidden="true">
+    <div class="nav-drawer-backdrop" id="nav-drawer-backdrop" aria-hidden="true"></div>
+    <div class="nav-drawer-panel">
+      <div class="nav-drawer-header">
+        <a href="{{ base }}/?f=html" class="brand">GeoFast</a>
+        <button type="button" class="nav-drawer-close" id="nav-drawer-close" aria-label="Close menu">&#215;</button>
+      </div>
+      <nav class="nav-drawer-links">
+        <a href="{{ base }}/?f=html">Home</a>
+        <a href="{{ base }}/collections?f=html">Collections</a>
+        <a href="{{ base }}/maps?f=html">Maps</a>
+        <a href="{{ base }}/jobs?f=html">Jobs</a>
+        <a href="{{ base }}/processes?f=html">Processing</a>
+        <a href="{{ base }}/style-editor?f=html">Style editor</a>
+        <a href="{{ base }}/basemaps?f=html">Basemaps</a>
+        <a href="{{ base }}/project-docs?f=html">Documentation</a>
+        <a href="{{ base }}/docs">API docs</a>
+      </nav>
+    </div>
+  </div>
   <main class="container">
     {% block content %}{% endblock %}
   </main>
   <script>
     (function() {
-      var toggle = document.getElementById('theme-toggle');
-      var label = document.getElementById('theme-toggle-label');
-      function updateLabel() {
+      var themeToggle = document.getElementById('theme-toggle');
+      var themeLabel = document.getElementById('theme-toggle-label');
+      function updateThemeLabel() {
         var theme = document.documentElement.getAttribute('data-theme');
-        if (label) label.textContent = theme === 'dark' ? 'Light' : 'Dark';
+        if (themeLabel) themeLabel.textContent = theme === 'dark' ? 'Light' : 'Dark';
       }
-      if (toggle) {
-        toggle.addEventListener('click', function() {
+      if (themeToggle) {
+        themeToggle.addEventListener('click', function() {
           var theme = document.documentElement.getAttribute('data-theme');
           var next = theme === 'dark' ? 'light' : 'dark';
           document.documentElement.setAttribute('data-theme', next);
           try { localStorage.setItem('geofast-theme', next); } catch (e) {}
-          updateLabel();
+          updateThemeLabel();
         });
-        updateLabel();
+        updateThemeLabel();
       }
 
-      var configBtn = document.getElementById('nav-config-btn');
-      var configMenu = document.getElementById('nav-config-menu');
-      if (configBtn && configMenu) {
-        configBtn.addEventListener('click', function(e) {
+      var drawer = document.getElementById('nav-drawer');
+      var kebab = document.getElementById('nav-kebab');
+      var drawerBackdrop = document.getElementById('nav-drawer-backdrop');
+      var drawerClose = document.getElementById('nav-drawer-close');
+      var drawerLinks = drawer && drawer.querySelectorAll('.nav-drawer-links a');
+
+      function openDrawer() {
+        if (drawer) {
+          drawer.classList.add('is-open');
+          drawer.setAttribute('aria-hidden', 'false');
+          if (kebab) kebab.setAttribute('aria-expanded', 'true');
+          document.body.style.overflow = 'hidden';
+        }
+      }
+      function closeDrawer() {
+        if (drawer) {
+          drawer.classList.remove('is-open');
+          drawer.setAttribute('aria-hidden', 'true');
+          if (kebab) kebab.setAttribute('aria-expanded', 'false');
+          document.body.style.overflow = '';
+        }
+      }
+
+      if (kebab) kebab.addEventListener('click', function(e) { e.stopPropagation(); openDrawer(); });
+      if (drawerBackdrop) drawerBackdrop.addEventListener('click', closeDrawer);
+      if (drawerClose) drawerClose.addEventListener('click', closeDrawer);
+      if (drawerLinks) for (var i = 0; i < drawerLinks.length; i++) drawerLinks[i].addEventListener('click', closeDrawer);
+
+      var gearBtn = document.getElementById('nav-gear-btn');
+      var userMenu = document.getElementById('nav-user-menu');
+      if (gearBtn && userMenu) {
+        gearBtn.addEventListener('click', function(e) {
           e.stopPropagation();
-          var open = configMenu.getAttribute('aria-hidden') !== 'false';
-          configMenu.setAttribute('aria-hidden', open ? 'false' : 'true');
-          configBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+          var open = userMenu.getAttribute('aria-hidden') !== 'false';
+          userMenu.setAttribute('aria-hidden', open ? 'false' : 'true');
+          gearBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
         });
         document.addEventListener('click', function() {
-          configMenu.setAttribute('aria-hidden', 'true');
-          configBtn.setAttribute('aria-expanded', 'false');
+          userMenu.setAttribute('aria-hidden', 'true');
+          gearBtn.setAttribute('aria-expanded', 'false');
         });
       }
     })();

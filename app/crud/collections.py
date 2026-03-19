@@ -1,11 +1,13 @@
 """CRUD for collections."""
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Tuple
 
 from sqlalchemy import exists, func, or_, select, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import collection_tiles as tiles_crud
@@ -53,12 +55,14 @@ async def list_collections(
     offset: int = 0,
     has_static_tiles: bool = False,
     current_user: "User | None" = None,
+    only_public: bool = False,
 ) -> Tuple[Sequence[Collection], int]:
     """
     List collections with optional full-text search (id, title, description),
     bbox filter (collections whose extent intersects bbox), sort, and pagination.
     When has_static_tiles=True, only collections that have static tiles built are returned.
-    Admin sees all; otherwise visibility and sharing apply.
+    When only_public=True, only collections with visibility=public are returned (e.g. for processing).
+    Otherwise: admin sees all; anon sees public; logged sees public+logged+owned+shared.
     Returns (collections, total_count).
     """
     base = select(Collection)
@@ -71,8 +75,11 @@ async def list_collections(
         base = base.where(Collection.id.in_(static_ids))
         count_base = count_base.where(Collection.id.in_(static_ids))
 
-    # Visibility: admin sees all; anon sees public; logged sees public+logged+owned+shared
-    if current_user is not None and current_user.is_admin:
+    # Visibility: only_public forces public; else admin sees all; anon sees public; logged sees public+logged+owned+shared
+    if only_public:
+        base = base.where(Collection.visibility == VISIBILITY_PUBLIC)
+        count_base = count_base.where(Collection.visibility == VISIBILITY_PUBLIC)
+    elif current_user is not None and current_user.is_admin:
         pass
     elif current_user is None:
         base = base.where(Collection.visibility == VISIBILITY_PUBLIC)
@@ -173,6 +180,33 @@ async def recompute_and_update_collection_extent(
     await db.commit()
     await db.refresh(collection)
     return extent
+
+
+def recompute_and_update_collection_extent_sync(engine: Engine, collection_id: str) -> None:
+    """
+    Sync variant: compute extent from feature geometries and update the collection's stored extent.
+    Use from process worker or bulk import after writing features. No-op if collection has no features with geometry.
+    """
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT ST_XMin(e) AS minx, ST_YMin(e) AS miny, ST_XMax(e) AS maxx, ST_YMax(e) AS maxy
+                FROM (SELECT ST_Extent(geometry) AS e FROM features WHERE collection_id = :cid AND geometry IS NOT NULL) t
+            """),
+            {"cid": collection_id},
+        ).first()
+        if row is None or row.minx is None:
+            extent_json = None
+        else:
+            extent_json = json.dumps({
+                "bbox": [[float(row.minx), float(row.miny), float(row.maxx), float(row.maxy)]],
+                "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84",
+            })
+        conn.execute(
+            text("UPDATE collections SET extent = :extent::jsonb WHERE id = :cid"),
+            {"cid": collection_id, "extent": extent_json},
+        )
+        conn.commit()
 
 
 async def get_collections_bboxes(db: AsyncSession) -> dict[str, Extent]:

@@ -50,6 +50,17 @@
     <button type="button" class="btn btn-primary" id="sharing-save-btn">Save visibility &amp; sharing</button>
   </div>
 </div>
+<div id="make-layers-public-modal" class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="make-layers-public-title" aria-hidden="true">
+  <div class="confirm-modal-backdrop" id="make-layers-public-backdrop"></div>
+  <div class="confirm-modal-content">
+    <div class="confirm-modal-header" id="make-layers-public-title">Make map public</div>
+    <div id="make-layers-public-message" class="confirm-modal-body">The following layers are not public. Make all of them public and then make the map public?</div>
+    <div class="confirm-modal-actions">
+      <button type="button" class="btn" id="make-layers-public-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="make-layers-public-confirm">Make all public and save</button>
+    </div>
+  </div>
+</div>
 <script>
 (function() {
   var card = document.getElementById('sharing-card');
@@ -96,6 +107,25 @@
     addMessage.style.color = isError ? 'var(--danger)' : 'var(--success)';
   }
 
+  function showAddMessageHtml(html, isError) {
+    addMessage.innerHTML = html || '';
+    addMessage.style.display = html ? 'block' : 'none';
+    addMessage.style.color = isError ? 'var(--danger)' : 'var(--success)';
+  }
+
+  var baseUrl = (patchUrl.indexOf('/maps/') >= 0 ? patchUrl.split('/maps/')[0] : patchUrl.split('/collections/')[0]) || '';
+
+  function doPatchMap(body, onDone) {
+    fetch(patchUrl, fetchOpts('PATCH', body))
+      .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw (d && (d.message || d.detail)) || r.statusText; });
+        return r.json();
+      })
+      .then(function() { showAddMessage('Saved.', false); if (onDone) onDone(); })
+      .catch(function(e) { showAddMessage('Failed to save: ' + (e.message || e || 'Unknown'), true); if (onDone) onDone(); })
+      .finally(function() { if (saveBtn) saveBtn.disabled = false; });
+  }
+
   function saveVisibility() {
     var visRadio = document.querySelector('#sharing-card input[name="sharing_visibility"]:checked');
     if (!visRadio) return;
@@ -103,6 +133,42 @@
     var viewerCanEdit = viewerEditRadio && viewerEditRadio.value === 'edit';
     var body = { visibility: visRadio.value };
     if (visRadio.value === 'logged' || visRadio.value === 'public') body.viewer_can_edit = viewerCanEdit;
+
+    var isMap = patchUrl.indexOf('/maps/') >= 0;
+    var wantPublic = visRadio.value === 'public';
+
+    if (isMap && wantPublic) {
+      if (saveBtn) saveBtn.disabled = true;
+      var checkUrl = patchUrl.replace(/\/$/, '') + '/check-public-layers';
+      fetch(checkUrl, fetchOpts('GET'))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var blocking = (data && data.blocking) || [];
+          var suggest = (data && data.suggest) || [];
+          if (blocking.length) {
+            var links = blocking.map(function(c) { return '<a href="' + baseUrl + '/collections/' + encodeURIComponent(c.id) + '/edit?f=html">' + String(c.title || c.id).replace(/</g, '&lt;') + '</a>'; }).join(', ');
+            showAddMessageHtml((data.message || 'Cannot make map public: you do not have permission to change these layers.') + ' ' + (blocking.length === 1 ? 'Collection:' : 'Collections:') + ' ' + links, true);
+            if (saveBtn) saveBtn.disabled = false;
+            return;
+          }
+          if (suggest.length) {
+            var modal = document.getElementById('make-layers-public-modal');
+            var msgEl = document.getElementById('make-layers-public-message');
+            if (modal && msgEl) {
+              var names = suggest.map(function(c) { return (c.title || c.id); }).join(', ');
+              msgEl.textContent = 'The following layers are not public: ' + names + '. Make all of them public and then make the map public?';
+              modal.setAttribute('aria-hidden', 'false');
+              window._makeLayersPublicPending = { body: body, suggest: suggest };
+            }
+            if (saveBtn) saveBtn.disabled = false;
+            return;
+          }
+          doPatchMap(body);
+        })
+        .catch(function(e) { showAddMessage('Failed to check layers: ' + (e.message || e || 'Unknown'), true); if (saveBtn) saveBtn.disabled = false; });
+      return;
+    }
+
     if (saveBtn) saveBtn.disabled = true;
     fetch(patchUrl, fetchOpts('PATCH', body))
       .then(function(r) {
@@ -112,11 +178,8 @@
             var msg = (detail && (typeof detail === 'string' ? detail : detail.message)) || r.statusText;
             var blocking = detail && detail.collections_blocking;
             if (blocking && blocking.length) {
-              var base = patchUrl.indexOf('/maps/') >= 0 ? patchUrl.split('/maps/')[0] : (patchUrl.split('/collections/')[0] || '');
-              var links = blocking.map(function(c) { return '<a href="' + base + '/collections/' + encodeURIComponent(c.id) + '/edit?f=html">' + String(c.title || c.id).replace(/</g, '&lt;') + '</a>'; }).join(', ');
-              addMessage.innerHTML = msg + ' ' + (blocking.length === 1 ? 'Collection:' : 'Collections:') + ' ' + links;
-              addMessage.style.display = 'block';
-              addMessage.style.color = 'var(--danger)';
+              var links = blocking.map(function(c) { return '<a href="' + baseUrl + '/collections/' + encodeURIComponent(c.id) + '/edit?f=html">' + String(c.title || c.id).replace(/</g, '&lt;') + '</a>'; }).join(', ');
+              showAddMessageHtml(msg + ' ' + (blocking.length === 1 ? 'Collection:' : 'Collections:') + ' ' + links, true);
             } else {
               showAddMessage('Failed to save: ' + msg, true);
             }
@@ -124,17 +187,14 @@
           return;
         }
         showAddMessage('Saved.', false);
-        if (patchUrl.indexOf('/maps/') >= 0 && visRadio.value === 'public') {
+        if (isMap && wantPublic) {
           var suggestHeader = r.headers.get('X-Suggest-Make-Public-Collections');
           if (suggestHeader) {
             try {
               var suggest = JSON.parse(suggestHeader);
               if (suggest && suggest.length) {
-                var base = patchUrl.split('/maps/')[0] || '';
-                var linkList = suggest.map(function(c) { return '<a href="' + base + '/collections/' + encodeURIComponent(c.id) + '/edit?f=html">' + (c.title || c.id).replace(/</g, '&lt;') + '</a>'; }).join(', ');
-                addMessage.innerHTML = 'Map is now public. For consistency, consider making these collections public too: ' + linkList;
-                addMessage.style.display = 'block';
-                addMessage.style.color = 'var(--success)';
+                var linkList = suggest.map(function(c) { return '<a href="' + baseUrl + '/collections/' + encodeURIComponent(c.id) + '/edit?f=html">' + (c.title || c.id).replace(/</g, '&lt;') + '</a>'; }).join(', ');
+                showAddMessageHtml('Map is now public. For consistency, consider making these collections public too: ' + linkList, false);
               }
             } catch (err) { /* ignore */ }
           }
@@ -142,6 +202,35 @@
       })
       .catch(function(e) { showAddMessage('Failed to save: ' + (e.message || 'Unknown'), true); })
       .finally(function() { if (saveBtn) saveBtn.disabled = false; });
+  }
+
+  var makeLayersModal = document.getElementById('make-layers-public-modal');
+  var makeLayersBackdrop = document.getElementById('make-layers-public-backdrop');
+  var makeLayersCancel = document.getElementById('make-layers-public-cancel');
+  var makeLayersConfirm = document.getElementById('make-layers-public-confirm');
+  if (makeLayersModal) {
+    function closeMakeLayersModal() {
+      makeLayersModal.setAttribute('aria-hidden', 'true');
+      window._makeLayersPublicPending = null;
+    }
+    if (makeLayersBackdrop) makeLayersBackdrop.onclick = closeMakeLayersModal;
+    if (makeLayersCancel) makeLayersCancel.onclick = closeMakeLayersModal;
+    if (makeLayersConfirm) {
+      makeLayersConfirm.onclick = function() {
+        var pending = window._makeLayersPublicPending;
+        if (!pending || !pending.suggest || !pending.suggest.length) { closeMakeLayersModal(); return; }
+        closeMakeLayersModal();
+        if (saveBtn) saveBtn.disabled = true;
+        var chain = Promise.resolve();
+        pending.suggest.forEach(function(c) {
+          chain = chain.then(function() {
+            return fetch(baseUrl + '/collections/' + encodeURIComponent(c.id), fetchOpts('PATCH', { visibility: 'public' }));
+          }).then(function(r) { if (!r.ok) throw new Error('Failed to make collection public'); });
+        });
+        chain.then(function() { doPatchMap(pending.body); })
+          .catch(function(e) { showAddMessage('Failed: ' + (e.message || 'Unknown'), true); if (saveBtn) saveBtn.disabled = false; });
+      };
+    }
   }
 
   if (saveBtn) {

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -105,6 +105,11 @@ async def api_info_edit_page(
     current_user=Depends(get_current_user_optional),
 ):
     """Serve the edit-API-info form. HTML only."""
+    if current_user is None or not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
     if not wants_html(request):
         return RedirectResponse(url=_base_url(request) + "/api-info/edit?f=html", status_code=302)
     info = await api_landing_crud.get_or_create_api_landing(db)
@@ -153,8 +158,14 @@ async def style_editor_page(
 async def api_info_update(
     payload: ApiLandingUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
 ) -> ApiLandingRead:
     """Update the API landing page content (title, description, contact)."""
+    if current_user is None or not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
     row = await api_landing_crud.update_api_landing(
         db,
         title=payload.title,

@@ -267,6 +267,27 @@ async def edit_map_form(
     )
 
 
+@router.get(
+    "/{map_id}/check-public-layers",
+    summary="Check which map layers are not public",
+    description="Returns blocking and suggest lists for making the map public. Use before setting map visibility to public.",
+)
+async def check_map_public_layers(
+    map_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    """Return { blocking: [...], suggest: [...] } for the map's saved definition."""
+    row = await maps_crud.get_map(db, map_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Map not found")
+    if not await can_edit_map(db, row.owner_id, str(row.id), current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    definition = row.definition or {}
+    blocking, suggest = await _check_map_public_layers(db, definition, current_user)
+    return {"blocking": blocking, "suggest": suggest}
+
+
 @router.put(
     "/{map_id}",
     summary="Update map",

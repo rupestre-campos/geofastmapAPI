@@ -36,7 +36,9 @@
     <div class="card-header">
       <h2 class="card-title">Actions</h2>
       <div class="card-actions">
+        {% if is_admin %}
         <a href="{{ base }}/api-info/edit?f=html" class="btn">Edit API info</a>
+        {% endif %}
       </div>
     </div>
     <p class="meta">Change title, description, and contact without redeploying.</p>

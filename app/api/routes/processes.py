@@ -193,7 +193,7 @@ async def list_processes(
         if not current_user:
             login_url = f"{base}/auth/login?f=html&next={quote(str(request.url), safe='')}"
             return RedirectResponse(url=login_url, status_code=status.HTTP_302_FOUND)
-        collections, _ = await collections_crud.list_collections(db, limit=500)
+        collections, _ = await collections_crud.list_collections(db, limit=500, current_user=current_user)
         collection_items = [{"id": c.id, "title": c.title or c.id} for c in collections]
         return html_response(
             "processing.html",

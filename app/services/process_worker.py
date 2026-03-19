@@ -20,6 +20,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
+from app.crud import collections as collections_crud
 from app.services.process_queue import ProcessJobPayload
 from app.services.job_store import update_job
 
@@ -952,6 +953,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                 insert_session.close()
             try:
                 _update_feature_count_sync(engine, result_id)
+                collections_crud.recompute_and_update_collection_extent_sync(engine, result_id)
             except Exception:
                 pass
             engine.dispose()
@@ -1428,9 +1430,10 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
             engine.dispose()
             return (f"Unknown process: {payload.process_id}", 0, 0, "")
 
-        # Update cached feature_count for the result collection so HTML views and tiles see the real size.
+        # Update cached feature_count and extent for the result collection so HTML views and tiles see the real size.
         try:
             _update_feature_count_sync(engine, result_id)
+            collections_crud.recompute_and_update_collection_extent_sync(engine, result_id)
         except Exception:
             # Don't fail the whole job if this bookkeeping step has an issue.
             pass
