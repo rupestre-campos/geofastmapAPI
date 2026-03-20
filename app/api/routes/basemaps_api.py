@@ -2,7 +2,7 @@
 
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_required
@@ -38,8 +38,14 @@ def _to_read(b) -> BasemapRead:
 
 
 @router.get("", response_model=BasemapList, summary="List basemaps")
-async def list_basemaps(db: AsyncSession = Depends(get_db)) -> BasemapList:
+async def list_basemaps(
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> BasemapList:
     """List all basemaps (for map selector and admin)."""
+    # Ensure clients always see latest basemap changes immediately.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
     items = await basemaps_crud.list_basemaps(db)
     return BasemapList(basemaps=[_to_read(b) for b in items])
 

@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import uuid
 import threading
 import time
 from queue import Queue
@@ -76,7 +77,8 @@ def build_pmtiles_sync(
 
     tiles_dir = settings.tiles_storage_path
     os.makedirs(tiles_dir, exist_ok=True)
-    out_path = os.path.join(tiles_dir, f"{collection_id}.mbtiles")
+    out_path_final = os.path.join(tiles_dir, f"{collection_id}.mbtiles")
+    out_path_tmp: str | None = None  # tippecanoe output; swapped into out_path_final only on success
     opts = options or TileBuildOptions()
     minz = opts.min_zoom if opts.min_zoom is not None else settings.tippecanoe_minzoom
     maxz = opts.max_zoom if opts.max_zoom is not None else settings.tippecanoe_maxzoom
@@ -95,8 +97,8 @@ def build_pmtiles_sync(
 
     if feature_count == 0:
         try:
-            if os.path.exists(out_path):
-                os.unlink(out_path)
+            if os.path.exists(out_path_final):
+                os.unlink(out_path_final)
         except OSError:
             pass
         with SessionLocal() as s:
@@ -152,6 +154,9 @@ def build_pmtiles_sync(
             if export_cancelled:
                 return BUILD_CANCELLED
 
+        # Build into a temp file, then atomically replace the live MBTiles so clients never read a partial file.
+        out_path_tmp = os.path.join(tiles_dir, f"{collection_id}.mbtiles.{uuid.uuid4().hex}.tmp")
+
         # Use sanitized layer name so it matches TileJSON vector_layers.id and frontend source-layer.
         layer_name = mvt_layer_name(collection_id)
         # -L requires "layername:file" (single argument per layer)
@@ -159,7 +164,7 @@ def build_pmtiles_sync(
         cmd = [
             "tippecanoe",
             "--read-parallel",
-            "-o", out_path,
+            "-o", out_path_tmp,
             "-L", f"{layer_name}:{geojsonl_path}",
             f"--layer={layer_name}",
             f"-z{maxz}",
@@ -215,39 +220,51 @@ def build_pmtiles_sync(
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait()
-                if os.path.exists(out_path):
+                if out_path_tmp and os.path.exists(out_path_tmp):
                     try:
-                        os.unlink(out_path)
+                        os.unlink(out_path_tmp)
                     except OSError:
                         pass
                 return BUILD_CANCELLED
         if proc.returncode != 0:
             print("[tile_builder] tippecanoe failed (see above for details)", file=sys.stderr, flush=True)
-            if os.path.exists(out_path):
+            if out_path_tmp and os.path.exists(out_path_tmp):
                 try:
-                    os.unlink(out_path)
+                    os.unlink(out_path_tmp)
                 except OSError:
                     pass
             return "tippecanoe failed"
+        # Atomic install: readers keep using the previous file until this succeeds.
+        try:
+            os.replace(out_path_tmp, out_path_final)
+        except OSError as e:
+            print(f"[tile_builder] Failed to install MBTiles: {e}", file=sys.stderr, flush=True)
+            if out_path_tmp and os.path.exists(out_path_tmp):
+                try:
+                    os.unlink(out_path_tmp)
+                except OSError:
+                    pass
+            return f"failed to install tiles: {e}"
+        out_path_tmp = None  # installed; do not delete in finally
     finally:
         try:
             os.unlink(geojsonl_path)
         except OSError:
             pass
-        if tippecanoe_started and stopped() and os.path.exists(out_path):
+        if out_path_tmp and os.path.exists(out_path_tmp):
             try:
-                os.unlink(out_path)
+                os.unlink(out_path_tmp)
             except OSError:
                 pass
 
-    # Delete old file if it was at a different path; then upsert new path
+    # Remove previous file if DB pointed elsewhere (e.g. legacy path); live path is out_path_final.
     with SessionLocal() as session:
         old = session.execute(
             text("SELECT pmtiles_path FROM collection_tiles WHERE collection_id = :cid"),
             {"cid": collection_id},
         ).first()
         old_path = (old[0] if old else None)
-        if old_path and old_path != out_path and os.path.exists(old_path):
+        if old_path and old_path != out_path_final and os.path.exists(old_path):
             try:
                 os.unlink(old_path)
             except OSError:
@@ -263,7 +280,7 @@ def build_pmtiles_sync(
                     minzoom = EXCLUDED.minzoom,
                     maxzoom = EXCLUDED.maxzoom
             """),
-            {"cid": collection_id, "path": out_path, "now": datetime.now(timezone.utc), "fua": max_updated, "minz": minz, "maxz": maxz},
+            {"cid": collection_id, "path": out_path_final, "now": datetime.now(timezone.utc), "fua": max_updated, "minz": minz, "maxz": maxz},
         )
         session.commit()
 

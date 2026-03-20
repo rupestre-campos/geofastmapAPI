@@ -96,8 +96,9 @@ def create_app() -> FastAPI:
     )
     app.include_router(tiles.router, prefix="/collections", tags=["tiles"])
     app.include_router(collection_styles.router, prefix="/collections", tags=["styles"])
-    app.include_router(styles.router, prefix="/styles", tags=["styles"])
+    # Register /styles/basemaps before /styles so it is not captured by /styles/{style_id}.
     app.include_router(basemaps_api.router, prefix="/styles/basemaps", tags=["basemaps"])
+    app.include_router(styles.router, prefix="/styles", tags=["styles"])
     app.include_router(basemaps_pages.router, prefix="/basemaps", tags=["basemaps-pages"])
     app.include_router(processes.router, prefix="/processes", tags=["processes"])
     app.include_router(jobs.router, prefix="/jobs", tags=["jobs"])

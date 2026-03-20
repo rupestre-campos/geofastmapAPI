@@ -62,10 +62,27 @@ class TileBuildRequestBody(BaseModel):
     no_shared_node_simplification: bool | None = Field(None, description="If true, use -pn (do not simplify away shared nodes, e.g. road intersections).")
     no_tiny_polygon_reduction: bool | None = Field(None, description="If true, use -pt (do not combine tiny polygons into squares).")
     no_point_dropping: bool | None = Field(None, description="If true, use -r1 (do not drop fraction of points at low zooms; for clustering). Default false (point dropping on).")
+    force: bool | None = Field(
+        False,
+        description="If true, queue a build even when features have not changed since the last tile build (e.g. new tippecanoe options).",
+    )
 
 
 def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
+
+
+def _static_tile_cache_headers() -> dict[str, str]:
+    """Browser cache for static (MBTiles) vector tiles: 1 hour at all zooms."""
+    return {"Cache-Control": "public, max-age=3600"}
+
+
+def _dynamic_tile_cache_headers_for_zoom(z: int) -> dict[str, str]:
+    """
+    Browser cache for dynamic tiles: z 0–10 = 1 hour, z 11+ = 5 minutes (two buckets).
+    """
+    max_age = 3600 if z <= 10 else 300
+    return {"Cache-Control": f"public, max-age={max_age}"}
 
 
 @router.get(
@@ -163,6 +180,9 @@ async def build_tiles(
     elif max_updated is not None:
         if rec is None or rec.features_updated_at is None or max_updated > rec.features_updated_at:
             need_build = True
+    if body is not None and body.force:
+        need_build = True
+
     if not need_build:
         return JSONResponse(
             status_code=status.HTTP_200_OK,
@@ -510,7 +530,7 @@ async def get_tiles_dynamic(
     if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     settings = get_settings()
-    cache_headers = {"Cache-Control": "public, max-age=60"}
+    cache_headers = _dynamic_tile_cache_headers_for_zoom(z)
     cache_hit_headers = {**cache_headers, "X-From-Cache": "true"}
 
     feature_ids: list[str] | None = None
@@ -933,12 +953,12 @@ async def get_tiles_static_zxy(
         return Response(
             content=b"",
             media_type="application/x-protobuf",
-            headers={"Cache-Control": "public, max-age=3600"},
+            headers=_static_tile_cache_headers(),
         )
     return Response(
         content=tile_bytes,
         media_type="application/x-protobuf",
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers=_static_tile_cache_headers(),
     )
 
 

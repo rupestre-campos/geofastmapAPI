@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence, AsyncGenerator
+import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Tuple
 
 from geoalchemy2.elements import WKTElement
@@ -52,6 +54,10 @@ def _parts_to_logical_feature(parts: list[Any]) -> Feature:
         g = getattr(p, "geometry_geojson", None)
         if g:
             try:
+                # Depending on DB driver/cast, ST_AsGeoJSON may come as a string or a dict.
+                # Parse strings to GeoJSON dict before handing to shapely.
+                if isinstance(g, str):
+                    g = json.loads(g)
                 geoms.append(shape(g))
             except Exception:
                 pass
@@ -212,6 +218,77 @@ async def stream_features_geojsonl(
     result set in memory. Connection is only used for short queries and can be
     closed between batches. Yields one row at a time for immediate streaming.
     """
+    # For bbox exports, stream logical features (one per id) by:
+    #   1) selecting matching unique ids in bbox
+    #   2) fetching all parts for those ids
+    #   3) unioning in Python
+    # This avoids partial polygons when a logical feature is split into DB parts.
+    if bbox is not None:
+        minx, miny, maxx, maxy = bbox
+        envelope = ST_MakeEnvelope(minx, miny, maxx, maxy, 4326)
+        ids_base = select(Feature.id).where(
+            Feature.collection_id == collection_id,
+            Feature.geometry.isnot(None),
+            ST_Intersects(Feature.geometry, envelope),
+        )
+        if datetime_start is not None:
+            ids_base = ids_base.where(Feature.created_at >= datetime_start)
+        if datetime_end is not None:
+            ids_base = ids_base.where(Feature.created_at <= datetime_end)
+        if property_filters:
+            for key, value in property_filters.items():
+                ids_base = ids_base.where(_property_filter_clause(key, value))
+        if structured_filters:
+            for pf in structured_filters:
+                ids_base = ids_base.where(_structured_filter_clause(pf))
+        if fulltext_q and fulltext_q.strip():
+            q = fulltext_q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{q}%"
+            ids_base = ids_base.where(Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\"))
+        ids_base = ids_base.distinct().order_by(Feature.id.asc())
+
+        last_id: str | None = None
+        batch_size = max(1, min(batch_size, 2000))
+        while True:
+            ids_stmt = ids_base.limit(batch_size)
+            if last_id is not None:
+                ids_stmt = ids_stmt.where(Feature.id > last_id)
+            ids_result = await db.execute(ids_stmt)
+            id_rows = ids_result.fetchall()
+            if not id_rows:
+                break
+            batch_ids = [r.id for r in id_rows]
+            parts_stmt = (
+                select(
+                    Feature.id,
+                    Feature.collection_id,
+                    Feature.part_index,
+                    func.ST_AsGeoJSON(Feature.geometry).label("geometry_geojson"),
+                    Feature.properties,
+                    Feature.created_at,
+                    Feature.updated_at,
+                )
+                .where(Feature.collection_id == collection_id, Feature.id.in_(batch_ids))
+                .order_by(Feature.id.asc(), Feature.part_index.asc())
+            )
+            parts_result = await db.execute(parts_stmt)
+            parts_rows = parts_result.fetchall()
+            grouped: dict[str, list[Any]] = {}
+            for row in parts_rows:
+                grouped.setdefault(row.id, []).append(row)
+            for fid in batch_ids:
+                parts = grouped.get(fid)
+                if not parts:
+                    continue
+                logical = _parts_to_logical_feature(parts)
+                yield SimpleNamespace(
+                    id=logical.id,
+                    geometry_geojson=getattr(logical, "geometry_geojson", None),
+                    properties=logical.properties,
+                )
+            last_id = batch_ids[-1]
+        return
+
     base = _geojsonl_export_base_stmt(
         collection_id,
         bbox=bbox,
@@ -455,68 +532,74 @@ async def list_features_paginated(
             page_ids = [r.id for r in page_rows]
         else:
             # Phase 1 with filters and/or sortby: get page_ids (no ST_Union).
-            # sortby created_at: GROUP BY id, min(created_at). sortby property key: GROUP BY id, array_agg(properties)[1], order by ->key.
+            # IMPORTANT: page by unique *logical* IDs first, then fetch all parts for those IDs in Phase 2.
+            # This prevents "partial"/split GeoJSON when features are stored as subdivided parts.
             if sortby == "created_at":
-                phase1 = (
-                    select(Feature.id, Feature.collection_id)
+                page_ids_stmt = (
+                    select(
+                        Feature.id,
+                        Feature.collection_id,
+                        func.min(Feature.created_at).label("created_at"),
+                    )
                     .where(Feature.collection_id == collection_id)
                     .group_by(Feature.id, Feature.collection_id)
-                    .add_columns(func.min(Feature.created_at).label("created_at"))
+                )
+                order_page_ids = (
+                    literal_column("created_at").asc() if not sortdesc else literal_column("created_at").desc()
                 )
             elif sortby and sortby != "id":
-                # Order by a property key: GROUP BY id with array_agg(properties) only (no geometry), order by props->>key
+                # Sort by a property key: order by props->>key (where props is the first properties JSON among parts).
                 key = safe_json_key(sortby)
                 if key:
-                    phase1 = (
+                    page_ids_stmt = (
                         select(
                             Feature.id,
                             Feature.collection_id,
-                            literal_column("(array_agg(features.properties ORDER BY features.part_index))[1]").label("props"),
+                            literal_column(
+                                "(array_agg(features.properties ORDER BY features.part_index))[1]"
+                            ).label("props"),
                         )
                         .where(Feature.collection_id == collection_id)
                         .group_by(Feature.id, Feature.collection_id)
                     )
                     order_prop = literal_column(f"props ->> '{key}'")
-                    order_phase1 = order_prop.asc() if not sortdesc else order_prop.desc()
+                    order_page_ids = order_prop.asc() if not sortdesc else order_prop.desc()
                 else:
-                    phase1 = (
+                    page_ids_stmt = (
                         select(Feature.id)
                         .where(Feature.collection_id == collection_id)
                         .distinct()
                     )
-                    order_phase1 = Feature.id.asc() if not sortdesc else Feature.id.desc()
+                    order_page_ids = Feature.id.asc() if not sortdesc else Feature.id.desc()
             else:
-                phase1 = (
+                page_ids_stmt = (
                     select(Feature.id)
                     .where(Feature.collection_id == collection_id)
                     .distinct()
                 )
-                order_phase1 = Feature.id.asc() if not sortdesc else Feature.id.desc()
+                order_page_ids = Feature.id.asc() if not sortdesc else Feature.id.desc()
 
             if feature_ids:
-                phase1 = phase1.where(Feature.id.in_(list(feature_ids)))
+                page_ids_stmt = page_ids_stmt.where(Feature.id.in_(list(feature_ids)))
             if bbox is not None:
-                phase1 = phase1.where(Feature.geometry.isnot(None) & ST_Intersects(Feature.geometry, envelope))
+                page_ids_stmt = page_ids_stmt.where(Feature.geometry.isnot(None) & ST_Intersects(Feature.geometry, envelope))
             if datetime_start is not None:
-                phase1 = phase1.where(Feature.created_at >= datetime_start)
+                page_ids_stmt = page_ids_stmt.where(Feature.created_at >= datetime_start)
             if datetime_end is not None:
-                phase1 = phase1.where(Feature.created_at <= datetime_end)
+                page_ids_stmt = page_ids_stmt.where(Feature.created_at <= datetime_end)
             if property_filters:
                 for key, value in property_filters.items():
-                    phase1 = phase1.where(_property_filter_clause(key, value))
+                    page_ids_stmt = page_ids_stmt.where(_property_filter_clause(key, value))
             if structured_filters:
                 for pf in structured_filters:
-                    phase1 = phase1.where(_structured_filter_clause(pf))
+                    page_ids_stmt = page_ids_stmt.where(_structured_filter_clause(pf))
             if fulltext_q and fulltext_q.strip():
-                phase1 = phase1.where(Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\"))
+                page_ids_stmt = page_ids_stmt.where(
+                    Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\")
+                )
 
-            if sortby == "created_at":
-                # Use literal so ORDER BY refers to the SELECT alias (min(created_at) AS created_at), not anon_1
-                order_phase1 = literal_column("created_at").asc() if not sortdesc else literal_column("created_at").desc()
-            elif not (sortby and sortby != "id" and safe_json_key(sortby)):
-                order_phase1 = Feature.id.asc() if not sortdesc else Feature.id.desc()
-            phase1 = phase1.order_by(order_phase1).limit(limit).offset(offset)
-            result1 = await db.execute(phase1)
+            page_ids_stmt = page_ids_stmt.order_by(order_page_ids).limit(limit).offset(offset)
+            result1 = await db.execute(page_ids_stmt)
             page_rows = result1.fetchall()
             page_ids = [r.id for r in page_rows]
 
@@ -569,14 +652,37 @@ async def list_features_paginated(
                 features.append(f)
             return (features, int(total))
 
-        # Phase 2: fetch parts only (no ST_Union/array_agg in DB — fast, releases connection quickly).
+        # Phase 2: build logical features for selected ids.
+        # For bbox queries, prefer DB-side per-id union to guarantee complete geometry per logical id.
+        # (We still keep the "ids first" paging behavior from Phase 1.)
+        if bbox is not None:
+            r_full = await db.execute(
+                text("""
+                    SELECT id, collection_id,
+                           ST_AsText(ST_Union(geometry)) AS geometry_wkt,
+                           (array_agg(properties ORDER BY part_index))[1] AS properties,
+                           min(created_at) AS created_at,
+                           max(updated_at) AS updated_at
+                    FROM features
+                    WHERE collection_id = :cid
+                      AND id = ANY(:ids)
+                    GROUP BY id, collection_id
+                """),
+                {"cid": collection_id, "ids": page_ids},
+            )
+            by_id = {row.id: _row_to_logical_feature(row) for row in r_full.fetchall()}
+            ordered = [by_id[pid] for pid in page_ids if pid in by_id]
+            return (ordered, int(total))
+
+        # Non-bbox path: fetch parts only (no ST_Union/array_agg in DB — fast, releases connection quickly).
         # Aggregate to logical features in Python in parallel (union geometries per id).
         parts_stmt = (
             select(
                 Feature.id,
                 Feature.collection_id,
                 Feature.part_index,
-                cast(func.ST_AsGeoJSON(Feature.geometry), JSONB).label("geometry_geojson"),
+                # Fetch raw GeoJSON text; _parts_to_logical_feature() handles str vs dict.
+                func.ST_AsGeoJSON(Feature.geometry).label("geometry_geojson"),
                 Feature.properties,
                 Feature.created_at,
                 Feature.updated_at,

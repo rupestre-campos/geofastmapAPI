@@ -60,8 +60,8 @@
    * Rejects on network error; use .catch() to fall back to getBasemaps(googleKey).
    */
   function fetchBasemaps(baseUrl) {
-    var url = (baseUrl || '').replace(/\/$/, '') + '/styles/basemaps';
-    return fetch(url, { headers: { Accept: 'application/json' } })
+    var url = (baseUrl || '').replace(/\/$/, '') + '/styles/basemaps?t=' + Date.now();
+    return fetch(url, { cache: 'no-store', headers: { Accept: 'application/json' } })
       .then(function(r) { if (!r.ok) throw new Error(r.statusText); return r.json(); })
       .then(function(data) {
         var list = data.basemaps || [];
