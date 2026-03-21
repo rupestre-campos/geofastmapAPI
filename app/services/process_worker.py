@@ -1039,6 +1039,11 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                 _update_feature_count_sync(engine, result_id)
             except Exception:
                 pass
+            # Store bbox on the collection immediately (same engine, post-commit inserts are visible).
+            try:
+                collections_crud.recompute_and_update_collection_extent_sync(engine, result_id)
+            except Exception:
+                pass
             engine.dispose()
             return (None, count, 1, result_id)
         except ProcessCancelled:
@@ -1152,6 +1157,10 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
             # Rowcount is parts updated; report logical features updated (distinct ids)
             items_in = len(ids) if ids else 0
             update_job(payload.job_id, status="running", message=f"Updated {field_name} for {updated_rows} rows.")
+            try:
+                collections_crud.recompute_and_update_collection_extent_sync(engine, target_cid)
+            except Exception:
+                pass
             engine.dispose()
             return (None, updated_rows, items_in, target_cid)
         except ProcessCancelled:
@@ -1536,11 +1545,15 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
             engine.dispose()
             return (f"Unknown process: {payload.process_id}", 0, 0, "")
 
-        # Update cached feature_count; extent is recomputed in process_worker_main (same as POST /extent/recompute).
+        # Update cached feature_count and stored extent (bbox) from written geometries.
         try:
             _update_feature_count_sync(engine, result_id)
         except Exception:
             # Don't fail the whole job if this bookkeeping step has an issue.
+            pass
+        try:
+            collections_crud.recompute_and_update_collection_extent_sync(engine, result_id)
+        except Exception:
             pass
 
         engine.dispose()

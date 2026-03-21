@@ -137,15 +137,6 @@
     <div class="btn-group" style="margin-top: var(--space);">
       <button type="button" class="btn btn-primary" id="btn-save-collection">Save collection</button>
     </div>
-    {% if is_admin %}
-    <div class="form-row" style="margin-top: var(--space); padding-top: var(--space); border-top: 1px solid var(--border);">
-      <label class="checkbox-inline" for="edit-editing-enabled">
-        <input type="checkbox" id="edit-editing-enabled" {% if editing_enabled | default(true) %}checked{% endif %}>
-        <strong>Allow editing</strong> — when checked, normal permissions apply (owner, editors, viewer-can-edit). When unchecked, this layer is <strong>read-only</strong> for everyone except administrators.
-      </label>
-      <p class="meta" style="margin-top:6px;">Administrators only.</p>
-    </div>
-    {% endif %}
   </div>
 
   {% if patch_url is defined and shares_url is defined %}
@@ -230,12 +221,6 @@
     const collectionStylesUrl = {{ collection_styles_url | tojson if collection_styles_url else 'null' }};
     const googleKey = {{ google_maps_api_key | tojson }};
     const isAdmin = {{ is_admin | default(false) | tojson }};
-
-    function appendEditingEnabledIfAdmin(body) {
-      var el = document.getElementById('edit-editing-enabled');
-      if (isAdmin && el) body.editing_enabled = el.checked;
-      return body;
-    }
 
     function bboxToPolygonFeature(bbox) {
       if (!bbox || bbox.length < 4) return null;
@@ -949,7 +934,6 @@
           alert('Draw a polygon on the map or fill in the bbox fields below.');
           return;
         }
-        appendEditingEnabledIfAdmin(body);
         fetch(base + '/collections/' + encodeURIComponent(collectionId), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -984,7 +968,6 @@
           }
         }
 
-        appendEditingEnabledIfAdmin(body);
         fetch(base + '/collections/' + encodeURIComponent(collectionId), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },

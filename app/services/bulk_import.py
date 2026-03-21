@@ -15,6 +15,7 @@ from shapely.validation import make_valid
 from uuid6 import uuid7
 
 from app.core.config import get_settings
+from app.crud import collections as collections_crud
 from app.models.collection import Collection
 from app.models.feature import Feature
 from app.utils.feature_subdivide import (
@@ -269,6 +270,12 @@ def run_bulk_import_sync(
                     .values(feature_count=Collection.feature_count + total_created)
                 )
             session.commit()
+
+            # Precompute collection extent (bbox) from imported geometries before closing the engine.
+            try:
+                collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id)
+            except Exception:
+                pass
 
             if on_progress:
                 on_progress("completed", total_created, total_created)

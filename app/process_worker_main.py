@@ -7,7 +7,6 @@ import sys
 from sqlalchemy import create_engine, text
 
 from app.core.config import get_settings
-from app.crud import collections as collections_crud
 from app.services.job_store import get_job, update_job
 from app.services.process_queue import (
     PROCESS_QUEUE_KEY,
@@ -139,22 +138,7 @@ def main() -> None:
             update_job(job_id, status="failed", message=err)
             print(f"Process FAILED: {err}", file=sys.stderr, flush=True)
         else:
-            # Same effect as POST /collections/{id}/extent/recompute — ensure stored bbox matches features after process.
-            if result_id:
-                try:
-                    eng = create_engine(
-                        settings.database_sync_url,
-                        pool_pre_ping=True,
-                        future=True,
-                        pool_size=1,
-                        max_overflow=0,
-                    )
-                    try:
-                        collections_crud.recompute_and_update_collection_extent_sync(eng, result_id)
-                    finally:
-                        eng.dispose()
-                except Exception:
-                    pass
+            # Extent (bbox) is recomputed inside process_process_job_sync after features are written.
             set_process_job_result(job_id, result_id)
             update_job(
                 job_id,

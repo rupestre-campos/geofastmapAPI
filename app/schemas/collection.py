@@ -85,10 +85,6 @@ class CollectionPatch(BaseModel):
     extent: Extent | None = None
     visibility: str | None = None  # private | logged | public
     viewer_can_edit: bool | None = None  # when True, everyone who can view can edit
-    editing_enabled: bool | None = Field(
-        default=None,
-        description="When False, only administrators may edit this collection and its features. Only admins may change this flag.",
-    )
 
 
 class CollectionRead(CollectionBase):
@@ -97,10 +93,6 @@ class CollectionRead(CollectionBase):
     feature_count: int | None = Field(
         default=None,
         description="Total number of features in this collection (cached).",
-    )
-    editing_enabled: bool = Field(
-        default=True,
-        description="When False, only administrators may edit this collection and its features.",
     )
     links: list[Link] | None = Field(default=None, description="OGC links (self, items).")
 
