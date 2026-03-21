@@ -5,6 +5,9 @@
   <header class="page-header">
     <h1>{{ collection.title or collection.id }}</h1>
     <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection.id }}?f=html">{{ collection.id }}</a></p>
+    {% if not (editing_enabled | default(true)) %}
+    <p class="meta">This layer is <strong>read-only</strong> (editing disabled for non-administrators).</p>
+    {% endif %}
   </header>
 
   <div class="card">
@@ -176,14 +179,12 @@
           };
         }
         if (hasStaticTiles && map.getLayer('layer')) {
-          var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
-          map.getCanvas().style.cursor = '';
-          map.on('mouseenter', ['layer', 'layer-line', 'layer-circle'], function() { map.getCanvas().style.cursor = 'pointer'; });
-          map.on('mouseleave', ['layer', 'layer-line', 'layer-circle'], function() { map.getCanvas().style.cursor = ''; });
-          map.on('click', ['layer', 'layer-line', 'layer-circle'], function(e) {
-            var feat = e.features && e.features[0];
-            if (!feat) return;
-            popup.setLngLat(e.lngLat).setHTML(GeofastMapUtils.popupHtmlForFeature(feat, base, collectionId)).addTo(map);
+          GeofastMapUtils.attachMultiLayerFeaturePopup(map, {
+            base: base,
+            getLayerIds: function() {
+              return ['layer', 'layer-line', 'layer-circle'].filter(function(id) { return map.getLayer(id); });
+            },
+            getCollectionId: function() { return collectionId; }
           });
         }
         sel.onchange = function() {

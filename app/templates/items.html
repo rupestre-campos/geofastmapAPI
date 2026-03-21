@@ -538,18 +538,18 @@
           else removeCollectionTilesLayer();
         };
       }
-      var popupLayers = ['results-fill', 'results-line', 'results-circle', 'tiles-fill', 'tiles-line', 'tiles-circle'];
-      if (map.getLayer('results-fill') || map.getLayer('results-line') || map.getLayer('results-circle')) {
-        var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
-        map.getCanvas().style.cursor = '';
-        map.on('mouseenter', popupLayers, function() { map.getCanvas().style.cursor = 'pointer'; });
-        map.on('mouseleave', popupLayers, function() { map.getCanvas().style.cursor = ''; });
-        map.on('click', popupLayers, function(e) {
-          var feat = e.features && e.features[0];
-          if (!feat) return;
-          popup.setLngLat(e.lngLat).setHTML(GeofastMapUtils.popupHtmlForFeature(feat, base, collectionId)).addTo(map);
+      function getItemsMapPopupLayerIds() {
+        var ids = [];
+        ['results-fill', 'results-line', 'results-circle', 'tiles-fill', 'tiles-line', 'tiles-circle'].forEach(function(id) {
+          if (map.getLayer(id)) ids.push(id);
         });
+        return ids;
       }
+      GeofastMapUtils.attachMultiLayerFeaturePopup(map, {
+        base: base,
+        getLayerIds: getItemsMapPopupLayerIds,
+        getCollectionId: function() { return collectionId; }
+      });
       });
     }
 

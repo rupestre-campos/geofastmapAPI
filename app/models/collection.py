@@ -24,6 +24,8 @@ class Collection(Base):
     visibility: str = Column(String(32), nullable=False, default=VISIBILITY_PRIVATE, server_default="private")
     # When True, everyone who can see the collection (by visibility) can edit; when False, only owner + explicit editor shares can edit.
     viewer_can_edit: bool = Column(Boolean, nullable=False, default=False, server_default="false")
+    # When False, only admins may change the collection or its features (read-only reference layers). Toggle via admin UI / API.
+    editing_enabled: bool = Column(Boolean, nullable=False, default=True, server_default="true")
 
     created_at: datetime = Column(
         DateTime(timezone=True),

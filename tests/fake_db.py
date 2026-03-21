@@ -233,6 +233,8 @@ class FakeCollectionsCrud:
             c.description = data.description
         if "extent" in data.model_fields_set:
             c.extent = data.extent.model_dump() if data.extent else None
+        if "editing_enabled" in data.model_fields_set and data.editing_enabled is not None:
+            c.editing_enabled = data.editing_enabled
         c.updated_at = _now()
         return c
 

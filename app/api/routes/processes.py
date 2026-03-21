@@ -434,7 +434,9 @@ async def _execute_process_feature(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Process execution requires Redis (PROCESS_QUEUE_TYPE=redis). Run a process worker.",
         )
-    job = create_job(collection_ids[0] if feature_ref else "feature", owner_id=current_user.id)
+    # Use initiator collection (feature source) for job, not first target layer
+    initiator = feature_ref["collection_id"] if feature_ref else "feature"
+    job = create_job(initiator, owner_id=current_user.id)
     pl = ProcessJobPayload(
         job_id=job.job_id,
         process_id=process_id,

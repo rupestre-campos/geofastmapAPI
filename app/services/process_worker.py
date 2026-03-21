@@ -22,7 +22,49 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import get_settings
 from app.crud import collections as collections_crud
 from app.services.process_queue import ProcessJobPayload
-from app.services.job_store import update_job
+from app.services.job_store import get_job, update_job
+
+
+class ProcessCancelled(Exception):
+    """Raised when the job is marked cancelled in job_store (cooperative stop)."""
+
+
+def _raise_if_cancelled(job_id: str) -> None:
+    if not job_id:
+        return
+    j = get_job(job_id)
+    if j is not None and j.status == "cancelled":
+        raise ProcessCancelled()
+
+
+def _cleanup_after_process_cancel(engine: Engine, payload: ProcessJobPayload, result_id: str) -> None:
+    """Remove partial result data after a cancelled process job."""
+    if not result_id:
+        return
+    # In-place measure updates: do not delete the target collection
+    if payload.process_id == "measure":
+        return
+    try:
+        if payload.update_existing:
+            SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+            session = SessionLocal()
+            try:
+                _clear_result_collection_sync(session, result_id)
+            finally:
+                session.close()
+            try:
+                _update_feature_count_sync(engine, result_id)
+                collections_crud.recompute_and_update_collection_extent_sync(engine, result_id)
+            except Exception:
+                pass
+        else:
+            _cleanup_result_collection_sync(engine, result_id)
+    except Exception:
+        pass
+    try:
+        cleanup_process_worker_temp_dir()
+    except Exception:
+        pass
 
 _MAX_RESULT_COLLECTION_ID_LEN = 60
 _RESULT_HASH_LEN = 12
@@ -420,11 +462,17 @@ def _run_intersection_feature_vs_layers_sync(
     props_a: dict,
     collection_ids: list[str],
     insert_session: Session,
+    job_id: str = "",
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> int:
     """Single geometry vs multiple layers: for each layer, find intersecting features; intersect; insert. Returns count."""
     from shapely.validation import make_valid
     total = 0
-    for cid in collection_ids:
+    n_layers = len(collection_ids)
+    for i, cid in enumerate(collection_ids):
+        _raise_if_cancelled(job_id)
+        if progress_callback:
+            progress_callback(i + 1, n_layers, cid)
         session = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)()
         try:
             rows = session.execute(
@@ -473,11 +521,17 @@ def _run_erase_feature_vs_layers_sync(
     props_a: dict,
     collection_ids: list[str],
     insert_session: Session,
+    job_id: str = "",
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> int:
     """Single geometry vs multiple layers: geom_result = geom_a minus (union of all features in layers). Insert result. Returns count."""
     from shapely.validation import make_valid
     current = geom_a
-    for cid in collection_ids:
+    n_layers = len(collection_ids)
+    for i, cid in enumerate(collection_ids):
+        _raise_if_cancelled(job_id)
+        if progress_callback:
+            progress_callback(i + 1, n_layers, cid)
         session = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)()
         try:
             rows = session.execute(
@@ -902,6 +956,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
     )
 
     if payload.is_feature_vs_layers:
+        result_id = ""
         try:
             if payload.feature_ref:
                 geom_a, props_a = _get_single_feature_geometry_sync(
@@ -941,27 +996,61 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
             insert_session = SessionLocal()
             try:
                 _clear_result_collection_sync(insert_session, result_id)
+                op_label = "intersection" if payload.process_id == "intersection" else "erase"
+                last_progress = [0.0]
+
+                def on_layer_progress(i: int, n: int, cid: str) -> None:
+                    import time
+                    now = time.monotonic()
+                    if now - last_progress[0] < 2.0:
+                        return
+                    last_progress[0] = now
+                    update_job(
+                        payload.job_id,
+                        status="running",
+                        message=f"Computing {op_label}… layer {i}/{n} ({cid})",
+                    )
+
                 if payload.process_id == "intersection":
                     count = _run_intersection_feature_vs_layers_sync(
-                        engine, result_id, geom_a, props_a, payload.collection_ids, insert_session
+                        engine,
+                        result_id,
+                        geom_a,
+                        props_a,
+                        payload.collection_ids,
+                        insert_session,
+                        payload.job_id,
+                        progress_callback=on_layer_progress,
                     )
                 else:
                     count = _run_erase_feature_vs_layers_sync(
-                        engine, result_id, geom_a, props_a, payload.collection_ids, insert_session
+                        engine,
+                        result_id,
+                        geom_a,
+                        props_a,
+                        payload.collection_ids,
+                        insert_session,
+                        payload.job_id,
+                        progress_callback=on_layer_progress,
                     )
             finally:
                 insert_session.close()
             try:
                 _update_feature_count_sync(engine, result_id)
-                collections_crud.recompute_and_update_collection_extent_sync(engine, result_id)
             except Exception:
                 pass
             engine.dispose()
             return (None, count, 1, result_id)
+        except ProcessCancelled:
+            _cleanup_after_process_cancel(engine, payload, result_id)
+            engine.dispose()
+            return ("cancelled", 0, 0, result_id)
         except Exception as e:
             engine.dispose()
             return (str(e), 0, 0, "")
 
+    # First engine was only for feature-vs-layers; main path uses a larger pool below.
+    engine.dispose()
     cpu_count = getattr(os, "cpu_count", lambda: 4)() or 4
     max_workers = max(1, settings.process_batch_workers or cpu_count)
     batch_max_bytes = max(1024, settings.process_batch_max_bytes)
@@ -1017,6 +1106,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
             # Optional filter by feature ids (match UI behavior of other single-layer tools)
             ids = list(payload.feature_ids or [])
             update_job(payload.job_id, status="running", message=f"Computing {op}…")
+            _raise_if_cancelled(payload.job_id)
             with engine.connect() as conn:
                 params: dict[str, Any] = {"cid": target_cid, "field": field_name, "factor": float(factor), "now": datetime.now(timezone.utc)}
                 ids_clause = ""
@@ -1064,6 +1154,9 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
             update_job(payload.job_id, status="running", message=f"Updated {field_name} for {updated_rows} rows.")
             engine.dispose()
             return (None, updated_rows, items_in, target_cid)
+        except ProcessCancelled:
+            engine.dispose()
+            return ("cancelled", 0, 0, result_id)
         except Exception as e:
             engine.dispose()
             return (str(e), 0, 0, "")
@@ -1087,6 +1180,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
 
         def maybe_update(status_text: str) -> None:
             nonlocal last_update
+            _raise_if_cancelled(payload.job_id)
             now = time.monotonic()
             if last_update and (now - last_update) < interval:
                 return
@@ -1115,6 +1209,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                     pair_chunk_size,
                     on_progress=on_pairs_progress,
                 ):
+                    _raise_if_cancelled(payload.job_id)
                     items_in += len(pair_chunk)
                     maybe_update("Computing intersection…")
                     chunk_results = _process_intersection_pairs_chunk(
@@ -1145,9 +1240,11 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                         for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows):
                             if not batch_a:
                                 continue
+                            _raise_if_cancelled(payload.job_id)
                             items_in += len(batch_a)
                             maybe_update("Computing erase…")
                             while len(pending) >= max_pending:
+                                _raise_if_cancelled(payload.job_id)
                                 done = [f for f in pending if f.done()]
                                 for f in done:
                                     pending.discard(f)
@@ -1159,6 +1256,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                             fut = executor.submit(_process_erase_batch, batch_a, payload.collection_id_b, engine)
                             pending.add(fut)
                         for fut in as_completed(pending):
+                            _raise_if_cancelled(payload.job_id)
                             chunk_results = fut.result()
                             if chunk_results:
                                 _insert_features_sync(insert_session, result_id, chunk_results)
@@ -1195,9 +1293,11 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                         for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows):
                             if not batch_a:
                                 continue
+                            _raise_if_cancelled(payload.job_id)
                             items_in += len(batch_a)
                             maybe_update("Computing buffer…")
                             while len(pending) >= max_pending:
+                                _raise_if_cancelled(payload.job_id)
                                 done = [f for f in pending if f.done()]
                                 for f in done:
                                     pending.discard(f)
@@ -1209,6 +1309,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                             fut = executor.submit(_process_buffer_batch, batch_a, float(payload.buffer_distance_degrees or 0.0))
                             pending.add(fut)
                         for fut in as_completed(pending):
+                            _raise_if_cancelled(payload.job_id)
                             chunk_results = fut.result()
                             if chunk_results:
                                 _insert_features_sync(insert_session, result_id, chunk_results)
@@ -1245,9 +1346,11 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                         for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows):
                             if not batch_a:
                                 continue
+                            _raise_if_cancelled(payload.job_id)
                             items_in += len(batch_a)
                             maybe_update("Exploding geometries…")
                             while len(pending) >= max_pending:
+                                _raise_if_cancelled(payload.job_id)
                                 done = [f for f in pending if f.done()]
                                 for f in done:
                                     pending.discard(f)
@@ -1259,6 +1362,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                             fut = executor.submit(_process_explode_batch, batch_a)
                             pending.add(fut)
                         for fut in as_completed(pending):
+                            _raise_if_cancelled(payload.job_id)
                             chunk_results = fut.result()
                             if chunk_results:
                                 _insert_features_sync(insert_session, result_id, chunk_results)
@@ -1307,6 +1411,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                         params["ids"] = payload.feature_ids
                     offset = 0
                     while True:
+                        _raise_if_cancelled(payload.job_id)
                         batch_sql = sql + f" ORDER BY id, part_index LIMIT {union_batch_size} OFFSET {offset}"
                         rows_batch = conn.execute(text(batch_sql), params).fetchall()
                         if not rows_batch:
@@ -1376,6 +1481,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                     rows = conn.execute(text(f"SELECT group_val, ST_AsBinary(geom) FROM {tmp_table}")).fetchall()
                 union_feats = []
                 for row in rows:
+                    _raise_if_cancelled(payload.job_id)
                     gval = row[0]
                     geom_wkb = row[1]
                     if not geom_wkb:
@@ -1430,16 +1536,19 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
             engine.dispose()
             return (f"Unknown process: {payload.process_id}", 0, 0, "")
 
-        # Update cached feature_count and extent for the result collection so HTML views and tiles see the real size.
+        # Update cached feature_count; extent is recomputed in process_worker_main (same as POST /extent/recompute).
         try:
             _update_feature_count_sync(engine, result_id)
-            collections_crud.recompute_and_update_collection_extent_sync(engine, result_id)
         except Exception:
             # Don't fail the whole job if this bookkeeping step has an issue.
             pass
 
         engine.dispose()
         return (None, count, items_in, result_id)
+    except ProcessCancelled:
+        _cleanup_after_process_cancel(engine, payload, result_id)
+        engine.dispose()
+        return ("cancelled", 0, 0, result_id)
     except Exception as e:
         engine.dispose()
         return (str(e), 0, 0, "")

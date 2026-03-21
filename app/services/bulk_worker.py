@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import os
 
+from sqlalchemy import create_engine
+
 from app.core.config import get_settings
+from app.crud import collections as collections_crud
 from app.services.bulk_import import run_bulk_import_sync
 from app.services.bulk_queue import QUEUE_KEY, BulkJobPayload
 from app.services.bulk_storage import get_bulk_storage
@@ -78,6 +81,21 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
                 items_failed=failed,
             )
         else:
+            # Same effect as POST /collections/{id}/extent/recompute — keep stored bbox in sync after import.
+            try:
+                eng = create_engine(
+                    get_settings().database_sync_url,
+                    pool_pre_ping=True,
+                    future=True,
+                    pool_size=1,
+                    max_overflow=0,
+                )
+                try:
+                    collections_crud.recompute_and_update_collection_extent_sync(eng, payload.collection_id)
+                finally:
+                    eng.dispose()
+            except Exception:
+                pass
             update_job(
                 payload.job_id,
                 status="completed",

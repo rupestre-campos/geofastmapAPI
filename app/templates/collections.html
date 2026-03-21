@@ -207,34 +207,39 @@
           map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
         }
       });
-      var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
-      map.on('click', 'collections-fill', function(e) {
-        if (!e.features || e.features.length === 0) return;
-        var html = '';
-        e.features.forEach(function(f) {
-          var id = f.properties.collection_id;
-          var title = f.properties.title || id;
-          var description = f.properties.description || '';
-          var href = base + '/collections/' + encodeURIComponent(id) + '?f=html';
-          html += '<div class="map-popup-item">';
-          html += '<div class="map-popup-label">Title</div>';
-          html += '<div class="map-popup-title-value">' + escapeHtml(title) + '</div>';
-          html += '<div class="map-popup-label">Layer id</div>';
-          html += '<div class="map-popup-id-value">' + escapeHtml(id) + '</div>';
-          html += '<div class="map-popup-label">Description</div>';
-          html += '<div class="map-popup-desc-value">' + (description ? escapeHtml(description) : '—') + '</div>';
-          html += '<a href="' + escapeHtml(href) + '">Open collection →</a>';
-          html += '</div>';
-        });
-        popup.setLngLat(e.lngLat).setHTML('<div class="map-popup">' + html + '</div>').addTo(map);
-      });
       function escapeHtml(s) {
         var div = document.createElement('div');
         div.textContent = s;
         return div.innerHTML;
       }
-      map.on('mouseenter', 'collections-fill', function() { map.getCanvas().style.cursor = 'pointer'; });
-      map.on('mouseleave', 'collections-fill', function() { map.getCanvas().style.cursor = ''; });
+      GeofastMapUtils.attachMultiLayerFeaturePopup(map, {
+        base: base,
+        getLayerIds: function() {
+          return ['collections-fill', 'collections-line'].filter(function(id) { return map.getLayer(id); });
+        },
+        customRender: function(features) {
+          var seen = {};
+          var html = '';
+          features.forEach(function(f) {
+            var id = f.properties && f.properties.collection_id;
+            if (!id || seen[id]) return;
+            seen[id] = true;
+            var title = (f.properties && f.properties.title) || id;
+            var description = (f.properties && f.properties.description) || '';
+            var href = base + '/collections/' + encodeURIComponent(id) + '?f=html';
+            html += '<div class="map-popup-item">';
+            html += '<div class="map-popup-label">Title</div>';
+            html += '<div class="map-popup-title-value">' + escapeHtml(title) + '</div>';
+            html += '<div class="map-popup-label">Layer id</div>';
+            html += '<div class="map-popup-id-value">' + escapeHtml(id) + '</div>';
+            html += '<div class="map-popup-label">Description</div>';
+            html += '<div class="map-popup-desc-value">' + (description ? escapeHtml(description) : '—') + '</div>';
+            html += '<a href="' + escapeHtml(href) + '">Open collection →</a>';
+            html += '</div>';
+          });
+          return html ? '<div class="map-popup">' + html + '</div>' : '';
+        }
+      });
 
       window.collectionsMap = map;
     }

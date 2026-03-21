@@ -7,6 +7,7 @@ import sys
 from sqlalchemy import create_engine, text
 
 from app.core.config import get_settings
+from app.crud import collections as collections_crud
 from app.services.job_store import get_job, update_job
 from app.services.process_queue import (
     PROCESS_QUEUE_KEY,
@@ -130,10 +131,30 @@ def main() -> None:
             print(f"Running {payload.process_id} ({payload.collection_id_a}, {payload.collection_id_b}) job_id={job_id}...", flush=True)
         update_job(job_id, status="running", message=f"Computing {payload.process_id}...")
         err, count, items_in, result_id = process_process_job_sync(payload)
+        if err == "cancelled":
+            update_job(job_id, status="cancelled", message="Cancelled by user.")
+            print(f"Process cancelled: {job_id}", flush=True)
+            continue
         if err:
             update_job(job_id, status="failed", message=err)
             print(f"Process FAILED: {err}", file=sys.stderr, flush=True)
         else:
+            # Same effect as POST /collections/{id}/extent/recompute — ensure stored bbox matches features after process.
+            if result_id:
+                try:
+                    eng = create_engine(
+                        settings.database_sync_url,
+                        pool_pre_ping=True,
+                        future=True,
+                        pool_size=1,
+                        max_overflow=0,
+                    )
+                    try:
+                        collections_crud.recompute_and_update_collection_extent_sync(eng, result_id)
+                    finally:
+                        eng.dispose()
+                except Exception:
+                    pass
             set_process_job_result(job_id, result_id)
             update_job(
                 job_id,

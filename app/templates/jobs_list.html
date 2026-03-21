@@ -76,7 +76,7 @@
             <td class="meta">{{ (j.finished_at or '')[:19] | replace('T', ' ') if j.finished_at else '—' }}</td>
             <td>
               <a href="{{ base }}/jobs/{{ j.job_id }}?f=html" class="btn">View</a>
-              {% if j.status == 'pending' or (j.status in ('running', 'replacing') and j.is_tile_build) %}
+              {% if j.status == 'pending' or (j.status in ('running', 'replacing') and (j.is_tile_build or j.process_id)) %}
               <button type="button" class="btn btn-danger btn-cancel" data-job-id="{{ j.job_id }}" data-collection-id="{{ j.collection_id or '' }}" data-is-tile-build="{{ '1' if j.is_tile_build else '' }}">Cancel</button>
               {% endif %}
             </td>
@@ -156,7 +156,7 @@
     if (jobsEmpty) jobsEmpty.style.display = 'none';
     var showOwner = (typeof is_admin !== 'undefined' && is_admin) || (jobs.length && jobs[0].owner_username !== undefined);
     tbody.innerHTML = jobs.map(function(j) {
-      var showCancel = j.status === 'pending' || (j.status === 'running' || j.status === 'replacing') && j.is_tile_build;
+      var showCancel = j.status === 'pending' || (j.status === 'running' || j.status === 'replacing') && (j.is_tile_build || j.process_id);
       var cancelBtn = showCancel
         ? '<button type="button" class="btn btn-danger btn-cancel" data-job-id="' + esc(j.job_id) + '" data-collection-id="' + esc(j.collection_id || '') + '" data-is-tile-build="' + (j.is_tile_build ? '1' : '') + '">Cancel</button>'
         : '';

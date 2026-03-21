@@ -71,6 +71,14 @@ For a custom id:
 
 **Style editor** (`style_editor.html`) and **collections list** (`collections.html`) keep their own basemap/popup logic where the UI or data shape differs; they can be switched to shared utils later if desired.
 
+### Collection “read-only layer” (`editing_enabled`)
+
+- Stored on the collection (`editing_enabled`, default `true`). When `false`, only **administrators** may change the collection or its features (API enforces via `can_edit_collection`).
+- **Collection edit** (`collection_edit.html`): admins see an **Allow editing** checkbox; saves include `editing_enabled` in the PATCH body (`appendEditingEnabledIfAdmin`).
+- **Collection view** (`collection.html`): shows a short notice when the layer is read-only for non-admins.
+
+Run DB migration `0021_collection_editing_enabled` after deploy.
+
 ## Consistency
 
 - For **page-specific behavior**, extend the shared API with **parameters** (e.g. `popupHtmlForFeature(feat, base, collectionId)`) or options instead of copying code.

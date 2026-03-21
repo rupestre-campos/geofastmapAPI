@@ -406,22 +406,35 @@
   }
 
   /**
+   * Human-readable label for special popup layer ids (e.g. style editor sketch).
+   */
+  function layerDisplayName(collectionId) {
+    if (collectionId === '__editor__') return 'Editor sketch';
+    return collectionId;
+  }
+
+  /**
    * Build popup HTML for a vector tile feature.
    * @param {Object} feat - Feature with properties and optionally id
    * @param {string} base - Base URL (e.g. window.location.origin + path prefix)
-   * @param {string} collectionId - Collection id for the item link
+   * @param {string} collectionId - Collection id for the item link (optional; omit link if falsy)
    * @param {string|null} displayIdProperty - Optional property name to show as identifier (link text); when set, first line uses this property
    * @returns {string} HTML string for popup content
    */
   function popupHtmlForFeature(feat, base, collectionId, displayIdProperty) {
     var props = feat.properties || {};
     var id = props.id != null ? String(props.id) : (feat.id != null ? String(feat.id) : '—');
-    var featureUrl = base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(id) + '?f=html';
+    var featureUrl = collectionId
+      ? (base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(id) + '?f=html')
+      : '';
     var displayLabel = displayIdProperty && props[displayIdProperty] != null ? String(props[displayIdProperty]) : id;
     var firstLabel = displayIdProperty ? escapeHtml(displayIdProperty) : 'ID';
+    var idLine = featureUrl
+      ? ('<a href="' + escapeHtml(featureUrl) + '">' + escapeHtml(displayLabel) + '</a>')
+      : escapeHtml(displayLabel);
     var parts = [
       '<div class="map-popup">',
-      '<div class="map-popup-id"><strong>' + firstLabel + '</strong> <a href="' + escapeHtml(featureUrl) + '">' + escapeHtml(displayLabel) + '</a></div>'
+      '<div class="map-popup-id"><strong>' + firstLabel + '</strong> ' + idLine + '</div>'
     ];
     Object.keys(props).sort().forEach(function(k) {
       if (k === 'id') return;
@@ -468,7 +481,8 @@
     var parts = ['<div class="map-popup map-popup-step">', '<div class="map-popup-step-title">Layers</div>', '<ul class="map-popup-list">'];
     byLayerOrder.forEach(function(cid) {
       var count = byLayer[cid].length;
-      var label = escapeHtml(cid) + (count > 1 ? ' (' + count + ')' : '');
+      var name = layerDisplayName(cid);
+      var label = escapeHtml(name) + (count > 1 ? ' (' + count + ')' : '');
       parts.push('<li><a href="#" class="map-popup-link" data-action="layer" data-layer="' + escapeHtml(cid) + '">' + label + '</a></li>');
     });
     parts.push('</ul></div>');
@@ -480,7 +494,8 @@
    * @param {string|null} displayIdProperty - Optional property name to show as label for each feature
    */
   function popupHtmlFeaturesStep(collectionId, features, base, displayIdProperty) {
-    var parts = ['<div class="map-popup map-popup-step">', '<a href="#" class="map-popup-back" data-action="layers">← Back to layers</a>', '<div class="map-popup-step-title">' + escapeHtml(collectionId) + '</div>', '<ul class="map-popup-list">'];
+    var title = escapeHtml(layerDisplayName(collectionId));
+    var parts = ['<div class="map-popup map-popup-step">', '<a href="#" class="map-popup-back" data-action="layers">← Back to layers</a>', '<div class="map-popup-step-title">' + title + '</div>', '<ul class="map-popup-list">'];
     features.forEach(function(feat, idx) {
       var label = getFeatureDisplayLabel(feat, displayIdProperty || null, idx);
       parts.push('<li><a href="#" class="map-popup-link" data-action="feature" data-layer="' + escapeHtml(collectionId) + '" data-index="' + idx + '">' + escapeHtml(String(label)) + '</a></li>');
@@ -496,7 +511,141 @@
   function popupHtmlFeatureStep(feat, collectionId, base, displayIdProperty) {
     var backFeatures = '<a href="#" class="map-popup-back" data-action="features" data-layer="' + escapeHtml(collectionId) + '">← Back to features</a>';
     var backLayers = '<a href="#" class="map-popup-back" data-action="layers">← Back to layers</a>';
-    return '<div class="map-popup map-popup-step">' + backFeatures + ' ' + backLayers + '<div class="map-popup-step-body">' + popupHtmlForFeature(feat, base, collectionId, displayIdProperty || null) + '</div></div>';
+    var cidForLink = (collectionId === '__editor__' || !collectionId) ? null : collectionId;
+    return '<div class="map-popup map-popup-step">' + backFeatures + ' ' + backLayers + '<div class="map-popup-step-body">' + popupHtmlForFeature(feat, base, cidForLink, displayIdProperty || null) + '</div></div>';
+  }
+
+  /**
+   * Map click: query all interactive vector layers at the point, then show grouped popups (like map view).
+   * @param {object} map - MapLibre map
+   * @param {object} options
+   * @param {function(): string[]} options.getLayerIds - returns map layer ids (only existing layers are used)
+   * @param {function(object): string|null} options.getCollectionId - MapLibre feature -> collection id (or "__editor__" for editor sketch)
+   * @param {string} options.base - API base URL
+   * @param {Object.<string,string>} [options.displayIdByLayer] - optional property name per collection for popup labels
+   * @param {function(): Object.<string,string>} [options.getDisplayIdByLayer] - if set, called on each click to resolve labels (overrides displayIdByLayer snapshot)
+   * @param {function(Array, object, object): string} [options.customRender] - if set, receives (features, lngLat, map) and returns HTML; skips feature grouping
+   */
+  function attachMultiLayerFeaturePopup(map, options) {
+    if (!map || !options) return;
+    if (map.__geofastMultiLayerPopupBound) return;
+    map.__geofastMultiLayerPopupBound = true;
+    var getLayerIds = options.getLayerIds;
+    var getCollectionId = options.getCollectionId;
+    var base = options.base || '';
+    var displayIdByLayer = options.displayIdByLayer || {};
+    var getDisplayIdByLayer = options.getDisplayIdByLayer;
+    var customRender = options.customRender;
+
+    function resolveDisplayIdByLayer() {
+      if (typeof getDisplayIdByLayer === 'function') {
+        try {
+          var o = getDisplayIdByLayer();
+          return o && typeof o === 'object' ? o : {};
+        } catch (e) {
+          return {};
+        }
+      }
+      return displayIdByLayer;
+    }
+
+    function bindListeners() {
+      function filteredLayerIds() {
+        var ids = (getLayerIds && getLayerIds()) || [];
+        return ids.filter(function(id) {
+          try {
+            return map.getLayer(id);
+          } catch (e) {
+            return false;
+          }
+        });
+      }
+
+      map.on('mousemove', function(e) {
+        var layerIds = filteredLayerIds();
+        var hit = layerIds.length > 0 && (function() {
+          try {
+            return map.queryRenderedFeatures(e.point, { layers: layerIds }).length > 0;
+          } catch (err) {
+            return false;
+          }
+        })();
+        map.getCanvas().style.cursor = hit ? 'pointer' : '';
+      });
+
+      setupLayeredPopupNavigation();
+
+      map.on('click', function(e) {
+        var layerIds = filteredLayerIds();
+        if (layerIds.length === 0) return;
+        var features;
+        try {
+          features = map.queryRenderedFeatures(e.point, { layers: layerIds });
+        } catch (err) {
+          return;
+        }
+        if (!features || features.length === 0) return;
+
+        if (customRender) {
+          var htmlCustom = customRender(features, e.lngLat, map);
+          if (!htmlCustom) return;
+          if (window._geofastMapPopup) {
+            try {
+              window._geofastMapPopup.remove();
+            } catch (err) {}
+          }
+          var popupC = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '420px' });
+          popupC.setLngLat(e.lngLat).setHTML(htmlCustom).addTo(map);
+          window._geofastMapPopup = popupC;
+          return;
+        }
+
+        if (!getCollectionId) return;
+
+        function getCid(f) {
+          return getCollectionId(f);
+        }
+
+        var grouped = groupFeaturesByCollection(features, getCid);
+        if (grouped.byLayerOrder.length === 0) return;
+
+        if (window._geofastMapPopup) {
+          try {
+            window._geofastMapPopup.remove();
+          } catch (err) {}
+        }
+
+        var dispMap = resolveDisplayIdByLayer();
+        window._geofastMapPopupData = {
+          byLayerOrder: grouped.byLayerOrder,
+          byLayer: grouped.byLayer,
+          base: base,
+          displayIdByLayer: dispMap
+        };
+        var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '420px' });
+        var html;
+        if (grouped.byLayerOrder.length > 1) {
+          html = popupHtmlLayersStep(grouped.byLayerOrder, grouped.byLayer, base);
+        } else {
+          var cid0 = grouped.byLayerOrder[0];
+          var feats = grouped.byLayer[cid0];
+          var dispId = dispMap[cid0] || null;
+          if (feats.length > 1) {
+            html = popupHtmlFeaturesStep(cid0, feats, base, dispId);
+          } else {
+            html = popupHtmlFeatureStep(feats[0], cid0, base, dispId);
+          }
+        }
+        popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+        window._geofastMapPopup = popup;
+      });
+    }
+
+    if (typeof map.loaded === 'function' && map.loaded()) {
+      bindListeners();
+    } else {
+      map.once('load', bindListeners);
+    }
   }
 
   /**
@@ -603,6 +752,8 @@
     popupHtmlLayersStep: popupHtmlLayersStep,
     popupHtmlFeaturesStep: popupHtmlFeaturesStep,
     popupHtmlFeatureStep: popupHtmlFeatureStep,
+    layerDisplayName: layerDisplayName,
+    attachMultiLayerFeaturePopup: attachMultiLayerFeaturePopup,
     setupLayeredPopupNavigation: setupLayeredPopupNavigation,
     setupFullscreenForMap: setupFullscreenForMap
   };

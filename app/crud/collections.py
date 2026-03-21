@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Tuple
@@ -185,28 +186,35 @@ async def recompute_and_update_collection_extent(
 def recompute_and_update_collection_extent_sync(engine: Engine, collection_id: str) -> None:
     """
     Sync variant: compute extent from feature geometries and update the collection's stored extent.
-    Use from process worker or bulk import after writing features. No-op if collection has no features with geometry.
+    Same database effect as POST /collections/{id}/extent/recompute.
+
+    Use from workers after bulk import or process jobs finish writing features.
+    No-op if the collection has no features with geometry (stored extent becomes null).
     """
-    with engine.connect() as conn:
-        row = conn.execute(
-            text("""
-                SELECT ST_XMin(e) AS minx, ST_YMin(e) AS miny, ST_XMax(e) AS maxx, ST_YMax(e) AS maxy
-                FROM (SELECT ST_Extent(geometry) AS e FROM features WHERE collection_id = :cid AND geometry IS NOT NULL) t
-            """),
-            {"cid": collection_id},
-        ).first()
-        if row is None or row.minx is None:
-            extent_json = None
-        else:
-            extent_json = json.dumps({
-                "bbox": [[float(row.minx), float(row.miny), float(row.maxx), float(row.maxy)]],
-                "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84",
-            })
-        conn.execute(
-            text("UPDATE collections SET extent = :extent::jsonb WHERE id = :cid"),
-            {"cid": collection_id, "extent": extent_json},
-        )
-        conn.commit()
+    log = logging.getLogger(__name__)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("""
+                    SELECT ST_XMin(e) AS minx, ST_YMin(e) AS miny, ST_XMax(e) AS maxx, ST_YMax(e) AS maxy
+                    FROM (SELECT ST_Extent(geometry) AS e FROM features WHERE collection_id = :cid AND geometry IS NOT NULL) t
+                """),
+                {"cid": collection_id},
+            ).first()
+            if row is None or row.minx is None:
+                extent_json = None
+            else:
+                extent_json = json.dumps({
+                    "bbox": [[float(row.minx), float(row.miny), float(row.maxx), float(row.maxy)]],
+                    "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84",
+                })
+            conn.execute(
+                text("UPDATE collections SET extent = :extent::jsonb WHERE id = :cid"),
+                {"cid": collection_id, "extent": extent_json},
+            )
+            conn.commit()
+    except Exception:
+        log.warning("recompute_and_update_collection_extent_sync failed for %s", collection_id, exc_info=True)
 
 
 async def get_collections_bboxes(db: AsyncSession) -> dict[str, Extent]:
@@ -280,6 +288,8 @@ async def patch_collection(
             collection.visibility = data.visibility
     if "viewer_can_edit" in data.model_fields_set and data.viewer_can_edit is not None:
         collection.viewer_can_edit = data.viewer_can_edit
+    if "editing_enabled" in data.model_fields_set and data.editing_enabled is not None:
+        collection.editing_enabled = data.editing_enabled
     await db.commit()
     await db.refresh(collection)
     return collection

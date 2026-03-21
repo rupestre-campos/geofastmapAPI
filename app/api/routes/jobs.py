@@ -13,6 +13,7 @@ from app.crud import user as user_crud
 from app.db.session import get_db
 from app.models.user import User
 from app.services.job_store import get_job, list_all_jobs, list_jobs_for_collection, update_job
+from app.services.process_queue import get_process_job_meta
 from app.services.tile_build_queue import get_latest_tile_build_job
 
 router = APIRouter()
@@ -104,8 +105,12 @@ async def list_jobs(
 @router.post(
     "/{job_id}/cancel",
     status_code=status.HTTP_200_OK,
-    summary="Cancel a queued job",
-    description="Marks a job as cancelled. Only jobs with status 'pending' can be cancelled. Owner or admin only.",
+    summary="Cancel a queued or running process job",
+    description=(
+        "Marks a job as cancelled. Pending jobs are removed from the queue. "
+        "Running or replacing process jobs (intersection, erase, etc.) are cooperatively cancelled; "
+        "other running jobs cannot be cancelled here (use tile build cancel for tiles)."
+    ),
 )
 async def cancel_job(
     job_id: str,
@@ -116,13 +121,25 @@ async def cancel_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     if not _can_see_job(job.owner_id, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    if job.status != "pending":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Job is {job.status}; only pending (queued) jobs can be cancelled.",
+    is_process = get_process_job_meta(job_id) is not None
+    if job.status == "pending":
+        update_job(job_id, status="cancelled", message="Cancelled by user.")
+        return {"job_id": job_id, "status": "cancelled", "message": "Job cancelled."}
+    if job.status in ("running", "replacing") and is_process:
+        update_job(
+            job_id,
+            status="cancelled",
+            message="Cancellation requested — stopping soon…",
         )
-    update_job(job_id, status="cancelled", message="Cancelled by user.")
-    return {"job_id": job_id, "status": "cancelled", "message": "Job cancelled."}
+        return {
+            "job_id": job_id,
+            "status": "cancelled",
+            "message": "Cancellation requested; the worker will stop and clean up shortly.",
+        }
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"Job is {job.status}; only pending jobs or running process jobs can be cancelled.",
+    )
 
 
 @router.get(
@@ -141,6 +158,16 @@ async def get_job_status(
     if not _can_see_job(job.owner_id, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     if wants_html(request):
+        # For feature-vs-layers jobs, display initiator collection (from feature_source) not first target layer
+        display_collection_id = job.collection_id
+        meta = get_process_job_meta(job_id)
+        if meta:
+            fs = meta.get("feature_source") or ""
+            if fs.startswith("reference "):
+                # "reference COLLECTION_ID/FEATURE_ID" -> COLLECTION_ID
+                part = fs[len("reference "):].strip()
+                if "/" in part:
+                    display_collection_id = part.split("/", 1)[0]
         # Tile builds are cancelled via /collections/{collection_id}/tiles/build/cancel and can be cancelled
         # even while "running". Detect if this job is the latest tile build for the collection.
         is_tile_build = False
@@ -154,7 +181,7 @@ async def get_job_status(
             "job.html",
             base=base,
             job_id=job.job_id,
-            collection_id=job.collection_id,
+            collection_id=display_collection_id,
             status=job.status,
             is_tile_build=is_tile_build,
             message=job.message or "",

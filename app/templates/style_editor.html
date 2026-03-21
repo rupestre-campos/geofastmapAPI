@@ -172,6 +172,208 @@
       mapStyle.glyphs = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
       map = new maplibregl.Map({ container: 'map', style: mapStyle, center: [0, 20], zoom: 2, renderWorldCopies: false });
       GeofastMapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
+      // Popups (same multi-layer flow as collections/items). Called after Geoman from second load handler.
+      function attachStyleEditorFeaturePopup() {
+        GeofastMapUtils.attachMultiLayerFeaturePopup(map, {
+          base: base,
+          getLayerIds: function() {
+            var ids = [];
+            ['editor-fill', 'editor-line', 'editor-circle', 'editor-symbol'].forEach(function(id) {
+              if (map.getLayer(id)) ids.push(id);
+            });
+            (styleEditorState.layersOnMap || []).forEach(function(entry) {
+              var sid = entry.sourceId;
+              ['fill', 'line', 'circle', 'symbol'].forEach(function(suf) {
+                var lid = sid + '-' + suf;
+                if (map.getLayer(lid)) ids.push(lid);
+              });
+            });
+            return ids;
+          },
+          getDisplayIdByLayer: function() {
+            var o = {};
+            (styleEditorState.layersOnMap || []).forEach(function(entry) {
+              var cid = entry.collectionId;
+              if (cid && entry.popupIdProperty) o[cid] = entry.popupIdProperty;
+            });
+            return o;
+          },
+          getCollectionId: function(feat) {
+            var lid = feat.layer && feat.layer.id;
+            if (!lid) return null;
+            if (/^editor-(fill|line|circle|symbol)$/.test(lid)) return '__editor__';
+            var m = lid.match(/^(.+)-(fill|line|circle|symbol)$/);
+            if (!m) return null;
+            var sourceId = m[1];
+            var entry = (styleEditorState.layersOnMap || []).filter(function(l) { return l.sourceId === sourceId; })[0];
+            return entry && entry.collectionId ? entry.collectionId : null;
+          }
+        });
+      }
+      styleEditorState.attachFeaturePopup = attachStyleEditorFeaturePopup;
+      attachStyleEditorFeaturePopup(); // attach immediately (same as collections/items); defers bind until map load
+
+      function addCollectionLayerToMap(collectionId, collectionName) {
+        if (!map || typeof map.getSource !== 'function') return;
+        if (typeof map.loaded === 'function' && !map.loaded()) {
+          map.once('load', function() { addCollectionLayerToMap(collectionId, collectionName); });
+          return;
+        }
+        var sourceId = 'collection-' + collectionId.replace(/[^a-zA-Z0-9_-]/g, '_');
+        if (map.getSource(sourceId)) return;
+        var name = collectionName || collectionId;
+        function addLayerWithSpec(styleSpec) {
+          var s = styleSpec || defaultSpec;
+          var p = (window.GeofastMapUtils && window.GeofastMapUtils.specToPaint) ? window.GeofastMapUtils.specToPaint(s) : null;
+          var fillColor = p ? p.fillColor : (s.fillColor || '#58a6ff');
+          var fillOpacityPaint = p ? p.fillOpacity : (s.fillOpacity != null ? s.fillOpacity : 0.6);
+          var lineColor = p ? p.lineColor : (s.lineColor || '#58a6ff');
+          var lineWidthPaint = p ? p.lineWidth : Math.max(0.5, s.lineWidth != null ? s.lineWidth : 1);
+          var lineOpacityPaint = p ? p.lineOpacity : (s.lineOpacity != null ? s.lineOpacity : 1);
+          var fillVisible = p ? p.fillEnabled : (s.fillEnabled !== false);
+          var lineVisible = p ? p.lineEnabled : (s.lineEnabled !== false);
+          var pointVisible = p ? p.pointEnabled : (s.pointEnabled !== false);
+          var lineDash = p ? p.lineDash : (LINE_DASH[s.linePattern || 'solid'] || LINE_DASH.solid);
+          fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles', { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.json(); })
+            .then(function(tilejson) {
+              var tiles = tilejson.tiles || [];
+              var hasStatic = tiles.some(function(t) { return (t || '').indexOf('/tiles/static/') !== -1; });
+              if (hasStatic) {
+                var staticTileUrl = tiles.filter(function(t) { return (t || '').indexOf('/tiles/static/') !== -1; })[0];
+                var tileUrl = staticTileUrl && staticTileUrl.indexOf('{z}') !== -1
+                  ? staticTileUrl
+                  : (base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf');
+                map.addSource(sourceId, { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
+                var layerId = tilejson.vector_layers && tilejson.vector_layers[0] ? tilejson.vector_layers[0].id : collectionId;
+                var pointFilter = ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]];
+                var notPointFilter = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
+                var ptColor = p ? p.pointColor : ((s && s.pointColor) || defaultSpec.pointColor || '#58a6ff');
+                var ptSize = p ? p.pointRadius : ((s && s.pointSize != null) ? s.pointSize : (defaultSpec.pointSize != null ? defaultSpec.pointSize : 8));
+                var beforeFill = map.getLayer('editor-fill') ? 'editor-fill' : undefined;
+                var beforeLine = map.getLayer('editor-line') ? 'editor-line' : undefined;
+                map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, beforeFill);
+                map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, beforeLine);
+                map.addLayer({ id: sourceId + '-circle', type: 'circle', source: sourceId, 'source-layer': layerId, filter: pointFilter, layout: { visibility: pointVisible ? 'visible' : 'none' }, paint: { 'circle-color': ptColor, 'circle-radius': ptSize, 'circle-opacity': 0.9 } });
+                styleEditorState.activeEditTarget = sourceId;
+                if (styleEditorState.applySpecToForm) styleEditorState.applySpecToForm(s);
+                if (styleEditorState.applyVectorStyle) styleEditorState.applyVectorStyle();
+                if (styleEditorState.refreshRuleFields) styleEditorState.refreshRuleFields();
+                if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
+                if (styleEditorState.loadStylesList) styleEditorState.loadStylesList();
+              } else {
+                var pointFilterGeo = ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]];
+                var notPointFilterGeo = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
+                fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=100', { headers: { 'Accept': 'application/geo+json' } })
+                  .then(function(r) { return r.json(); })
+                  .then(function(fc) {
+                    if (!fc.features || fc.features.length === 0) return;
+                    map.addSource(sourceId, { type: 'geojson', data: fc });
+                    var ptColorGeo = p ? p.pointColor : ((s && s.pointColor) || defaultSpec.pointColor || '#58a6ff');
+                    var ptSizeGeo = p ? p.pointRadius : ((s && s.pointSize != null) ? s.pointSize : (defaultSpec.pointSize != null ? defaultSpec.pointSize : 8));
+                    var beforeFillGeo = map.getLayer('editor-fill') ? 'editor-fill' : undefined;
+                    var beforeLineGeo = map.getLayer('editor-line') ? 'editor-line' : undefined;
+                    map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, filter: notPointFilterGeo, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, beforeFillGeo);
+                    map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, filter: notPointFilterGeo, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, beforeLineGeo);
+                    map.addLayer({ id: sourceId + '-circle', type: 'circle', source: sourceId, filter: pointFilterGeo, layout: { visibility: pointVisible ? 'visible' : 'none' }, paint: { 'circle-color': ptColorGeo, 'circle-radius': ptSizeGeo, 'circle-opacity': 0.9 } });
+                    styleEditorState.activeEditTarget = sourceId;
+                    if (styleEditorState.applySpecToForm) styleEditorState.applySpecToForm(s);
+                    if (styleEditorState.applyVectorStyle) styleEditorState.applyVectorStyle();
+                    if (styleEditorState.refreshRuleFields) styleEditorState.refreshRuleFields();
+                    if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
+                    if (styleEditorState.loadStylesList) styleEditorState.loadStylesList();
+                  })
+                  .catch(function(e) { console.warn('Load items failed', e); });
+              }
+              if (map.getSource(sourceId)) {
+                styleEditorState.layersOnMap.push({
+                  sourceId: sourceId,
+                  collectionId: collectionId,
+                  name: name,
+                  styleSpec: s,
+                  popupIdProperty: null
+                });
+                if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
+              }
+            })
+            .catch(function(e) { console.warn('TileJSON failed', e); });
+        }
+        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/styles', { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var list = data.styles || [];
+            var defaultStyle = list.filter(function(s) { return s.is_default; })[0] || list[0];
+            addLayerWithSpec(defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : null);
+          })
+          .catch(function() { addLayerWithSpec(null); });
+      }
+
+      var collectionSearchTimeout = null;
+      function renderCollectionResults(list, resultsEl) {
+        resultsEl.innerHTML = '';
+        list.forEach(function(c) {
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'collection-search-item';
+          btn.dataset.collectionId = c.id;
+          btn.innerHTML = '<strong>' + (c.title || c.id) + '</strong><span class="meta">' + (c.id !== (c.title || c.id) ? c.id : '') + (c.description ? ' — ' + String(c.description).slice(0, 60) + (c.description.length > 60 ? '…' : '') : '') + '</span>';
+          btn.onclick = function() {
+            var cid = this.dataset.collectionId;
+            var name = (c.title || c.id);
+            resultsEl.innerHTML = '';
+            document.getElementById('collection-search').value = '';
+            addCollectionLayerToMap(cid, name);
+          };
+          resultsEl.appendChild(btn);
+        });
+        if (list.length === 0) resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">No collections found.</div>';
+      }
+      function fetchFirst10Collections() {
+        var resultsEl = document.getElementById('collection-search-results');
+        if (!resultsEl) return;
+        resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">Loading…</div>';
+        fetch(base + '/collections?limit=10', { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var list = data.collections || [];
+            renderCollectionResults(list, resultsEl);
+          })
+          .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Load failed.</div>'; });
+      }
+      var searchEl = document.getElementById('collection-search');
+      if (searchEl) {
+        searchEl.onfocus = function() {
+          var resultsEl = document.getElementById('collection-search-results');
+          if (resultsEl && resultsEl.children.length === 0) fetchFirst10Collections();
+        };
+        searchEl.oninput = function() {
+          var q = this.value.trim();
+          clearTimeout(collectionSearchTimeout);
+          var resultsEl = document.getElementById('collection-search-results');
+          if (!resultsEl) return;
+          if (!q) {
+            fetchFirst10Collections();
+            return;
+          }
+          collectionSearchTimeout = setTimeout(function() {
+            resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">Searching…</div>';
+            fetch(base + '/collections?limit=20&q=' + encodeURIComponent(q), { headers: { 'Accept': 'application/json' } })
+              .then(function(r) { return r.json(); })
+              .then(function(data) {
+                var list = data.collections || [];
+                renderCollectionResults(list, resultsEl);
+              })
+              .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Search failed.</div>'; });
+          }, 220);
+        };
+        searchEl.onblur = function() {
+          setTimeout(function() {
+            var el = document.getElementById('collection-search-results');
+            if (el) el.innerHTML = '';
+          }, 200);
+        };
+      }
+
       map.on('load', function() {
         GeofastMapUtils.setupFullscreenForMap(map);
         map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
@@ -380,58 +582,7 @@
         if (cid) _setRuleFieldOptionsForCollection(cid);
         else if (window.GeofastStyleEditor && window.GeofastStyleEditor.setRuleFieldOptions) window.GeofastStyleEditor.setRuleFieldOptions([]);
       };
-
-      // ---- Popups for fast data inspection ----
-      var popup = null;
-      function _esc(s) { return (s + '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
-      function showPopup(lngLat, feature) {
-        if (!feature) return;
-        // Prefer shared popup rendering so it matches other pages (readable colors, consistent layout)
-        if (window.GeofastMapUtils && window.GeofastMapUtils.popupHtmlForFeature) {
-          try {
-            var html2 = window.GeofastMapUtils.popupHtmlForFeature(feature, base, null);
-            if (html2) {
-              try { if (popup) popup.remove(); } catch(e) {}
-              popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '420px' })
-                .setLngLat(lngLat)
-                .setHTML(html2)
-                .addTo(map);
-              return;
-            }
-          } catch(e) {}
-        }
-        var props = feature.properties || {};
-        var keys = Object.keys(props || {}).sort();
-        var rows = keys.map(function(k) {
-          var v = props[k];
-          var vs = (v == null) ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
-          if (vs.length > 500) vs = vs.slice(0, 500) + '…';
-          return '<div class="map-popup-row"><strong>' + _esc(k) + '</strong>' + _esc(vs) + '</div>';
-        }).join('');
-        var html = '<div class="map-popup"><div class="map-popup-id"><strong>Feature</strong></div>' + rows + '</div>';
-        try { if (popup) popup.remove(); } catch(e) {}
-        popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '420px' })
-          .setLngLat(lngLat)
-          .setHTML(html)
-          .addTo(map);
-      }
-      function bindPopupForLayer(layerId) {
-        if (!layerId) return;
-        try {
-          map.on('click', layerId, function(e) {
-            if (!e || !e.features || !e.features.length) return;
-            showPopup(e.lngLat, e.features[0]);
-          });
-          // Use mousemove to reliably show pointer cursor on fills (not just borders).
-          map.on('mousemove', layerId, function() { map.getCanvas().style.cursor = 'pointer'; });
-          map.on('mouseleave', layerId, function() { map.getCanvas().style.cursor = ''; });
-        } catch(e) {}
-      }
-      styleEditorState.bindPopupForLayer = bindPopupForLayer;
-      // Editor layers popups too
-      bindPopupForLayer('editor-fill');
-      bindPopupForLayer('editor-line');
-      bindPopupForLayer('editor-circle');
+      styleEditorState.bindPopupForLayer = function() { /* superseded by attachMultiLayerFeaturePopup */ };
 
       function publicStylesUrl() { return base + '/styles'; }
       function collectionStylesUrl(cid) { return base + '/collections/' + encodeURIComponent(cid) + '/styles'; }
@@ -836,202 +987,49 @@
       };
     }
 
-    var collectionSearchTimeout = null;
-
-    function renderCollectionResults(list, resultsEl) {
-      resultsEl.innerHTML = '';
-      list.forEach(function(c) {
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'collection-search-item';
-        btn.dataset.collectionId = c.id;
-        btn.innerHTML = '<strong>' + (c.title || c.id) + '</strong><span class="meta">' + (c.id !== (c.title || c.id) ? c.id : '') + (c.description ? ' — ' + String(c.description).slice(0, 60) + (c.description.length > 60 ? '…' : '') : '') + '</span>';
-        btn.onclick = function() {
-          var cid = this.dataset.collectionId;
-          var name = (c.title || c.id);
-          resultsEl.innerHTML = '';
-          document.getElementById('collection-search').value = '';
-          addCollectionLayerToMap(cid, name);
-        };
-        resultsEl.appendChild(btn);
-      });
-      if (list.length === 0) resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">No collections found.</div>';
-    }
-
-    function fetchFirst10Collections() {
-      var resultsEl = document.getElementById('collection-search-results');
-      resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">Loading…</div>';
-      fetch(base + '/collections?limit=10', { headers: { 'Accept': 'application/json' } })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          var list = data.collections || [];
-          renderCollectionResults(list, resultsEl);
-        })
-        .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Load failed.</div>'; });
-    }
-
-    document.getElementById('collection-search').onfocus = function() {
-      var resultsEl = document.getElementById('collection-search-results');
-      if (resultsEl.children.length === 0) fetchFirst10Collections();
-    };
-
-    document.getElementById('collection-search').oninput = function() {
-      var q = this.value.trim();
-      clearTimeout(collectionSearchTimeout);
-      var resultsEl = document.getElementById('collection-search-results');
-      if (!q) {
-        fetchFirst10Collections();
-        return;
-      }
-      collectionSearchTimeout = setTimeout(function() {
-        resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">Searching…</div>';
-        fetch(base + '/collections?limit=20&q=' + encodeURIComponent(q), { headers: { 'Accept': 'application/json' } })
-          .then(function(r) { return r.json(); })
-          .then(function(data) {
-            var list = data.collections || [];
-            renderCollectionResults(list, resultsEl);
-          })
-          .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Search failed.</div>'; });
-      }, 220);
-    };
-    document.getElementById('collection-search').onblur = function() {
-      setTimeout(function() {
-        var el = document.getElementById('collection-search-results');
-        if (el) el.innerHTML = '';
-      }, 200);
-    };
-
-    function addCollectionLayerToMap(collectionId, collectionName) {
-      if (!map || typeof map.getSource !== 'function') return;
-      if (typeof map.loaded === 'function' && !map.loaded()) {
-        map.once('load', function() { addCollectionLayerToMap(collectionId, collectionName); });
-        return;
-      }
-      var sourceId = 'collection-' + collectionId.replace(/[^a-zA-Z0-9_-]/g, '_');
-      if (map.getSource(sourceId)) return;
-      var name = collectionName || collectionId;
-      function addLayerWithSpec(styleSpec) {
-        var s = styleSpec || defaultSpec;
-        var p = (window.GeofastMapUtils && window.GeofastMapUtils.specToPaint) ? window.GeofastMapUtils.specToPaint(s) : null;
-        var fillColor = p ? p.fillColor : (s.fillColor || '#58a6ff');
-        var fillOpacityPaint = p ? p.fillOpacity : (s.fillOpacity != null ? s.fillOpacity : 0.6);
-        var lineColor = p ? p.lineColor : (s.lineColor || '#58a6ff');
-        var lineWidthPaint = p ? p.lineWidth : Math.max(0.5, s.lineWidth != null ? s.lineWidth : 1);
-        var lineOpacityPaint = p ? p.lineOpacity : (s.lineOpacity != null ? s.lineOpacity : 1);
-        var fillVisible = p ? p.fillEnabled : (s.fillEnabled !== false);
-        var lineVisible = p ? p.lineEnabled : (s.lineEnabled !== false);
-        var pointVisible = p ? p.pointEnabled : (s.pointEnabled !== false);
-        var lineDash = p ? p.lineDash : (LINE_DASH[s.linePattern || 'solid'] || LINE_DASH.solid);
-        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles', { headers: { 'Accept': 'application/json' } })
-          .then(function(r) { return r.json(); })
-          .then(function(tilejson) {
-            var tiles = tilejson.tiles || [];
-            var hasStatic = tiles.some(function(t) { return (t || '').indexOf('/tiles/static/') !== -1; });
-            if (hasStatic) {
-              var staticTileUrl = tiles.filter(function(t) { return (t || '').indexOf('/tiles/static/') !== -1; })[0];
-              var tileUrl = staticTileUrl && staticTileUrl.indexOf('{z}') !== -1
-                ? staticTileUrl
-                : (base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf');
-              map.addSource(sourceId, { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
-              var layerId = tilejson.vector_layers && tilejson.vector_layers[0] ? tilejson.vector_layers[0].id : collectionId;
-              var pointFilter = ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]];
-              var notPointFilter = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
-              var ptColor = p ? p.pointColor : ((s && s.pointColor) || defaultSpec.pointColor || '#58a6ff');
-              var ptSize = p ? p.pointRadius : ((s && s.pointSize != null) ? s.pointSize : (defaultSpec.pointSize != null ? defaultSpec.pointSize : 8));
-              var beforeFill = map.getLayer('editor-fill') ? 'editor-fill' : undefined;
-              var beforeLine = map.getLayer('editor-line') ? 'editor-line' : undefined;
-              map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, beforeFill);
-              map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, 'source-layer': layerId, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, beforeLine);
-              map.addLayer({ id: sourceId + '-circle', type: 'circle', source: sourceId, 'source-layer': layerId, filter: pointFilter, layout: { visibility: pointVisible ? 'visible' : 'none' }, paint: { 'circle-color': ptColor, 'circle-radius': ptSize, 'circle-opacity': 0.9 } });
-              if (styleEditorState.bindPopupForLayer) {
-                styleEditorState.bindPopupForLayer(sourceId + '-fill');
-                styleEditorState.bindPopupForLayer(sourceId + '-line');
-                styleEditorState.bindPopupForLayer(sourceId + '-circle');
-              }
-              styleEditorState.activeEditTarget = sourceId;
-              if (styleEditorState.applySpecToForm) styleEditorState.applySpecToForm(s);
-              if (styleEditorState.applyVectorStyle) styleEditorState.applyVectorStyle();
-              if (styleEditorState.refreshRuleFields) styleEditorState.refreshRuleFields();
-              if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
-              if (styleEditorState.loadStylesList) styleEditorState.loadStylesList();
-            } else {
-              var pointFilterGeo = ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]];
-              var notPointFilterGeo = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
-              fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=100', { headers: { 'Accept': 'application/geo+json' } })
-                .then(function(r) { return r.json(); })
-                .then(function(fc) {
-                  if (!fc.features || fc.features.length === 0) return;
-                  map.addSource(sourceId, { type: 'geojson', data: fc });
-                  var ptColorGeo = p ? p.pointColor : ((s && s.pointColor) || defaultSpec.pointColor || '#58a6ff');
-                  var ptSizeGeo = p ? p.pointRadius : ((s && s.pointSize != null) ? s.pointSize : (defaultSpec.pointSize != null ? defaultSpec.pointSize : 8));
-                  var beforeFillGeo = map.getLayer('editor-fill') ? 'editor-fill' : undefined;
-                  var beforeLineGeo = map.getLayer('editor-line') ? 'editor-line' : undefined;
-                  map.addLayer({ id: sourceId + '-fill', type: 'fill', source: sourceId, filter: notPointFilterGeo, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacityPaint } }, beforeFillGeo);
-                  map.addLayer({ id: sourceId + '-line', type: 'line', source: sourceId, filter: notPointFilterGeo, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidthPaint, 'line-opacity': lineOpacityPaint, 'line-dasharray': lineDash } }, beforeLineGeo);
-                  map.addLayer({ id: sourceId + '-circle', type: 'circle', source: sourceId, filter: pointFilterGeo, layout: { visibility: pointVisible ? 'visible' : 'none' }, paint: { 'circle-color': ptColorGeo, 'circle-radius': ptSizeGeo, 'circle-opacity': 0.9 } });
-                  if (styleEditorState.bindPopupForLayer) {
-                    styleEditorState.bindPopupForLayer(sourceId + '-fill');
-                    styleEditorState.bindPopupForLayer(sourceId + '-line');
-                    styleEditorState.bindPopupForLayer(sourceId + '-circle');
-                  }
-                  styleEditorState.activeEditTarget = sourceId;
-                  if (styleEditorState.applySpecToForm) styleEditorState.applySpecToForm(s);
-                  if (styleEditorState.applyVectorStyle) styleEditorState.applyVectorStyle();
-                  if (styleEditorState.refreshRuleFields) styleEditorState.refreshRuleFields();
-                  if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
-                  if (styleEditorState.loadStylesList) styleEditorState.loadStylesList();
-                })
-                .catch(function(e) { console.warn('Load items failed', e); });
-            }
-            // Only register the layer after it is actually added to the map.
-            if (map.getSource(sourceId)) {
-              styleEditorState.layersOnMap.push({ sourceId: sourceId, collectionId: collectionId, name: name, styleSpec: s });
-              if (styleEditorState.renderLayersTable) styleEditorState.renderLayersTable();
-            }
-          })
-          .catch(function(e) { console.warn('TileJSON failed', e); });
-      }
-      fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/styles', { headers: { 'Accept': 'application/json' } })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          var list = data.styles || [];
-          var defaultStyle = list.filter(function(s) { return s.is_default; })[0] || list[0];
-          addLayerWithSpec(defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : null);
-        })
-        .catch(function() { addLayerWithSpec(null); });
-    }
-
-    Promise.all([
-      import('https://esm.sh/@geoman-io/maplibre-geoman-free@0.6.2'),
-      import('https://esm.sh/maplibre-gl-geo-editor@0.7.3')
-    ]).then(function(modules) {
-      var Geoman = modules[0].Geoman || modules[0].default;
-      var GeoEditor = modules[1].GeoEditor;
-      var geoman = new Geoman(map, {});
-      map.once('gm:loaded', function() {
-        geoEditor = new GeoEditor({
-          position: 'top-left',
-          toolbarOrientation: 'vertical',
-          columns: 2,
-          drawModes: ['polygon', 'rectangle', 'circle', 'marker'],
-          editModes: ['select', 'drag', 'change', 'rotate', 'delete', 'scale'],
-          showFeatureProperties: false,
-          fitBoundsOnLoad: true,
-          attributeSchema: { polygon: [], line: [], point: [], common: [] }
+      var geomanReady = false;
+      Promise.all([
+        import('https://esm.sh/@geoman-io/maplibre-geoman-free@0.6.2'),
+        import('https://esm.sh/maplibre-gl-geo-editor@0.7.3')
+      ]).then(function(modules) {
+        var Geoman = modules[0].Geoman || modules[0].default;
+        var GeoEditor = modules[1].GeoEditor;
+        var geoman = new Geoman(map, {});
+        map.once('gm:loaded', function() {
+          geomanReady = true;
+          geoEditor = new GeoEditor({
+            position: 'top-left',
+            toolbarOrientation: 'vertical',
+            columns: 2,
+            drawModes: ['polygon', 'rectangle', 'circle', 'marker'],
+            editModes: ['select', 'drag', 'change', 'rotate', 'delete', 'scale'],
+            showFeatureProperties: false,
+            fitBoundsOnLoad: true,
+            attributeSchema: { polygon: [], line: [], point: [], common: [] }
+          });
+          geoEditor.setGeoman(geoman);
+          map.addControl(geoEditor, 'top-left');
+          geoEditor.loadGeoJson({ type: 'FeatureCollection', features: [] });
+          function onEditorChange() { syncEditorFeaturesToMap(); }
+          if (geoEditor.on) {
+            geoEditor.on('change', onEditorChange);
+            geoEditor.on('update', onEditorChange);
+          }
+          map.on('pm:create', onEditorChange);
+          map.on('pm:edit', onEditorChange);
+          map.on('pm:remove', onEditorChange);
+          attachStyleEditorFeaturePopup();
         });
-        geoEditor.setGeoman(geoman);
-        map.addControl(geoEditor, 'top-left');
-        geoEditor.loadGeoJson({ type: 'FeatureCollection', features: [] });
-        function onEditorChange() { syncEditorFeaturesToMap(); }
-        if (geoEditor.on) {
-          geoEditor.on('change', onEditorChange);
-          geoEditor.on('update', onEditorChange);
-        }
-        map.on('pm:create', onEditorChange);
-        map.on('pm:edit', onEditorChange);
-        map.on('pm:remove', onEditorChange);
+        setTimeout(function() {
+          if (!geomanReady && map && !map.__geofastMultiLayerPopupBound) {
+            console.warn('Geoman gm:loaded did not fire in time; attaching map feature popups anyway.');
+            attachStyleEditorFeaturePopup();
+          }
+        }, 4000);
+      }).catch(function(err) {
+        console.warn('GeoEditor load failed', err);
+        attachStyleEditorFeaturePopup();
       });
-    }).catch(function(err) { console.warn('GeoEditor load failed', err); });
     }
 
     GeofastMapUtils.fetchBasemaps(base).then(function(result) {

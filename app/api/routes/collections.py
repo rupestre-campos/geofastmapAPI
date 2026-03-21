@@ -249,6 +249,7 @@ async def get_collection_edit_form(
         show_cancel_tile_build=show_cancel_tile_build,
         visibility=getattr(collection, "visibility", "private"),
         viewer_can_edit=getattr(collection, "viewer_can_edit", False),
+        editing_enabled=getattr(collection, "editing_enabled", True),
         shares=[{"username": u, "role": r} for u, r in shares],
         shares_url=f"{base}/collections/{collection_id}/shares",
         patch_url=f"{base}/collections/{collection_id}",
@@ -309,6 +310,7 @@ async def get_collection(
             default_style={"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec} if default_style else None,
             collection_styles_url=f"{base}/collections/{collection_id}/styles",
             can_edit_collection=can_edit,
+            editing_enabled=out.editing_enabled,
         )
     return out.model_copy(
         update={
@@ -363,6 +365,11 @@ async def patch_collection(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     if not await can_edit_collection(db, coll, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if "editing_enabled" in payload.model_fields_set and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can change the editing_enabled flag",
+        )
     collection = await collections_crud.patch_collection(db, collection_id, payload)
     if not collection:
         raise HTTPException(

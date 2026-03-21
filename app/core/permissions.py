@@ -62,6 +62,9 @@ async def can_edit_collection(db: AsyncSession, collection: Collection, user: Us
         return False
     if user.is_admin:
         return True
+    # Admin-only lock: reference / public layers that must not be edited by non-admins
+    if getattr(collection, "editing_enabled", True) is False:
+        return False
     if collection.owner_id == user.id:
         return True
     role = await get_share_role(db, RESOURCE_TYPE_COLLECTION, collection.id, user.username)
