@@ -469,20 +469,23 @@ def _run_intersection_feature_vs_layers_sync(
     from shapely.validation import make_valid
     total = 0
     n_layers = len(collection_ids)
+    minx, miny, maxx, maxy = geom_a.bounds
     for i, cid in enumerate(collection_ids):
         _raise_if_cancelled(job_id)
         if progress_callback:
             progress_callback(i + 1, n_layers, cid)
         session = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)()
         try:
+            # Bbox pre-filter (uses GIST index) before exact ST_Intersects — reduces load and keeps API responsive.
             rows = session.execute(
                 text("""
                     SELECT id, geometry, properties
                     FROM features
                     WHERE collection_id = :cid AND geometry IS NOT NULL
+                    AND geometry && ST_MakeEnvelope(:minx, :miny, :maxx, :maxy, 4326)
                     AND ST_Intersects(geometry, ST_GeomFromText(:wkt, 4326))
                 """),
-                {"cid": cid, "wkt": geom_a.wkt},
+                {"cid": cid, "wkt": geom_a.wkt, "minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy},
             ).fetchall()
             batch = []
             for r in rows:
@@ -532,16 +535,19 @@ def _run_erase_feature_vs_layers_sync(
         _raise_if_cancelled(job_id)
         if progress_callback:
             progress_callback(i + 1, n_layers, cid)
+        minx, miny, maxx, maxy = current.bounds
         session = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)()
         try:
+            # Bbox pre-filter (uses GIST index) before exact ST_Intersects — reduces load and keeps API responsive.
             rows = session.execute(
                 text("""
                     SELECT id, geometry
                     FROM features
                     WHERE collection_id = :cid AND geometry IS NOT NULL
+                    AND geometry && ST_MakeEnvelope(:minx, :miny, :maxx, :maxy, 4326)
                     AND ST_Intersects(geometry, ST_GeomFromText(:wkt, 4326))
                 """),
-                {"cid": cid, "wkt": current.wkt},
+                {"cid": cid, "wkt": current.wkt, "minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy},
             ).fetchall()
             list_b = []
             for r in rows:
@@ -947,12 +953,17 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
     from sqlalchemy import create_engine
 
     settings = get_settings()
+    connect_args: dict = {}
+    timeout = getattr(settings, "process_worker_statement_timeout_seconds", 0) or 0
+    if timeout > 0:
+        connect_args["options"] = f"-c statement_timeout={timeout * 1000}"  # milliseconds
     engine = create_engine(
         settings.database_sync_url,
         pool_pre_ping=True,
         future=True,
-        pool_size=8,
-        max_overflow=4,
+        pool_size=5,
+        max_overflow=2,
+        connect_args=connect_args,
     )
 
     if payload.is_feature_vs_layers:
@@ -1060,13 +1071,18 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
     max_workers = max(1, settings.process_batch_workers or cpu_count)
     batch_max_bytes = max(1024, settings.process_batch_max_bytes)
     batch_max_rows = max(0, settings.process_batch_max_rows)
-    pool_size = max(5, max_workers + 3)
+    pool_size = max(4, min(max_workers + 2, 8))  # cap to leave headroom for API connections
+    _connect_args: dict = {}
+    _timeout = getattr(settings, "process_worker_statement_timeout_seconds", 0) or 0
+    if _timeout > 0:
+        _connect_args["options"] = f"-c statement_timeout={_timeout * 1000}"
     engine = create_engine(
         settings.database_sync_url,
         pool_pre_ping=True,
         future=True,
         pool_size=pool_size,
-        max_overflow=min(4, max_workers),
+        max_overflow=min(2, max_workers),
+        connect_args=_connect_args,
     )
 
     if payload.update_existing and payload.result_collection_id:

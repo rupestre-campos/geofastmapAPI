@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     process_intersection_pair_chunk_size: int = 400  # pairs per chunk (each chunk = 2 bounded feature fetches)
     # Temp directory for process worker; cleaned on startup. Set empty to disable cleanup.
     process_temp_path: str = "/tmp/geofast_process_worker"
+    # Statement timeout (seconds) for process worker DB connections. 0 = disabled. Helps prevent long queries from blocking API.
+    process_worker_statement_timeout_seconds: int = 0  # 0 = no limit; e.g. 1800 = 30 min max per statement
 
     # Tiles: static MBTiles storage; dynamic tiles are served by FastAPI from PostGIS.
     tiles_storage_path: str = "/data/tiles"
