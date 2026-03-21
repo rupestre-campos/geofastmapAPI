@@ -14,6 +14,7 @@ from app.core.html import wants_html
 
 from app.api.routes import auth, basemaps_api, basemaps_pages, collection_styles, collections, items, jobs, maps, processes, project_docs, root, styles, tiles
 from app.core.config import get_settings
+from app.utils.geometry_limits import GeometryTooLargeError
 from app.services.bulk_queue import start_memory_consumer
 from app.services.bulk_worker import process_bulk_job
 
@@ -67,6 +68,16 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.add_exception_handler(HTTPException, http_exception_redirect_to_login)
+
+    async def geometry_too_large_handler(request: Request, exc: GeometryTooLargeError):
+        from fastapi import status
+
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc)},
+        )
+
+    app.add_exception_handler(GeometryTooLargeError, geometry_too_large_handler)
     session_secret = settings.auth_secret_key
     if not session_secret:
         session_secret = secrets.token_hex(32)

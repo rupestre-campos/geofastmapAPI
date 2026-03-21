@@ -10,7 +10,6 @@ from typing import Callable
 from sqlalchemy import create_engine, delete, text, update
 from sqlalchemy.orm import Session, sessionmaker
 from shapely.geometry import shape, GeometryCollection, MultiPoint, MultiLineString, MultiPolygon, Point, LineString, Polygon
-from shapely.ops import unary_union
 from shapely.validation import make_valid
 from uuid6 import uuid7
 
@@ -25,6 +24,7 @@ from app.utils.feature_subdivide import (
     insert_feature_subdivided_sql,
     subdivide_geometry_by_vertices,
 )
+from app.utils.geometry_limits import geometry_exceeds_limit
 
 # Driver for fiona by file extension (lowercase). No shapefile (would require sidecar files).
 # .geojsonseq is the same format as .geojsonl (GeoJSON Seq / newline-delimited GeoJSON).
@@ -79,6 +79,44 @@ def _resolve_zip_shapefile(zip_path: str, inner_path: str | None = None) -> tupl
     return open_path, "ESRI Shapefile"
 
 
+def _explode_to_simple_parts(geom) -> list:
+    """
+    Break multi-part and collection geometries into single-part geometries
+    (Point, LineString, Polygon) for one row per simple shape in the database.
+    Recurses into GeometryCollection. Invalid geometries are repaired when possible.
+    """
+    if geom is None or geom.is_empty:
+        return []
+    if not geom.is_valid:
+        geom = make_valid(geom)
+        if geom is None or geom.is_empty:
+            return []
+    if isinstance(geom, Point):
+        return [geom]
+    if isinstance(geom, LineString):
+        return [geom]
+    if isinstance(geom, Polygon):
+        return [geom]
+    if isinstance(geom, MultiPoint):
+        return [g for g in geom.geoms if g is not None and not g.is_empty]
+    if isinstance(geom, MultiLineString):
+        return [g for g in geom.geoms if g is not None and not g.is_empty]
+    if isinstance(geom, MultiPolygon):
+        return [g for g in geom.geoms if g is not None and not g.is_empty]
+    if isinstance(geom, GeometryCollection):
+        out: list = []
+        for g in geom.geoms:
+            out.extend(_explode_to_simple_parts(g))
+        return out
+    # Fallback (e.g. LinearRing or future types): treat as atomic if possible
+    try:
+        if hasattr(geom, "geoms"):
+            return [g for g in geom.geoms if g is not None and not g.is_empty]
+    except Exception:
+        pass
+    return [geom]
+
+
 def _import_one_source(
     session: Session,
     open_path: str,
@@ -96,40 +134,6 @@ def _import_one_source(
     failed = 0
     max_vertices = get_settings().features_subdivide_max_vertices
 
-    def _split_geometry_by_type(geom):
-        if geom is None or geom.is_empty:
-            return []
-        if not geom.is_valid:
-            geom = make_valid(geom)
-        if geom is None or geom.is_empty:
-            return []
-        if isinstance(geom, GeometryCollection):
-            pts = []
-            lines = []
-            polys = []
-            for g in geom.geoms:
-                if g is None or g.is_empty:
-                    continue
-                if not g.is_valid:
-                    g = make_valid(g)
-                    if g is None or g.is_empty:
-                        continue
-                if isinstance(g, (Polygon, MultiPolygon)):
-                    polys.append(g)
-                elif isinstance(g, (LineString, MultiLineString)):
-                    lines.append(g)
-                elif isinstance(g, (Point, MultiPoint)):
-                    pts.append(g)
-            out = []
-            if polys:
-                out.append(unary_union(polys))
-            if lines:
-                out.append(unary_union(lines))
-            if pts:
-                out.append(unary_union(pts))
-            return [g for g in out if g and not g.is_empty]
-        return [geom]
-
     with fiona.open(open_path, driver=driver) as src:
         for rec in src:
             try:
@@ -137,14 +141,29 @@ def _import_one_source(
                 props = dict(rec.get("properties") or {})
                 if geom_dict:
                     base_geom = shape(geom_dict)
-                    geoms = _split_geometry_by_type(base_geom)
+                    geoms = _explode_to_simple_parts(base_geom)
+                    if not geoms:
+                        failed += 1
+                        continue
                 else:
                     geoms = [None]
                 for geom in geoms:
+                    if geometry_exceeds_limit(geom):
+                        failed += 1
+                        continue
                     fid = str(uuid7())
                     if geom is not None and not geom.is_empty and _coord_count(geom) > MAX_COORDS_FOR_DB_SUBDIVIDE:
                         parts = subdivide_geometry_by_vertices(geom, max_vertices)
-                        wkt_list = [p.wkt for p in parts if p is not None and not p.is_empty]
+                        wkt_list = []
+                        for p in parts:
+                            if p is None or p.is_empty:
+                                continue
+                            if geometry_exceeds_limit(p):
+                                failed += 1
+                                continue
+                            wkt_list.append(p.wkt)
+                        if not wkt_list:
+                            continue
                         for sql, params in insert_feature_parts_batched(
                             fid, collection_id, wkt_list, props if props else None, now
                         ):

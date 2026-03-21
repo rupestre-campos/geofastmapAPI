@@ -177,6 +177,7 @@ async def get_job_status(
         except Exception:
             is_tile_build = False
         base = _base_url(request)
+        is_process_job = meta is not None
         return html_response(
             "job.html",
             base=base,
@@ -184,6 +185,7 @@ async def get_job_status(
             collection_id=display_collection_id,
             status=job.status,
             is_tile_build=is_tile_build,
+            is_process_job=is_process_job,
             message=job.message or "",
             items_in=job.items_in,
             items_created=job.items_created,

@@ -116,11 +116,17 @@ def _stream_batches_by_size(
     result_iter: Iterator,
     max_bytes: int,
     max_rows: int,
+    job_id: str = "",
 ) -> Iterator[list[tuple[str, bytes | None, dict]]]:
-    """Yield batches of (id, geom_wkb, props) until total geometry size >= max_bytes or row count >= max_rows (if > 0)."""
+    """Yield batches of (id, geom_wkb, props) until total geometry size >= max_bytes or row count >= max_rows (if > 0).
+    If job_id is set, checks cooperative cancellation every ~80 rows while streaming (so cancel works during long SELECTs)."""
     batch_a: list[tuple[str, bytes | None, dict]] = []
     batch_bytes = 0
+    row_num = 0
     for row in result_iter:
+        row_num += 1
+        if job_id and row_num % 80 == 0:
+            _raise_if_cancelled(job_id)
         geom_bytes = _geom_to_wkb_bytes(row.geometry)
         row_bytes = len(geom_bytes) if geom_bytes else 0
         # Flush before adding if this row would exceed limit (keeps batch under cap)
@@ -708,6 +714,7 @@ def _run_intersection_sync(
     max_workers: int,
     batch_max_bytes: int,
     batch_max_rows: int,
+    job_id: str = "",
 ) -> int:
     """Stream A (only rows that intersect B, filtered in DB). Batches by geometry size (~200 MiB); parallel workers; low RAM."""
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
@@ -731,7 +738,7 @@ def _run_intersection_sync(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             pending: set = set()
             max_pending = max(max_workers * 2, 4)
-            for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows):
+            for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows, job_id):
                 if not batch_a:
                     continue
                 while len(pending) >= max_pending:
@@ -904,6 +911,7 @@ def _run_erase_sync(
     max_workers: int,
     batch_max_bytes: int,
     batch_max_rows: int,
+    job_id: str = "",
 ) -> int:
     """Stream A in batches by geometry size; each worker loads B for bbox and computes erase. Low RAM."""
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
@@ -919,7 +927,7 @@ def _run_erase_sync(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             pending: set = set()
             max_pending = max(max_workers * 2, 4)
-            for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows):
+            for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows, job_id):
                 if not batch_a:
                     continue
                 while len(pending) >= max_pending:
@@ -1262,7 +1270,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         pending: set = set()
                         max_pending = max(max_workers * 2, 4)
-                        for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows):
+                        for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows, payload.job_id):
                             if not batch_a:
                                 continue
                             _raise_if_cancelled(payload.job_id)
@@ -1315,7 +1323,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         pending: set = set()
                         max_pending = max(max_workers * 2, 4)
-                        for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows):
+                        for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows, payload.job_id):
                             if not batch_a:
                                 continue
                             _raise_if_cancelled(payload.job_id)
@@ -1368,7 +1376,7 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         pending: set = set()
                         max_pending = max(max_workers * 2, 4)
-                        for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows):
+                        for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows, payload.job_id):
                             if not batch_a:
                                 continue
                             _raise_if_cancelled(payload.job_id)

@@ -21,6 +21,7 @@ from app.models.collection import Collection
 from app.models.feature import Feature
 from app.schemas.feature import FeatureCreate, FeaturePatch, FeatureReplace
 from app.utils.geo import geojson_to_wkt_element
+from app.utils.geometry_limits import check_geometry_size_limit
 from app.utils.feature_subdivide import (
     MAX_COORDS_FOR_DB_SUBDIVIDE,
     _coord_count,
@@ -741,6 +742,8 @@ async def create_feature(db: AsyncSession, data: FeatureCreate) -> Feature:
             geom = make_valid(geom)
         if geom.is_empty:
             geom = None
+    if geom is not None:
+        check_geometry_size_limit(geom)
     props = _properties_without_readonly(data.properties)
     fid = str(uuid7())
     max_vertices = get_settings().features_subdivide_max_vertices
@@ -784,6 +787,8 @@ async def replace_feature(
             geom = make_valid(geom)
         if geom.is_empty:
             geom = None
+    if geom is not None:
+        check_geometry_size_limit(geom)
     props = _properties_without_readonly(data.properties)
     max_vertices = get_settings().features_subdivide_max_vertices
     now = datetime.now(timezone.utc)
@@ -828,6 +833,8 @@ async def update_feature(
             geom = make_valid(geom)
         if geom.is_empty:
             geom = None
+    if geom is not None:
+        check_geometry_size_limit(geom)
     await db.execute(text("DELETE FROM features WHERE collection_id = :cid AND id = :fid"), {"cid": collection_id, "fid": feature_id})
     max_vertices = get_settings().features_subdivide_max_vertices
     now = datetime.now(timezone.utc)

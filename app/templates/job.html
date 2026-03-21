@@ -38,7 +38,8 @@
     <div class="card-header">
       <h2 class="card-title">Actions</h2>
       <div class="card-actions">
-        {% if status == 'pending' or (is_tile_build and status in ('running', 'building', 'replacing')) %}
+        {# Pending: cancel before worker picks up. Running process jobs: cooperative cancel (API). Tile builds: separate cancel URL when running. #}
+        {% if status == 'pending' or (is_tile_build and status in ('running', 'building', 'replacing')) or (is_process_job | default(false) and status in ('running', 'replacing')) %}
         <button type="button" class="btn btn-danger" id="btn-cancel-job">Cancel job</button>
         {% endif %}
         <a href="{{ base }}/collections?f=html" class="btn">Return to collections</a>

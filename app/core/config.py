@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     items_max_limit: int = 1000
     # Max vertices per feature row; geometries are subdivided at insert via ST_Subdivide(geom, N).
     features_subdivide_max_vertices: int = 256
+    # Max size of one geometry (OGC WKB byte length). Rejects API writes and skips bulk-import parts over limit.
+    features_max_geometry_bytes: int = 50 * 1024 * 1024  # 50 MiB; set 0 to disable
 
     # Bulk import: batch size for DB inserts (background job)
     bulk_import_batch_size: int = 1000
