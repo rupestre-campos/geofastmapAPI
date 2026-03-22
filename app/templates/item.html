@@ -2,7 +2,11 @@
 {% block title %}Feature {{ feature.id }} – GeoFast API{% endblock %}
 {% block head %}
   {% include '_map_popup_css.html' %}
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
   <style>
+    #map { position: relative; }
+    .geofast-inline-edit-toolbar .btn { margin-bottom: 0; }
     .modal { display: none; position: fixed; inset: 0; z-index: 1000; align-items: center; justify-content: center; padding: 1.5rem; }
     .modal[aria-hidden="false"] { display: flex; }
     .modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.6); cursor: pointer; }
@@ -101,6 +105,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
+  <script src="{{ base }}/static/js/geofast-inline-feature-edit.js?v=1"></script>
   <script>
     const base = {{ base | tojson }};
     const collectionId = {{ collection_id | tojson }};
@@ -116,6 +121,8 @@
     const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
     const hasStaticTiles = {{ has_static_tiles | tojson }};
     const googleKey = {{ google_maps_api_key | tojson }};
+    var canEditByCollection = {};
+    canEditByCollection[collectionId] = {{ can_edit_collection | default(false) | tojson }};
     var BASEMAPS;
     var basemapList;
     var map;
@@ -211,15 +218,32 @@
           };
         }
         addOverlayLayers();
-        if (map.getLayer('feature-fill') || map.getLayer('feature-line')) {
+        var pinSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="36" viewBox="0 0 24 36"><path fill="%2358a6ff" stroke="%23111" stroke-width="1" d="M12 0C5.4 0 0 5.4 0 12c0 9 12 24 12 24s12-15 12-24C24 5.4 18.6 0 12 0z"/></svg>';
+        map.loadImage('data:image/svg+xml,' + encodeURIComponent(pinSvg), function(err, img) {
+          if (!err && img) { try { map.addImage('geofast-pin', img); } catch (e) {} }
+        });
+        function itemPopupLayerIds() {
+          return ['feature-fill', 'feature-line', 'feature-circle', 'tiles-fill', 'tiles-line', 'tiles-circle'].filter(function(id) { try { return map.getLayer(id); } catch (e) { return false; } });
+        }
+        GeofastInlineFeatureEdit.setPageOptions({
+          map: map,
+          base: base,
+          getHideLayerIds: function() { return itemPopupLayerIds(); },
+          getDefaultStyleSpecForCollection: function() { return (defaultStyle && defaultStyle.style_spec) ? defaultStyle.style_spec : {}; }
+        });
+        if (map.getLayer('feature-fill') || map.getLayer('feature-line') || map.getLayer('feature-circle')) {
           var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
           map.getCanvas().style.cursor = '';
-          map.on('mouseenter', ['feature-fill', 'feature-line'], function() { map.getCanvas().style.cursor = 'pointer'; });
-          map.on('mouseleave', ['feature-fill', 'feature-line'], function() { map.getCanvas().style.cursor = ''; });
-          map.on('click', ['feature-fill', 'feature-line'], function(e) {
+          var hoverIds = itemPopupLayerIds();
+          map.on('mouseenter', hoverIds, function() { map.getCanvas().style.cursor = 'pointer'; });
+          map.on('mouseleave', hoverIds, function() { map.getCanvas().style.cursor = ''; });
+          map.on('click', hoverIds, function(e) {
+            if (window.GeofastInlineFeatureEdit && GeofastInlineFeatureEdit.handleMapClick(e, map)) return;
             var feat = e.features && e.features[0];
             if (!feat) return;
-            popup.setLngLat(e.lngLat).setHTML(GeofastMapUtils.popupHtmlForFeature(feat, base, collectionId)).addTo(map);
+            window._geofastMapPopupData = { base: base, displayIdByLayer: {}, canEditByCollection: canEditByCollection };
+            popup.setLngLat(e.lngLat).setHTML(GeofastMapUtils.popupHtmlForFeature(feat, base, collectionId, null)).addTo(map);
+            window._geofastMapPopup = popup;
           });
         }
       });

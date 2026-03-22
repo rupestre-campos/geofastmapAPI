@@ -79,10 +79,11 @@ def _static_tile_cache_headers() -> dict[str, str]:
 
 def _dynamic_tile_cache_headers_for_zoom(z: int) -> dict[str, str]:
     """
-    Browser cache for dynamic tiles: z 0–10 = 1 hour, z 11+ = 5 minutes (two buckets).
+    Browser cache for dynamic tiles: short TTL (1 minute) so edits show up without long stale tiles.
+    Server-side Redis cache is invalidated on feature writes; clients may also bust cache via ?_gt= on sources.
     """
-    max_age = 3600 if z <= 10 else 300
-    return {"Cache-Control": f"public, max-age={max_age}"}
+    _ = z  # kept for API stability; all zooms use the same short browser cache
+    return {"Cache-Control": "public, max-age=60"}
 
 
 @router.get(

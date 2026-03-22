@@ -31,6 +31,7 @@ from app.utils.feature_subdivide import (
 )
 from app.utils.property_filter import property_value_to_like_pattern
 from app.utils.property_filters import PropertyFilter, PropertyOp, safe_json_key
+from app.services.dynamic_tile_cache import invalidate_collection_cache
 
 # Properties key that must not be writable via API (feature id is from the resource)
 PROPERTIES_READONLY_KEYS = frozenset({"id"})
@@ -763,6 +764,7 @@ async def create_feature(db: AsyncSession, data: FeatureCreate) -> Feature:
         .values(feature_count=Collection.feature_count + 1)
     )
     await db.commit()
+    invalidate_collection_cache(data.collection_id)
     feature = await get_feature(db, data.collection_id, fid)
     assert feature is not None
     return feature
@@ -802,6 +804,7 @@ async def replace_feature(
         sql, params = insert_feature_subdivided_sql(feature_id, collection_id, wkt, props, now, max_vertices)
         await db.execute(text(sql), params)
     await db.commit()
+    invalidate_collection_cache(collection_id)
     return True
 
 
@@ -812,8 +815,10 @@ async def update_feature(
     feature = await get_feature(db, collection_id, feature_id)
     if feature is None:
         return None
+    # Use exclude_unset so geometry-only / properties-only PATCH is detected reliably (model_fields_set alone can miss nested updates).
+    patch_keys = data.model_dump(exclude_unset=True).keys()
     geom_dict = None
-    if "geometry" in data.model_fields_set:
+    if "geometry" in patch_keys:
         geom_dict = data.geometry.model_dump() if data.geometry is not None else None
     else:
         # Keep current geometry (from logical feature)
@@ -821,7 +826,7 @@ async def update_feature(
             from app.utils.geo import geometry_to_geojson
             geom_dict = geometry_to_geojson(feature.geometry)
     existing = feature.properties or {}
-    incoming = _properties_without_readonly(data.properties) if "properties" in data.model_fields_set else None
+    incoming = _properties_without_readonly(data.properties) if "properties" in patch_keys else None
     props = {**existing, **(incoming or {})}
     from shapely.geometry import shape
     from shapely.validation import make_valid
@@ -848,6 +853,7 @@ async def update_feature(
         sql, params = insert_feature_subdivided_sql(feature_id, collection_id, wkt, props, now, max_vertices)
         await db.execute(text(sql), params)
     await db.commit()
+    invalidate_collection_cache(collection_id)
     return await get_feature(db, collection_id, feature_id)
 
 
@@ -867,5 +873,6 @@ async def delete_feature(
         .values(feature_count=func.greatest(0, Collection.feature_count - 1))
     )
     await db.commit()
+    invalidate_collection_cache(collection_id)
     return True
 

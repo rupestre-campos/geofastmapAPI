@@ -2,7 +2,11 @@
 {% block title %}Items – {{ collection_id }} – GeoFast API{% endblock %}
 {% block head %}
   {% include '_map_popup_css.html' %}
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
   <style>
+    #map { position: relative; }
+    .geofast-inline-edit-toolbar .btn { margin-bottom: 0; }
     .items-table-card .table-scroll-wrap {
       overflow: auto;
       max-height: min(55vh, 420px);
@@ -329,6 +333,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
+  <script src="{{ base }}/static/js/geofast-inline-feature-edit.js?v=1"></script>
   <script>
     let features = {{ features_geojson | tojson }};
     const base = {{ base | tojson }};
@@ -414,6 +419,8 @@
     }
 
     const googleKey = {{ google_maps_api_key | tojson }};
+    var canEditByCollection = {};
+    canEditByCollection[collectionId] = {{ can_edit_collection | default(false) | tojson }};
     var BASEMAPS;
     var basemapList;
     var map;
@@ -545,10 +552,27 @@
         });
         return ids;
       }
+      GeofastInlineFeatureEdit.setPageOptions({
+        map: map,
+        base: base,
+        getHideLayerIds: function() {
+          return ['results-fill', 'results-line', 'results-circle', 'tiles-fill', 'tiles-line', 'tiles-circle'].filter(function(id) {
+            try { return map.getLayer(id); } catch (e) { return false; }
+          });
+        },
+        getDefaultStyleSpecForCollection: function() {
+          return (defaultStyle && defaultStyle.style_spec) ? defaultStyle.style_spec : {};
+        }
+      });
       GeofastMapUtils.attachMultiLayerFeaturePopup(map, {
         base: base,
         getLayerIds: getItemsMapPopupLayerIds,
-        getCollectionId: function() { return collectionId; }
+        getCollectionId: function() { return collectionId; },
+        canEditByCollection: canEditByCollection,
+        beforePopup: function(e, m) {
+          if (window.GeofastInlineFeatureEdit && GeofastInlineFeatureEdit.handleMapClick(e, m)) return false;
+          return true;
+        }
       });
       });
     }

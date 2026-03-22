@@ -2,7 +2,10 @@
 {% block title %}{{ map_name }} – GeoFast API{% endblock %}
 {% block head %}
   {% include '_map_popup_css.html' %}
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
   <style>
+    .geofast-inline-edit-toolbar .btn { margin-bottom: 0; }
     .map-view-container .map-wrapper { position: relative; min-height: 70vh; height: 70vh; }
     .map-view-container .map-container { min-height: 70vh; height: 70vh; width: 100%; box-sizing: border-box; }
     .map-view-container .map-controls { position: absolute; top: 8px; left: 8px; z-index: 10; }
@@ -165,6 +168,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofast-map-utils.js?v=2"></script>
+  <script src="{{ base }}/static/js/geofast-inline-feature-edit.js?v=1"></script>
   <script>
     (function() {
       var base = {{ base | tojson }};
@@ -205,6 +209,7 @@
       }
 
       function runAfterMapReady() {
+      var canEditByCollection = {{ can_edit_by_collection | default({}) | tojson }};
       function layerKey(layer) { return (layer && (layer.layer_id || layer.collectionId)) || (layer && layer.collection_id) || ''; }
       function sourceId(collectionIdOrKey) { return 'layer-' + String(collectionIdOrKey).replace(/[^a-zA-Z0-9_-]/g, '_'); }
       var layerStyleVisibility = {};
@@ -705,7 +710,31 @@
         if (typeof GeofastMapUtils.setupLayeredPopupNavigation === 'function') {
           GeofastMapUtils.setupLayeredPopupNavigation();
         }
+        if (typeof GeofastInlineFeatureEdit !== 'undefined' && GeofastInlineFeatureEdit.setPageOptions) {
+          GeofastInlineFeatureEdit.setPageOptions({
+            map: map,
+            base: base,
+            getHideLayerIds: function(cid) {
+              var ids = [];
+              layers.forEach(function(layer) {
+                var lc = layer.collection_id || layer.collectionId;
+                if (lc !== cid) return;
+                var sid = sourceId(layerKey(layer));
+                ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) { ids.push(sid + suf); });
+              });
+              return ids.filter(function(id) { try { return map.getLayer(id); } catch (e) { return false; } });
+            },
+            getDefaultStyleSpecForCollection: function(cid) {
+              for (var i = 0; i < layers.length; i++) {
+                var lc = layers[i].collection_id || layers[i].collectionId;
+                if (lc === cid && layers[i].style_spec && typeof layers[i].style_spec === 'object') return layers[i].style_spec;
+              }
+              return {};
+            }
+          });
+        }
         map.on('click', function(e) {
+          if (window.GeofastInlineFeatureEdit && GeofastInlineFeatureEdit.handleMapClick(e, map)) return;
           var layerIds = getPopupLayerIdsFiltered();
           if (layerIds.length === 0) return;
           var features;
@@ -724,7 +753,7 @@
               var lcid = l.collection_id || l.collectionId;
               if (lcid && l.popup && l.popup_id_property) displayIdByLayer[lcid] = l.popup_id_property;
             });
-            window._geofastMapPopupData = { byLayerOrder: grouped.byLayerOrder, byLayer: grouped.byLayer, base: base, displayIdByLayer: displayIdByLayer };
+            window._geofastMapPopupData = { byLayerOrder: grouped.byLayerOrder, byLayer: grouped.byLayer, base: base, displayIdByLayer: displayIdByLayer, canEditByCollection: canEditByCollection };
             var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
             var html;
             if (grouped.byLayerOrder.length > 1) {
@@ -744,6 +773,7 @@
           } else {
             var dispId = null;
             for (var i = 0; i < layers.length; i++) { if ((layers[i].collection_id || layers[i].collectionId) === cid && layers[i].popup_id_property) { dispId = layers[i].popup_id_property; break; } }
+            window._geofastMapPopupData = { base: base, displayIdByLayer: {}, canEditByCollection: canEditByCollection };
             var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
             popup.setLngLat(e.lngLat).setHTML(GeofastMapUtils.popupHtmlForFeature(feat, base, cid, dispId)).addTo(map);
             window._geofastMapPopup = popup;

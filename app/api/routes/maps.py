@@ -39,6 +39,25 @@ def _thumbnail_url(base: str, map_id: uuid.UUID) -> str:
     return f"{base}/maps/{map_id}/thumbnail"
 
 
+async def _can_edit_by_collection_for_map_layers(
+    db: AsyncSession,
+    definition: dict | None,
+    current_user,
+) -> dict[str, bool]:
+    """collection_id -> whether the user may edit features in that collection (inline Edit feature on map)."""
+    out: dict[str, bool] = {}
+    for lyr in (definition or {}).get("layers") or []:
+        cid = lyr.get("collection_id") or lyr.get("collectionId")
+        if not cid or cid in out:
+            continue
+        coll = await collections_crud.get_collection(db, cid)
+        if coll:
+            out[cid] = await can_edit_collection(db, coll, current_user)
+        else:
+            out[cid] = False
+    return out
+
+
 def _map_to_read(m, base: str | None = None) -> dict:
     thumbnail = m.thumbnail
     if m.thumbnail_data and base:
@@ -160,6 +179,7 @@ async def new_map_form(
         map_thumbnail="",
         map_definition={"layers": []},
         google_maps_api_key=settings.google_maps_api_key or "",
+        can_edit_by_collection={},
     )
 
 
@@ -207,6 +227,9 @@ async def get_map(
         if getattr(row, "owner_id", None):
             owner_username = (await user_crud.get_usernames_by_ids(db, [row.owner_id])).get(row.owner_id)
         can_edit = await can_edit_map(db, row.owner_id, str(row.id), current_user)
+        can_edit_by_collection = await _can_edit_by_collection_for_map_layers(
+            db, row.definition or {"layers": []}, current_user
+        )
         return html_response(
             "map_view.html",
             base=base,
@@ -220,6 +243,7 @@ async def get_map(
             owner_username=owner_username,
             google_maps_api_key=settings.google_maps_api_key or "",
             can_edit_map=can_edit,
+            can_edit_by_collection=can_edit_by_collection,
         )
     return _map_to_read(row, base)
 
@@ -246,6 +270,9 @@ async def edit_map_form(
     thumb_url = _thumbnail_url(base, row.id) if row.thumbnail_data else (row.thumbnail or "")
     settings = get_settings()
     shares = await resource_share_crud.list_shares(db, RESOURCE_TYPE_MAP, str(row.id))
+    can_edit_by_collection = await _can_edit_by_collection_for_map_layers(
+        db, row.definition or {"layers": []}, current_user
+    )
     return html_response(
         "map_edit.html",
         base=base,
@@ -264,6 +291,7 @@ async def edit_map_form(
         patch_url=f"{base}/maps/{row.id}",
         resource_label="this map",
         show_viewer_edit=True,
+        can_edit_by_collection=can_edit_by_collection,
     )
 
 

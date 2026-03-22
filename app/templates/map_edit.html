@@ -2,7 +2,11 @@
 {% block title %}{% if map_id %}Edit map{% else %}Create map{% endif %} – GeoFast API{% endblock %}
 {% block head %}
   {% include '_map_popup_css.html' %}
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
   <style>
+    #map.map-edit-map { position: relative; }
+    .geofast-inline-edit-toolbar .btn { margin-bottom: 0; }
     #map.map-edit-map { min-height: 70vh; height: 70vh; width: 100%; box-sizing: border-box; }
     .collection-search-wrap { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
     .collection-search-wrap input { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-size: 0.95rem; width: 100%; }
@@ -167,6 +171,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofast-map-utils.js?v=2"></script>
+  <script src="{{ base }}/static/js/geofast-inline-feature-edit.js?v=1"></script>
   <script>
     (function() {
       var base = {{ base | tojson }};
@@ -317,6 +322,7 @@
       }
 
       function runAfterMapReady() {
+      var canEditByCollection = {{ can_edit_by_collection | default({}) | tojson }};
       function fetchCollectionBbox(collectionId) {
         return fetch(base + '/collections/' + encodeURIComponent(collectionId), { headers: { 'Accept': 'application/json' } })
           .then(function(r) { return r.ok ? r.json() : null; })
@@ -1284,7 +1290,31 @@
         if (typeof GeofastMapUtils.setupLayeredPopupNavigation === 'function') {
           GeofastMapUtils.setupLayeredPopupNavigation();
         }
+        if (typeof GeofastInlineFeatureEdit !== 'undefined' && GeofastInlineFeatureEdit.setPageOptions) {
+          GeofastInlineFeatureEdit.setPageOptions({
+            map: map,
+            base: base,
+            getHideLayerIds: function(cid) {
+              var ids = [];
+              state.layers.forEach(function(layer) {
+                var lc = layer.collection_id || layer.collectionId;
+                if (lc !== cid) return;
+                var sid = sourceId(layerKey(layer));
+                ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) { ids.push(sid + suf); });
+              });
+              return ids.filter(function(id) { try { return map.getLayer(id); } catch (err) { return false; } });
+            },
+            getDefaultStyleSpecForCollection: function(cid) {
+              for (var i = 0; i < state.layers.length; i++) {
+                var lc = state.layers[i].collection_id || state.layers[i].collectionId;
+                if (lc === cid && state.layers[i].style_spec && typeof state.layers[i].style_spec === 'object') return state.layers[i].style_spec;
+              }
+              return {};
+            }
+          });
+        }
         map.on('click', function(e) {
+          if (window.GeofastInlineFeatureEdit && GeofastInlineFeatureEdit.handleMapClick(e, map)) return;
           var layerIds = getPopupLayerIdsFiltered();
           if (layerIds.length === 0) return;
           var features;
@@ -1303,7 +1333,7 @@
               var lcid = l.collection_id || l.collectionId;
               if (lcid && l.popup && l.popup_id_property) displayIdByLayer[lcid] = l.popup_id_property;
             });
-            window._geofastMapPopupData = { byLayerOrder: grouped.byLayerOrder, byLayer: grouped.byLayer, base: base, displayIdByLayer: displayIdByLayer };
+            window._geofastMapPopupData = { byLayerOrder: grouped.byLayerOrder, byLayer: grouped.byLayer, base: base, displayIdByLayer: displayIdByLayer, canEditByCollection: canEditByCollection };
             var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
             var html;
             if (grouped.byLayerOrder.length > 1) {
@@ -1323,6 +1353,7 @@
           } else {
             var dispId = null;
             for (var i = 0; i < state.layers.length; i++) { if ((state.layers[i].collection_id || state.layers[i].collectionId) === cid && state.layers[i].popup_id_property) { dispId = state.layers[i].popup_id_property; break; } }
+            window._geofastMapPopupData = { base: base, displayIdByLayer: {}, canEditByCollection: canEditByCollection };
             var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
             popup.setLngLat(e.lngLat).setHTML(popupHtmlForFeature(feat, cid, dispId)).addTo(map);
             window._geofastMapPopup = popup;

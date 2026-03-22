@@ -432,10 +432,21 @@
     var idLine = featureUrl
       ? ('<a href="' + escapeHtml(featureUrl) + '">' + escapeHtml(displayLabel) + '</a>')
       : escapeHtml(displayLabel);
-    var parts = [
-      '<div class="map-popup">',
-      '<div class="map-popup-id"><strong>' + firstLabel + '</strong> ' + idLine + '</div>'
-    ];
+    var canEdit = false;
+    try {
+      if (typeof global !== 'undefined' && global._geofastMapPopupData && global._geofastMapPopupData.canEditByCollection && collectionId) {
+        canEdit = !!global._geofastMapPopupData.canEditByCollection[collectionId];
+      }
+    } catch (err) {}
+    var parts = ['<div class="map-popup">'];
+    if (canEdit && collectionId && id !== '—') {
+      parts.push(
+        '<div class="map-popup-actions map-popup-actions--top">' +
+        '<a href="#" class="map-popup-edit-link" data-action="geofast-edit-feature" data-collection="' +
+        escapeHtml(collectionId) + '" data-feature-id="' + escapeHtml(id) + '">Edit feature</a></div>'
+      );
+    }
+    parts.push('<div class="map-popup-id"><strong>' + firstLabel + '</strong> ' + idLine + '</div>');
     Object.keys(props).sort().forEach(function(k) {
       if (k === 'id') return;
       if (displayIdProperty && k === displayIdProperty) return;
@@ -536,6 +547,8 @@
     var displayIdByLayer = options.displayIdByLayer || {};
     var getDisplayIdByLayer = options.getDisplayIdByLayer;
     var customRender = options.customRender;
+    var beforePopup = options.beforePopup;
+    var canEditByCollection = options.canEditByCollection || {};
 
     function resolveDisplayIdByLayer() {
       if (typeof getDisplayIdByLayer === 'function') {
@@ -576,6 +589,11 @@
       setupLayeredPopupNavigation();
 
       map.on('click', function(e) {
+        if (typeof beforePopup === 'function') {
+          try {
+            if (beforePopup(e, map) === false) return;
+          } catch (err) {}
+        }
         var layerIds = filteredLayerIds();
         if (layerIds.length === 0) return;
         var features;
@@ -620,7 +638,8 @@
           byLayerOrder: grouped.byLayerOrder,
           byLayer: grouped.byLayer,
           base: base,
-          displayIdByLayer: dispMap
+          displayIdByLayer: dispMap,
+          canEditByCollection: canEditByCollection
         };
         var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '420px' });
         var html;
@@ -661,6 +680,8 @@
       if (!link || !link.getAttribute('data-action')) return;
       var popupContent = e.target.closest ? e.target.closest('.maplibregl-popup-content') : null;
       if (!popupContent) return;
+      var actionEarly = link.getAttribute('data-action');
+      if (actionEarly === 'geofast-edit-feature') return;
       e.preventDefault();
       var popup = window._geofastMapPopup;
       var data = window._geofastMapPopupData;
