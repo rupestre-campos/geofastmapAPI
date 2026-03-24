@@ -184,7 +184,7 @@
 
   <div class="card">
     <h2 class="card-title">Jobs for this collection</h2>
-    <p class="meta">Recent and ongoing jobs (bulk import, static tile build). Links stay for a while after completion.</p>
+    <p class="meta">Recent jobs for this collection (bulk import, tile build, geoprocessing). <a href="{{ base }}/jobs?f=html">All jobs →</a></p>
     <div id="jobs-table-wrap">
       <p id="jobs-loading" class="meta">Loading…</p>
       <table id="jobs-table" style="display:none">
@@ -193,10 +193,12 @@
             <th>Type</th>
             <th>Job</th>
             <th>Status</th>
+            <th>Input</th>
             <th>Message</th>
             <th>Items</th>
-            <th>Created</th>
+            <th>Started</th>
             <th>Updated</th>
+            <th>Finished</th>
           </tr>
         </thead>
         <tbody id="jobs-tbody"></tbody>
@@ -1080,13 +1082,15 @@
           d.textContent = s;
           return d.innerHTML;
         }
-      function jobType(j) {
-        var status = (j.status || '').toLowerCase();
-        var msg = (j.message || '').toLowerCase();
-        var hasItems = (j.items_created || 0) > 0 || (j.items_failed || 0) > 0;
-        if (status === 'replacing' || hasItems) return 'Bulk import';
-        if (status === 'building' || status === 'running' && !hasItems || msg.indexOf('tile') !== -1 || msg.indexOf('build') !== -1) return 'Tile build';
+      function jobTypeLabel(j) {
+        if (j.job_type_label) return j.job_type_label;
+        if (j.job_category === 'tile_build') return 'Static tile build';
+        if (j.process_id) return String(j.process_id).replace(/_/g, ' ');
         return 'Bulk import';
+      }
+      function fmtTs(ts) {
+        if (!ts) return '—';
+        return (ts + '').replace('Z', '').replace('T', ' ').substring(0, 19);
       }
       function renderJobs(jobs) {
         if (!jobs || jobs.length === 0) {
@@ -1099,11 +1103,12 @@
         emptyEl.style.display = 'none';
         tableEl.style.display = 'table';
         tbodyEl.innerHTML = jobs.map(function(j) {
-          var typeLabel = jobType(j);
+          var typeLabel = jobTypeLabel(j);
           var itemsText = (j.items_created || j.items_failed) ? (j.items_created || 0) + ' created, ' + (j.items_failed || 0) + ' failed' : '—';
           var msg = (j.message || '').substring(0, 60);
           if ((j.message || '').length > 60) msg += '…';
-          return '<tr><td>' + esc(typeLabel) + '</td><td><a href="' + base + '/jobs/' + encodeURIComponent(j.job_id) + '?f=html">' + esc(j.job_id) + '</a></td><td>' + esc(j.status) + '</td><td>' + esc(msg || '—') + '</td><td>' + esc(itemsText) + '</td><td>' + esc(j.created_at || '—') + '</td><td>' + esc(j.updated_at || '—') + '</td></tr>';
+          var inputCell = j.input_summary ? esc(j.input_summary) : esc(j.collection_id || '—');
+          return '<tr><td>' + esc(typeLabel) + '</td><td><a href="' + base + '/jobs/' + encodeURIComponent(j.job_id) + '?f=html"><code>' + esc(j.job_id) + '</code></a></td><td>' + esc(j.status) + '</td><td class="meta">' + inputCell + '</td><td>' + esc(msg || '—') + '</td><td>' + esc(itemsText) + '</td><td class="meta">' + esc(fmtTs(j.created_at)) + '</td><td class="meta">' + esc(fmtTs(j.updated_at)) + '</td><td class="meta">' + esc(fmtTs(j.finished_at)) + '</td></tr>';
         }).join('');
         var hasActive = jobs.some(function(j) { return j.status === 'pending' || j.status === 'running' || j.status === 'replacing'; });
         return hasActive;

@@ -244,7 +244,7 @@
   <div class="card" style="margin-top: var(--space-lg);">
     <h2 class="card-title">Single-layer tools</h2>
     <p class="meta" style="margin-bottom: var(--space);">
-      Run tools on a single layer: buffer (distance in degrees) or explode multi-part/collection geometries into single-part features. At the equator, 1° ≈ 111,320 m.
+      Run tools on a single layer: buffer (distance in degrees), explode multi-part/collection geometries, <strong>make valid</strong> (Shapely <code>make_valid</code> per feature; collections/multiparts split into separate rows), union (dissolve), or measure. At the equator, 1° ≈ 111,320 m.
     </p>
     <form class="processing-form" id="processing-form-buffer">
       <div class="form-row">
@@ -252,6 +252,7 @@
         <select id="layer-tool-op">
           <option value="buffer">Buffer (distance in degrees)</option>
           <option value="explode">Explode multi-part geometries</option>
+          <option value="make_valid">Make valid (repair + split parts)</option>
           <option value="union">Union (dissolve)</option>
           <option value="measure">Measure (area/length/perimeter → properties)</option>
         </select>
@@ -383,16 +384,16 @@
         <thead>
           <tr>
             <th>Status</th>
+            <th>Job</th>
             <th>Operation</th>
             <th>Owner</th>
-            <th>Layer A / Feature</th>
-            <th>Layer B / Layers</th>
             <th>Input</th>
-            <th>Output</th>
+            <th>In</th>
+            <th>Out</th>
             <th>Result</th>
-            <th>Created</th>
-            <th>Last updated</th>
-            <th>Finished at</th>
+            <th>Started</th>
+            <th>Updated</th>
+            <th>Finished</th>
             <th></th>
           </tr>
         </thead>
@@ -503,15 +504,19 @@
     jobsWrap.style.display = 'block';
     tbody.innerHTML = jobs.map(function(j) {
       var op = (j.process_id || '').toLowerCase();
-      var opLabel = op === 'erase' ? 'Erase (A−B)' : (op === 'intersection' ? 'Intersection (A∩B)' : op || '—');
-      var cellA = '';
-      var cellB = '';
-      if (j.collection_ids && j.collection_ids.length) {
-        cellA = '<span class="meta">' + esc(j.feature_source || 'feature') + '</span>';
-        cellB = (j.collection_ids || []).map(function(cid) { return '<a href="' + base + '/collections/' + encodeURIComponent(cid) + '?f=html">' + esc(cid) + '</a>'; }).join(', ');
+      var opLabel = j.job_type_label || (op === 'erase' ? 'Erase (A−B)' : (op === 'intersection' ? 'Intersection (A∩B)' : (op || '—')));
+      var shortId = (j.job_id || '').substring(0, 8);
+      var jobLink = '<a href="' + base + '/jobs/' + encodeURIComponent(j.job_id) + '?f=html" title="' + esc(j.job_id) + '"><code>' + esc(shortId) + '…</code></a>';
+      var inputCell = '';
+      if (j.input_summary) {
+        inputCell = '<span class="meta">' + esc(j.input_summary) + '</span>';
+      } else if (j.collection_ids && j.collection_ids.length) {
+        inputCell = '<span class="meta">' + esc(j.feature_source || 'feature') + '</span> · ' +
+          (j.collection_ids || []).map(function(cid) { return '<a href="' + base + '/collections/' + encodeURIComponent(cid) + '?f=html">' + esc(cid) + '</a>'; }).join(', ');
       } else {
-        cellA = j.collection_id_a ? '<a href="' + base + '/collections/' + encodeURIComponent(j.collection_id_a) + '?f=html">' + esc(j.collection_id_a) + '</a>' : '—';
-        cellB = j.collection_id_b ? '<a href="' + base + '/collections/' + encodeURIComponent(j.collection_id_b) + '?f=html">' + esc(j.collection_id_b) + '</a>' : '—';
+        var cellA = j.collection_id_a ? '<a href="' + base + '/collections/' + encodeURIComponent(j.collection_id_a) + '?f=html">' + esc(j.collection_id_a) + '</a>' : '—';
+        var cellB = j.collection_id_b ? '<a href="' + base + '/collections/' + encodeURIComponent(j.collection_id_b) + '?f=html">' + esc(j.collection_id_b) + '</a>' : '—';
+        inputCell = cellA + ' <span class="meta">·</span> ' + cellB;
       }
       var resultCell = '';
       if (j.result_collection_id) {
@@ -537,10 +542,10 @@
       var finished = fmtTs(j.finished_at);
       return '<tr>' +
         '<td><span class="status-badge ' + statusClass(j.status) + '">' + esc(j.status) + '</span></td>' +
+        '<td>' + jobLink + '</td>' +
         '<td>' + esc(opLabel) + '</td>' +
         '<td class="meta">' + esc(j.owner_username != null ? j.owner_username : '—') + '</td>' +
-        '<td>' + cellA + '</td>' +
-        '<td>' + cellB + '</td>' +
+        '<td>' + inputCell + '</td>' +
         '<td>' + esc((j.items_in || 0).toString()) + '</td>' +
         '<td>' + esc((j.items_created || 0).toString()) + '</td>' +
         '<td>' + resultCell + '</td>' +
@@ -858,6 +863,11 @@
       try { document.querySelector('input[name="result-dest-buffer"][value="update"]').checked = true; } catch(e) {}
       document.getElementById('result-new-buffer').style.display = 'none';
       document.getElementById('result-update-buffer').style.display = 'none';
+    } else {
+      var destNew = document.querySelector('input[name="result-dest-buffer"]:checked');
+      var isNewDest = destNew ? destNew.value === 'new' : true;
+      document.getElementById('result-new-buffer').style.display = isNewDest ? 'block' : 'none';
+      document.getElementById('result-update-buffer').style.display = isNewDest ? 'none' : 'block';
     }
     if (!isBuffer) {
       bufferDistanceHint.textContent = '';
@@ -969,6 +979,9 @@
       payload = { collection_id: layer, distance_degrees: dist, update_existing: updateExisting };
     } else if (op === 'explode') {
       url = base + '/processes/explode/execution';
+      payload = { collection_id: layer, update_existing: updateExisting };
+    } else if (op === 'make_valid') {
+      url = base + '/processes/make-valid/execution';
       payload = { collection_id: layer, update_existing: updateExisting };
     } else if (op === 'measure') {
       url = base + '/processes/measure-layer/execution';

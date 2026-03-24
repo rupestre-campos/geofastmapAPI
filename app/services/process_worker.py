@@ -903,6 +903,78 @@ def _process_explode_batch(
     return out
 
 
+def _flatten_make_valid_geometry(geom: Any) -> list[Any]:
+    """
+    After make_valid: split GeometryCollection and Multi* into atomic Point, LineString, Polygon
+    (one output row each), same idea as exploding multi-polygons into separate polygons.
+    """
+    from shapely.geometry import (
+        GeometryCollection,
+        LineString,
+        MultiLineString,
+        MultiPoint,
+        MultiPolygon,
+        Point,
+        Polygon,
+    )
+
+    if geom is None or geom.is_empty:
+        return []
+    gt = getattr(geom, "geom_type", None)
+    if gt == "GeometryCollection":
+        out: list[Any] = []
+        for g in geom.geoms:
+            out.extend(_flatten_make_valid_geometry(g))
+        return out
+    if gt == "MultiPoint":
+        return [p for p in geom.geoms if p is not None and not p.is_empty]
+    if gt == "MultiLineString":
+        return [ln for ln in geom.geoms if ln is not None and not ln.is_empty]
+    if gt == "MultiPolygon":
+        return [poly for poly in geom.geoms if poly is not None and not poly.is_empty]
+    if gt in ("Point", "LineString", "Polygon"):
+        return [geom]
+    if gt == "LinearRing":
+        try:
+            return [LineString(geom.coords)]
+        except Exception:
+            return []
+    return []
+
+
+def _process_make_valid_batch(
+    batch_a: list[tuple[str, bytes | None, dict]],
+) -> list[tuple[Any, dict]]:
+    """Apply shapely.make_valid per logical feature; split GeometryCollection / Multi* into single-part rows."""
+    from shapely.validation import make_valid
+
+    out: list[tuple[Any, dict]] = []
+    for fid, geom_wkb, props in batch_a:
+        if geom_wkb is None:
+            continue
+        try:
+            shp = wkb.loads(geom_wkb)
+        except Exception:
+            continue
+        if shp is None or shp.is_empty:
+            continue
+        try:
+            fixed = make_valid(shp)
+        except Exception:
+            continue
+        if fixed is None or fixed.is_empty:
+            continue
+        parts = _flatten_make_valid_geometry(fixed)
+        for idx, g in enumerate(parts):
+            if g is None or g.is_empty:
+                continue
+            props_out = dict(props or {})
+            props_out.setdefault("_source_id", fid)
+            props_out.setdefault("_part_index", idx)
+            out.append((g, props_out))
+    return out
+
+
 def _run_erase_sync(
     engine: Engine,
     result_id: str,
@@ -1195,6 +1267,8 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
             return (str(e), 0, 0, "")
     if payload.process_id == "buffer":
         title = f"Buffer of {payload.collection_id_a}"
+    elif payload.process_id == "make_valid":
+        title = f"Make valid of {payload.collection_id_a}"
     else:
         title = f"{payload.process_id.title()} of {payload.collection_id_a} and {payload.collection_id_b}"
 
@@ -1393,6 +1467,63 @@ def process_process_job_sync(payload: ProcessJobPayload) -> tuple[str | None, in
                                         items_out += len(chunk_results)
                                         maybe_update("Writing results…")
                             fut = executor.submit(_process_explode_batch, batch_a)
+                            pending.add(fut)
+                        for fut in as_completed(pending):
+                            _raise_if_cancelled(payload.job_id)
+                            chunk_results = fut.result()
+                            if chunk_results:
+                                _insert_features_sync(insert_session, result_id, chunk_results)
+                                items_out += len(chunk_results)
+                                maybe_update("Writing results…")
+                finally:
+                    session.close()
+            finally:
+                insert_session.close()
+            count = items_out
+        elif payload.process_id == "make_valid":
+            # One row per logical feature: union parts, then make_valid in Python; split collections / multiparts.
+            SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+            insert_session = SessionLocal()
+            try:
+                session = SessionLocal()
+                try:
+                    params: dict[str, Any] = {"cid": payload.collection_id_a}
+                    sql = """
+                        SELECT id,
+                               ST_UnaryUnion(ST_Collect(geometry)) AS geometry,
+                               (array_agg(properties ORDER BY part_index))[1] AS properties
+                        FROM features
+                        WHERE collection_id = :cid AND geometry IS NOT NULL
+                    """
+                    if payload.feature_ids:
+                        sql += " AND id = ANY(:ids)"
+                        params["ids"] = list(payload.feature_ids)
+                    sql += " GROUP BY id ORDER BY id"
+                    result = session.execute(
+                        text(sql),
+                        params,
+                        execution_options={"stream_results": True},
+                    )
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        pending: set = set()
+                        max_pending = max(max_workers * 2, 4)
+                        for batch_a in _stream_batches_by_size(result, batch_max_bytes, batch_max_rows, payload.job_id):
+                            if not batch_a:
+                                continue
+                            _raise_if_cancelled(payload.job_id)
+                            items_in += len(batch_a)
+                            maybe_update("Making geometries valid…")
+                            while len(pending) >= max_pending:
+                                _raise_if_cancelled(payload.job_id)
+                                done = [f for f in pending if f.done()]
+                                for f in done:
+                                    pending.discard(f)
+                                    chunk_results = f.result()
+                                    if chunk_results:
+                                        _insert_features_sync(insert_session, result_id, chunk_results)
+                                        items_out += len(chunk_results)
+                                        maybe_update("Writing results…")
+                            fut = executor.submit(_process_make_valid_batch, batch_a)
                             pending.add(fut)
                         for fut in as_completed(pending):
                             _raise_if_cancelled(payload.job_id)

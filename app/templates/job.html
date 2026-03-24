@@ -10,6 +10,19 @@
       font-weight: 600;
       text-transform: capitalize;
     }
+    .job-cat-badge {
+      display: inline-block;
+      padding: 0.2rem 0.5rem;
+      border-radius: var(--radius-sm);
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-left: 0.5rem;
+      background: var(--bg-elevated);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
     .job-status-pending { background: rgba(174, 124, 0, 0.2); color: #9e6a03; border: 1px solid rgba(174, 124, 0, 0.4); }
     .job-status-running { background: rgba(47, 129, 247, 0.2); color: var(--accent); border: 1px solid rgba(47, 129, 247, 0.4); }
     .job-status-replacing { background: rgba(47, 129, 247, 0.2); color: var(--accent); border: 1px solid rgba(47, 129, 247, 0.4); }
@@ -21,38 +34,64 @@
     .job-status-completed { background: rgba(63, 185, 80, 0.2); color: var(--success); border: 1px solid rgba(63, 185, 80, 0.3); }
     .job-status-failed,
     .job-status-cancelled { background: rgba(248, 81, 73, 0.15); color: var(--danger); border: 1px solid rgba(248, 81, 73, 0.3); }
-    .job-meta-table { width: 100%; max-width: 480px; border-collapse: collapse; font-size: 0.9rem; }
-    .job-meta-table th { text-align: left; padding: 0.5rem 0.75rem 0.5rem 0; font-weight: 500; color: var(--text-secondary); width: 10rem; }
+    .job-meta-table { width: 100%; max-width: 640px; border-collapse: collapse; font-size: 0.9rem; }
+    .job-meta-table th { text-align: left; padding: 0.5rem 0.75rem 0.5rem 0; font-weight: 500; color: var(--text-secondary); width: 11rem; vertical-align: top; }
     .job-meta-table td { padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
     .job-message { padding: 0.75rem 1rem; border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.5rem; }
     .job-message:empty { display: none; }
+    .job-details-wrap { margin-top: var(--space); }
+    .job-details-wrap summary { cursor: pointer; font-weight: 600; color: var(--accent); user-select: none; }
+    .job-details-wrap pre {
+      margin: 0.75rem 0 0;
+      padding: 1rem;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      font-size: 0.8rem;
+      line-height: 1.45;
+      overflow-x: auto;
+      max-height: 50vh;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .job-details-actions { margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
   </style>
 {% endblock %}
 {% block content %}
   <header class="page-header">
-    <h1>Job status</h1>
-    <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> › Job <code>{{ job_id }}</code></p>
+    <h1>Job</h1>
+    <p class="breadcrumb">
+      <a href="{{ base }}/?f=html">Home</a> ›
+      <a href="{{ base }}/jobs?f=html">Jobs</a> ›
+      <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> ›
+      <code>{{ job_id }}</code>
+    </p>
   </header>
 
   <div class="card">
     <div class="card-header">
       <h2 class="card-title">Actions</h2>
       <div class="card-actions">
-        {# Pending: cancel before worker picks up. Running process jobs: cooperative cancel (API). Tile builds: separate cancel URL when running. #}
         {% if status == 'pending' or (is_tile_build and status in ('running', 'building', 'replacing')) or (is_process_job | default(false) and status in ('running', 'replacing')) %}
         <button type="button" class="btn btn-danger" id="btn-cancel-job">Cancel job</button>
         {% endif %}
-        <a href="{{ base }}/collections?f=html" class="btn">Return to collections</a>
-        <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn btn-primary">Back to collection</a>
+        <a href="{{ base }}/jobs?f=html" class="btn">All jobs</a>
+        <a href="{{ base }}/collections?f=html" class="btn">Collections</a>
+        <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn btn-primary">Open collection</a>
       </div>
     </div>
   </div>
 
   <div class="card">
-    <h2 class="card-title">Status</h2>
+    <h2 class="card-title">Overview</h2>
     <p style="margin: 0 0 var(--space);">
       <span class="job-status-badge job-status-{{ status }}">{{ status }}</span>
+      <span class="job-cat-badge">{{ job_category or '—' }}</span>
     </p>
+    <p style="margin: 0 0 0.5rem; font-size: 1.05rem; font-weight: 600;">{{ job_type_label }}</p>
+    {% if input_summary %}
+    <p class="meta" style="margin: 0 0 var(--space);"><strong>Input:</strong> {{ input_summary }}</p>
+    {% endif %}
     {% if message %}
     <div class="job-message" id="job-message">{{ message }}</div>
     {% else %}
@@ -60,38 +99,41 @@
     {% endif %}
     <table class="job-meta-table">
       <tr>
-        <th>Collection</th>
+        <th>Job ID</th>
+        <td><a href="{{ base }}/jobs/{{ job_id }}?f=html"><code>{{ job_id }}</code></a></td>
+      </tr>
+      <tr>
+        <th>Primary collection</th>
         <td><a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a></td>
       </tr>
       <tr>
-        <th>Job ID</th>
-        <td><code>{{ job_id }}</code></td>
+        <th>Items in → created</th>
+        <td><span id="job-items-in">{{ items_in }}</span> → <span id="job-items-created">{{ items_created }}</span> (failed: {{ items_failed }})</td>
       </tr>
       <tr>
-        <th>Items input</th>
-        <td id="job-items-in">{{ items_in }}</td>
+        <th>Started (created)</th>
+        <td id="job-created-at">{{ created_at }}</td>
       </tr>
       <tr>
-        <th>Items created</th>
-        <td id="job-items-created">{{ items_created }}</td>
-      </tr>
-      <tr>
-        <th>Items failed</th>
-        <td>{{ items_failed }}</td>
-      </tr>
-      <tr>
-        <th>Created</th>
-        <td>{{ created_at }}</td>
-      </tr>
-      <tr>
-        <th>Last update</th>
+        <th>Last updated</th>
         <td id="job-updated-at">{{ updated_at }}</td>
       </tr>
       <tr id="job-finished-at-row" style="display:{{ 'none' if not finished_at else '' }};">
-        <th>Finished at</th>
+        <th>Finished</th>
         <td id="job-finished-at">{{ finished_at or '—' }}</td>
       </tr>
     </table>
+
+    <div class="job-details-wrap">
+      <details id="job-details-panel">
+        <summary>Job details (JSON)</summary>
+        <div class="job-details-actions">
+          <button type="button" class="btn btn-sm" id="btn-copy-job-details">Copy JSON</button>
+          <span class="meta" id="copy-job-feedback" style="display:none;">Copied.</span>
+        </div>
+        <pre id="job-details-pre">{{ details_json }}</pre>
+      </details>
+    </div>
   </div>
 {% endblock %}
 {% block script %}
@@ -107,6 +149,17 @@
         if (!s) return '—';
         return s.replace('Z', '').replace('T', ' ').substring(0, 19);
       }
+      var detailsPre = document.getElementById('job-details-pre');
+      var detailsJson = {{ details_json | tojson }};
+      document.getElementById('btn-copy-job-details').onclick = function() {
+        var t = detailsPre ? detailsPre.textContent : detailsJson;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(t).then(function() {
+            var fb = document.getElementById('copy-job-feedback');
+            if (fb) { fb.style.display = ''; setTimeout(function() { fb.style.display = 'none'; }, 2000); }
+          });
+        }
+      };
       function updateLive(job) {
         var inEl = document.getElementById('job-items-in');
         var outEl = document.getElementById('job-items-created');
@@ -114,9 +167,11 @@
         var updatedEl = document.getElementById('job-updated-at');
         var finishedEl = document.getElementById('job-finished-at');
         var finishedRow = document.getElementById('job-finished-at-row');
+        var createdEl = document.getElementById('job-created-at');
         if (inEl && job.items_in !== undefined) inEl.textContent = job.items_in;
         if (outEl && job.items_created !== undefined) outEl.textContent = job.items_created;
         if (updatedEl && job.updated_at) updatedEl.textContent = formatTime(job.updated_at);
+        if (createdEl && job.created_at) createdEl.textContent = formatTime(job.created_at);
         if (job.finished_at && finishedEl) {
           finishedEl.textContent = formatTime(job.finished_at);
           if (finishedRow) finishedRow.style.display = '';
@@ -125,6 +180,11 @@
           var m = job.message || '';
           msgEl.textContent = m;
           msgEl.style.display = m ? '' : 'none';
+        }
+        if (detailsPre && job.details) {
+          try {
+            detailsPre.textContent = JSON.stringify(job.details, null, 2);
+          } catch (e) {}
         }
       }
       var cancelBtn = document.getElementById('btn-cancel-job');

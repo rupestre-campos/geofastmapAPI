@@ -22,6 +22,8 @@ from app.services.process_queue import (
     get_process_job_meta,
     list_process_job_ids,
 )
+from app.services.tile_build_queue import get_latest_tile_build_job
+from app.utils.job_display import build_job_view_dict
 from app.services.process_worker import (
     _default_result_collection_id,
     _default_result_collection_id_feature,
@@ -49,6 +51,11 @@ PROCESSES = [
         "id": "explode",
         "title": "Explode (single layer)",
         "description": "Explode multi-part and collection geometries in a single collection into single-part features. Result collection id: explode_{id}_{id}.",
+    },
+    {
+        "id": "make_valid",
+        "title": "Make valid (single layer)",
+        "description": "Apply Shapely make_valid to each feature's geometry (parts are unioned first). If the result is a GeometryCollection or multi-part, output points, lines, and polygons as separate features. Result collection id: make_valid_{hash}.",
     },
     {
         "id": "measure",
@@ -133,6 +140,10 @@ class ExplodeExecutionInput(BaseModel):
     tile_build_options: dict | None = Field(None, description="Optional tile build options (same fields as POST /collections/{id}/tiles/build).")
 
 
+# Same payload as explode: one layer, optional feature id filter, optional result collection.
+MakeValidExecutionInput = ExplodeExecutionInput
+
+
 class UnionLayerExecutionInput(BaseModel):
     """Single-layer union (dissolve): merge features, optionally grouped by an attribute."""
     collection_id: str = Field(..., description="Collection (layer) id to union (dissolve).")
@@ -143,14 +154,6 @@ class UnionLayerExecutionInput(BaseModel):
     group_by_property: str | None = Field(
         None,
         description="Optional property name to dissolve by (features with the same value are merged). Leave empty for full layer union.",
-    )
-    result_collection_id: str | None = Field(
-        None,
-        description="Result collection name (create new) or existing id when update_existing. Default: process + hash(layer id).",
-    )
-    update_existing: bool = Field(
-        False,
-        description="If true, write result into existing collection (result_collection_id must be set).",
     )
     result_collection_id: str | None = Field(
         None,
@@ -221,7 +224,7 @@ async def list_processes(
 )
 async def get_default_result_name(
     mode: str = Query(..., description="collection or feature"),
-    process_id: str = Query(..., description="intersection, erase, buffer, explode, or union"),
+    process_id: str = Query(..., description="intersection, erase, buffer, explode, make_valid, union, or measure"),
     collection_id_a: str = Query("", description="Layer A (collection mode)."),
     collection_id_b: str = Query("", description="Layer B (collection mode)."),
     feature_id: str = Query("", description="Feature id (feature mode; use 'geojson' for GeoJSON input)."),
@@ -265,13 +268,23 @@ async def list_process_jobs(
         if job.owner_id is not None and job.owner_id != current_user.id and not current_user.is_admin:
             continue
         meta = get_process_job_meta(jid)
-        d = job.to_dict()
+        try:
+            latest = get_latest_tile_build_job(job.collection_id)
+            is_tile_latest = latest is not None and latest.job_id == job.job_id
+        except Exception:
+            is_tile_latest = False
+        d = build_job_view_dict(job, meta=meta, is_tile_build_latest=is_tile_latest)
         d["status_url"] = f"{base}/jobs/{jid}"
         if meta:
             d["process_id"] = meta.get("process_id")
             d["collection_id_a"] = meta.get("collection_id_a")
             d["collection_id_b"] = meta.get("collection_id_b")
-            d["result_collection_id"] = meta.get("result_collection_id")
+            d["collection_ids"] = meta.get("collection_ids")
+            d["feature_source"] = meta.get("feature_source")
+            d["result_collection_id"] = meta.get("result_collection_id") or d.get("result_collection_id")
+        else:
+            d["job_category"] = "process"
+            d["job_type_label"] = d.get("job_type_label") or "Geoprocess job (metadata expired)"
         jobs.append(d)
         if len(jobs) >= limit:
             break
@@ -620,6 +633,70 @@ async def execute_explode(
             "job_id": job.job_id,
             "status_url": f"{base}/jobs/{job.job_id}",
             "message": f"Process explode queued. {result_msg}",
+        },
+    )
+
+
+@router.post(
+    "/make-valid/execution",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Execute make valid (single layer)",
+    description="Queue Shapely make_valid per logical feature (parts are unioned first). GeometryCollection / multi-part results become separate point, line, and polygon features.",
+)
+async def execute_make_valid(
+    request: Request,
+    payload: MakeValidExecutionInput,
+    current_user: Annotated[User, Depends(get_current_user_required)],
+    db: AsyncSession = Depends(get_db),
+):
+    collection = await collections_crud.get_collection(db, payload.collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Collection not found: {payload.collection_id}")
+    if payload.update_existing:
+        if not payload.result_collection_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="update_existing requires result_collection_id (existing collection to update).",
+            )
+        existing = await collections_crud.get_collection(db, payload.result_collection_id)
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Collection to update not found: {payload.result_collection_id}",
+            )
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if settings.process_queue_type != "redis":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Process execution requires Redis (PROCESS_QUEUE_TYPE=redis). Run a process worker.",
+        )
+    job = create_job(payload.collection_id, owner_id=current_user.id)
+    feature_ids = list(payload.feature_ids or [])
+    pl = ProcessJobPayload(
+        job_id=job.job_id,
+        process_id="make_valid",
+        collection_id_a=payload.collection_id,
+        collection_id_b=payload.collection_id,
+        feature_ids=feature_ids,
+        result_collection_id=payload.result_collection_id or None,
+        update_existing=payload.update_existing,
+        queue_compute_tiles=payload.queue_compute_tiles,
+        tile_build_options=payload.tile_build_options,
+    )
+    if not enqueue_process_job(pl):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Failed to enqueue process job.")
+    base = _base_url(request)
+    result_msg = f"Result: {payload.result_collection_id}" if payload.result_collection_id else "Result collection name will be process + hash of layer id."
+    if payload.update_existing:
+        result_msg = f"Updating existing collection: {payload.result_collection_id}"
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "job_id": job.job_id,
+            "status_url": f"{base}/jobs/{job.job_id}",
+            "message": f"Process make_valid queued. {result_msg}",
         },
     )
 

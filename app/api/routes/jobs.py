@@ -1,5 +1,6 @@
 """Job status for bulk import and tile/process jobs. Users see only their jobs; admins see all and owner."""
 
+import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -15,6 +16,7 @@ from app.models.user import User
 from app.services.job_store import get_job, list_all_jobs, list_jobs_for_collection, update_job
 from app.services.process_queue import get_process_job_meta
 from app.services.tile_build_queue import get_latest_tile_build_job
+from app.utils.job_display import build_job_view_dict
 
 router = APIRouter()
 
@@ -31,23 +33,22 @@ def _can_see_job(job_owner_id: int | None, user: User) -> bool:
 
 
 def _build_job_dicts(jobs, include_owner_username: bool = False, owner_names: dict | None = None):
-    from app.services.process_queue import get_process_job_meta
-
     out = []
     for j in jobs:
-        d = j.to_dict()
         meta = get_process_job_meta(j.job_id)
+        latest = get_latest_tile_build_job(j.collection_id)
+        is_tile_latest = latest is not None and latest.job_id == j.job_id
+        d = build_job_view_dict(j, meta=meta, is_tile_build_latest=is_tile_latest)
+        # Back-compat for older clients / scripts
+        d["is_tile_build"] = d.get("job_category") == "tile_build"
         if meta:
             d["process_id"] = meta.get("process_id")
             d["collection_id_a"] = meta.get("collection_id_a")
             d["collection_id_b"] = meta.get("collection_id_b")
             d["collection_ids"] = meta.get("collection_ids")
             d["feature_source"] = meta.get("feature_source")
-            d["result_collection_id"] = meta.get("result_collection_id") or d.get("result_collection_id")
-            d["is_tile_build"] = False
-        else:
-            latest = get_latest_tile_build_job(j.collection_id)
-            d["is_tile_build"] = latest is not None and latest.job_id == j.job_id
+            if meta.get("result_collection_id"):
+                d["result_collection_id"] = meta.get("result_collection_id")
         if include_owner_username and owner_names is not None and j.owner_id is not None:
             d["owner_username"] = owner_names.get(j.owner_id)
         elif include_owner_username and j.owner_id is None:
@@ -157,27 +158,26 @@ async def get_job_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     if not _can_see_job(job.owner_id, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    meta = get_process_job_meta(job_id)
+    try:
+        latest = get_latest_tile_build_job(job.collection_id)
+        is_tile_latest = latest is not None and latest.job_id == job.job_id
+    except Exception:
+        is_tile_latest = False
+    job_view = build_job_view_dict(job, meta=meta, is_tile_build_latest=is_tile_latest)
+
     if wants_html(request):
-        # For feature-vs-layers jobs, display initiator collection (from feature_source) not first target layer
+        # Breadcrumb / primary collection: for feature-vs-layers, use initiator collection when known
         display_collection_id = job.collection_id
-        meta = get_process_job_meta(job_id)
         if meta:
             fs = meta.get("feature_source") or ""
             if fs.startswith("reference "):
-                # "reference COLLECTION_ID/FEATURE_ID" -> COLLECTION_ID
-                part = fs[len("reference "):].strip()
+                part = fs[len("reference ") :].strip()
                 if "/" in part:
                     display_collection_id = part.split("/", 1)[0]
-        # Tile builds are cancelled via /collections/{collection_id}/tiles/build/cancel and can be cancelled
-        # even while "running". Detect if this job is the latest tile build for the collection.
-        is_tile_build = False
-        try:
-            latest = get_latest_tile_build_job(job.collection_id)
-            is_tile_build = latest is not None and latest.job_id == job.job_id
-        except Exception:
-            is_tile_build = False
-        base = _base_url(request)
+        is_tile_build = job_view.get("job_category") == "tile_build"
         is_process_job = meta is not None
+        base = _base_url(request)
         return html_response(
             "job.html",
             base=base,
@@ -195,5 +195,11 @@ async def get_job_status(
             finished_at=job.finished_at.isoformat() + "Z" if job.finished_at else None,
             username=current_user.username,
             is_admin=current_user.is_admin,
+            job_view=job_view,
+            job_type_label=job_view.get("job_type_label", "Job"),
+            job_category=job_view.get("job_category", ""),
+            input_summary=job_view.get("input_summary", ""),
+            details_json=json.dumps(job_view.get("details") or {}, indent=2, default=str),
         )
-    return job.to_dict()
+    # JSON API: full enriched record
+    return job_view

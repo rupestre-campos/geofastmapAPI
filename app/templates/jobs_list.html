@@ -18,6 +18,22 @@
     [data-theme="dark"] .jobs-table .status-replacing { background: rgba(88, 166, 255, 0.2); color: #58a6ff; }
     .jobs-table .result-link { font-weight: 500; }
     .jobs-table .meta { color: var(--text-secondary); font-size: 0.85rem; }
+    .jobs-table .job-cat { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); }
+    .jobs-table details.job-json-details { max-width: 280px; }
+    .jobs-table details.job-json-details summary { cursor: pointer; font-size: 0.8rem; color: var(--accent); user-select: none; }
+    .jobs-table details.job-json-details pre {
+      margin: 0.4rem 0 0;
+      padding: 0.5rem;
+      font-size: 0.72rem;
+      line-height: 1.4;
+      max-height: 200px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     .jobs-loading { color: var(--text-secondary); }
     .jobs-empty { color: var(--text-secondary); font-size: 0.9rem; padding: var(--space-lg); text-align: center; }
     #jobs-wrap { max-height: 60vh; overflow-y: auto; overflow-x: auto; }
@@ -31,7 +47,7 @@
 
   <div class="card">
     <h2 class="card-title">All jobs</h2>
-    <p class="meta" style="margin-bottom: var(--space);">Bulk imports, tile builds, and process jobs (intersection/erase). Newest first. Page auto-refreshes while there are running jobs.</p>
+    <p class="meta" style="margin-bottom: var(--space);">Bulk import, static tile build, and geoprocessing jobs. Types and inputs are labeled consistently. Newest first; refreshes while jobs are active.</p>
     <div id="jobs-wrap" style="{{ 'display: none;' if not jobs else '' }}">
       <table class="jobs-table" id="jobs-table">
         <thead>
@@ -39,12 +55,13 @@
             <th>Status</th>
             <th>Type</th>
             {% if is_admin %}<th>Owner</th>{% endif %}
-            <th>Collection / Input</th>
+            <th>Input</th>
             <th>Result</th>
             <th>Items</th>
-            <th>Created</th>
+            <th>Started</th>
             <th>Updated</th>
             <th>Finished</th>
+            <th>Details</th>
             <th></th>
           </tr>
         </thead>
@@ -52,10 +69,15 @@
           {% for j in jobs %}
           <tr>
             <td><span class="status-badge status-{{ j.status }}">{{ j.status }}</span></td>
-            <td>{{ j.process_id and (j.process_id == 'erase' and 'Erase' or 'Intersection') or 'Import / Tiles' }}</td>
+            <td>
+              <div>{{ j.job_type_label | default('Job') }}</div>
+              {% if j.job_category %}<div class="job-cat">{{ j.job_category }}</div>{% endif %}
+            </td>
             {% if is_admin %}<td class="meta">{{ j.owner_username or '—' }}</td>{% endif %}
             <td>
-              {% if j.collection_ids %}
+              {% if j.input_summary %}
+                <span class="meta">{{ j.input_summary }}</span>
+              {% elif j.collection_ids %}
                 <span class="meta">{{ j.feature_source or 'feature' }}</span> + {{ j.collection_ids | join(', ') }}
               {% elif j.collection_id_a and j.collection_id_b %}
                 <a href="{{ base }}/collections/{{ j.collection_id_a }}?f=html">{{ j.collection_id_a }}</a>, <a href="{{ base }}/collections/{{ j.collection_id_b }}?f=html">{{ j.collection_id_b }}</a>
@@ -74,6 +96,17 @@
             <td class="meta">{{ (j.created_at or '')[:19] | replace('T', ' ') if j.created_at else '—' }}</td>
             <td class="meta">{{ (j.updated_at or '')[:19] | replace('T', ' ') if j.updated_at else '—' }}</td>
             <td class="meta">{{ (j.finished_at or '')[:19] | replace('T', ' ') if j.finished_at else '—' }}</td>
+            <td>
+              {% if j.details %}
+              <details class="job-json-details">
+                <summary>JSON</summary>
+                <pre class="job-json-pre">{{ j.details | tojson }}</pre>
+                <button type="button" class="btn btn-sm btn-copy-json">Copy</button>
+              </details>
+              {% else %}
+              <span class="meta">—</span>
+              {% endif %}
+            </td>
             <td>
               <a href="{{ base }}/jobs/{{ j.job_id }}?f=html" class="btn">View</a>
               {% if j.status == 'pending' or (j.status in ('running', 'replacing') and (j.is_tile_build or j.process_id)) %}
@@ -120,11 +153,13 @@
   }
 
   function typeLabel(j) {
-    if (j.process_id) return j.process_id === 'erase' ? 'Erase' : 'Intersection';
-    return 'Import / Tiles';
+    if (j.job_type_label) return j.job_type_label;
+    if (j.process_id) return j.process_id === 'erase' ? 'Erase' : (j.process_id === 'intersection' ? 'Intersection' : j.process_id);
+    return j.job_category === 'tile_build' ? 'Static tile build' : 'Bulk import';
   }
 
-  function cellCollection(j) {
+  function cellInput(j) {
+    if (j.input_summary) return '<span class="meta">' + esc(j.input_summary) + '</span>';
     if (j.collection_ids && j.collection_ids.length) {
       var src = esc(j.feature_source || 'feature');
       var layers = (j.collection_ids || []).map(function(cid) {
@@ -137,6 +172,12 @@
         '<a href="' + base + '/collections/' + encodeURIComponent(j.collection_id_b) + '?f=html">' + esc(j.collection_id_b) + '</a>';
     }
     return '<a href="' + base + '/collections/' + encodeURIComponent(j.collection_id) + '?f=html">' + esc(j.collection_id) + '</a>';
+  }
+
+  function cellDetails(j) {
+    if (!j.details) return '<span class="meta">—</span>';
+    var jsonStr = JSON.stringify(j.details, null, 2);
+    return '<details class="job-json-details"><summary>JSON</summary><pre class="job-json-pre">' + esc(jsonStr) + '</pre><button type="button" class="btn btn-sm btn-copy-json">Copy</button></details>';
   }
 
   function cellResult(j) {
@@ -161,16 +202,18 @@
         ? '<button type="button" class="btn btn-danger btn-cancel" data-job-id="' + esc(j.job_id) + '" data-collection-id="' + esc(j.collection_id || '') + '" data-is-tile-build="' + (j.is_tile_build ? '1' : '') + '">Cancel</button>'
         : '';
       var ownerCell = showOwner ? '<td class="meta">' + esc(j.owner_username || '—') + '</td>' : '';
+      var cat = j.job_category ? '<div class="job-cat">' + esc(j.job_category) + '</div>' : '';
       return '<tr>' +
         '<td><span class="status-badge ' + statusClass(j.status) + '">' + esc(j.status) + '</span></td>' +
-        '<td>' + esc(typeLabel(j)) + '</td>' +
+        '<td><div>' + esc(typeLabel(j)) + '</div>' + cat + '</td>' +
         ownerCell +
-        '<td>' + cellCollection(j) + '</td>' +
+        '<td>' + cellInput(j) + '</td>' +
         '<td>' + cellResult(j) + '</td>' +
         '<td>' + esc((j.items_in || 0) + ' → ' + (j.items_created || 0)) + '</td>' +
         '<td class="meta">' + esc(fmtTs(j.created_at)) + '</td>' +
         '<td class="meta">' + esc(fmtTs(j.updated_at)) + '</td>' +
         '<td class="meta">' + esc(fmtTs(j.finished_at)) + '</td>' +
+        '<td>' + cellDetails(j) + '</td>' +
         '<td><a href="' + base + '/jobs/' + encodeURIComponent(j.job_id) + '?f=html" class="btn">View</a> ' + cancelBtn + '</td>' +
         '</tr>';
     });
@@ -209,6 +252,21 @@
   }, REFRESH_MS);
 
   loadJobs();
+
+  document.getElementById('jobs-table').addEventListener('click', function(e) {
+    var btn = e.target && e.target.closest && e.target.closest('.btn-copy-json');
+    if (!btn) return;
+    e.preventDefault();
+    var pre = btn.parentNode && btn.parentNode.querySelector('.job-json-pre');
+    var t = pre ? pre.textContent : '';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(function() {
+        var old = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(function() { btn.textContent = old; }, 1500);
+      });
+    }
+  });
 })();
 </script>
 {% endblock %}
