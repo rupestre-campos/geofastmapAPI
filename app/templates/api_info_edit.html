@@ -55,17 +55,20 @@
           contact: document.getElementById('api-contact').value.trim() || null
         };
         if (!body.title) { message.textContent = 'Title is required.'; message.style.color = 'var(--danger)'; return; }
-        fetch(base + '/api-info', {
+        // Same-origin relative URL avoids mixed-content (HTTPS page + server-rendered http:// base behind proxy).
+        fetch('/api-info', {
           method: 'PATCH',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify(body)
         })
           .then(function(r) {
-            if (r.ok) { window.location.href = base + '/?f=html'; return; }
+            if (r.ok) { window.location.href = (base || '') + '/?f=html'; return; }
             return r.json().then(function(j) { throw j; });
           })
           .catch(function(err) {
-            message.textContent = 'Error: ' + (err.detail || err.message || JSON.stringify(err));
+            var msg = (err && err.detail) ? err.detail : (err && err.message) ? err.message : String(err);
+            message.textContent = 'Error: ' + msg;
             message.style.color = 'var(--danger)';
           });
       });

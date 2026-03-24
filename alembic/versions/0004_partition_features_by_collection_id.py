@@ -55,13 +55,13 @@ def upgrade() -> None:
 
     # 6. Create indexes on parent (they are created on all partitions)
     op.execute("""
-        CREATE INDEX idx_features_geometry ON features USING GIST (geometry)
+        CREATE INDEX IF NOT EXISTS idx_features_geometry ON features USING GIST (geometry)
     """)
     op.execute("""
-        CREATE INDEX idx_features_properties_gin ON features USING GIN (properties)
+        CREATE INDEX IF NOT EXISTS idx_features_properties_gin ON features USING GIN (properties)
     """)
     op.execute("""
-        CREATE INDEX idx_features_properties_flat_trgm ON features USING GIN (properties_flat gin_trgm_ops)
+        CREATE INDEX IF NOT EXISTS idx_features_properties_flat_trgm ON features USING GIN (properties_flat gin_trgm_ops)
     """)
 
 
@@ -84,16 +84,16 @@ def downgrade() -> None:
         )
     """)
     op.execute("""
-        CREATE INDEX idx_features_geometry ON features USING GIST (geometry)
+        CREATE INDEX IF NOT EXISTS idx_features_geometry ON features USING GIST (geometry)
     """)
     op.execute("""
-        CREATE INDEX idx_features_properties_gin ON features USING GIN (properties)
+        CREATE INDEX IF NOT EXISTS idx_features_properties_gin ON features USING GIN (properties)
     """)
     op.execute("""
-        CREATE INDEX idx_features_properties_flat_trgm ON features USING GIN (properties_flat gin_trgm_ops)
+        CREATE INDEX IF NOT EXISTS idx_features_properties_flat_trgm ON features USING GIN (properties_flat gin_trgm_ops)
     """)
     op.execute("""
-        CREATE INDEX idx_features_collection_id ON features (collection_id)
+        CREATE INDEX IF NOT EXISTS idx_features_collection_id ON features (collection_id)
     """)
 
     # 3. Copy data from all partitions (query the partitioned table)

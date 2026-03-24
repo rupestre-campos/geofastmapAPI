@@ -40,7 +40,8 @@ def upgrade() -> None:
         sa.Column("collection_id", sa.String(), nullable=False, index=True),
         sa.Column(
             "geometry",
-            Geometry(geometry_type="GEOMETRY", srid=4326),
+            # Disable auto-GiST: GeoAlchemy2 would create a spatial index here; we add idx_features_geometry below.
+            Geometry(geometry_type="GEOMETRY", srid=4326, spatial_index=False),
             nullable=True,
         ),
         sa.Column("properties", JSONB(astext_type=sa.Text()), nullable=True),
@@ -52,16 +53,14 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
     )
-    op.create_index(
-        "idx_features_geometry",
-        "features",
-        ["geometry"],
-        postgresql_using="gist",
+    # GiST index for spatial queries (IF NOT EXISTS: safe if DB was partially migrated or index pre-exists)
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_features_geometry ON features USING GIST (geometry)"
     )
 
 
 def downgrade() -> None:
-    op.drop_index("idx_features_geometry", table_name="features")
+    op.execute("DROP INDEX IF EXISTS idx_features_geometry")
     op.drop_table("features")
     op.drop_table("collections")
     op.execute("DROP EXTENSION IF EXISTS postgis")

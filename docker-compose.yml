@@ -41,6 +41,10 @@ services:
       retries: 5
       start_period: 30s
     environment:
+      # Stable signing key so login sessions survive container restarts. Without this, the app
+      # generates a random key each boot and every Set-Cookie becomes invalid → always "Login",
+      # and anonymous collection rules apply (often zero rows for private data).
+      AUTH_SECRET_KEY: dev-docker-auth-secret-change-for-production
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofastmap
       REDIS_URL: redis://redis:6379/0
       BULK_QUEUE_TYPE: redis

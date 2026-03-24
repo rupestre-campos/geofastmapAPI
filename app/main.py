@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.core.html import wants_html
 
@@ -85,7 +86,10 @@ def create_app() -> FastAPI:
             "AUTH_SECRET_KEY not set; using an auto-generated session key. "
             "Sessions will be invalidated on restart. Set AUTH_SECRET_KEY for production."
         )
+    # Trust X-Forwarded-Proto / X-Forwarded-For from nginx or Docker reverse proxy so
+    # request.base_url uses https and public host (avoids mixed-content links in HTML).
     app.add_middleware(SessionMiddleware, secret_key=session_secret)
+    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
     # Start in-process bulk consumer when using memory queue (so no Redis/worker needed)
     if settings.bulk_queue_type == "memory":
         start_memory_consumer(process_bulk_job)

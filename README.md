@@ -140,7 +140,7 @@ Key settings (env vars or `.env`; see `app/core/config.py`):
 
 **Auth (users, roles, visibility):**
 
-- **AUTH_SECRET_KEY** — Secret key for session signing. If set, HTML login/logout and session auth are enabled; if empty, only HTTP Basic Auth works for API access.
+- **AUTH_SECRET_KEY** — Secret key for signing session cookies (HTML login). If **unset**, the app generates a **random key on every start**, so sessions are invalidated after each container restart (nav shows **Login** and you only see **public** collections until you sign in again). Set a stable value in production and in Docker (see `docker-compose.yml`).
 - **AUTH_DEFAULT_ADMIN_USERNAME** / **AUTH_DEFAULT_ADMIN_PASSWORD** — Used only when the DB has no users (first run): a default `admin` user is created and must change password on first login.
 - **Passwords:** Stored as bcrypt(salt + secret) on the server. The web UI hashes passwords with SHA-256 in the browser before sending; the backend then bcrypts that value. API/HTTP Basic can send either the same SHA-256 hex or plaintext (server hashes plaintext with SHA-256 before bcrypt).
 
