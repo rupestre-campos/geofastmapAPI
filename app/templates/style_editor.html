@@ -124,6 +124,21 @@
     var geoEditor = null;
     var editorSource = null;
 
+
+    function _safeJsonResponse(r) {
+      if (!r) return Promise.resolve(null);
+      var ct = (r.headers && r.headers.get && r.headers.get('content-type')) || '';
+      if (!r.ok) {
+        return r.text().then(function(t) {
+          try { throw JSON.parse(t); } catch (e) { throw { detail: t || r.statusText || 'Request failed' }; }
+        });
+      }
+      if (ct.indexOf('application/json') === -1 && ct.indexOf('application/geo+json') === -1) {
+        return Promise.resolve(null);
+      }
+      return r.json().catch(function() { return null; });
+    }
+
     function getEditorFeatures() {
       if (!geoEditor) return [];
       try {
@@ -234,8 +249,8 @@
           var lineVisible = p ? p.lineEnabled : (s.lineEnabled !== false);
           var pointVisible = p ? p.pointEnabled : (s.pointEnabled !== false);
           var lineDash = p ? p.lineDash : (LINE_DASH[s.linePattern || 'solid'] || LINE_DASH.solid);
-          fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles', { headers: { 'Accept': 'application/json' } })
-            .then(function(r) { return r.json(); })
+          fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+            .then(_safeJsonResponse)
             .then(function(tilejson) {
               var tiles = tilejson.tiles || [];
               var hasStatic = tiles.some(function(t) { return (t || '').indexOf('/tiles/static/') !== -1; });
@@ -264,8 +279,8 @@
               } else {
                 var pointFilterGeo = ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]];
                 var notPointFilterGeo = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
-                fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=100', { headers: { 'Accept': 'application/geo+json' } })
-                  .then(function(r) { return r.json(); })
+                fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=100', { credentials: 'same-origin', headers: { 'Accept': 'application/geo+json' } })
+                  .then(_safeJsonResponse)
                   .then(function(fc) {
                     if (!fc.features || fc.features.length === 0) return;
                     map.addSource(sourceId, { type: 'geojson', data: fc });
@@ -298,8 +313,8 @@
             })
             .catch(function(e) { console.warn('TileJSON failed', e); });
         }
-        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/styles', { headers: { 'Accept': 'application/json' } })
-          .then(function(r) { return r.json(); })
+        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/styles', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(_safeJsonResponse)
           .then(function(data) {
             var list = data.styles || [];
             var defaultStyle = list.filter(function(s) { return s.is_default; })[0] || list[0];
@@ -317,13 +332,14 @@
           btn.className = 'collection-search-item';
           btn.dataset.collectionId = c.id;
           btn.innerHTML = '<strong>' + (c.title || c.id) + '</strong><span class="meta">' + (c.id !== (c.title || c.id) ? c.id : '') + (c.description ? ' — ' + String(c.description).slice(0, 60) + (c.description.length > 60 ? '…' : '') : '') + '</span>';
-          btn.onclick = function() {
-            var cid = this.dataset.collectionId;
+          function selectCollection() {
+            var cid = btn.dataset.collectionId;
             var name = (c.title || c.id);
             resultsEl.innerHTML = '';
             document.getElementById('collection-search').value = '';
             addCollectionLayerToMap(cid, name);
-          };
+          }
+          btn.onclick = selectCollection;
           resultsEl.appendChild(btn);
         });
         if (list.length === 0) resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">No collections found.</div>';
@@ -332,13 +348,13 @@
         var resultsEl = document.getElementById('collection-search-results');
         if (!resultsEl) return;
         resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">Loading…</div>';
-        fetch(base + '/collections?limit=10', { headers: { 'Accept': 'application/json' } })
-          .then(function(r) { return r.json(); })
+        fetch(base + '/collections?limit=10', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(_safeJsonResponse)
           .then(function(data) {
             var list = data.collections || [];
             renderCollectionResults(list, resultsEl);
           })
-          .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Load failed.</div>'; });
+          .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Load failed. Check session/login.</div>'; });
       }
       var searchEl = document.getElementById('collection-search');
       if (searchEl) {
@@ -357,21 +373,22 @@
           }
           collectionSearchTimeout = setTimeout(function() {
             resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">Searching…</div>';
-            fetch(base + '/collections?limit=20&q=' + encodeURIComponent(q), { headers: { 'Accept': 'application/json' } })
-              .then(function(r) { return r.json(); })
+            fetch(base + '/collections?limit=20&q=' + encodeURIComponent(q), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+              .then(_safeJsonResponse)
               .then(function(data) {
                 var list = data.collections || [];
                 renderCollectionResults(list, resultsEl);
               })
-              .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Search failed.</div>'; });
+              .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Search failed. Check session/login.</div>'; });
           }, 220);
         };
-        searchEl.onblur = function() {
-          setTimeout(function() {
-            var el = document.getElementById('collection-search-results');
-            if (el) el.innerHTML = '';
-          }, 200);
-        };
+        document.addEventListener('click', function(ev) {
+          var wrap = document.querySelector('.collection-search-wrap');
+          var el = document.getElementById('collection-search-results');
+          if (!wrap || !el) return;
+          if (wrap.contains(ev.target)) return;
+          el.innerHTML = '';
+        });
       }
 
       map.on('load', function() {
@@ -558,16 +575,16 @@
           window.GeofastStyleEditor.setRuleFieldOptions(keys);
         }
         // Prefer /queryables (fast), but fall back to reading one feature's properties if needed.
-        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/queryables', { headers: { 'Accept': 'application/json' } })
-          .then(function(r) { return r.ok ? r.json() : null; })
+        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/queryables', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return _safeJsonResponse(r); })
           .then(function(data) {
             var keys = (data && data.properties && Array.isArray(data.properties)) ? data.properties : [];
             if (keys && keys.length) {
               setKeys(keys);
               return;
             }
-            return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=1', { headers: { 'Accept': 'application/json' } })
-              .then(function(r) { return r.ok ? r.json() : null; })
+            return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items?limit=1', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+              .then(function(r) { return _safeJsonResponse(r); })
               .then(function(fc) {
                 var feat = fc && fc.features && fc.features[0];
                 var props = feat && feat.properties && typeof feat.properties === 'object' ? feat.properties : {};
@@ -647,8 +664,8 @@
         var publicPromise = Promise.resolve();
         // Only show the "Public styles" group when the selector is set to Public styles.
         if (!selectedCollectionId) {
-          publicPromise = fetch(publicStylesUrl(), { headers: { 'Accept': 'application/json' } })
-            .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
+          publicPromise = fetch(publicStylesUrl(), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return _safeJsonResponse(r).then(function(j){ return j || { styles: [] }; }); })
             .then(function(data) {
               var list = data.styles || [];
               if (list.length && listEl) {
@@ -661,13 +678,14 @@
                 var val = 'p:' + s.id;
                 addItemToList(sel, listEl, val, s.title || s.id, s.style_spec);
               });
-            });
+            })
+            .catch(function() { return { styles: [] }; });
         }
 
         return publicPromise.then(function() {
-          return fetch(base + '/collections', { headers: { 'Accept': 'application/json' } });
+          return fetch(base + '/collections', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
         })
-          .then(function(r) { return r.ok ? r.json() : { collections: [] }; })
+          .then(function(r) { return _safeJsonResponse(r).then(function(j){ return j || { collections: [] }; }); })
           .then(function(data) {
             var colls = data.collections || [];
             var prevLoadVal = loadCollSelect ? loadCollSelect.value : '';
@@ -704,8 +722,8 @@
               collectionsToFetch.push({ id: loadCollSelect.value, name: opt ? opt.text : loadCollSelect.value });
             }
             function fetchOneCollectionStyles(cid, cname) {
-              return fetch(collectionStylesUrl(cid), { headers: { 'Accept': 'application/json' } })
-                .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
+              return fetch(collectionStylesUrl(cid), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+                .then(function(r) { return _safeJsonResponse(r).then(function(j){ return j || { styles: [] }; }); })
                 .then(function(data) {
                   var list = data.styles || [];
                   if (list.length && listEl) {
@@ -774,8 +792,8 @@
         rep.options.length = 1;
         var saveTo = document.getElementById('save-style-to').value;
         var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl(getSaveCollectionId());
-        fetch(url, { headers: { 'Accept': 'application/json' } })
-          .then(function(r) { return r.json(); })
+        fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return _safeJsonResponse(r).then(function(j){ return j || { styles: [] }; }); })
           .then(function(data) {
             (data.styles || []).forEach(function(s) { rep.add(new Option(s.title || s.id, s.id)); });
           })
@@ -911,7 +929,7 @@
           return;
         }
         fetch(url, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
-          .then(function(r) { return r.json(); })
+          .then(_safeJsonResponse)
           .then(function(s) {
             if (s.style_spec) window.GeofastStyleEditor.applySpecToForm(s.style_spec);
             if (collectionIdForLayer && styleEditorState.layersOnMap) {
@@ -962,8 +980,15 @@
           url = (saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl(cid)) + '/' + encodeURIComponent(id);
           body = saveTo === 'public' ? { style_spec: window.GeofastStyleEditor.getCurrentSpec(), title: title } : { style_spec: window.GeofastStyleEditor.getCurrentSpec(), title: title, set_default: setDefault };
         }
-        fetch(url, { method: method, headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body) })
-          .then(function(r) { if (!r.ok) return r.json().then(function(j) { throw j; }); return r.json(); })
+        fetch(url, { method: method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body) })
+          .then(function(r) {
+            if (!r.ok) {
+              return r.text().then(function(t) {
+                try { throw JSON.parse(t); } catch (e) { throw { detail: t || r.statusText || 'Request failed' }; }
+              });
+            }
+            return r.json();
+          })
           .then(function() {
             document.getElementById('save-style-form').style.display = 'none';
             document.getElementById('save-style-id').value = '';
