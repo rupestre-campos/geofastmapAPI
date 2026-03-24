@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_optional
@@ -39,6 +39,25 @@ async def favicon_ico() -> FileResponse:
     """Serve the single favicon at .ico URL so pages only request favicon.ico (no .svg)."""
     path = Path(__file__).resolve().parent.parent.parent.parent / "static" / "favicon.svg"
     return FileResponse(path, media_type="image/svg+xml")
+
+
+_ROBOTS_TXT = """\
+# Crawlers: you may access the public landing page at / and the collections index
+# at /collections (including ?f=html). Do not bulk-scrape, mirror, or systematically
+# crawl every URL on this host.
+
+User-agent: *
+Disallow: /
+
+Allow: /$
+Allow: /collections$
+"""
+
+
+@router.get("/robots.txt", include_in_schema=False)
+async def robots_txt() -> Response:
+    """Crawler policy: allow only the landing page paths; discourage site-wide harvesting."""
+    return Response(content=_ROBOTS_TXT, media_type="text/plain; charset=utf-8")
 
 
 def _base_url(request: Request) -> str:
