@@ -1,6 +1,6 @@
-GeoFast API — Permissive License with Attribution
+GeoFastMap API — Permissive License with Attribution
 
-Copyright (c) 2026 GeoFast API contributors.
+Copyright (c) 2026 GeoFastMap API contributors.
 
 Permission is hereby granted, free of charge, to any person or organization
 obtaining a copy of this software and associated documentation files (the
@@ -13,12 +13,12 @@ Software is furnished to do so, subject to the following conditions:
 
 2. ATTRIBUTION REQUIRED. Any use of the Software in a product, service,
    or publication (including but not limited to software, APIs, hosted
-   services, or research) must give clear and visible credit to GeoFast API.
+   services, or research) must give clear and visible credit to GeoFastMap API.
    Acceptable forms of attribution include:
-   - A mention in "About" or "Credits" or documentation (e.g. "Uses GeoFast API
+   - A mention in "About" or "Credits" or documentation (e.g. "Uses GeoFastMap API
      (https://github.com/...) for vector tiles and OGC Features.")
    - A citation in academic or technical publications.
-   - For APIs or services built on this software: "Powered by GeoFast API" or
+   - For APIs or services built on this software: "Powered by GeoFastMap API" or
      equivalent in the service's documentation or user-facing credits.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR

@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}GeoFast API{% endblock %}</title>
+  <title>{% block title %}GeoFastMap API{% endblock %}</title>
   <link rel="icon" href="{{ base|default('') }}/favicon.ico" type="image/svg+xml">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.css" crossorigin="">
   <script>
     (function() {
-      var stored = localStorage.getItem('geofast-theme');
+      var stored = localStorage.getItem('geofastmap-theme');
       var theme = stored === 'light' || stored === 'dark' ? stored
         : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
       document.documentElement.setAttribute('data-theme', theme);
@@ -365,7 +365,7 @@
 </head>
 <body>
   <header class="nav-bar">
-    <a href="{{ base }}/?f=html" class="brand">GeoFast</a>
+    <a href="{{ base }}/?f=html" class="brand">GeoFastMap</a>
     <button type="button" class="nav-kebab" id="nav-kebab" aria-label="Open menu" aria-expanded="false" title="Menu">&#9776;</button>
     <span class="nav-spacer"></span>
     {% if username is defined and username %}
@@ -395,7 +395,7 @@
     <div class="nav-drawer-backdrop" id="nav-drawer-backdrop" aria-hidden="true"></div>
     <div class="nav-drawer-panel">
       <div class="nav-drawer-header">
-        <a href="{{ base }}/?f=html" class="brand">GeoFast</a>
+        <a href="{{ base }}/?f=html" class="brand">GeoFastMap</a>
         <button type="button" class="nav-drawer-close" id="nav-drawer-close" aria-label="Close menu">&#215;</button>
       </div>
       <nav class="nav-drawer-links">
@@ -427,7 +427,7 @@
           var theme = document.documentElement.getAttribute('data-theme');
           var next = theme === 'dark' ? 'light' : 'dark';
           document.documentElement.setAttribute('data-theme', next);
-          try { localStorage.setItem('geofast-theme', next); } catch (e) {}
+          try { localStorage.setItem('geofastmap-theme', next); } catch (e) {}
           updateThemeLabel();
         });
         updateThemeLabel();

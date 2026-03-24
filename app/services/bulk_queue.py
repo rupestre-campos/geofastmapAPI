@@ -10,7 +10,7 @@ from typing import Callable
 
 from app.core.config import get_settings
 
-QUEUE_KEY = "geofast:bulk_import_queue"
+QUEUE_KEY = "geofastmap:bulk_import_queue"
 
 
 @dataclass

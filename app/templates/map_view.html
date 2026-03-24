@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}{{ map_name }} – GeoFast API{% endblock %}
+{% block title %}{{ map_name }} – GeoFastMap API{% endblock %}
 {% block head %}
   {% include '_map_popup_css.html' %}
   <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
   <style>
-    .geofast-inline-edit-toolbar .btn { margin-bottom: 0; }
+    .geofastmap-inline-edit-toolbar .btn { margin-bottom: 0; }
     .map-view-container .map-wrapper { position: relative; min-height: 70vh; height: 70vh; }
     .map-view-container .map-container { min-height: 70vh; height: 70vh; width: 100%; box-sizing: border-box; }
     .map-view-container .map-controls { position: absolute; top: 8px; left: 8px; z-index: 10; }
@@ -167,8 +167,8 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofast-map-utils.js?v=2"></script>
-  <script src="{{ base }}/static/js/geofast-inline-feature-edit.js?v=1"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=2"></script>
+  <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   <script>
     (function() {
       var base = {{ base | tojson }};
@@ -184,26 +184,26 @@
 
       function initMapView() {
         var sel = document.getElementById('map-basemap');
-        GeofastMapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
+        GeofastmapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
         var initialId = (mapBasemap && BASEMAPS[mapBasemap]) ? mapBasemap : null;
-        try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch(e) {}
+        try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch(e) {}
         if (!initialId && basemapList.length) initialId = basemapList[0].id;
         if (!initialId && BASEMAPS.osm) initialId = 'osm';
         var initial = (initialId && BASEMAPS[initialId]) ? BASEMAPS[initialId] : (BASEMAPS.osm || (basemapList[0] && BASEMAPS[basemapList[0].id]));
         if (!initial) return;
-        var mapStyle = GeofastMapUtils.buildMapStyleWithBasemap(initial);
+        var mapStyle = GeofastmapUtils.buildMapStyleWithBasemap(initial);
         mapStyle.glyphs = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
         map = new maplibregl.Map({ container: 'map', style: mapStyle, center: [0, 20], zoom: 2, renderWorldCopies: false });
-        GeofastMapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
+        GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
         if (mapBasemap && BASEMAPS[mapBasemap]) sel.value = mapBasemap; else sel.value = initialId;
-        GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), initial);
+        GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), initial);
         function applyBasemap(key) {
           var b = BASEMAPS[key] || BASEMAPS.osm;
           var layers = map.getStyle() && map.getStyle().layers;
           var firstId = null;
           if (layers) { for (var i = 0; i < layers.length; i++) { if (layers[i].id !== 'basemap' && layers[i].id !== 'basemap-labels') { firstId = layers[i].id; break; } } }
-          GeofastMapUtils.applyBasemapToMap(map, b, { beforeLayerId: firstId });
-          GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), b);
+          GeofastmapUtils.applyBasemapToMap(map, b, { beforeLayerId: firstId });
+          GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), b);
         }
         sel.onchange = function() { applyBasemap(this.value); };
       }
@@ -282,7 +282,7 @@
         updateLegendToggleLabel();
       }
       function setupFullscreen() {
-        GeofastMapUtils.setupFullscreenForMap(map);
+        GeofastmapUtils.setupFullscreenForMap(map);
       }
       function getPopupLayerIds() {
         var ids = [];
@@ -299,9 +299,9 @@
         return ids;
       }
       function specFromLayer(layer) {
-        if (layer && layer.style_spec && typeof layer.style_spec === 'object') return GeofastMapUtils.specToPaint(layer.style_spec);
+        if (layer && layer.style_spec && typeof layer.style_spec === 'object') return GeofastmapUtils.specToPaint(layer.style_spec);
         var c = (layer && layer.color) || defaultColor;
-        return { fillColor: c, lineColor: c, fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1.5, lineDash: GeofastMapUtils.LINE_DASH.solid, fillVisible: true, pointColor: c, pointRadius: 8, pointOpacity: 0.9, pointIcon: 'circle' };
+        return { fillColor: c, lineColor: c, fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1.5, lineDash: GeofastmapUtils.LINE_DASH.solid, fillVisible: true, pointColor: c, pointRadius: 8, pointOpacity: 0.9, pointIcon: 'circle' };
       }
       function collectionIdFromLayerId(mapLayerId) {
         if (mapLayerId === 'map-search-fill' || mapLayerId === 'map-search-line' || mapLayerId === 'map-search-circle') return currentSearchCollectionId;
@@ -314,8 +314,8 @@
       }
 
       var defaultColor = '#58a6ff';
-      var pointFilter = GeofastMapUtils.pointFilter;
-      var notPointFilter = GeofastMapUtils.notPointFilter;
+      var pointFilter = GeofastmapUtils.pointFilter;
+      var notPointFilter = GeofastmapUtils.notPointFilter;
 
 
       function apiBaseUrlMaps() {
@@ -574,7 +574,7 @@
               var cid = layers[i].collection_id || layers[i].collectionId;
               if (cid === collectionId) { layer = layers[i]; break; }
             }
-            var style = layer ? specFromLayer(layer) : { fillColor: defaultColor, lineColor: defaultColor, fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1.5, lineDash: GeofastMapUtils.LINE_DASH.solid, fillVisible: true, lineVisible: true, pointVisible: true, pointColor: defaultColor, pointRadius: 8, pointOpacity: 0.9, pointIcon: 'circle' };
+            var style = layer ? specFromLayer(layer) : { fillColor: defaultColor, lineColor: defaultColor, fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1.5, lineDash: GeofastmapUtils.LINE_DASH.solid, fillVisible: true, lineVisible: true, pointVisible: true, pointColor: defaultColor, pointRadius: 8, pointOpacity: 0.9, pointIcon: 'circle' };
             addSearchLayers(collectionId, style);
           })
           .catch(function(err) {
@@ -596,7 +596,7 @@
         map.setLayoutProperty(sid + '-circle', 'visibility', circleVisible ? 'visible' : 'none');
         if (window._mapViewPinImageLoaded) {
           var iconSize = typeof ptSize === 'number' ? ptSize / 12 : ['/', ptSize, 12];
-          var symOpt = { id: sid + '-symbol', type: 'symbol', source: sid, filter: pointFilter, layout: { 'icon-image': 'geofast-pin', 'icon-size': iconSize, 'icon-allow-overlap': true }, paint: { 'icon-color': ptColor, 'icon-opacity': ptOpacity } };
+          var symOpt = { id: sid + '-symbol', type: 'symbol', source: sid, filter: pointFilter, layout: { 'icon-image': 'geofastmap-pin', 'icon-size': iconSize, 'icon-allow-overlap': true }, paint: { 'icon-color': ptColor, 'icon-opacity': ptOpacity } };
           if (layerId) symOpt['source-layer'] = layerId;
           map.addLayer(symOpt);
           map.setLayoutProperty(sid + '-symbol', 'visibility', symbolVisible ? 'visible' : 'none');
@@ -707,11 +707,11 @@
           var hit = layerIds.length > 0 && (function() { try { return map.queryRenderedFeatures(e.point, { layers: layerIds }).length > 0; } catch (err) { return false; } })();
           map.getCanvas().style.cursor = hit ? 'pointer' : '';
         });
-        if (typeof GeofastMapUtils.setupLayeredPopupNavigation === 'function') {
-          GeofastMapUtils.setupLayeredPopupNavigation();
+        if (typeof GeofastmapUtils.setupLayeredPopupNavigation === 'function') {
+          GeofastmapUtils.setupLayeredPopupNavigation();
         }
-        if (typeof GeofastInlineFeatureEdit !== 'undefined' && GeofastInlineFeatureEdit.setPageOptions) {
-          GeofastInlineFeatureEdit.setPageOptions({
+        if (typeof GeofastmapInlineFeatureEdit !== 'undefined' && GeofastmapInlineFeatureEdit.setPageOptions) {
+          GeofastmapInlineFeatureEdit.setPageOptions({
             map: map,
             base: base,
             getHideLayerIds: function(cid) {
@@ -734,7 +734,7 @@
           });
         }
         map.on('click', function(e) {
-          if (window.GeofastInlineFeatureEdit && GeofastInlineFeatureEdit.handleMapClick(e, map)) return;
+          if (window.GeofastmapInlineFeatureEdit && GeofastmapInlineFeatureEdit.handleMapClick(e, map)) return;
           var layerIds = getPopupLayerIdsFiltered();
           if (layerIds.length === 0) return;
           var features;
@@ -743,40 +743,40 @@
           var feat = features[0];
           var cid = collectionIdFromLayerId(feat.layer.id);
           if (!cid) return;
-          if (window._geofastMapPopup) { try { window._geofastMapPopup.remove(); } catch (err) {} }
-          if (typeof GeofastMapUtils.groupFeaturesByCollection === 'function') {
+          if (window._geofastmapPopup) { try { window._geofastmapPopup.remove(); } catch (err) {} }
+          if (typeof GeofastmapUtils.groupFeaturesByCollection === 'function') {
             function getCid(f) { return collectionIdFromLayerId(f.layer.id); }
-            var grouped = GeofastMapUtils.groupFeaturesByCollection(features, getCid);
+            var grouped = GeofastmapUtils.groupFeaturesByCollection(features, getCid);
             if (grouped.byLayerOrder.length === 0) return;
             var displayIdByLayer = {};
             layers.forEach(function(l) {
               var lcid = l.collection_id || l.collectionId;
               if (lcid && l.popup && l.popup_id_property) displayIdByLayer[lcid] = l.popup_id_property;
             });
-            window._geofastMapPopupData = { byLayerOrder: grouped.byLayerOrder, byLayer: grouped.byLayer, base: base, displayIdByLayer: displayIdByLayer, canEditByCollection: canEditByCollection };
+            window._geofastmapPopupData = { byLayerOrder: grouped.byLayerOrder, byLayer: grouped.byLayer, base: base, displayIdByLayer: displayIdByLayer, canEditByCollection: canEditByCollection };
             var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
             var html;
             if (grouped.byLayerOrder.length > 1) {
-              html = GeofastMapUtils.popupHtmlLayersStep(grouped.byLayerOrder, grouped.byLayer, base);
+              html = GeofastmapUtils.popupHtmlLayersStep(grouped.byLayerOrder, grouped.byLayer, base);
             } else {
               var cid0 = grouped.byLayerOrder[0];
               var feats = grouped.byLayer[cid0];
               var dispId = displayIdByLayer[cid0] || null;
               if (feats.length > 1) {
-                html = GeofastMapUtils.popupHtmlFeaturesStep(cid0, feats, base, dispId);
+                html = GeofastmapUtils.popupHtmlFeaturesStep(cid0, feats, base, dispId);
               } else {
-                html = GeofastMapUtils.popupHtmlFeatureStep(feats[0], cid0, base, dispId);
+                html = GeofastmapUtils.popupHtmlFeatureStep(feats[0], cid0, base, dispId);
               }
             }
             popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
-            window._geofastMapPopup = popup;
+            window._geofastmapPopup = popup;
           } else {
             var dispId = null;
             for (var i = 0; i < layers.length; i++) { if ((layers[i].collection_id || layers[i].collectionId) === cid && layers[i].popup_id_property) { dispId = layers[i].popup_id_property; break; } }
-            window._geofastMapPopupData = { base: base, displayIdByLayer: {}, canEditByCollection: canEditByCollection };
+            window._geofastmapPopupData = { base: base, displayIdByLayer: {}, canEditByCollection: canEditByCollection };
             var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
-            popup.setLngLat(e.lngLat).setHTML(GeofastMapUtils.popupHtmlForFeature(feat, base, cid, dispId)).addTo(map);
-            window._geofastMapPopup = popup;
+            popup.setLngLat(e.lngLat).setHTML(GeofastmapUtils.popupHtmlForFeature(feat, base, cid, dispId)).addTo(map);
+            window._geofastmapPopup = popup;
           }
         });
         var pinSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="36" viewBox="0 0 24 36"><path fill="%2358a6ff" stroke="%23111" stroke-width="1" d="M12 0C5.4 0 0 5.4 0 12c0 9 12 24 12 24s12-15 12-24C24 5.4 18.6 0 12 0z"/></svg>';
@@ -784,7 +784,7 @@
           if (err || !img) return;
           try {
             if (!map.getStyle()) return;
-            map.addImage('geofast-pin', img);
+            map.addImage('geofastmap-pin', img);
             window._mapViewPinImageLoaded = true;
           } catch (e) {}
         });
@@ -847,12 +847,12 @@
       if (clearBtn) clearBtn.addEventListener('click', clearMapSearch);
 
       var layerSelect = document.getElementById('map-search-layer');
-      if (layerSelect && typeof window.geofastFilterBuilderSetCollection !== 'undefined' && window.geofastFilterBuilderSetCollection['map-search-filter-builder']) {
+      if (layerSelect && typeof window.geofastmapFilterBuilderSetCollection !== 'undefined' && window.geofastmapFilterBuilderSetCollection['map-search-filter-builder']) {
         layerSelect.addEventListener('change', function() {
           var cid = this.value ? this.value.trim() : '';
-          window.geofastFilterBuilderSetCollection['map-search-filter-builder'](cid);
+          window.geofastmapFilterBuilderSetCollection['map-search-filter-builder'](cid);
         });
-        if (layerSelect.value) window.geofastFilterBuilderSetCollection['map-search-filter-builder'](layerSelect.value);
+        if (layerSelect.value) window.geofastmapFilterBuilderSetCollection['map-search-filter-builder'](layerSelect.value);
       }
 
       var advToggle = document.getElementById('map-search-advanced-toggle');
@@ -921,14 +921,14 @@
       }
       }
 
-      GeofastMapUtils.fetchBasemaps(base).then(function(result) {
+      GeofastmapUtils.fetchBasemaps(base).then(function(result) {
         BASEMAPS = result.byId;
         basemapList = result.basemaps;
-        if (!basemapList.length) { BASEMAPS = GeofastMapUtils.getBasemaps(googleKey); basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; }); }
+        if (!basemapList.length) { BASEMAPS = GeofastmapUtils.getBasemaps(googleKey); basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; }); }
         initMapView();
         runAfterMapReady();
       }).catch(function() {
-        BASEMAPS = GeofastMapUtils.getBasemaps(googleKey);
+        BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
         basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
         initMapView();
         runAfterMapReady();

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Collections – GeoFast API{% endblock %}
+{% block title %}Collections – GeoFastMap API{% endblock %}
 {% block head %}
   {% include '_map_popup_css.html' %}
 {% endblock %}
@@ -156,7 +156,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
   <script>
     const base = {{ base | tojson }};
     const collectionsWithBbox = {{ collections_with_bbox | tojson }};
@@ -191,7 +191,7 @@
       };
       const map = new maplibregl.Map({ container: 'map', style: mapStyle, renderWorldCopies: false });
       map.on('load', function() {
-        GeofastMapUtils.setupFullscreenForMap(map);
+        GeofastmapUtils.setupFullscreenForMap(map);
         map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
         var bounds = geojson.features.reduce(function(acc, f) {
           var ring = f.geometry.coordinates[0];
@@ -212,7 +212,7 @@
         div.textContent = s;
         return div.innerHTML;
       }
-      GeofastMapUtils.attachMultiLayerFeaturePopup(map, {
+      GeofastmapUtils.attachMultiLayerFeaturePopup(map, {
         base: base,
         getLayerIds: function() {
           return ['collections-fill', 'collections-line'].filter(function(id) { return map.getLayer(id); });

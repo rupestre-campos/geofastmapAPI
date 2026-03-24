@@ -1,6 +1,6 @@
 /**
  * Inline map feature editor: load GeoJSON, Geoman + GeoEditor, PATCH geometry/properties.
- * Pages call GeofastInlineFeatureEdit.setPageOptions({ map, base, getHideLayerIds, defaultStyleSpec }) once the map exists.
+ * Pages call GeofastmapInlineFeatureEdit.setPageOptions({ map, base, getHideLayerIds, defaultStyleSpec }) once the map exists.
  */
 (function (global) {
   'use strict';
@@ -54,7 +54,7 @@
   /** Read current geometry from the inline GeoJSON source (editor keeps it in sync). */
   function getGeometryFromInlineSource(map) {
     try {
-      var src = map.getSource('geofast-inline-edit');
+      var src = map.getSource('geofastmap-inline-edit');
       if (!src || src.type !== 'geojson') return null;
       var d = null;
       if (typeof src.serialize === 'function') d = src.serialize();
@@ -77,13 +77,13 @@
 
   function removeInlineLayers(map) {
     if (!map) return;
-    ['geofast-inline-symbol', 'geofast-inline-circle', 'geofast-inline-line', 'geofast-inline-fill'].forEach(function (id) {
+    ['geofastmap-inline-symbol', 'geofastmap-inline-circle', 'geofastmap-inline-line', 'geofastmap-inline-fill'].forEach(function (id) {
       try {
         if (map.getLayer(id)) map.removeLayer(id);
       } catch (e) {}
     });
     try {
-      if (map.getSource('geofast-inline-edit')) map.removeSource('geofast-inline-edit');
+      if (map.getSource('geofastmap-inline-edit')) map.removeSource('geofastmap-inline-edit');
     } catch (e) {}
   }
 
@@ -150,7 +150,7 @@
       });
       try {
         window.dispatchEvent(
-          new CustomEvent('geofast:dynamic-tiles-invalidate', { detail: { collectionId: collectionId } })
+          new CustomEvent('geofastmap:dynamic-tiles-invalidate', { detail: { collectionId: collectionId } })
         );
       } catch (e) {}
     } catch (e) {}
@@ -174,8 +174,8 @@
   }
 
   function wireInlineSaveButtons(map, base, collectionId, featureId, bar) {
-    var btnG = bar.querySelector('.geofast-inline-save-geom');
-    var btnA = bar.querySelector('.geofast-inline-save-all');
+    var btnG = bar.querySelector('.geofastmap-inline-save-geom');
+    var btnA = bar.querySelector('.geofastmap-inline-save-all');
     if (btnG) btnG.disabled = false;
     if (btnA) btnA.disabled = false;
     if (btnG) {
@@ -249,7 +249,7 @@
         return (
           '<tr><td><label>' +
           esc(k) +
-          '</label></td><td><input type="text" class="geofast-inline-prop-inp" data-k="' +
+          '</label></td><td><input type="text" class="geofastmap-inline-prop-inp" data-k="' +
           esc(k) +
           '" value="' +
           esc(valStr) +
@@ -258,21 +258,21 @@
       })
       .join('');
     var html =
-      '<div class="map-popup geofast-inline-props-popup">' +
+      '<div class="map-popup geofastmap-inline-props-popup">' +
       '<div class="map-popup-step-title">Edit properties</div>' +
-      '<table class="geofast-inline-props-table">' +
+      '<table class="geofastmap-inline-props-table">' +
       rows +
       '</table>' +
-      '<div style="margin-top:8px;"><button type="button" class="btn btn-sm btn-primary geofast-inline-save-props">Save properties</button></div>' +
+      '<div style="margin-top:8px;"><button type="button" class="btn btn-sm btn-primary geofastmap-inline-save-props">Save properties</button></div>' +
       '</div>';
     var popup = new maplibregl.Popup({ closeButton: true, maxWidth: '360px' }).setLngLat(lngLat).setHTML(html).addTo(map);
     state.propsPopup = popup;
-    var saveBtn = popup.getElement().querySelector('.geofast-inline-save-props');
+    var saveBtn = popup.getElement().querySelector('.geofastmap-inline-save-props');
     if (saveBtn) {
       saveBtn.onclick = function () {
-        var tbody = popup.getElement().querySelector('.geofast-inline-props-table');
+        var tbody = popup.getElement().querySelector('.geofastmap-inline-props-table');
         var next = {};
-        (tbody ? tbody.querySelectorAll('.geofast-inline-prop-inp') : []).forEach(function (inp) {
+        (tbody ? tbody.querySelectorAll('.geofastmap-inline-prop-inp') : []).forEach(function (inp) {
           var k = inp.getAttribute('data-k');
           if (!k) return;
           next[k] = propValueToJson(inp.value);
@@ -297,7 +297,7 @@
 
   function handleMapClickForProps(e, map) {
     if (!state || !state.active || map !== state.map) return false;
-    var ids = ['geofast-inline-fill', 'geofast-inline-line', 'geofast-inline-circle', 'geofast-inline-symbol'].filter(function (id) {
+    var ids = ['geofastmap-inline-fill', 'geofastmap-inline-line', 'geofastmap-inline-circle', 'geofastmap-inline-symbol'].filter(function (id) {
       try {
         return map.getLayer(id);
       } catch (err) {
@@ -333,9 +333,9 @@
       } catch (e) {}
     }
 
-    if (window._geofastMapPopup) {
+    if (window._geofastmapPopup) {
       try {
-        window._geofastMapPopup.remove();
+        window._geofastmapPopup.remove();
       } catch (e) {}
     }
 
@@ -388,14 +388,14 @@
         if (featureId != null) gj.properties.id = featureId;
 
         removeInlineLayers(map);
-        map.addSource('geofast-inline-edit', { type: 'geojson', data: gj });
-        var GMU = global.GeofastMapUtils;
+        map.addSource('geofastmap-inline-edit', { type: 'geojson', data: gj });
+        var GMU = global.GeofastmapUtils;
         var s = GMU && GMU.specToPaint ? GMU.specToPaint(defaultStyleSpec) : {};
         var beforeId = null;
         var sl = map.getStyle() && map.getStyle().layers;
         if (sl && sl.length) {
           for (var i = sl.length - 1; i >= 0; i--) {
-            if (sl[i].id.indexOf('geofast-inline') !== 0) {
+            if (sl[i].id.indexOf('geofastmap-inline') !== 0) {
               beforeId = sl[i].id;
               break;
             }
@@ -406,9 +406,9 @@
 
         map.addLayer(
           {
-            id: 'geofast-inline-fill',
+            id: 'geofastmap-inline-fill',
             type: 'fill',
-            source: 'geofast-inline-edit',
+            source: 'geofastmap-inline-edit',
             filter: npf,
             paint: { 'fill-color': s.fillColor || '#58a6ff', 'fill-opacity': s.fillOpacity != null ? s.fillOpacity : 0.6 },
           },
@@ -416,9 +416,9 @@
         );
         map.addLayer(
           {
-            id: 'geofast-inline-line',
+            id: 'geofastmap-inline-line',
             type: 'line',
-            source: 'geofast-inline-edit',
+            source: 'geofastmap-inline-edit',
             filter: npf,
             paint: {
               'line-color': s.lineColor || '#58a6ff',
@@ -431,9 +431,9 @@
         );
         map.addLayer(
           {
-            id: 'geofast-inline-circle',
+            id: 'geofastmap-inline-circle',
             type: 'circle',
-            source: 'geofast-inline-edit',
+            source: 'geofastmap-inline-edit',
             filter: pf,
             paint: {
               'circle-color': s.pointColor || '#58a6ff',
@@ -443,21 +443,21 @@
           },
           beforeId
         );
-        if (map.hasImage && map.hasImage('geofast-pin')) {
+        if (map.hasImage && map.hasImage('geofastmap-pin')) {
           var psz = s.pointRadius != null ? s.pointRadius : 8;
           var iconSize = typeof psz === 'number' ? psz / 12 : 0.7;
           map.addLayer(
             {
-              id: 'geofast-inline-symbol',
+              id: 'geofastmap-inline-symbol',
               type: 'symbol',
-              source: 'geofast-inline-edit',
+              source: 'geofastmap-inline-edit',
               filter: pf,
-              layout: { 'icon-image': 'geofast-pin', 'icon-size': iconSize, 'icon-allow-overlap': true },
+              layout: { 'icon-image': 'geofastmap-pin', 'icon-size': iconSize, 'icon-allow-overlap': true },
               paint: { 'icon-color': s.pointColor || '#58a6ff', 'icon-opacity': s.pointOpacity != null ? s.pointOpacity : 0.9 },
             },
             beforeId
           );
-          map.setLayoutProperty('geofast-inline-circle', 'visibility', 'none');
+          map.setLayoutProperty('geofastmap-inline-circle', 'visibility', 'none');
         }
 
         var editModes = ['select', 'drag', 'change', 'rotate', 'cut', 'delete', 'scale', 'copy', 'split', 'union', 'difference', 'simplify', 'lasso'];
@@ -513,13 +513,13 @@
 
         var wrap = map.getContainer().parentNode || map.getContainer();
         var bar = document.createElement('div');
-        bar.className = 'geofast-inline-edit-toolbar';
+        bar.className = 'geofastmap-inline-edit-toolbar';
         bar.setAttribute('role', 'toolbar');
         bar.innerHTML =
           '<span style="font-weight:600;margin-right:8px;">Editing feature</span>' +
-          '<button type="button" class="btn btn-sm btn-primary geofast-inline-save-geom" disabled title="Loads after editor is ready">Save geometry</button> ' +
-          '<button type="button" class="btn btn-sm btn-primary geofast-inline-save-all" disabled title="Loads after editor is ready">Save all</button> ' +
-          '<button type="button" class="btn btn-sm geofast-inline-cancel">Cancel</button>' +
+          '<button type="button" class="btn btn-sm btn-primary geofastmap-inline-save-geom" disabled title="Loads after editor is ready">Save geometry</button> ' +
+          '<button type="button" class="btn btn-sm btn-primary geofastmap-inline-save-all" disabled title="Loads after editor is ready">Save all</button> ' +
+          '<button type="button" class="btn btn-sm geofastmap-inline-cancel">Cancel</button>' +
           '<span class="meta" style="margin-left:8px;">Click the feature to edit properties. Ctrl+Z / Ctrl+Y undo/redo.</span>';
         bar.style.cssText =
           'position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:20;background:var(--card,#fff);border:1px solid var(--border,#ccc);padding:8px 12px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.15);display:flex;flex-wrap:wrap;align-items:center;gap:6px;max-width:96%;';
@@ -527,7 +527,7 @@
         wrap.appendChild(bar);
         state.toolbarEl = bar;
 
-        bar.querySelector('.geofast-inline-cancel').onclick = function () {
+        bar.querySelector('.geofastmap-inline-cancel').onclick = function () {
           stop();
         };
 
@@ -541,16 +541,16 @@
       });
   }
 
-  global.GeofastInlineFeatureEdit = {
+  global.GeofastmapInlineFeatureEdit = {
     setPageOptions: function (opts) {
-      global.__geofastInlinePageOpts = opts || {};
+      global.__geofastmapInlinePageOpts = opts || {};
     },
     /** Bust browser/MapLibre tile cache for all vector sources pointing at this collection's dynamic tiles. */
     bustDynamicTilesForCollection: function (map, collectionId) {
       bustDynamicVectorTilesForCollection(map, collectionId);
     },
     startFromPopup: function (collectionId, featureId) {
-      var o = global.__geofastInlinePageOpts;
+      var o = global.__geofastmapInlinePageOpts;
       if (!o || !o.map) return;
       start(o, collectionId, featureId);
     },
@@ -566,14 +566,14 @@
   document.addEventListener(
     'click',
     function (e) {
-      var a = e.target.closest && e.target.closest('a[data-action="geofast-edit-feature"]');
+      var a = e.target.closest && e.target.closest('a[data-action="geofastmap-edit-feature"]');
       if (!a) return;
       e.preventDefault();
       e.stopPropagation();
       var cid = a.getAttribute('data-collection');
       var fid = a.getAttribute('data-feature-id');
       if (!cid || !fid) return;
-      global.GeofastInlineFeatureEdit.startFromPopup(cid, fid);
+      global.GeofastmapInlineFeatureEdit.startFromPopup(cid, fid);
     },
     true
   );

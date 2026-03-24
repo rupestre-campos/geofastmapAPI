@@ -4,12 +4,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "GeoFast API"
+    app_name: str = "GeoFastMap API"
     environment: str = "development"
 
-    # Example: postgresql+asyncpg://user:password@localhost:5432/geofast
+    # Example: postgresql+asyncpg://user:password@localhost:5432/geofastmap
     database_url: str = (
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/geofast"
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/geofastmap"
     )
     # Connection pool: increase for heavy concurrent load (e.g. dynamic tiles). Default 5+10 is too low for maps.
     database_pool_size: int = 20
@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     # Intersection pair-based flow: chunk size when reading (id_a, id_b) pairs and fetching those two features only.
     process_intersection_pair_chunk_size: int = 400  # pairs per chunk (each chunk = 2 bounded feature fetches)
     # Temp directory for process worker; cleaned on startup. Set empty to disable cleanup.
-    process_temp_path: str = "/tmp/geofast_process_worker"
+    process_temp_path: str = "/tmp/geofastmap_process_worker"
     # Statement timeout (seconds) for process worker DB connections. 0 = disabled. Helps prevent long queries from blocking API.
     process_worker_statement_timeout_seconds: int = 0  # 0 = no limit; e.g. 1800 = 30 min max per statement
 

@@ -1,4 +1,4 @@
-{# Shared style toolbox logic. Expects window.__styleEditorConfig before this script runs (or call GeofastStyleEditor.initToolbox(config) later).
+{# Shared style toolbox logic. Expects window.__styleEditorConfig before this script runs (or call GeofastmapStyleEditor.initToolbox(config) later).
    config = { map, getLayerIds: function() return { fill, line, circle?, symbol? }, defaultSpec, legendElId?, onAfterApply?(spec) } #}
 <script>
 (function() {
@@ -267,8 +267,8 @@
       if (ptSizeByZoom && ptSizeByZoom.checked) { stops = getStopsFromContainer('point-size-zoom-stops'); if (stops.length >= 2) spec.pointSizeZoom = stops; }
       var ptOpByZoom = document.getElementById('point-opacity-by-zoom');
       if (ptOpByZoom && ptOpByZoom.checked) { stops = getStopsFromContainer('point-opacity-zoom-stops'); if (stops.length >= 2) spec.pointOpacityZoom = stops; }
-      if (window.GeofastStyleEditor && window.GeofastStyleEditor.getRulesSpec) {
-        try { spec.rules = window.GeofastStyleEditor.getRulesSpec() || []; } catch (e) {}
+      if (window.GeofastmapStyleEditor && window.GeofastmapStyleEditor.getRulesSpec) {
+        try { spec.rules = window.GeofastmapStyleEditor.getRulesSpec() || []; } catch (e) {}
       }
       return spec;
     };
@@ -311,8 +311,8 @@
       if (ptSizeZoom) { ptSizeZoom.checked = !!(s.pointSizeZoom && s.pointSizeZoom.length >= 2); document.getElementById('point-size-zoom-stops').style.display = ptSizeZoom.checked ? '' : 'none'; renderZoomStops('point-size-zoom-stops', s.pointSizeZoom, refresh); }
       var ptOpZoom = document.getElementById('point-opacity-by-zoom');
       if (ptOpZoom) { ptOpZoom.checked = !!(s.pointOpacityZoom && s.pointOpacityZoom.length >= 2); document.getElementById('point-opacity-zoom-stops').style.display = ptOpZoom.checked ? '' : 'none'; renderZoomStops('point-opacity-zoom-stops', s.pointOpacityZoom, refresh); }
-      if (window.GeofastStyleEditor && window.GeofastStyleEditor.setRulesSpec) {
-        try { window.GeofastStyleEditor.setRulesSpec(Array.isArray(s.rules) ? s.rules : []); } catch (e) {}
+      if (window.GeofastmapStyleEditor && window.GeofastmapStyleEditor.setRulesSpec) {
+        try { window.GeofastmapStyleEditor.setRulesSpec(Array.isArray(s.rules) ? s.rules : []); } catch (e) {}
       }
       applyVectorStyleToLayers(map, getLayerIds(), getCurrentSpec(), formEls);
       updateStyleLegend(getCurrentSpec());
@@ -330,7 +330,7 @@
       el.style.borderColor = line;
       el.style.opacity = '1';
     }
-    if (typeof window.GeofastStyleEditor !== 'undefined' && window.GeofastStyleEditor.updateLoadStyleTrigger) window.GeofastStyleEditor.updateLoadStyleTrigger();
+    if (typeof window.GeofastmapStyleEditor !== 'undefined' && window.GeofastmapStyleEditor.updateLoadStyleTrigger) window.GeofastmapStyleEditor.updateLoadStyleTrigger();
   }
 
   function initToolbox(config) {
@@ -504,9 +504,9 @@
         refreshStyle();
       };
     }
-    window.GeofastStyleEditor.getRulesSpec = function() { return _rules.slice(); };
-    window.GeofastStyleEditor.setRulesSpec = function(rules) { _rules = Array.isArray(rules) ? rules.slice() : []; _renderRules(); };
-    window.GeofastStyleEditor.setRuleFieldOptions = function(keys) {
+    window.GeofastmapStyleEditor.getRulesSpec = function() { return _rules.slice(); };
+    window.GeofastmapStyleEditor.setRulesSpec = function(rules) { _rules = Array.isArray(rules) ? rules.slice() : []; _renderRules(); };
+    window.GeofastmapStyleEditor.setRuleFieldOptions = function(keys) {
       var dl = document.getElementById('vector-rule-fields');
       if (!dl) return;
       _ruleFieldKeys = (Array.isArray(keys) ? keys : []).slice();
@@ -548,26 +548,26 @@
     if (pointSize) pointSize.oninput = refreshStyle;
     if (pointIcon) pointIcon.onchange = refreshStyle;
 
-    window.GeofastStyleEditor = window.GeofastStyleEditor || {};
-    window.GeofastStyleEditor.LINE_DASH = LINE_DASH;
-    window.GeofastStyleEditor.defaultSpec = defaultSpec;
-    window.GeofastStyleEditor.ZOOM_STOP_DEFAULTS = ZOOM_STOP_DEFAULTS;
-    window.GeofastStyleEditor.getStopsFromContainer = getStopsFromContainer;
-    window.GeofastStyleEditor.renderZoomStops = renderZoomStops;
-    window.GeofastStyleEditor.zoomStopsToExpression = zoomStopsToExpression;
-    window.GeofastStyleEditor.getCurrentSpec = getCurrentSpec;
-    window.GeofastStyleEditor.applySpecToForm = applySpecToForm;
-    window.GeofastStyleEditor.applyVectorStyleToLayers = function(spec) { applyVectorStyleToLayers(map, getLayerIds(), spec || getCurrentSpec(), formEls); };
-    window.GeofastStyleEditor.updateStyleLegend = function(spec) { updateStyleLegend(spec || getCurrentSpec(), legendElId); };
+    window.GeofastmapStyleEditor = window.GeofastmapStyleEditor || {};
+    window.GeofastmapStyleEditor.LINE_DASH = LINE_DASH;
+    window.GeofastmapStyleEditor.defaultSpec = defaultSpec;
+    window.GeofastmapStyleEditor.ZOOM_STOP_DEFAULTS = ZOOM_STOP_DEFAULTS;
+    window.GeofastmapStyleEditor.getStopsFromContainer = getStopsFromContainer;
+    window.GeofastmapStyleEditor.renderZoomStops = renderZoomStops;
+    window.GeofastmapStyleEditor.zoomStopsToExpression = zoomStopsToExpression;
+    window.GeofastmapStyleEditor.getCurrentSpec = getCurrentSpec;
+    window.GeofastmapStyleEditor.applySpecToForm = applySpecToForm;
+    window.GeofastmapStyleEditor.applyVectorStyleToLayers = function(spec) { applyVectorStyleToLayers(map, getLayerIds(), spec || getCurrentSpec(), formEls); };
+    window.GeofastmapStyleEditor.updateStyleLegend = function(spec) { updateStyleLegend(spec || getCurrentSpec(), legendElId); };
   }
 
-  window.GeofastStyleEditor = window.GeofastStyleEditor || {};
-  window.GeofastStyleEditor.initToolbox = initToolbox;
-  window.GeofastStyleEditor.applyVectorStyleToLayers = applyVectorStyleToLayers;
-  window.GeofastStyleEditor.defaultSpec = defaultSpec;
-  window.GeofastStyleEditor.LINE_DASH = LINE_DASH;
-  window.GeofastStyleEditor.zoomStopsToExpression = zoomStopsToExpression;
-  window.GeofastStyleEditor.updateLoadStyleTrigger = function() {};
+  window.GeofastmapStyleEditor = window.GeofastmapStyleEditor || {};
+  window.GeofastmapStyleEditor.initToolbox = initToolbox;
+  window.GeofastmapStyleEditor.applyVectorStyleToLayers = applyVectorStyleToLayers;
+  window.GeofastmapStyleEditor.defaultSpec = defaultSpec;
+  window.GeofastmapStyleEditor.LINE_DASH = LINE_DASH;
+  window.GeofastmapStyleEditor.zoomStopsToExpression = zoomStopsToExpression;
+  window.GeofastmapStyleEditor.updateLoadStyleTrigger = function() {};
   if (window.__styleEditorConfig) initToolbox(window.__styleEditorConfig);
 })();
 </script>

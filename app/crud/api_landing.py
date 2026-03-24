@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.api_landing import API_LANDING_ID, ApiLanding
 
-DEFAULT_TITLE = "GeoFast API"
+DEFAULT_TITLE = "GeoFastMap API"
 DEFAULT_DESCRIPTION = (
     "OGC API – Features and Tiles. Browse feature collections and items (GeoJSON), "
     "view and edit on maps, and use vector tiles (static and dynamic) per collection."

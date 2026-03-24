@@ -1,18 +1,18 @@
 <div align="center">
-  <img src="static/favicon.svg" alt="GeoFast API logo" width="140" />
+  <img src="static/favicon.svg" alt="GeoFastMap API logo" width="140" />
 </div>
 
-# GeoFast API
+# GeoFastMap API
 
 **Fast, OGC-compliant geo API for vector tiles, PostGIS, and web maps.**
 
-Struggle dealing with large geospatial files? That was then. **GeoFast API** is a modern stack: FastAPI + PostgreSQL/PostGIS, built to be *fast*—low latency, streaming downloads, efficient vector tiles, and real-time intersection/erase. No Java, no heavyweight servers. Just Python, async I/O, and a database that knows geometry.
+Struggle dealing with large geospatial files? That was then. **GeoFastMap API** is a modern stack: FastAPI + PostgreSQL/PostGIS, built to be *fast*—low latency, streaming downloads, efficient vector tiles, and real-time intersection/erase. No Java, no heavyweight servers. Just Python, async I/O, and a database that knows geometry.
 
 ---
 
 ## What is it?
 
-GeoFast API is an **OGC API – Features** (and tiles, styles, processes) implementation focused on:
+GeoFastMap API is an **OGC API – Features** (and tiles, styles, processes) implementation focused on:
 
 - **Speed** — Async FastAPI, asyncpg, keyset-paginated streaming, bounded-memory exports
 - **Vector tiles** — Static MBTiles (Tippecanoe) and dynamic MVT from PostGIS; TileJSON per collection
@@ -130,7 +130,7 @@ For `GET /collections/{id}/items` (and the same filters apply to the GeoJSONL ex
 
 Key settings (env vars or `.env`; see `app/core/config.py`):
 
-- **DATABASE_URL** — PostgreSQL + PostGIS (e.g. `postgresql+asyncpg://user:pass@host:5432/geofast`).
+- **DATABASE_URL** — PostgreSQL + PostGIS (e.g. `postgresql+asyncpg://user:pass@host:5432/geofastmap`).
 - **REDIS_URL** — For bulk queue, tile build queue, process queue, and tile cache (default `redis://localhost:6379/0`).
 - **BULK_QUEUE_TYPE** — `redis` (separate worker) or `memory` (in-process consumer).
 - **PROCESS_QUEUE_TYPE** — `redis` or `memory` for intersection/erase jobs.
@@ -203,16 +203,16 @@ pytest --cov=app --cov-report=term-missing --cov-report=html
 - **app/services** — Bulk import, tile build queue, process worker, dynamic tile cache, job store.
 - **app/templates** — Jinja2 HTML (maps, collection/item/style editors, landing).
 - **alembic/versions** — DB migrations (PostGIS, partitions, indexes, basemaps, etc.).
-- **static** — JS/CSS for map UIs (e.g. MapLibre, geofast-map-utils).
+- **static** — JS/CSS for map UIs (e.g. MapLibre, `geofastmap-utils.js`).
 
 ---
 
-## Why “GeoFast”?
+## Why “GeoFastMap”?
 
-Because we lived without it: heavyweight servers, slow feeds, and bloated stacks. **GeoFast API** is built to be fast and lean—async from the DB to the HTTP response, streaming where it matters, and no more resources than you need. Vector tiles, DB-backed intersection, and web maps, without the pfff.
+Because we lived without it: heavyweight servers, slow feeds, and bloated stacks. **GeoFastMap API** is built to be fast and lean—async from the DB to the HTTP response, streaming where it matters, and no more resources than you need. Vector tiles, DB-backed intersection, and web maps, without the pfff.
 
 ---
 
 ## License
 
-GeoFast API is released under a **permissive license with attribution**: you may use, modify, and distribute it for any purpose, but you **must give clear credit** to GeoFast API (e.g. in documentation, “About” / “Credits,” or as “Powered by GeoFast API”). See [LICENSE](LICENSE) for the full terms.
+GeoFastMap API is released under a **permissive license with attribution**: you may use, modify, and distribute it for any purpose, but you **must give clear credit** to GeoFastMap API (e.g. in documentation, “About” / “Credits,” or as “Powered by GeoFastMap API”). See [LICENSE](LICENSE) for the full terms.

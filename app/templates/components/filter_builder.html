@@ -62,8 +62,8 @@
       })
       .catch(function() {});
   }
-  window.geofastFilterBuilderSetCollection = window.geofastFilterBuilderSetCollection || {};
-  window.geofastFilterBuilderSetCollection[{{ builder_id | tojson }}] = function(collectionId) {
+  window.geofastmapFilterBuilderSetCollection = window.geofastmapFilterBuilderSetCollection || {};
+  window.geofastmapFilterBuilderSetCollection[{{ builder_id | tojson }}] = function(collectionId) {
     root.setAttribute('data-collection-id', collectionId || '');
     return loadColumns(collectionId || '');
   };

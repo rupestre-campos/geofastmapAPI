@@ -47,7 +47,7 @@ def _client_ip(request: Request) -> str:
 
 
 def _attempts_key(ip: str) -> str:
-    return f"geofast:auth:login_fail:{ip}"
+    return f"geofastmap:auth:login_fail:{ip}"
 
 
 def _prune_attempts(ts: list[float], now: float, window_s: int) -> list[float]:

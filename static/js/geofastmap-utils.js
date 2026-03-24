@@ -1,7 +1,7 @@
 /**
- * Shared map and vector style utilities for GeoFast frontend.
+ * Shared map and vector style utilities for GeoFastMap frontend.
  * Use across collection, items, item, map_edit, map_view, style_editor, etc.
- * Include once per page: <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
+ * Include once per page: <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
  */
 (function(global) {
   'use strict';
@@ -134,14 +134,14 @@
    */
   function setBasemapTransformRequest(map, maxZoom, tiles) {
     if (!map) return;
-    map._geofastBasemapMaxZoom = maxZoom;
-    map._geofastBasemapPrefixes = getBasemapUrlPrefixes(tiles || []);
-    if (map._geofastBasemapTransformSet) return;
-    map._geofastBasemapTransformSet = true;
+    map._geofastmapBasemapMaxZoom = maxZoom;
+    map._geofastmapBasemapPrefixes = getBasemapUrlPrefixes(tiles || []);
+    if (map._geofastmapBasemapTransformSet) return;
+    map._geofastmapBasemapTransformSet = true;
     var existing = typeof map.getTransformRequest === 'function' ? map.getTransformRequest() : null;
     map.setTransformRequest(function(url, resourceType) {
-      var maxZ = map._geofastBasemapMaxZoom;
-      var prefixes = map._geofastBasemapPrefixes;
+      var maxZ = map._geofastmapBasemapMaxZoom;
+      var prefixes = map._geofastmapBasemapPrefixes;
       var clamped = (maxZ != null && prefixes && prefixes.length) ? clampBasemapTileUrl(url, maxZ, prefixes) : url;
       if (clamped !== url) return { url: clamped };
       if (existing) return existing(url, resourceType);
@@ -434,15 +434,15 @@
       : escapeHtml(displayLabel);
     var canEdit = false;
     try {
-      if (typeof global !== 'undefined' && global._geofastMapPopupData && global._geofastMapPopupData.canEditByCollection && collectionId) {
-        canEdit = !!global._geofastMapPopupData.canEditByCollection[collectionId];
+      if (typeof global !== 'undefined' && global._geofastmapPopupData && global._geofastmapPopupData.canEditByCollection && collectionId) {
+        canEdit = !!global._geofastmapPopupData.canEditByCollection[collectionId];
       }
     } catch (err) {}
     var parts = ['<div class="map-popup">'];
     if (canEdit && collectionId && id !== '—') {
       parts.push(
         '<div class="map-popup-actions map-popup-actions--top">' +
-        '<a href="#" class="map-popup-edit-link" data-action="geofast-edit-feature" data-collection="' +
+        '<a href="#" class="map-popup-edit-link" data-action="geofastmap-edit-feature" data-collection="' +
         escapeHtml(collectionId) + '" data-feature-id="' + escapeHtml(id) + '">Edit feature</a></div>'
       );
     }
@@ -539,8 +539,8 @@
    */
   function attachMultiLayerFeaturePopup(map, options) {
     if (!map || !options) return;
-    if (map.__geofastMultiLayerPopupBound) return;
-    map.__geofastMultiLayerPopupBound = true;
+    if (map.__geofastmapMultiLayerPopupBound) return;
+    map.__geofastmapMultiLayerPopupBound = true;
     var getLayerIds = options.getLayerIds;
     var getCollectionId = options.getCollectionId;
     var base = options.base || '';
@@ -607,14 +607,14 @@
         if (customRender) {
           var htmlCustom = customRender(features, e.lngLat, map);
           if (!htmlCustom) return;
-          if (window._geofastMapPopup) {
+          if (window._geofastmapPopup) {
             try {
-              window._geofastMapPopup.remove();
+              window._geofastmapPopup.remove();
             } catch (err) {}
           }
           var popupC = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '420px' });
           popupC.setLngLat(e.lngLat).setHTML(htmlCustom).addTo(map);
-          window._geofastMapPopup = popupC;
+          window._geofastmapPopup = popupC;
           return;
         }
 
@@ -627,14 +627,14 @@
         var grouped = groupFeaturesByCollection(features, getCid);
         if (grouped.byLayerOrder.length === 0) return;
 
-        if (window._geofastMapPopup) {
+        if (window._geofastmapPopup) {
           try {
-            window._geofastMapPopup.remove();
+            window._geofastmapPopup.remove();
           } catch (err) {}
         }
 
         var dispMap = resolveDisplayIdByLayer();
-        window._geofastMapPopupData = {
+        window._geofastmapPopupData = {
           byLayerOrder: grouped.byLayerOrder,
           byLayer: grouped.byLayer,
           base: base,
@@ -656,7 +656,7 @@
           }
         }
         popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
-        window._geofastMapPopup = popup;
+        window._geofastmapPopup = popup;
       });
     }
 
@@ -669,22 +669,22 @@
 
   /**
    * Setup delegated click handler for layered popup navigation. Call once (e.g. on map load).
-   * Expects window._geofastMapPopup (popup instance) and window._geofastMapPopupData = { byLayerOrder, byLayer, base, displayIdByLayer }.
+   * Expects window._geofastmapPopup (popup instance) and window._geofastmapPopupData = { byLayerOrder, byLayer, base, displayIdByLayer }.
    * displayIdByLayer: optional { collectionId: propertyName } for popup identifier per layer.
    */
   function setupLayeredPopupNavigation() {
-    if (document._geofastLayeredPopupSetup) return;
-    document._geofastLayeredPopupSetup = true;
+    if (document._geofastmapLayeredPopupSetup) return;
+    document._geofastmapLayeredPopupSetup = true;
     document.addEventListener('click', function(e) {
       var link = e.target && (e.target.closest ? e.target.closest('a[data-action]') : (e.target.tagName === 'A' && e.target.getAttribute('data-action') ? e.target : null));
       if (!link || !link.getAttribute('data-action')) return;
       var popupContent = e.target.closest ? e.target.closest('.maplibregl-popup-content') : null;
       if (!popupContent) return;
       var actionEarly = link.getAttribute('data-action');
-      if (actionEarly === 'geofast-edit-feature') return;
+      if (actionEarly === 'geofastmap-edit-feature') return;
       e.preventDefault();
-      var popup = window._geofastMapPopup;
-      var data = window._geofastMapPopupData;
+      var popup = window._geofastmapPopup;
+      var data = window._geofastmapPopupData;
       if (!popup || !data || !data.byLayer || !data.base) return;
       var action = link.getAttribute('data-action');
       var layer = link.getAttribute('data-layer');
@@ -752,7 +752,7 @@
     };
   }
 
-  global.GeofastMapUtils = {
+  global.GeofastmapUtils = {
     LINE_DASH: LINE_DASH,
     DEFAULT_STYLE_SPEC: DEFAULT_STYLE_SPEC,
     pointFilter: pointFilter,

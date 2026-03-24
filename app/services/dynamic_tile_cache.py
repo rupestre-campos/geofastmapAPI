@@ -7,10 +7,10 @@ import json
 
 from app.core.config import get_settings
 
-DYNAMIC_TILE_CACHE_PREFIX = "geofast:dynamic_tile:"
-DYNAMIC_TILE_CACHE_PARAMS_PREFIX = "geofast:dynamic_tile_p:"
-SEARCH_RESULT_PREFIX = "geofast:search_result:"
-TILE_JOBS_QUEUE_KEY = "geofast:tile_jobs"
+DYNAMIC_TILE_CACHE_PREFIX = "geofastmap:dynamic_tile:"
+DYNAMIC_TILE_CACHE_PARAMS_PREFIX = "geofastmap:dynamic_tile_p:"
+SEARCH_RESULT_PREFIX = "geofastmap:search_result:"
+TILE_JOBS_QUEUE_KEY = "geofastmap:tile_jobs"
 
 
 def _redis_bytes():

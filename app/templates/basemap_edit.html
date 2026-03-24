@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{% if is_new %}New basemap{% else %}Edit {{ basemap.name }}{% endif %} – GeoFast API{% endblock %}
+{% block title %}{% if is_new %}New basemap{% else %}Edit {{ basemap.name }}{% endif %} – GeoFastMap API{% endblock %}
 {% block head %}
   <style>
     .basemap-form .form-row { margin-bottom: var(--space); }
@@ -77,7 +77,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
   <script>
     (function() {
       var base = {{ base | tojson }};
@@ -99,7 +99,7 @@
       }
       var initialTilesArr = Array.isArray(initialTiles) ? initialTiles : (typeof initialTiles === 'string' ? initialTiles.split(/\r?\n/).filter(function(u) { return u.length > 0; }) : []);
       var initialConfig = initialTilesArr.length ? { tiles: initialTilesArr, labels: initialLabels || undefined, minZoom: initialMinZoom, maxZoom: initialMaxZoom } : defaultOsm;
-      var mapStyle = GeofastMapUtils.buildMapStyleWithBasemap(initialConfig);
+      var mapStyle = GeofastmapUtils.buildMapStyleWithBasemap(initialConfig);
       mapStyle.glyphs = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
       var map = new maplibregl.Map({
         container: 'basemap-preview-map',
@@ -108,7 +108,7 @@
         zoom: 2,
         renderWorldCopies: false
       });
-      GeofastMapUtils.setBasemapTransformRequest(map, initialConfig.maxZoom, initialConfig.tiles);
+      GeofastmapUtils.setBasemapTransformRequest(map, initialConfig.maxZoom, initialConfig.tiles);
       map.on('load', function() {
         map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
         function updatePreview() {
@@ -116,8 +116,8 @@
           if (!cfg.tiles || cfg.tiles.length === 0) {
             cfg = defaultOsm;
           }
-          GeofastMapUtils.applyBasemapToMap(map, cfg);
-          GeofastMapUtils.setBasemapTransformRequest(map, cfg.maxZoom, cfg.tiles);
+          GeofastmapUtils.applyBasemapToMap(map, cfg);
+          GeofastmapUtils.setBasemapTransformRequest(map, cfg.maxZoom, cfg.tiles);
         }
         var tilesEl = document.getElementById('basemap-tiles');
         var minEl = document.getElementById('basemap-min-zoom');

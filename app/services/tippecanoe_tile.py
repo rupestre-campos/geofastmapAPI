@@ -40,10 +40,10 @@ def _temp_dir_fast() -> str:
     """Use /dev/shm on Linux for faster I/O when available."""
     try:
         if os.path.exists("/dev/shm") and os.path.isdir("/dev/shm"):
-            return tempfile.mkdtemp(prefix="geofast_tile_", dir="/dev/shm")
+            return tempfile.mkdtemp(prefix="geofastmap_tile_", dir="/dev/shm")
     except OSError:
         pass
-    return tempfile.mkdtemp(prefix="geofast_tile_")
+    return tempfile.mkdtemp(prefix="geofastmap_tile_")
 
 
 def build_single_tile(

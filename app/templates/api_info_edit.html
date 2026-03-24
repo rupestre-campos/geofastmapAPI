@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Edit API info – GeoFast API{% endblock %}
+{% block title %}Edit API info – GeoFastMap API{% endblock %}
 {% block head %}
   <style>
     .api-info-form .form-row { margin-bottom: var(--space); }
@@ -20,7 +20,7 @@
     <form id="form-api-info">
       <div class="form-row">
         <label for="api-title">Title</label>
-        <input type="text" id="api-title" name="title" value="{{ api_title | e }}" required maxlength="500" placeholder="e.g. GeoFast API">
+        <input type="text" id="api-title" name="title" value="{{ api_title | e }}" required maxlength="500" placeholder="e.g. GeoFastMap API">
       </div>
       <div class="form-row">
         <label for="api-description">Description</label>

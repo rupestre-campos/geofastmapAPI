@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Items – {{ collection_id }} – GeoFast API{% endblock %}
+{% block title %}Items – {{ collection_id }} – GeoFastMap API{% endblock %}
 {% block head %}
   {% include '_map_popup_css.html' %}
   <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
   <style>
     #map { position: relative; }
-    .geofast-inline-edit-toolbar .btn { margin-bottom: 0; }
+    .geofastmap-inline-edit-toolbar .btn { margin-bottom: 0; }
     .items-table-card .table-scroll-wrap {
       overflow: auto;
       max-height: min(55vh, 420px);
@@ -332,8 +332,8 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
-  <script src="{{ base }}/static/js/geofast-inline-feature-edit.js?v=1"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
+  <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   <script>
     let features = {{ features_geojson | tojson }};
     const base = {{ base | tojson }};
@@ -425,8 +425,8 @@
     var basemapList;
     var map;
 
-    var pointFilter = GeofastMapUtils.pointFilter;
-    var notPointFilter = GeofastMapUtils.notPointFilter;
+    var pointFilter = GeofastmapUtils.pointFilter;
+    var notPointFilter = GeofastmapUtils.notPointFilter;
     function featuresWithIdInProps() {
       return features.map(function(f) {
         var props = f.properties ? Object.assign({}, f.properties) : {};
@@ -470,7 +470,7 @@
       if (!hasStaticTiles || map.getSource('tiles-collection')) return;
       var tileUrl = apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf';
       map.addSource('tiles-collection', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
-      var s = GeofastMapUtils.specToPaint(defaultStyle && defaultStyle.style_spec);
+      var s = GeofastmapUtils.specToPaint(defaultStyle && defaultStyle.style_spec);
       var beforeId = map.getLayer('results-fill') ? 'results-fill' : undefined;
       map.addLayer({ id: 'tiles-fill', type: 'fill', source: 'tiles-collection', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } }, beforeId);
       map.addLayer({ id: 'tiles-line', type: 'line', source: 'tiles-collection', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity } }, beforeId);
@@ -495,7 +495,7 @@
       removeResultsLayer();
       var tileUrl = getDynamicTileUrl();
       map.addSource('results-tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
-      var s = GeofastMapUtils.specToPaint(defaultStyle && defaultStyle.style_spec);
+      var s = GeofastmapUtils.specToPaint(defaultStyle && defaultStyle.style_spec);
       map.addLayer({ id: 'results-fill', type: 'fill', source: 'results-tiles', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
       map.addLayer({ id: 'results-line', type: 'line', source: 'results-tiles', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
       map.addLayer({ id: 'results-circle', type: 'circle', source: 'results-tiles', 'source-layer': tileLayerId, filter: pointFilter, paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity } });
@@ -509,26 +509,26 @@
       var v = sel.value;
       var cfg = BASEMAPS[v];
       if (!cfg) return;
-      GeofastMapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: map.getLayer('results-fill') ? 'results-fill' : undefined });
-      GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
+      GeofastmapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: map.getLayer('results-fill') ? 'results-fill' : undefined });
+      GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
     }
 
     function initMapItems() {
       var sel = document.getElementById('map-basemap');
-      GeofastMapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
+      GeofastmapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
       var initialId = null;
-      try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch(e) {}
+      try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch(e) {}
       if (!initialId && basemapList.length) initialId = basemapList[0].id;
       if (!initialId && BASEMAPS.osm) initialId = 'osm';
       var initial = (initialId && BASEMAPS[initialId]) ? BASEMAPS[initialId] : (BASEMAPS.osm || (basemapList[0] && BASEMAPS[basemapList[0].id]));
       if (!initial) return;
       if (sel) sel.value = initialId || (sel.options[0] && sel.options[0].value);
-      var mapStyle = GeofastMapUtils.buildMapStyleWithBasemap(initial);
+      var mapStyle = GeofastmapUtils.buildMapStyleWithBasemap(initial);
       map = new maplibregl.Map({ container: 'map', style: mapStyle, center: [0, 20], zoom: 2, renderWorldCopies: false });
-      GeofastMapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
+      GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
       map.on('load', function() {
-        GeofastMapUtils.setupFullscreenForMap(map);
-        try { var s = localStorage.getItem('geofast-basemap'); if (s && BASEMAPS[s]) sel.value = s; } catch(e) {}
+        GeofastmapUtils.setupFullscreenForMap(map);
+        try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) sel.value = s; } catch(e) {}
         applyBasemapFromSelect();
         addOverlayLayers();
         var bbox = (extentBbox && Array.isArray(extentBbox) && extentBbox.length >= 4)
@@ -536,7 +536,7 @@
           : bboxFromFeatures(features);
         if (bbox) map.fitBounds(bbox, { padding: 60, duration: 0 });
         else map.fitBounds([[-180, -90], [180, 90]], { padding: 0, duration: 0 });
-        sel.onchange = function() { try { localStorage.setItem('geofast-basemap', this.value); } catch(e) {} applyBasemapFromSelect(); };
+        sel.onchange = function() { try { localStorage.setItem('geofastmap-basemap', this.value); } catch(e) {} applyBasemapFromSelect(); };
       var showTilesCb = document.getElementById('show-collection-tiles');
       if (showTilesCb) {
         showTilesCb.checked = false;
@@ -552,7 +552,7 @@
         });
         return ids;
       }
-      GeofastInlineFeatureEdit.setPageOptions({
+      GeofastmapInlineFeatureEdit.setPageOptions({
         map: map,
         base: base,
         getHideLayerIds: function() {
@@ -564,26 +564,26 @@
           return (defaultStyle && defaultStyle.style_spec) ? defaultStyle.style_spec : {};
         }
       });
-      GeofastMapUtils.attachMultiLayerFeaturePopup(map, {
+      GeofastmapUtils.attachMultiLayerFeaturePopup(map, {
         base: base,
         getLayerIds: getItemsMapPopupLayerIds,
         getCollectionId: function() { return collectionId; },
         canEditByCollection: canEditByCollection,
         beforePopup: function(e, m) {
-          if (window.GeofastInlineFeatureEdit && GeofastInlineFeatureEdit.handleMapClick(e, m)) return false;
+          if (window.GeofastmapInlineFeatureEdit && GeofastmapInlineFeatureEdit.handleMapClick(e, m)) return false;
           return true;
         }
       });
       });
     }
 
-    GeofastMapUtils.fetchBasemaps(base).then(function(result) {
+    GeofastmapUtils.fetchBasemaps(base).then(function(result) {
       BASEMAPS = result.byId;
       basemapList = result.basemaps;
-      if (!basemapList.length) { BASEMAPS = GeofastMapUtils.getBasemaps(googleKey); basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; }); }
+      if (!basemapList.length) { BASEMAPS = GeofastmapUtils.getBasemaps(googleKey); basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; }); }
       initMapItems();
     }).catch(function() {
-      BASEMAPS = GeofastMapUtils.getBasemaps(googleKey);
+      BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
       basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
       initMapItems();
     });

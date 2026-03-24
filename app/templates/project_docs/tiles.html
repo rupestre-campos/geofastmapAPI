@@ -1,11 +1,11 @@
 {% extends "project_docs/_layout.html" %}
-{% block title %}Tiles – Documentation – GeoFast API{% endblock %}
+{% block title %}Tiles – Documentation – GeoFastMap API{% endblock %}
 
 {% block docs_content %}
   <div class="card">
     <h2 class="card-title">Vector tiles: static vs dynamic</h2>
     <p class="meta">
-      GeoFast supports two ways to serve MapLibre-compatible vector tiles: <strong>static</strong> tiles (prebuilt, fast)
+      GeoFastMap supports two ways to serve MapLibre-compatible vector tiles: <strong>static</strong> tiles (prebuilt, fast)
       and <strong>dynamic</strong> tiles (computed on demand, flexible).
     </p>
 
@@ -27,8 +27,8 @@
 
     <h3>How requests flow</h3>
     <ul>
-      <li><strong>Static</strong>: MapLibre requests <code>{z}/{x}/{y}</code> → GeoFast reads from the prebuilt tiles file → returns bytes.</li>
-      <li><strong>Dynamic</strong>: MapLibre requests <code>{z}/{x}/{y}</code> (+ query params) → GeoFast builds a SQL query → encodes features into MVT → returns bytes.</li>
+      <li><strong>Static</strong>: MapLibre requests <code>{z}/{x}/{y}</code> → GeoFastMap reads from the prebuilt tiles file → returns bytes.</li>
+      <li><strong>Dynamic</strong>: MapLibre requests <code>{z}/{x}/{y}</code> (+ query params) → GeoFastMap builds a SQL query → encodes features into MVT → returns bytes.</li>
     </ul>
 
     <h3>Tile build options (what they mean)</h3>

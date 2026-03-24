@@ -64,7 +64,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version="0.1.0",
-        description="OGC API - Features style service built with FastAPI and PostgreSQL.",
+        description="GeoFastMap API — OGC API - Features style service built with FastAPI and PostgreSQL.",
         lifespan=lifespan,
     )
     app.add_exception_handler(HTTPException, http_exception_redirect_to_login)

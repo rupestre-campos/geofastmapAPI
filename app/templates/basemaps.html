@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Basemaps – GeoFast API{% endblock %}
+{% block title %}Basemaps – GeoFastMap API{% endblock %}
 {% block head %}
   <style>
     .basemaps-map-wrap .map-container { min-height: 320px; height: 320px; width: 100%; box-sizing: border-box; }
@@ -86,7 +86,7 @@
 {% block script %}
   {% if basemaps %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofast-map-utils.js"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
   <script>
     (function() {
       var base = {{ base | tojson }};
@@ -107,7 +107,7 @@
       if (basemapList.length === 0) return;
       var initial = BASEMAPS[basemapList[0].id];
       if (!initial || !initial.tiles.length) return;
-      var mapStyle = GeofastMapUtils.buildMapStyleWithBasemap(initial);
+      var mapStyle = GeofastmapUtils.buildMapStyleWithBasemap(initial);
       mapStyle.glyphs = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
       var map = new maplibregl.Map({
         container: 'map',
@@ -116,17 +116,17 @@
         zoom: 2,
         renderWorldCopies: false
       });
-      GeofastMapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
-      GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), initial);
+      GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
+      GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), initial);
       map.on('load', function() {
-        GeofastMapUtils.setupFullscreenForMap(map);
+        GeofastmapUtils.setupFullscreenForMap(map);
         map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
         var sel = document.getElementById('map-basemap');
         sel.onchange = function() {
           var cfg = BASEMAPS[this.value];
           if (cfg) {
-            GeofastMapUtils.applyBasemapToMap(map, cfg);
-            GeofastMapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
+            GeofastmapUtils.applyBasemapToMap(map, cfg);
+            GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
           }
         };
       });

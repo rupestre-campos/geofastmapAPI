@@ -7,9 +7,9 @@ from dataclasses import dataclass, field
 
 from app.core.config import get_settings
 
-PROCESS_QUEUE_KEY = "geofast:process_queue"
-PROCESS_JOB_IDS_KEY = "geofast:process_job_ids"
-PROCESS_JOB_META_PREFIX = "geofast:process_job_meta:"
+PROCESS_QUEUE_KEY = "geofastmap:process_queue"
+PROCESS_JOB_IDS_KEY = "geofastmap:process_job_ids"
+PROCESS_JOB_META_PREFIX = "geofastmap:process_job_meta:"
 
 
 @dataclass

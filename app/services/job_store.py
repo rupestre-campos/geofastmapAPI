@@ -97,11 +97,11 @@ def _update_job_memory(
 
 # ----- Redis backend -----
 def _redis_key(job_id: str) -> str:
-    return f"geofast:job:{job_id}"
+    return f"geofastmap:job:{job_id}"
 
 
 def _jobs_by_collection_key(collection_id: str) -> str:
-    return f"geofast:jobs_by_collection:{collection_id}"
+    return f"geofastmap:jobs_by_collection:{collection_id}"
 
 
 def _create_job_redis(collection_id: str, owner_id: int | None = None) -> JobInfo:
@@ -295,7 +295,7 @@ def _list_all_jobs_redis(limit: int) -> list[JobInfo]:
     import redis
     settings = get_settings()
     r = redis.from_url(settings.redis_url, decode_responses=True)
-    prefix = "geofast:job:"
+    prefix = "geofastmap:job:"
     job_ids: list[str] = []
     for key in r.scan_iter(match=prefix + "*", count=500):
         if key.startswith(prefix) and key != prefix:

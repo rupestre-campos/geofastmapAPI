@@ -2,9 +2,9 @@
 
 Reusable pieces live in one place so updates and bug fixes apply everywhere.
 
-## Shared JavaScript (`/static/js/geofast-map-utils.js`)
+## Shared JavaScript (`/static/js/geofastmap-utils.js`)
 
-Loaded on map/style pages after MapLibre GL. Exposes `window.GeofastMapUtils`:
+Loaded on map/style pages after MapLibre GL. Exposes `window.GeofastmapUtils`:
 
 | Member | Use |
 |--------|-----|
@@ -21,10 +21,10 @@ Loaded on map/style pages after MapLibre GL. Exposes `window.GeofastMapUtils`:
 **Usage:** In any template that uses maps or vector styles, include after MapLibre:
 
 ```html
-<script src="{{ base }}/static/js/geofast-map-utils.js"></script>
+<script src="{{ base }}/static/js/geofastmap-utils.js"></script>
 ```
 
-Then use e.g. `const BASEMAPS = GeofastMapUtils.getBasemaps(googleKey);` and `GeofastMapUtils.specToPaint(spec)` instead of redefining these per page.
+Then use e.g. `const BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);` and `GeofastmapUtils.specToPaint(spec)` instead of redefining these per page.
 
 ## Shared HTML partials
 
@@ -66,7 +66,7 @@ For a custom id:
 - **item.html** – utils + popup CSS + basemap partial
 - **item_edit.html** – utils + popup CSS + basemap partial
 - **add_feature.html** – utils + basemap partial
-- **map_view.html** – utils + popup CSS + basemap partial; `specFromLayer(layer)` uses `GeofastMapUtils.specToPaint(layer.style_spec)`
+- **map_view.html** – utils + popup CSS + basemap partial; `specFromLayer(layer)` uses `GeofastmapUtils.specToPaint(layer.style_spec)`
 - **map_edit.html** – utils + popup CSS + basemap partial
 
 **Style editor** (`style_editor.html`) and **collections list** (`collections.html`) keep their own basemap/popup logic where the UI or data shape differs; they can be switched to shared utils later if desired.
@@ -74,4 +74,4 @@ For a custom id:
 ## Consistency
 
 - For **page-specific behavior**, extend the shared API with **parameters** (e.g. `popupHtmlForFeature(feat, base, collectionId)`) or options instead of copying code.
-- New map or style pages should include the shared script and partials and call `GeofastMapUtils` rather than redefining helpers.
+- New map or style pages should include the shared script and partials and call `GeofastmapUtils` rather than redefining helpers.

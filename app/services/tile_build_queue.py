@@ -11,9 +11,9 @@ from app.core.config import get_settings
 if TYPE_CHECKING:
     from app.services.job_store import JobInfo
 
-TILE_BUILD_QUEUE_KEY = "geofast:tile_build_queue"
-TILE_BUILD_LATEST_PREFIX = "geofast:tile_build_latest:"
-TILE_BUILD_PENDING_PREFIX = "geofast:tile_build_pending:"
+TILE_BUILD_QUEUE_KEY = "geofastmap:tile_build_queue"
+TILE_BUILD_LATEST_PREFIX = "geofastmap:tile_build_latest:"
+TILE_BUILD_PENDING_PREFIX = "geofastmap:tile_build_pending:"
 TILE_BUILD_JOB_TTL = 86400 * 7  # 7 days
 
 

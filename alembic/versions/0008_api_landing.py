@@ -42,7 +42,7 @@ def upgrade() -> None:
             "INSERT INTO api_landing (id, title, description, contact) "
             "VALUES (:id, :title, :desc, :contact)"
         ),
-        {"id": "default", "title": "GeoFast API", "desc": _DEFAULT_DESC, "contact": _DEFAULT_CONTACT},
+        {"id": "default", "title": "GeoFastMap API", "desc": _DEFAULT_DESC, "contact": _DEFAULT_CONTACT},
     )
 
 

@@ -92,7 +92,7 @@ async def get_tile(
 from fastapi import FastAPI
 
 app = FastAPI(
-    title="GeoFast Dynamic Tiler Worker",
+    title="GeoFastMap Dynamic Tiler Worker",
     description="Generates vector tiles on demand via DB + in-process MVT encoding.",
 )
 app.include_router(app_router)
