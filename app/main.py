@@ -16,6 +16,7 @@ from app.core.html import wants_html
 from app.api.routes import auth, basemaps_api, basemaps_pages, collection_styles, collections, items, jobs, maps, processes, project_docs, root, styles, tiles
 from app.core.config import get_settings
 from app.utils.geometry_limits import GeometryTooLargeError
+from app.middleware.private_html_cache import PrivateHtmlCacheMiddleware
 from app.services.bulk_queue import start_memory_consumer
 from app.services.bulk_worker import process_bulk_job
 
@@ -47,6 +48,10 @@ async def lifespan(app: FastAPI):
 async def http_exception_redirect_to_login(request: Request, exc):
     """On 401/403 for HTML requests, redirect to login with next=current URL so user can sign in and return."""
     if exc.status_code not in (401, 403):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    # fetch() / XHR use Sec-Fetch-Dest: empty; return JSON so clients do not follow a login redirect
+    # and then fail JSON.parse on HTML.
+    if request.headers.get("sec-fetch-dest") == "empty":
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     if not wants_html(request):
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
@@ -90,6 +95,8 @@ def create_app() -> FastAPI:
     # request.base_url uses https and public host (avoids mixed-content links in HTML).
     app.add_middleware(SessionMiddleware, secret_key=session_secret)
     app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+    # HTML pages include session-dependent nav; must not be cached at CDN edge (e.g. Cloudflare).
+    app.add_middleware(PrivateHtmlCacheMiddleware)
     # Start in-process bulk consumer when using memory queue (so no Redis/worker needed)
     if settings.bulk_queue_type == "memory":
         start_memory_consumer(process_bulk_job)

@@ -382,7 +382,7 @@
       </div>
     </div>
     {% else %}
-    <a href="{{ base }}/auth/login?f=html" class="nav-login-link">Login</a>
+    <a href="{{ base }}/auth/login?f=html" class="nav-login-link" id="nav-login-link">Login</a>
     {% endif %}
     <button type="button" class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode" aria-label="Toggle light/dark mode">
       <span class="theme-toggle-icon theme-icon-sun" aria-hidden="true">&#9728;</span>
@@ -431,6 +431,12 @@
           updateThemeLabel();
         });
         updateThemeLabel();
+      }
+
+      var navLogin = document.getElementById('nav-login-link');
+      if (navLogin) {
+        var b = {{ base | tojson }};
+        navLogin.href = b + '/auth/login?f=html&next=' + encodeURIComponent(window.location.pathname + window.location.search);
       }
 
       var drawer = document.getElementById('nav-drawer');

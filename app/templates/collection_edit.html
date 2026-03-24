@@ -160,7 +160,7 @@
       </div>
       <div class="form-row">
         <label><input type="checkbox" id="bulk-queue-compute-tiles" name="queue_compute_tiles" value="true" checked> Queue compute tiles after import</label>
-        <p class="meta" style="margin-top:4px;">When checked, a static tile build is queued for this collection as soon as the bulk import finishes (requires Redis).</p>
+        <p class="meta" style="margin-top:4px;">When checked, a static tile build is queued for this collection as soon as the bulk import finishes.</p>
       </div>
       <div class="btn-group">
         <button type="submit" class="btn btn-primary">Upload & import</button>
@@ -1151,8 +1151,24 @@
       var successEl = document.getElementById('bulk-result-success');
       successEl.style.display = 'none';
       resultEl.textContent = 'Uploading…';
-      fetch(base + '/collections/' + collectionId + '/items/bulk', { method: 'POST', body: formData, headers: { 'Accept': 'application/json' } })
-        .then(r => r.json())
+      var bulkUrl = '/collections/' + encodeURIComponent(collectionId) + '/items/bulk';
+      fetch(bulkUrl, { method: 'POST', body: formData, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+        .then(function(r) { return r.text().then(function(t) { return { r: r, t: t }; }); })
+        .then(function(x) {
+          var r = x.r, t = x.t, ct = (r.headers.get('content-type') || '').toLowerCase();
+          if (r.ok && ct.indexOf('text/html') !== -1) {
+            throw new Error('Got an HTML page instead of JSON (often a login or proxy page). Sign in again or open the app using the same URL as in the address bar.');
+          }
+          var d;
+          try { d = t ? JSON.parse(t) : {}; } catch (err) {
+            throw new Error('Server did not return JSON (HTTP ' + r.status + '). If you use a reverse proxy, ensure /collections/... reaches the API. First bytes: ' + t.slice(0, 120).replace(/\\s+/g, ' '));
+          }
+          if (!r.ok) {
+            var det = d.detail;
+            throw new Error(typeof det === 'string' ? det : (det ? JSON.stringify(det) : (r.statusText || 'Request failed')));
+          }
+          return d;
+        })
         .then(function(d) { resultEl.textContent = ''; successEl.innerHTML = 'Import queued. <a href="' + base + '/jobs/' + d.job_id + '?f=html">Check job status →</a>'; successEl.style.display = 'block'; if (window.refreshCollectionJobs) window.refreshCollectionJobs(); })
         .catch(function(e) { resultEl.textContent = 'Error: ' + (e.detail || e.message || e); });
     };

@@ -14,6 +14,10 @@ def wants_html(request: Request) -> bool:
     if request.query_params.get("f", "").lower() == "html":
         return True
     accept = request.headers.get("accept", "")
+    accept_l = accept.lower()
+    # Typical fetch(..., { headers: { Accept: 'application/json' } }) — not a document navigation.
+    if accept_l.strip().startswith("application/json"):
+        return False
     return "text/html" in accept and (
         "application/json" not in accept or accept.split(",")[0].strip().lower().startswith("text/html")
     )

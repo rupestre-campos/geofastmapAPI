@@ -8,6 +8,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
@@ -137,6 +138,26 @@ def _clear_failures(request: Request) -> None:
 
 def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
+
+
+def _normalize_next_url(request: Request, next_url: str | None) -> str:
+    """
+    Safe redirect target after login / change-password.
+    Accepts absolute same-origin URLs or a path+query beginning with / (not //).
+    """
+    base = _base_url(request)
+    u = (next_url or "").strip()
+    if not u:
+        return f"{base}/collections?f=html"
+    if u.startswith("/") and not u.startswith("//"):
+        if u.startswith("/auth/login"):
+            return f"{base}/collections?f=html"
+        return base + u
+    if u.startswith(base):
+        if u.startswith(base + "/auth/login"):
+            return f"{base}/collections?f=html"
+        return u
+    return f"{base}/collections?f=html"
 
 
 def _format_bytes(n: int | None) -> str:
@@ -454,7 +475,7 @@ async def login_form(request: Request):
     if not wants_html(request):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use ?f=html")
     base = _base_url(request)
-    next_url = request.query_params.get("next", f"{base}/collections?f=html")
+    next_url = _normalize_next_url(request, request.query_params.get("next"))
     return html_response("login.html", base=base, next_url=next_url, error=None, username=None, is_admin=False)
 
 
@@ -470,7 +491,7 @@ async def login_post(
         return html_response(
             "login.html",
             base=_base_url(request),
-            next_url=request.query_params.get("next", ""),
+            next_url=_normalize_next_url(request, request.query_params.get("next")),
             error=f"Too many login attempts. Try again in {retry_after}s.",
             username=None,
             is_admin=False,
@@ -478,10 +499,8 @@ async def login_post(
     form = await request.form()
     username = (form.get("username") or "").strip()
     password = form.get("password") or ""
-    next_url = (form.get("next") or request.query_params.get("next") or "").strip()
     base = _base_url(request)
-    if not next_url or not next_url.startswith(base):
-        next_url = f"{base}/collections?f=html"
+    next_url = _normalize_next_url(request, (form.get("next") or request.query_params.get("next") or "").strip() or None)
     if not username:
         return html_response("login.html", base=base, next_url=next_url, error="Username required", username=None, is_admin=False)
     user = await user_crud.get_user_by_username(db, username)
@@ -497,7 +516,10 @@ async def login_post(
     if session is not None:
         session["username"] = user.username
         if user.must_change_password:
-            return RedirectResponse(url=f"{base}/auth/change-password?next={next_url}", status_code=status.HTTP_302_FOUND)
+            return RedirectResponse(
+                url=f"{base}/auth/change-password?next={quote(next_url, safe='')}",
+                status_code=status.HTTP_302_FOUND,
+            )
         return RedirectResponse(url=next_url, status_code=status.HTTP_302_FOUND)
     raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Session not configured (set auth_secret_key)")
 
@@ -520,7 +542,7 @@ async def change_password_form(
     if not wants_html(request):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use ?f=html")
     base = _base_url(request)
-    next_url = request.query_params.get("next", f"{base}/collections?f=html")
+    next_url = _normalize_next_url(request, request.query_params.get("next"))
     return html_response(
         "change_password.html",
         base=base,
@@ -543,10 +565,8 @@ async def change_password_post(
     current_password = form.get("current_password") or ""
     new_password = form.get("new_password") or ""
     new_password_confirm = form.get("new_password_confirm") or ""
-    next_url = (form.get("next") or request.query_params.get("next") or "").strip()
     base = _base_url(request)
-    if not next_url or not next_url.startswith(base):
-        next_url = f"{base}/collections?f=html"
+    next_url = _normalize_next_url(request, (form.get("next") or request.query_params.get("next") or "").strip() or None)
     ctx = dict(
         base=base,
         username=current_user.username,
