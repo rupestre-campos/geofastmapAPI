@@ -39,6 +39,21 @@ def _thumbnail_url(base: str, map_id: uuid.UUID) -> str:
     return f"{base}/maps/{map_id}/thumbnail"
 
 
+def _map_layer_collection_ids(definition: dict | None) -> list[str]:
+    """Unique collection ids from map definition layers, in order."""
+    layers = (definition or {}).get("layers") or []
+    out: list[str] = []
+    seen: set[str] = set()
+    for lyr in layers:
+        if not isinstance(lyr, dict):
+            continue
+        cid = lyr.get("collection_id") or lyr.get("collectionId")
+        if cid and isinstance(cid, str) and cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return out
+
+
 async def _can_edit_by_collection_for_map_layers(
     db: AsyncSession,
     definition: dict | None,
@@ -178,6 +193,7 @@ async def new_map_form(
         map_description="",
         map_thumbnail="",
         map_definition={"layers": []},
+        collection_titles={},
         google_maps_api_key=settings.google_maps_api_key or "",
         can_edit_by_collection={},
     )
@@ -230,6 +246,9 @@ async def get_map(
         can_edit_by_collection = await _can_edit_by_collection_for_map_layers(
             db, row.definition or {"layers": []}, current_user
         )
+        collection_titles = await collections_crud.get_collection_titles_by_ids(
+            db, _map_layer_collection_ids(row.definition)
+        )
         return html_response(
             "map_view.html",
             base=base,
@@ -240,6 +259,7 @@ async def get_map(
             map_description=row.description or "",
             map_thumbnail=thumb_url,
             map_definition=row.definition or {"layers": []},
+            collection_titles=collection_titles,
             owner_username=owner_username,
             google_maps_api_key=settings.google_maps_api_key or "",
             can_edit_map=can_edit,
@@ -273,6 +293,9 @@ async def edit_map_form(
     can_edit_by_collection = await _can_edit_by_collection_for_map_layers(
         db, row.definition or {"layers": []}, current_user
     )
+    collection_titles = await collections_crud.get_collection_titles_by_ids(
+        db, _map_layer_collection_ids(row.definition)
+    )
     return html_response(
         "map_edit.html",
         base=base,
@@ -283,6 +306,7 @@ async def edit_map_form(
         map_description=row.description or "",
         map_thumbnail=thumb_url,
         map_definition=row.definition or {"layers": []},
+        collection_titles=collection_titles,
         google_maps_api_key=settings.google_maps_api_key or "",
         visibility=getattr(row, "visibility", "private"),
         viewer_can_edit=getattr(row, "viewer_can_edit", False),

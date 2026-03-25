@@ -12,6 +12,20 @@
     border-radius: 4px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.25);
   }
+  /* base.html uses code { background: var(--bg) } so dark theme paints <code> dark; popups stay light — reset. */
+  .maplibregl-popup-content code,
+  .maplibregl-popup-content pre {
+    background: #fff !important;
+    color: #1f2328 !important;
+    border: 1px solid #d0d7de;
+  }
+  .maplibregl-popup-content a code {
+    color: #1967d2 !important;
+    border-color: #c8d9f0;
+  }
+  .maplibregl-popup-content a:hover code {
+    color: #0550ae !important;
+  }
   .map-popup { min-width: 160px; max-width: 100%; font-size: 0.85rem; color: #000; word-break: break-word; }
   .map-popup-id { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ccc; }
   .map-popup-id a { color: #1967d2; text-decoration: none; }

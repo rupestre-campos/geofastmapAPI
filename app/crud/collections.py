@@ -143,6 +143,21 @@ async def get_collection(db: AsyncSession, collection_id: str) -> Collection | N
     return result.scalar_one_or_none()
 
 
+async def get_collection_titles_by_ids(db: AsyncSession, collection_ids: list[str]) -> dict[str, str]:
+    """Return id -> human-readable label: non-empty title when set, else collection id."""
+    if not collection_ids:
+        return {}
+    uniq = list(dict.fromkeys(collection_ids))
+    result = await db.execute(
+        select(Collection.id, Collection.title).where(Collection.id.in_(uniq))
+    )
+    out: dict[str, str] = {}
+    for row in result.all():
+        t = (row.title or "").strip()
+        out[row.id] = t if t else row.id
+    return out
+
+
 def _row_to_extent(row: Any) -> Extent:
     return Extent(
         bbox=[[float(row.minx), float(row.miny), float(row.maxx), float(row.maxy)]],

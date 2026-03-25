@@ -258,15 +258,30 @@
         pointIcon: pointIcon ? pointIcon.value : 'circle'
       };
       var fillOpByZoom = document.getElementById('fill-opacity-by-zoom');
-      if (fillOpByZoom && fillOpByZoom.checked) { var stops = getStopsFromContainer('fill-opacity-zoom-stops'); if (stops.length >= 2) spec.fillOpacityZoom = stops; }
+      if (fillOpByZoom && fillOpByZoom.checked) {
+        var fillStops = getStopsFromContainer('fill-opacity-zoom-stops');
+        if (fillStops.length >= 2) spec.fillOpacityZoom = fillStops;
+      }
       var lineWByZoom = document.getElementById('line-width-by-zoom');
-      if (lineWByZoom && lineWByZoom.checked) { stops = getStopsFromContainer('line-width-zoom-stops'); if (stops.length >= 2) spec.lineWidthZoom = stops; }
+      if (lineWByZoom && lineWByZoom.checked) {
+        var lineWStops = getStopsFromContainer('line-width-zoom-stops');
+        if (lineWStops.length >= 2) spec.lineWidthZoom = lineWStops;
+      }
       var lineOpByZoom = document.getElementById('line-opacity-by-zoom');
-      if (lineOpByZoom && lineOpByZoom.checked) { stops = getStopsFromContainer('line-opacity-zoom-stops'); if (stops.length >= 2) spec.lineOpacityZoom = stops; }
+      if (lineOpByZoom && lineOpByZoom.checked) {
+        var lineOpStops = getStopsFromContainer('line-opacity-zoom-stops');
+        if (lineOpStops.length >= 2) spec.lineOpacityZoom = lineOpStops;
+      }
       var ptSizeByZoom = document.getElementById('point-size-by-zoom');
-      if (ptSizeByZoom && ptSizeByZoom.checked) { stops = getStopsFromContainer('point-size-zoom-stops'); if (stops.length >= 2) spec.pointSizeZoom = stops; }
+      if (ptSizeByZoom && ptSizeByZoom.checked) {
+        var ptSizeStops = getStopsFromContainer('point-size-zoom-stops');
+        if (ptSizeStops.length >= 2) spec.pointSizeZoom = ptSizeStops;
+      }
       var ptOpByZoom = document.getElementById('point-opacity-by-zoom');
-      if (ptOpByZoom && ptOpByZoom.checked) { stops = getStopsFromContainer('point-opacity-zoom-stops'); if (stops.length >= 2) spec.pointOpacityZoom = stops; }
+      if (ptOpByZoom && ptOpByZoom.checked) {
+        var ptOpStops = getStopsFromContainer('point-opacity-zoom-stops');
+        if (ptOpStops.length >= 2) spec.pointOpacityZoom = ptOpStops;
+      }
       if (window.GeofastmapStyleEditor && window.GeofastmapStyleEditor.getRulesSpec) {
         try { spec.rules = window.GeofastmapStyleEditor.getRulesSpec() || []; } catch (e) {}
       }
@@ -536,7 +551,9 @@
     bindZoomToggle('line-opacity-by-zoom', 'line-opacity-zoom-stops');
     bindZoomToggle('point-size-by-zoom', 'point-size-zoom-stops');
     bindZoomToggle('point-opacity-by-zoom', 'point-opacity-zoom-stops');
-    ['fill-opacity-zoom-stops', 'line-width-zoom-stops', 'line-opacity-zoom-stops', 'point-size-zoom-stops', 'point-opacity-zoom-stops'].forEach(function(id) { renderZoomStops(id, null, refreshStyle); });
+    // Do not call renderZoomStops(id, null) here: applySpecToForm(mergedDefaultSpec) already populated
+    // each zoom list from the saved spec. Resetting with null overwrites saved breakpoints and triggers
+    // refreshStyle/onAfterApply with default stops (breaking pointSizeZoom, pointOpacityZoom, etc.).
 
     if (fillCheck) fillCheck.onchange = refreshStyle;
     if (lineCheck) lineCheck.onchange = refreshStyle;

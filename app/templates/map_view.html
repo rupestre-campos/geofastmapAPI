@@ -101,7 +101,7 @@
           {% set single_feature = lid.startswith('item-') and not lid.startswith('items-') %}
           {% if cid and cid not in seen and not single_feature %}
           {% set _ = seen.append(cid) %}
-          <option value="{{ cid }}">{{ cid }}</option>
+          <option value="{{ cid }}">{{ (collection_titles.get(cid) if collection_titles else None) or cid }}</option>
           {% endif %}
           {% endfor %}
         </select>
@@ -219,6 +219,13 @@
       var mapDefinition = {{ map_definition | tojson }};
       var googleKey = {{ google_maps_api_key | tojson }};
       var layers = (mapDefinition && mapDefinition.layers && Array.isArray(mapDefinition.layers)) ? mapDefinition.layers : [];
+      var collectionTitles = {{ collection_titles | default({}) | tojson }};
+      function layerDisplayNameForLegend(cid) {
+        if (!cid) return '';
+        var t = collectionTitles && collectionTitles[cid];
+        if (t != null && String(t).trim() !== '') return String(t).trim();
+        return cid;
+      }
       var mapBbox = (mapDefinition && mapDefinition.bbox && mapDefinition.bbox.length === 4) ? mapDefinition.bbox : null;
       var mapBasemap = (mapDefinition && mapDefinition.basemap) ? mapDefinition.basemap : null;
 
@@ -284,7 +291,14 @@
             list.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { cb.checked = on; });
           };
         }
-        layers.forEach(function(layer, idx) {
+        var sortedForLegend = layers.slice().sort(function(a, b) {
+          var ca = a.collection_id || a.collectionId || '';
+          var cb = b.collection_id || b.collectionId || '';
+          var na = layerDisplayNameForLegend(ca) + (a.tiles_url ? ' (dynamic)' : '');
+          var nb = layerDisplayNameForLegend(cb) + (b.tiles_url ? ' (dynamic)' : '');
+          return na.localeCompare(nb, undefined, { sensitivity: 'base' });
+        });
+        sortedForLegend.forEach(function(layer) {
           var lk = layerKey(layer);
           var cid = layer.collection_id || layer.collectionId;
           var style = specFromLayer(layer);
@@ -300,7 +314,8 @@
           var label = document.createElement('span');
           label.className = 'map-legend-label';
           label.title = cid;
-          label.textContent = layer.tiles_url ? (cid + ' (dynamic)') : cid;
+          var displayName = layerDisplayNameForLegend(cid);
+          label.textContent = layer.tiles_url ? (displayName + ' (dynamic)') : displayName;
           var cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.checked = true;

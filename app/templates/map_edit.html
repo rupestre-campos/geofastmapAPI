@@ -209,6 +209,13 @@
       var googleKey = {{ google_maps_api_key | tojson }};
       var initialLayers = {{ map_definition.layers | tojson if map_definition and map_definition.layers is defined else '[]' }};
       if (!Array.isArray(initialLayers)) initialLayers = [];
+      var collectionTitles = {{ collection_titles | default({}) | tojson }};
+      function layerDisplayNameForLegend(cid) {
+        if (!cid) return '';
+        var t = collectionTitles && collectionTitles[cid];
+        if (t != null && String(t).trim() !== '') return String(t).trim();
+        return cid;
+      }
       var initialBbox = {{ map_definition.bbox | tojson if map_definition and map_definition.bbox is defined else 'null' }};
       var initialBasemap = {{ map_definition.basemap | tojson if map_definition and map_definition.basemap is defined else 'null' }};
 
@@ -536,7 +543,17 @@
         if (!panel || !list) return;
         list.innerHTML = '';
         if (!state.layers || state.layers.length === 0) return;
-        state.layers.forEach(function(layer, idx) {
+        var legendEntries = state.layers.map(function(layer, idx) { return { layer: layer, idx: idx }; });
+        legendEntries.sort(function(a, b) {
+          var ca = a.layer.collection_id || a.layer.collectionId || '';
+          var cb = b.layer.collection_id || b.layer.collectionId || '';
+          var na = (layerDisplayNameForLegend(ca) || ca) + (a.layer.tiles_url ? ' (dynamic)' : '');
+          var nb = (layerDisplayNameForLegend(cb) || cb) + (b.layer.tiles_url ? ' (dynamic)' : '');
+          return na.localeCompare(nb, undefined, { sensitivity: 'base' });
+        });
+        legendEntries.forEach(function(entry) {
+          var layer = entry.layer;
+          var idx = entry.idx;
           var s = layer.style_spec || DEFAULT_SPEC;
           var p = (window.GeofastmapUtils && GeofastmapUtils.specToPaint) ? GeofastmapUtils.specToPaint(s) : null;
           var fill = p ? p.fillColor : (s.fillColor || DEFAULT_SPEC.fillColor);
@@ -553,8 +570,10 @@
 
           var label = document.createElement('span');
           label.className = 'map-edit-legend-label';
-          label.title = layer.collection_id || layer.collectionId || '';
-          label.textContent = layer.collection_id + (layer.tiles_url ? ' (dynamic)' : '');
+          var cid = layer.collection_id || layer.collectionId || '';
+          label.title = cid;
+          var displayName = layerDisplayNameForLegend(cid);
+          label.textContent = (displayName || cid) + (layer.tiles_url ? ' (dynamic)' : '');
 
           var cb = document.createElement('input');
           cb.type = 'checkbox';
@@ -846,13 +865,13 @@
             legendElId: 'vector-style-load-legend',
             onAfterApply: function(spec) {
               if (state.selectedLayerIndex === null || !state.layers[state.selectedLayerIndex]) return;
-              // Only persist/apply if the selected layer is actually on the map yet.
-              // initToolbox runs an initial applySpecToForm() which would otherwise overwrite
-              // the saved style_spec with DEFAULT_SPEC before layers are added.
-              var sid = sourceId(layerKey(state.layers[state.selectedLayerIndex]));
-              if (!map.getLayer(sid + '-fill') && !map.getLayer(sid + '-line') && !map.getLayer(sid + '-circle') && !map.getLayer(sid + '-symbol')) return;
+              // Always persist the form spec onto the layer (including pointSizeZoom / pointOpacityZoom).
+              // Do not require map layers: GeoJSON collections with no features add no GL layers, but style must still save.
               state.layers[state.selectedLayerIndex].style_spec = spec;
-              try { applyLayerStyleToMap(state.selectedLayerIndex); } catch (e) {}
+              var sid = sourceId(layerKey(state.layers[state.selectedLayerIndex]));
+              if (map.getLayer(sid + '-fill') || map.getLayer(sid + '-line') || map.getLayer(sid + '-circle') || map.getLayer(sid + '-symbol')) {
+                try { applyLayerStyleToMap(state.selectedLayerIndex); } catch (e) {}
+              }
             }
           });
         } catch (e) {
@@ -1117,7 +1136,24 @@
           .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Load failed.</div>'; });
       }
 
+      function cacheCollectionTitleForLegend(collectionId) {
+        if (!collectionId) return;
+        fetch(base + '/collections/' + encodeURIComponent(collectionId), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(c) {
+            if (!c || !c.id) return;
+            var t = (c.title && String(c.title).trim()) ? String(c.title).trim() : c.id;
+            collectionTitles[c.id] = t;
+            try {
+              var panel = document.getElementById('map-edit-legend');
+              if (panel && panel.classList.contains('open')) renderMapEditLegend();
+            } catch (e) {}
+          })
+          .catch(function() {});
+      }
+
       function addCollection(collectionId) {
+        cacheCollectionTitleForLegend(collectionId);
         fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/styles', { headers: { 'Accept': 'application/json' } })
           .then(function(r) { return r.json(); })
           .then(function(data) {
@@ -1177,6 +1213,9 @@
       document.getElementById('btn-save-map').onclick = function() {
         var name = document.getElementById('map-name').value.trim();
         if (!name) { document.getElementById('map-save-message').textContent = 'Enter a name.'; return; }
+        if (window.GeofastmapStyleEditor && typeof window.GeofastmapStyleEditor.getCurrentSpec === 'function' && state.selectedLayerIndex != null && state.layers[state.selectedLayerIndex]) {
+          try { state.layers[state.selectedLayerIndex].style_spec = window.GeofastmapStyleEditor.getCurrentSpec(); } catch (e) {}
+        }
         var msgEl = document.getElementById('map-save-message');
         msgEl.textContent = 'Saving…';
         var payload = {
