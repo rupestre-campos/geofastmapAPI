@@ -467,6 +467,7 @@ async def download_items_data(
     request: Request,
     collection_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
     bbox: str | None = Query(None, description="Bounding box: minx,miny,maxx,maxy (WGS84)."),
     datetime_param: str | None = Query(None, alias="datetime", description="Instant or range (e.g. 2024-01-01 or 2024-12-31/2025-01-31). Filters by feature created_at."),
     properties_include: str | None = Query(None, alias="properties", description="Comma-separated property names to return."),
@@ -475,6 +476,11 @@ async def download_items_data(
 ):
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    # Restrict GeoJSONL downloads to logged-in users to avoid anonymous bulk export.
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Login required")
+    if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     bbox_tuple: tuple[float, float, float, float] | None = None
     if bbox:

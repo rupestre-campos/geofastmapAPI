@@ -39,8 +39,14 @@ def _consumer(queue: Queue, file_handle) -> None:
         for fid, geom_str, props in chunk:
             geom_dict = json.loads(geom_str) if geom_str else None
             props_dict = dict(props) if props else {}
-            if "id" not in props_dict:
-                props_dict["id"] = fid
+            # Reserve "id" for our API feature id (UUID/string) so popups link correctly.
+            # If source data already has a property named "id", move it aside to avoid conflicts.
+            if "id" in props_dict and props_dict.get("id") != fid:
+                key = "id_source"
+                while key in props_dict:
+                    key = key + "_1"
+                props_dict[key] = props_dict.get("id")
+            props_dict["id"] = fid
             # Mapbox tippecanoe requires numeric Feature id; keep original id in properties
             feat = {
                 "type": "Feature",

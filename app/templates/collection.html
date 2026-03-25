@@ -18,7 +18,9 @@
       <div class="card-actions">
         {% set collection_id = collection.id %}{% set show_add_feature = false %}{% include '_collection_edit_actions.html' with context %}
         <a href="{{ base }}/collections/{{ collection.id }}/items?f=html" class="btn">View items</a>
+        {% if username %}
         <a href="{{ base }}/collections/{{ collection.id }}/items/data" class="btn" download>Download GeoJSONL</a>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -63,7 +65,9 @@
     <ul class="links">
       <li><a href="{{ base }}/collections/{{ collection.id }}/items?f=html">Items (HTML)</a></li>
       <li><a href="{{ base }}/collections/{{ collection.id }}/items">Items (GeoJSON)</a></li>
+      {% if username %}
       <li><a href="{{ base }}/collections/{{ collection.id }}/items/data" download>Items (GeoJSONL download)</a></li>
+      {% endif %}
       <li><a href="{{ base }}/collections/{{ collection.id }}/tiles">TileJSON</a></li>
       <li><a href="{{ base }}/collections/{{ collection.id }}/styles">Styles (this collection)</a></li>
       <li><a href="{{ base }}/styles">Styles (public)</a></li>

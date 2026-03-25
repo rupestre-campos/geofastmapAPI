@@ -424,6 +424,9 @@
   function popupHtmlForFeature(feat, base, collectionId, displayIdProperty) {
     var props = feat.properties || {};
     var id = props.id != null ? String(props.id) : (feat.id != null ? String(feat.id) : '—');
+    var collectionUrl = collectionId
+      ? (base + '/collections/' + encodeURIComponent(collectionId) + '?f=html')
+      : '';
     var featureUrl = collectionId
       ? (base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(id) + '?f=html')
       : '';
@@ -439,6 +442,13 @@
       }
     } catch (err) {}
     var parts = ['<div class="map-popup">'];
+    if (collectionId) {
+      parts.push(
+        '<div class="map-popup-row map-popup-layer"><strong>Layer</strong> ' +
+        (collectionUrl ? ('<a href="' + escapeHtml(collectionUrl) + '"><code>' + escapeHtml(collectionId) + '</code></a>') : ('<code>' + escapeHtml(collectionId) + '</code>')) +
+        '</div>'
+      );
+    }
     if (canEdit && collectionId && id !== '—') {
       parts.push(
         '<div class="map-popup-actions map-popup-actions--top">' +

@@ -59,6 +59,19 @@
     .vector-style-load-label-text { flex: 1; text-align: left; }
     .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
     .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+    .map-edit-legend { position: absolute; bottom: 52px; left: 8px; z-index: 10; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 0.8rem; max-height: 40vh; overflow-y: auto; box-shadow: 0 1px 4px rgba(0,0,0,0.15); min-width: 210px; display: none; }
+    .map-edit-legend.open { display: block; }
+    .map-edit-legend-title { font-weight: 600; margin-bottom: 6px; color: var(--text); display:flex; align-items:center; justify-content: space-between; gap: 8px; }
+    .map-edit-legend-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+    .map-edit-legend-row:first-of-type { margin-top: 0; }
+    .map-edit-legend-icon { width: 20px; height: 14px; flex-shrink: 0; border-radius: 2px; border: 2px solid; box-sizing: border-box; }
+    .map-edit-legend-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+    .map-edit-legend-row input[type="checkbox"] { cursor: pointer; }
+    .btn-layers-icon { width: 38px; padding-left: 10px; padding-right: 10px; }
+    .map-edit-legend-fab { position: absolute; bottom: 8px; left: 8px; z-index: 11; }
+    .sr-only { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
+    .legend-tools-row { border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 4px; }
+    .legend-tools-row label { display:flex; align-items:center; gap: 6px; }
   </style>
 {% endblock %}
 {% block content %}
@@ -129,6 +142,22 @@
         {% include '_basemap_selector.html' %}
         <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
         <button type="button" class="btn btn-sm" id="btn-set-extent" title="Use current map view as default extent when opening this map">Set extent from current view</button>
+      </div>
+      <button type="button" class="btn btn-sm btn-layers-icon map-edit-legend-fab" id="map-edit-legend-toggle" title="Layers">
+        <span aria-hidden="true">☰</span>
+        <span class="sr-only">Layers</span>
+      </button>
+      <div id="map-edit-legend" class="map-edit-legend" data-collapsed="true">
+        <div class="map-edit-legend-title">
+          <span>Layers</span>
+        </div>
+        <div class="map-edit-legend-row legend-tools-row">
+          <label class="meta" style="margin:0;">
+            <input type="checkbox" id="map-edit-legend-toggle-all" checked>
+            Show all
+          </label>
+        </div>
+        <div id="map-edit-legend-list"></div>
       </div>
     </div>
     <h2 class="card-title" style="margin-top:var(--space-lg);">Layers</h2>
@@ -501,6 +530,85 @@
 
       function escapeHtml(s) { return GeofastmapUtils.escapeHtml(s); }
 
+      function renderMapEditLegend() {
+        var panel = document.getElementById('map-edit-legend');
+        var list = document.getElementById('map-edit-legend-list');
+        if (!panel || !list) return;
+        list.innerHTML = '';
+        if (!state.layers || state.layers.length === 0) return;
+        state.layers.forEach(function(layer, idx) {
+          var s = layer.style_spec || DEFAULT_SPEC;
+          var p = (window.GeofastmapUtils && GeofastmapUtils.specToPaint) ? GeofastmapUtils.specToPaint(s) : null;
+          var fill = p ? p.fillColor : (s.fillColor || DEFAULT_SPEC.fillColor);
+          var line = p ? p.lineColor : (s.lineColor || DEFAULT_SPEC.lineColor);
+
+          var row = document.createElement('div');
+          row.className = 'map-edit-legend-row';
+          row.dataset.index = String(idx);
+
+          var icon = document.createElement('span');
+          icon.className = 'map-edit-legend-icon';
+          icon.style.backgroundColor = (s.fillEnabled !== false) ? fill : 'transparent';
+          icon.style.borderColor = line;
+
+          var label = document.createElement('span');
+          label.className = 'map-edit-legend-label';
+          label.title = layer.collection_id || layer.collectionId || '';
+          label.textContent = layer.collection_id + (layer.tiles_url ? ' (dynamic)' : '');
+
+          var cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = true;
+          cb.title = 'Toggle layer visibility';
+          cb.onchange = function() {
+            var i = parseInt(row.dataset.index, 10);
+            var on = !!cb.checked;
+            var sid = sourceId(layerKey(state.layers[i]));
+            ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {
+              var id = sid + suf;
+              if (!map.getLayer(id)) return;
+              if (!on) {
+                map.setLayoutProperty(id, 'visibility', 'none');
+                return;
+              }
+              // When turning back on, reapply intended visibility for this style.
+              try { applyLayerStyleToMap(i); } catch (e) {}
+            });
+          };
+
+          row.appendChild(icon);
+          row.appendChild(label);
+          row.appendChild(cb);
+          list.appendChild(row);
+        });
+      }
+
+      function setupMapEditLegendUI() {
+        var toggleBtn = document.getElementById('map-edit-legend-toggle');
+        var panel = document.getElementById('map-edit-legend');
+        var allCb = document.getElementById('map-edit-legend-toggle-all');
+        if (!toggleBtn || !panel) return;
+        function setOpen(open) {
+          panel.dataset.collapsed = open ? '' : 'true';
+          panel.classList.toggle('open', !!open);
+          if (open) renderMapEditLegend();
+        }
+        // Default collapsed on load
+        setOpen(false);
+        toggleBtn.onclick = function(e) { e.preventDefault(); setOpen(!panel.classList.contains('open')); };
+        if (allCb) {
+          allCb.onchange = function() {
+            var on = !!allCb.checked;
+            var list = document.getElementById('map-edit-legend-list');
+            if (!list) return;
+            list.querySelectorAll('.map-edit-legend-row').forEach(function(row) {
+              var cb = row.querySelector('input[type="checkbox"]');
+              if (cb) { cb.checked = on; cb.dispatchEvent(new Event('change')); }
+            });
+          };
+        }
+      }
+
       function renderLayers() {
         var wrap = document.getElementById('layers-table-wrap');
         var tbody = document.getElementById('layers-tbody');
@@ -567,6 +675,11 @@
           };
         });
         setupDragAndDrop();
+        // Keep the map legend list in sync (if open).
+        try {
+          var panel = document.getElementById('map-edit-legend');
+          if (panel && panel.classList.contains('open')) renderMapEditLegend();
+        } catch (e) {}
       }
 
       // Render the layers table as soon as the page JS runs (it does not depend on map load).
@@ -725,10 +838,19 @@
                 symbol: map.getLayer(sid + '-symbol') ? sid + '-symbol' : null
               };
             },
-            defaultSpec: DEFAULT_SPEC,
+            // Use the selected layer's saved spec as the toolbox default to avoid
+            // initToolbox auto-applying the blue default and overwriting layer[0] on page load.
+            defaultSpec: (state.selectedLayerIndex != null && state.layers[state.selectedLayerIndex] && state.layers[state.selectedLayerIndex].style_spec)
+              ? Object.assign({}, DEFAULT_SPEC, state.layers[state.selectedLayerIndex].style_spec)
+              : DEFAULT_SPEC,
             legendElId: 'vector-style-load-legend',
             onAfterApply: function(spec) {
               if (state.selectedLayerIndex === null || !state.layers[state.selectedLayerIndex]) return;
+              // Only persist/apply if the selected layer is actually on the map yet.
+              // initToolbox runs an initial applySpecToForm() which would otherwise overwrite
+              // the saved style_spec with DEFAULT_SPEC before layers are added.
+              var sid = sourceId(layerKey(state.layers[state.selectedLayerIndex]));
+              if (!map.getLayer(sid + '-fill') && !map.getLayer(sid + '-line') && !map.getLayer(sid + '-circle') && !map.getLayer(sid + '-symbol')) return;
               state.layers[state.selectedLayerIndex].style_spec = spec;
               try { applyLayerStyleToMap(state.selectedLayerIndex); } catch (e) {}
             }
@@ -1209,6 +1331,7 @@
         map.resize();
         // Bind toolbox once the map is ready.
         if (window.ensureStyleToolboxBound) window.ensureStyleToolboxBound();
+        setupMapEditLegendUI();
         if (state.bbox && state.bbox.length === 4) {
           map.fitBounds([[state.bbox[0], state.bbox[1]], [state.bbox[2], state.bbox[3]]], { padding: 60 });
         }
