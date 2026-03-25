@@ -401,8 +401,10 @@
       </table>
     </div>
   </div>
+  {% include '_confirm_cancel_job_modal.html' %}
 {% endblock %}
 {% block script %}
+<script src="{{ base }}/static/js/geofastmap-job-times.js"></script>
 <script>
 (function() {
   var base = {{ base | tojson }};
@@ -475,6 +477,33 @@
   }
   var tbody = document.getElementById('jobs-tbody');
   var REFRESH_MS = 4000;
+  var fmtTs = window.GeofastmapFormatJobTime || function(ts) {
+    if (!ts) return '—';
+    return String(ts).replace('Z', '').replace('T', ' ').substring(0, 19);
+  };
+
+  var cancelModal = document.getElementById('confirm-cancel-job-modal');
+  var cancelMsg = document.getElementById('confirm-cancel-job-message');
+  var cancelBackdrop = document.getElementById('confirm-cancel-job-backdrop');
+  var cancelDismiss = document.getElementById('confirm-cancel-job-dismiss');
+  var cancelConfirm = document.getElementById('confirm-cancel-job-confirm');
+  var cancelPending = null;
+  function closeJobCancelModal() {
+    if (cancelModal) cancelModal.setAttribute('aria-hidden', 'true');
+    cancelPending = null;
+  }
+  function openJobCancelModal(message, onConfirm) {
+    if (cancelMsg) cancelMsg.textContent = message;
+    cancelPending = onConfirm;
+    if (cancelModal) cancelModal.setAttribute('aria-hidden', 'false');
+  }
+  if (cancelDismiss) cancelDismiss.onclick = closeJobCancelModal;
+  if (cancelBackdrop) cancelBackdrop.onclick = closeJobCancelModal;
+  if (cancelConfirm) cancelConfirm.onclick = function() {
+    var fn = cancelPending;
+    closeJobCancelModal();
+    if (fn) fn();
+  };
 
   function esc(s) {
     if (s == null || s === undefined) return '';
@@ -533,10 +562,6 @@
       if (j.status === 'pending') {
         cancelBtn = '<button type="button" class="btn btn-danger btn-cancel" data-job-id="' + esc(j.job_id) + '">Cancel</button>';
       }
-      function fmtTs(ts) {
-        if (!ts) return '—';
-        return (ts + '').replace('Z', '').replace('T', ' ').substring(0, 19);
-      }
       var created = fmtTs(j.created_at);
       var updated = fmtTs(j.updated_at);
       var finished = fmtTs(j.finished_at);
@@ -559,11 +584,13 @@
       btn.addEventListener('click', function() {
         var jobId = btn.getAttribute('data-job-id');
         if (!jobId) return;
-        btn.disabled = true;
-        fetch(base + '/jobs/' + encodeURIComponent(jobId) + '/cancel', { method: 'POST', headers: { 'Accept': 'application/json' } })
-          .then(function(r) { return r.json().then(function(j) { if (!r.ok) return Promise.reject(j); return j; }); })
-          .then(function() { loadJobs(); })
-          .catch(function(e) { alert('Cancel failed: ' + (e.detail || e.message || JSON.stringify(e))); btn.disabled = false; });
+        openJobCancelModal('Cancel this processing job? It will not run to completion.', function() {
+          btn.disabled = true;
+          fetch(base + '/jobs/' + encodeURIComponent(jobId) + '/cancel', { method: 'POST', headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.json().then(function(j) { if (!r.ok) return Promise.reject(j); return j; }); })
+            .then(function() { loadJobs(); })
+            .catch(function(e) { alert('Cancel failed: ' + (e.detail || e.message || JSON.stringify(e))); btn.disabled = false; });
+        });
       });
     });
   }

@@ -72,7 +72,7 @@
     <div class="card-header">
       <h2 class="card-title">Actions</h2>
       <div class="card-actions">
-        {% if status == 'pending' or (is_tile_build and status in ('running', 'building', 'replacing')) or (is_process_job | default(false) and status in ('running', 'replacing')) %}
+        {% if status == 'pending' or (is_tile_build and status in ('running', 'building', 'replacing')) or (is_process_job | default(false) and status in ('running', 'replacing')) or (is_bulk_import | default(false) and status in ('running', 'replacing')) %}
         <button type="button" class="btn btn-danger" id="btn-cancel-job">Cancel job</button>
         {% endif %}
         <a href="{{ base }}/jobs?f=html" class="btn">All jobs</a>
@@ -112,15 +112,15 @@
       </tr>
       <tr>
         <th>Started (created)</th>
-        <td id="job-created-at">{{ created_at }}</td>
+        <td id="job-created-at" data-job-time="{{ created_at }}"></td>
       </tr>
       <tr>
         <th>Last updated</th>
-        <td id="job-updated-at">{{ updated_at }}</td>
+        <td id="job-updated-at" data-job-time="{{ updated_at }}"></td>
       </tr>
       <tr id="job-finished-at-row" style="display:{{ 'none' if not finished_at else '' }};">
         <th>Finished</th>
-        <td id="job-finished-at">{{ finished_at or '—' }}</td>
+        <td id="job-finished-at" data-job-time="{{ finished_at if finished_at else '' }}"></td>
       </tr>
     </table>
 
@@ -135,8 +135,10 @@
       </details>
     </div>
   </div>
+  {% include '_confirm_cancel_job_modal.html' %}
 {% endblock %}
 {% block script %}
+  <script src="{{ base }}/static/js/geofastmap-job-times.js"></script>
   <script>
     (function() {
       var base = {{ base | tojson }};
@@ -146,9 +148,11 @@
       var collectionId = {{ collection_id | tojson }};
       var pollInterval = 3000;
       function formatTime(s) {
+        if (window.GeofastmapFormatJobTime) return window.GeofastmapFormatJobTime(s);
         if (!s) return '—';
-        return s.replace('Z', '').replace('T', ' ').substring(0, 19);
+        return String(s).replace('Z', '').replace('T', ' ').substring(0, 19);
       }
+      if (window.GeofastmapApplyJobTimes) window.GeofastmapApplyJobTimes(document.querySelector('.job-meta-table'));
       var detailsPre = document.getElementById('job-details-pre');
       var detailsJson = {{ details_json | tojson }};
       document.getElementById('btn-copy-job-details').onclick = function() {
@@ -170,9 +174,16 @@
         var createdEl = document.getElementById('job-created-at');
         if (inEl && job.items_in !== undefined) inEl.textContent = job.items_in;
         if (outEl && job.items_created !== undefined) outEl.textContent = job.items_created;
-        if (updatedEl && job.updated_at) updatedEl.textContent = formatTime(job.updated_at);
-        if (createdEl && job.created_at) createdEl.textContent = formatTime(job.created_at);
+        if (updatedEl && job.updated_at) {
+          updatedEl.setAttribute('data-job-time', job.updated_at);
+          updatedEl.textContent = formatTime(job.updated_at);
+        }
+        if (createdEl && job.created_at) {
+          createdEl.setAttribute('data-job-time', job.created_at);
+          createdEl.textContent = formatTime(job.created_at);
+        }
         if (job.finished_at && finishedEl) {
+          finishedEl.setAttribute('data-job-time', job.finished_at);
           finishedEl.textContent = formatTime(job.finished_at);
           if (finishedRow) finishedRow.style.display = '';
         }
@@ -187,28 +198,52 @@
           } catch (e) {}
         }
       }
+      var cancelModal = document.getElementById('confirm-cancel-job-modal');
+      var cancelMsg = document.getElementById('confirm-cancel-job-message');
+      var cancelBackdrop = document.getElementById('confirm-cancel-job-backdrop');
+      var cancelDismiss = document.getElementById('confirm-cancel-job-dismiss');
+      var cancelConfirm = document.getElementById('confirm-cancel-job-confirm');
+      var cancelPending = null;
+      function closeJobCancelModal() {
+        if (cancelModal) cancelModal.setAttribute('aria-hidden', 'true');
+        cancelPending = null;
+      }
+      function openJobCancelModal(message, onConfirm) {
+        if (cancelMsg) cancelMsg.textContent = message;
+        cancelPending = onConfirm;
+        if (cancelModal) cancelModal.setAttribute('aria-hidden', 'false');
+      }
+      if (cancelDismiss) cancelDismiss.onclick = closeJobCancelModal;
+      if (cancelBackdrop) cancelBackdrop.onclick = closeJobCancelModal;
+      if (cancelConfirm) cancelConfirm.onclick = function() {
+        var fn = cancelPending;
+        closeJobCancelModal();
+        if (fn) fn();
+      };
+
       var cancelBtn = document.getElementById('btn-cancel-job');
       if (cancelBtn) {
         cancelBtn.onclick = function() {
-          if (!confirm('Cancel this job? It will not run.')) return;
-          cancelBtn.disabled = true;
-          cancelBtn.textContent = 'Cancelling…';
-          var url = (isTileBuild && collectionId)
-            ? base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/build/cancel'
-            : base + '/jobs/' + encodeURIComponent(jobId) + '/cancel';
-          fetch(url, { method: 'POST', headers: { 'Accept': 'application/json' } })
-            .then(function(r) {
-              if (r.ok) return r.json();
-              return r.json().then(function(err) { throw err; });
-            })
-            .then(function() {
-              window.location.reload();
-            })
-            .catch(function(e) {
-              cancelBtn.disabled = false;
-              cancelBtn.textContent = 'Cancel job';
-              alert('Failed to cancel: ' + (e.detail || e.message || 'Unknown error'));
-            });
+          openJobCancelModal('Cancel this job? It will not run to completion.', function() {
+            cancelBtn.disabled = true;
+            cancelBtn.textContent = 'Cancelling…';
+            var url = (isTileBuild && collectionId)
+              ? base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/build/cancel'
+              : base + '/jobs/' + encodeURIComponent(jobId) + '/cancel';
+            fetch(url, { method: 'POST', headers: { 'Accept': 'application/json' } })
+              .then(function(r) {
+                if (r.ok) return r.json();
+                return r.json().then(function(err) { throw err; });
+              })
+              .then(function() {
+                window.location.reload();
+              })
+              .catch(function(e) {
+                cancelBtn.disabled = false;
+                cancelBtn.textContent = 'Cancel job';
+                alert('Failed to cancel: ' + (e.detail || e.message || 'Unknown error'));
+              });
+          });
         };
       }
 

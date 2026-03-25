@@ -7,6 +7,10 @@
     <p class="meta">
       This section focuses on practical knobs: what to scale, what to cache, and how to avoid common performance pitfalls.
     </p>
+    <p class="meta">
+      For <strong>exposing the API from home</strong> with a domain and <strong>Cloudflare Tunnel</strong> (HTTPS without opening router ports, free-tier–friendly costs), see
+      <a href="{{ base }}/project-docs/deploy-cloudflare?f=html">Deploy from home (Cloudflare)</a>.
+    </p>
 
     <h3>Recommended production shape</h3>
     <ul>
@@ -30,6 +34,34 @@
       <li>Enforce sane limits for expensive searches (e.g., min length for full-text search).</li>
       <li>Use partitioning and indexes for predictable query performance.</li>
     </ul>
+
+    <h3>Large bulk uploads</h3>
+    <p>
+      Bulk import uses <code>POST /collections/{id}/items/bulk</code> with <code>multipart/form-data</code>. A <strong>413</strong> means something in front of uvicorn rejected the body; plain Docker Compose + uvicorn does not impose a small HTTP body limit by itself.
+    </p>
+
+    <h4>Cloudflare (including Cloudflare Tunnel)</h4>
+    <p>
+      Traffic to your public hostname goes through <strong>Cloudflare’s network</strong> before it reaches <code>cloudflared</code> on your machine.
+      Cloudflare enforces a <strong>maximum upload size per request</strong> (typically <strong>100&nbsp;MB</strong> on Free and Pro, <strong>200&nbsp;MB</strong> on Business, higher on Enterprise—see Cloudflare’s <em>Error 413</em> documentation).
+      A multi‑gigabyte file <strong>cannot</strong> be uploaded through that path on a typical plan; changing nginx or Docker on the host does not raise Cloudflare’s limit.
+    </p>
+    <p><strong>Practical options:</strong></p>
+    <ul>
+      <li>Run bulk import on the <strong>same machine</strong> as Docker: open <code>http://localhost:8000/…</code> (or your LAN IP) so the browser talks to uvicorn <strong>without</strong> going through Cloudflare.</li>
+      <li>Split the dataset into <strong>several files under the limit</strong> and import with <strong>Append</strong> each time.</li>
+      <li>Use a <strong>VPN</strong> or other private path to your home IP that does not pass uploads through Cloudflare’s HTTP edge.</li>
+      <li>Enterprise / higher limits only if your Cloudflare contract allows larger uploads.</li>
+    </ul>
+    <p class="meta">
+      Client-side “chunking” only helps after the API supports multi-part upload sessions; see
+      <a href="{{ base }}/project-docs/collections-items?f=html">Collections &amp; items → Large files, Cloudflare, and chunked browser uploads</a>.
+    </p>
+
+    <h4>nginx (or similar) on your own server</h4>
+    <p>
+      If you terminate TLS or proxy in front of the API, nginx’s default <code>client_max_body_size</code> is <strong>1&nbsp;m</strong>, which also returns 413. Raise it and timeouts; see <code>deploy/nginx-bulk-upload.conf.example</code> in the repo.
+    </p>
   </div>
 {% endblock %}
 

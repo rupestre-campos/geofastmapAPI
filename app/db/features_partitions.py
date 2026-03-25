@@ -52,8 +52,8 @@ async def ensure_features_partition(db: AsyncSession, collection_id: str) -> Non
 
     await db.execute(
         text("""
-            INSERT INTO features (id, collection_id, part_index, geometry, properties, created_at, updated_at)
-            SELECT id, collection_id, part_index, geometry, properties, created_at, updated_at
+            INSERT INTO features (id, collection_id, part_index, geometry, properties, created_at, updated_at, bulk_import_job_id)
+            SELECT id, collection_id, part_index, geometry, properties, created_at, updated_at, bulk_import_job_id
             FROM features_default
             WHERE collection_id = :cid
         """),

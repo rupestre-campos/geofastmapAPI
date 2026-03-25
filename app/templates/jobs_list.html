@@ -19,14 +19,18 @@
     .jobs-table .result-link { font-weight: 500; }
     .jobs-table .meta { color: var(--text-secondary); font-size: 0.85rem; }
     .jobs-table .job-cat { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); }
-    .jobs-table details.job-json-details { max-width: 280px; }
+    .jobs-table th.col-input,
+    .jobs-table td.col-input { min-width: 11rem; max-width: 24rem; width: 18%; vertical-align: top; }
+    .jobs-table th.col-details,
+    .jobs-table td.col-details { min-width: 16rem; max-width: 36rem; width: 28%; vertical-align: top; }
+    .jobs-table details.job-json-details { max-width: 100%; }
     .jobs-table details.job-json-details summary { cursor: pointer; font-size: 0.8rem; color: var(--accent); user-select: none; }
     .jobs-table details.job-json-details pre {
       margin: 0.4rem 0 0;
       padding: 0.5rem;
       font-size: 0.72rem;
       line-height: 1.4;
-      max-height: 200px;
+      max-height: min(50vh, 360px);
       overflow: auto;
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
@@ -55,26 +59,26 @@
             <th>Status</th>
             <th>Type</th>
             {% if is_admin %}<th>Owner</th>{% endif %}
-            <th>Input</th>
+            <th class="col-input">Input</th>
             <th>Result</th>
             <th>Items</th>
             <th>Started</th>
             <th>Updated</th>
             <th>Finished</th>
-            <th>Details</th>
-            <th></th>
+            <th class="col-details">Details</th>
+            <th class="col-actions"></th>
           </tr>
         </thead>
         <tbody id="jobs-tbody">
           {% for j in jobs %}
-          <tr>
+          <tr data-job-id="{{ j.job_id }}">
             <td><span class="status-badge status-{{ j.status }}">{{ j.status }}</span></td>
             <td>
               <div>{{ j.job_type_label | default('Job') }}</div>
               {% if j.job_category %}<div class="job-cat">{{ j.job_category }}</div>{% endif %}
             </td>
             {% if is_admin %}<td class="meta">{{ j.owner_username or '—' }}</td>{% endif %}
-            <td>
+            <td class="col-input">
               {% if j.input_summary %}
                 <span class="meta">{{ j.input_summary }}</span>
               {% elif j.collection_ids %}
@@ -93,10 +97,10 @@
               {% endif %}
             </td>
             <td>{{ j.items_in or 0 }} → {{ j.items_created or 0 }}</td>
-            <td class="meta">{{ (j.created_at or '')[:19] | replace('T', ' ') if j.created_at else '—' }}</td>
-            <td class="meta">{{ (j.updated_at or '')[:19] | replace('T', ' ') if j.updated_at else '—' }}</td>
-            <td class="meta">{{ (j.finished_at or '')[:19] | replace('T', ' ') if j.finished_at else '—' }}</td>
-            <td>
+            <td class="meta"><span data-job-time="{{ j.created_at | e if j.created_at else '' }}"></span></td>
+            <td class="meta"><span data-job-time="{{ j.updated_at | e if j.updated_at else '' }}"></span></td>
+            <td class="meta"><span data-job-time="{{ j.finished_at | e if j.finished_at else '' }}"></span></td>
+            <td class="col-details">
               {% if j.details %}
               <details class="job-json-details">
                 <summary>JSON</summary>
@@ -107,9 +111,9 @@
               <span class="meta">—</span>
               {% endif %}
             </td>
-            <td>
+            <td class="col-actions">
               <a href="{{ base }}/jobs/{{ j.job_id }}?f=html" class="btn">View</a>
-              {% if j.status == 'pending' or (j.status in ('running', 'replacing') and (j.is_tile_build or j.process_id)) %}
+              {% if j.status == 'pending' or (j.status in ('running', 'replacing') and (j.is_tile_build or j.process_id or j.job_category == 'bulk_import')) %}
               <button type="button" class="btn btn-danger btn-cancel" data-job-id="{{ j.job_id }}" data-collection-id="{{ j.collection_id or '' }}" data-is-tile-build="{{ '1' if j.is_tile_build else '' }}">Cancel</button>
               {% endif %}
             </td>
@@ -120,16 +124,92 @@
     </div>
     <p class="jobs-empty" id="jobs-empty" style="display: {{ 'none' if jobs else 'block' }};">No jobs yet.</p>
   </div>
+  {% include '_confirm_cancel_job_modal.html' %}
 {% endblock %}
 {% block script %}
+<script src="{{ base }}/static/js/geofastmap-job-times.js"></script>
 <script>
 (function() {
   var base = {{ base | tojson }};
   var is_admin = {{ is_admin | tojson }};
   var REFRESH_MS = 4000;
+  var OPEN_JSON_KEY = 'geofastmap-jobs-json-open';
   var tbody = document.getElementById('jobs-tbody');
+  var fmtTs = window.GeofastmapFormatJobTime || function(ts) {
+    if (!ts) return '—';
+    return String(ts).replace('Z', '').replace('T', ' ').substring(0, 19);
+  };
   var jobsEmpty = document.getElementById('jobs-empty');
   var jobsWrap = document.getElementById('jobs-wrap');
+
+  var cancelModal = document.getElementById('confirm-cancel-job-modal');
+  var cancelMsg = document.getElementById('confirm-cancel-job-message');
+  var cancelBackdrop = document.getElementById('confirm-cancel-job-backdrop');
+  var cancelDismiss = document.getElementById('confirm-cancel-job-dismiss');
+  var cancelConfirm = document.getElementById('confirm-cancel-job-confirm');
+  var cancelPending = null;
+  function closeJobCancelModal() {
+    if (cancelModal) cancelModal.setAttribute('aria-hidden', 'true');
+    cancelPending = null;
+  }
+  function openJobCancelModal(message, onConfirm) {
+    if (cancelMsg) cancelMsg.textContent = message;
+    cancelPending = onConfirm;
+    if (cancelModal) cancelModal.setAttribute('aria-hidden', 'false');
+  }
+  if (cancelDismiss) cancelDismiss.onclick = closeJobCancelModal;
+  if (cancelBackdrop) cancelBackdrop.onclick = closeJobCancelModal;
+  if (cancelConfirm) cancelConfirm.onclick = function() {
+    var fn = cancelPending;
+    closeJobCancelModal();
+    if (fn) fn();
+  };
+
+  function getOpenJsonJobIds() {
+    try {
+      var raw = sessionStorage.getItem(OPEN_JSON_KEY);
+      var parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) { return []; }
+  }
+
+  function saveOpenJsonJobIds(ids) {
+    try {
+      sessionStorage.setItem(OPEN_JSON_KEY, JSON.stringify(ids.slice(0, 100)));
+    } catch (e) {}
+  }
+
+  /** Merge currently expanded JSON rows into storage before DOM is replaced (auto-refresh). */
+  function mergeOpenJsonFromDom() {
+    var ids = new Set(getOpenJsonJobIds());
+    tbody.querySelectorAll('tr[data-job-id] details.job-json-details[open]').forEach(function(det) {
+      var tr = det.closest('tr');
+      if (tr) ids.add(tr.getAttribute('data-job-id'));
+    });
+    saveOpenJsonJobIds(Array.from(ids));
+  }
+
+  function restoreJsonOpenState() {
+    var want = new Set(getOpenJsonJobIds());
+    tbody.querySelectorAll('tr[data-job-id]').forEach(function(tr) {
+      var id = tr.getAttribute('data-job-id');
+      if (!want.has(id)) return;
+      var det = tr.querySelector('details.job-json-details');
+      if (det) det.open = true;
+    });
+  }
+
+  tbody.addEventListener('toggle', function(e) {
+    var det = e.target;
+    if (!det || !det.classList || !det.classList.contains('job-json-details')) return;
+    var tr = det.closest('tr');
+    if (!tr) return;
+    var id = tr.getAttribute('data-job-id');
+    if (!id) return;
+    var ids = new Set(getOpenJsonJobIds());
+    if (det.open) ids.add(id); else ids.delete(id);
+    saveOpenJsonJobIds(Array.from(ids));
+  }, true);
 
   function esc(s) {
     if (s == null || s === undefined) return '';
@@ -145,11 +225,6 @@
     if (s === 'completed') return 'status-completed';
     if (s === 'failed' || s === 'cancelled') return 'status-failed';
     return '';
-  }
-
-  function fmtTs(ts) {
-    if (!ts) return '—';
-    return (ts + '').replace('Z', '').replace('T', ' ').substring(0, 19);
   }
 
   function typeLabel(j) {
@@ -195,26 +270,27 @@
     }
     if (jobsWrap) jobsWrap.style.display = 'block';
     if (jobsEmpty) jobsEmpty.style.display = 'none';
+    mergeOpenJsonFromDom();
     var showOwner = (typeof is_admin !== 'undefined' && is_admin) || (jobs.length && jobs[0].owner_username !== undefined);
     tbody.innerHTML = jobs.map(function(j) {
-      var showCancel = j.status === 'pending' || (j.status === 'running' || j.status === 'replacing') && (j.is_tile_build || j.process_id);
+      var showCancel = j.status === 'pending' || (j.status === 'running' || j.status === 'replacing') && (j.is_tile_build || j.process_id || j.job_category === 'bulk_import');
       var cancelBtn = showCancel
         ? '<button type="button" class="btn btn-danger btn-cancel" data-job-id="' + esc(j.job_id) + '" data-collection-id="' + esc(j.collection_id || '') + '" data-is-tile-build="' + (j.is_tile_build ? '1' : '') + '">Cancel</button>'
         : '';
       var ownerCell = showOwner ? '<td class="meta">' + esc(j.owner_username || '—') + '</td>' : '';
       var cat = j.job_category ? '<div class="job-cat">' + esc(j.job_category) + '</div>' : '';
-      return '<tr>' +
+      return '<tr data-job-id="' + esc(j.job_id) + '">' +
         '<td><span class="status-badge ' + statusClass(j.status) + '">' + esc(j.status) + '</span></td>' +
         '<td><div>' + esc(typeLabel(j)) + '</div>' + cat + '</td>' +
         ownerCell +
-        '<td>' + cellInput(j) + '</td>' +
+        '<td class="col-input">' + cellInput(j) + '</td>' +
         '<td>' + cellResult(j) + '</td>' +
         '<td>' + esc((j.items_in || 0) + ' → ' + (j.items_created || 0)) + '</td>' +
         '<td class="meta">' + esc(fmtTs(j.created_at)) + '</td>' +
         '<td class="meta">' + esc(fmtTs(j.updated_at)) + '</td>' +
         '<td class="meta">' + esc(fmtTs(j.finished_at)) + '</td>' +
-        '<td>' + cellDetails(j) + '</td>' +
-        '<td><a href="' + base + '/jobs/' + encodeURIComponent(j.job_id) + '?f=html" class="btn">View</a> ' + cancelBtn + '</td>' +
+        '<td class="col-details">' + cellDetails(j) + '</td>' +
+        '<td class="col-actions"><a href="' + base + '/jobs/' + encodeURIComponent(j.job_id) + '?f=html" class="btn">View</a> ' + cancelBtn + '</td>' +
         '</tr>';
     });
     document.querySelectorAll('.btn-cancel').forEach(function(btn) {
@@ -222,17 +298,20 @@
         var jobId = btn.getAttribute('data-job-id');
         var collectionId = btn.getAttribute('data-collection-id');
         var isTileBuild = btn.getAttribute('data-is-tile-build') === '1';
-        if (!jobId || !confirm('Cancel this job?')) return;
-        btn.disabled = true;
-        var url = isTileBuild && collectionId
-          ? base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/build/cancel'
-          : base + '/jobs/' + encodeURIComponent(jobId) + '/cancel';
-        fetch(url, { method: 'POST', headers: { 'Accept': 'application/json' } })
-          .then(function(r) { return r.ok ? r.json() : r.json().then(function(e) { throw e; }); })
-          .then(function() { loadJobs(); })
-          .catch(function(e) { btn.disabled = false; alert('Failed: ' + (e.detail || e.message || 'Unknown')); });
+        if (!jobId) return;
+        openJobCancelModal('Cancel this job? It will not run to completion if it is still pending or running.', function() {
+          btn.disabled = true;
+          var url = isTileBuild && collectionId
+            ? base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/build/cancel'
+            : base + '/jobs/' + encodeURIComponent(jobId) + '/cancel';
+          fetch(url, { method: 'POST', headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.ok ? r.json() : r.json().then(function(e) { throw e; }); })
+            .then(function() { loadJobs(); })
+            .catch(function(e) { btn.disabled = false; alert('Failed: ' + (e.detail || e.message || 'Unknown')); });
+        });
       });
     });
+    restoreJsonOpenState();
   }
 
   function loadJobs() {
@@ -251,6 +330,7 @@
     maybeRefresh();
   }, REFRESH_MS);
 
+  if (window.GeofastmapApplyJobTimes) window.GeofastmapApplyJobTimes(document.getElementById('jobs-table'));
   loadJobs();
 
   document.getElementById('jobs-table').addEventListener('click', function(e) {

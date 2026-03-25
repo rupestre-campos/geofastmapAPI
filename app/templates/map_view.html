@@ -1,6 +1,35 @@
 {% extends "base.html" %}
 {% block title %}{{ map_name }} – GeoFastMap API{% endblock %}
 {% block head %}
+  {# Open Graph + Twitter: WhatsApp / Telegram / social link previews #}
+  {% set canonical_url = base ~ '/maps/' ~ map_id ~ '?f=html' %}
+  <meta property="og:title" content="{{ map_name|e }}">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="{{ canonical_url|e }}">
+  <meta property="og:site_name" content="GeoFastMap">
+  {% if map_description %}
+  <meta property="og:description" content="{{ map_description|e }}">
+  {% else %}
+  <meta property="og:description" content="{{ map_name|e }} · GeoFastMap">
+  {% endif %}
+  {% if map_thumbnail %}
+  {% if map_thumbnail.startswith('//') %}
+    {% set og_image = 'https:' ~ map_thumbnail %}
+  {% elif map_thumbnail.startswith('http://') or map_thumbnail.startswith('https://') %}
+    {% set og_image = map_thumbnail %}
+  {% else %}
+    {% set og_image = base ~ '/' ~ map_thumbnail.lstrip('/') %}
+  {% endif %}
+  <meta property="og:image" content="{{ og_image|e }}">
+  <meta property="og:image:secure_url" content="{{ og_image|e }}">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{ map_name|e }}">
+  <meta name="twitter:image" content="{{ og_image|e }}">
+    {% if map_description %}
+  <meta name="twitter:description" content="{{ map_description|e }}">
+    {% endif %}
+  {% endif %}
+  <link rel="canonical" href="{{ canonical_url|e }}">
   {% include '_map_popup_css.html' %}
   <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">

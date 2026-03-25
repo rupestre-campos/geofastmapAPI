@@ -22,6 +22,23 @@
       <li>Import modes typically include <strong>append</strong> (add features) and <strong>replace</strong> (delete then import).</li>
     </ul>
 
+    <h3>Large files, Cloudflare (~100&nbsp;MB), and chunked browser uploads</h3>
+    <p>
+      Bulk import is exposed as <strong>one HTTP POST</strong> per file: the browser sends the entire upload in a single request, and the API streams it to disk (then the worker reads that <strong>complete</strong> file with Fiona/GDAL, including zip/shapefile and GPKG).
+    </p>
+    <p>
+      <strong>Splitting a file in JavaScript only in the browser does not bypass Cloudflare’s per-request size limit</strong> unless the server exposes a separate protocol to accept <strong>many small requests</strong> and reassemble them into one file before import.
+      GeoFastMap does <strong>not</strong> ship that today—so for public hostnames behind Cloudflare, treat <strong>~100&nbsp;MB</strong> (typical Free/Pro cap) as a hard ceiling for browser uploads.
+    </p>
+    <p><strong>Practical options today (no new API):</strong></p>
+    <ul>
+      <li>Import from <strong>localhost</strong> or <strong>LAN IP</strong> to the machine running the API (no Cloudflare edge in the path).</li>
+      <li>Split the dataset into <strong>several files under the limit</strong> and use <strong>Append</strong> for each import.</li>
+      <li>Use a <strong>VPN</strong> or other private path that does not send the upload through Cloudflare.</li>
+      <li>A later <strong>CLI or desktop tool</strong> can talk directly to the origin the same way.</li>
+    </ul>
+    <p><strong>If chunked uploads are added in the future:</strong> a server-side session (upload id, chunk index or byte offset) would append chunks to a temp file until complete, then enqueue the existing bulk job on that path. In the browser, using <code>Blob.slice()</code> and uploading chunks <strong>sequentially</strong> (or with low concurrency) keeps <strong>RAM</strong> low by not loading the whole file into memory at once—each chunk is only a small slice. That would be new API surface, not a change to the core importer logic.</p>
+
     <h3>Visibility &amp; sharing</h3>
     <ul>
       <li><strong>private</strong>: only owner (and explicit shares) can see.</li>

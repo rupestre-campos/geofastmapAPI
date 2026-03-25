@@ -6,9 +6,9 @@ import os
 
 from app.core.config import get_settings
 from app.services.bulk_import import run_bulk_import_sync
-from app.services.bulk_queue import QUEUE_KEY, BulkJobPayload
+from app.services.bulk_queue import QUEUE_KEY, BulkJobPayload, unregister_bulk_import_job
 from app.services.bulk_storage import get_bulk_storage
-from app.services.job_store import update_job
+from app.services.job_store import get_job, update_job
 from app.services.tile_build_queue import (
     create_tile_build_job,
     enqueue_tile_build,
@@ -56,6 +56,15 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
     storage = get_bulk_storage()
     path = storage.get_path_or_uri(payload.storage_key)
 
+    job = get_job(payload.job_id)
+    if job and job.status == "cancelled":
+        try:
+            storage.delete(payload.storage_key)
+        except Exception:
+            pass
+        unregister_bulk_import_job(payload.job_id)
+        return
+
     def on_progress(status: str, items_created: int, _total: int | None) -> None:
         update_job(payload.job_id, status=status, items_created=items_created)
 
@@ -68,7 +77,17 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
             payload.batch_size,
             on_progress=on_progress,
             zip_inner_shp_paths=payload.zip_inner_shp_paths,
+            bulk_import_job_id=payload.job_id,
         )
+        if err == "cancelled":
+            update_job(
+                payload.job_id,
+                status="cancelled",
+                message="Cancelled by user.",
+                items_created=created,
+                items_failed=failed,
+            )
+            return
         if err:
             update_job(
                 payload.job_id,
@@ -101,3 +120,4 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
             storage.delete(payload.storage_key)
         except Exception:
             pass
+        unregister_bulk_import_job(payload.job_id)

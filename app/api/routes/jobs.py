@@ -13,6 +13,13 @@ from app.crud import collections as collections_crud
 from app.crud import user as user_crud
 from app.db.session import get_db
 from app.models.user import User
+from app.services.bulk_queue import (
+    get_bulk_import_storage_key,
+    is_registered_bulk_import_job,
+    remove_bulk_job_from_redis_queue,
+    unregister_bulk_import_job,
+)
+from app.services.bulk_storage import get_bulk_storage
 from app.services.job_store import get_job, list_all_jobs, list_jobs_for_collection, update_job
 from app.services.process_queue import get_process_job_meta
 from app.services.tile_build_queue import get_latest_tile_build_job
@@ -106,11 +113,11 @@ async def list_jobs(
 @router.post(
     "/{job_id}/cancel",
     status_code=status.HTTP_200_OK,
-    summary="Cancel a queued or running process job",
+    summary="Cancel a queued or running job",
     description=(
         "Marks a job as cancelled. Pending jobs are removed from the queue. "
-        "Running or replacing process jobs (intersection, erase, etc.) are cooperatively cancelled; "
-        "other running jobs cannot be cancelled here (use tile build cancel for tiles)."
+        "Running bulk imports and process jobs are cooperatively cancelled and cleaned up; "
+        "tile builds use POST /collections/{id}/tiles/build/cancel."
     ),
 )
 async def cancel_job(
@@ -123,9 +130,40 @@ async def cancel_job(
     if not _can_see_job(job.owner_id, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     is_process = get_process_job_meta(job_id) is not None
+    is_bulk = is_registered_bulk_import_job(job_id)
+
+    if job.status == "pending" and is_bulk:
+        sk = get_bulk_import_storage_key(job_id)
+        remove_bulk_job_from_redis_queue(job_id)
+        if sk:
+            try:
+                get_bulk_storage().delete(sk)
+            except Exception:
+                pass
+        unregister_bulk_import_job(job_id)
+        update_job(job_id, status="cancelled", message="Cancelled by user.")
+        return {
+            "job_id": job_id,
+            "status": "cancelled",
+            "message": "Bulk import cancelled before it started.",
+        }
+
     if job.status == "pending":
         update_job(job_id, status="cancelled", message="Cancelled by user.")
         return {"job_id": job_id, "status": "cancelled", "message": "Job cancelled."}
+
+    if job.status in ("running", "replacing") and is_bulk:
+        update_job(
+            job_id,
+            status="cancelled",
+            message="Cancellation requested — stopping soon…",
+        )
+        return {
+            "job_id": job_id,
+            "status": "cancelled",
+            "message": "Cancellation requested; rows from this import will be removed when the worker stops.",
+        }
+
     if job.status in ("running", "replacing") and is_process:
         update_job(
             job_id,
@@ -139,7 +177,7 @@ async def cancel_job(
         }
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
-        detail=f"Job is {job.status}; only pending jobs or running process jobs can be cancelled.",
+        detail=f"Job is {job.status}; only pending jobs, bulk imports, or running process jobs can be cancelled here.",
     )
 
 
@@ -185,6 +223,7 @@ async def get_job_status(
             collection_id=display_collection_id,
             status=job.status,
             is_tile_build=is_tile_build,
+            is_bulk_import=job_view.get("job_category") == "bulk_import",
             is_process_job=is_process_job,
             message=job.message or "",
             items_in=job.items_in,

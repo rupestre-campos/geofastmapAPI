@@ -39,6 +39,9 @@ class Feature(Base):
 
     properties = Column(JSONB, nullable=True)
 
+    # Set on rows created by POST .../items/bulk; used to DELETE this import only if the job is cancelled.
+    bulk_import_job_id = Column(String, nullable=True)
+
     # Generated column (see migration 0002): flatten properties to text for full-text/trigram search.
     # Mark as Computed so SQLAlchemy does not include it in INSERT/UPDATE.
     properties_flat = Column(Text, Computed("jsonb_flat_text(properties)"), nullable=True)

@@ -1,0 +1,12 @@
+{# Shared modal for confirming job / tile-build cancellation (same pattern as delete confirmation). #}
+<div id="confirm-cancel-job-modal" class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-cancel-job-title" aria-hidden="true">
+  <div class="confirm-modal-backdrop" id="confirm-cancel-job-backdrop"></div>
+  <div class="confirm-modal-content">
+    <div class="confirm-modal-header" id="confirm-cancel-job-title">Cancel?</div>
+    <div class="confirm-modal-body" id="confirm-cancel-job-message"></div>
+    <div class="confirm-modal-actions">
+      <button type="button" class="btn" id="confirm-cancel-job-dismiss">Keep running</button>
+      <button type="button" class="btn btn-danger" id="confirm-cancel-job-confirm">Cancel job</button>
+    </div>
+  </div>
+</div>

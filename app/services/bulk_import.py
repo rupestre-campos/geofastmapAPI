@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Callable
 
 from sqlalchemy import create_engine, delete, text, update
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from shapely.geometry import shape, GeometryCollection, MultiPoint, MultiLineString, MultiPolygon, Point, LineString, Polygon
 from shapely.validation import make_valid
@@ -25,6 +26,53 @@ from app.utils.feature_subdivide import (
     subdivide_geometry_by_vertices,
 )
 from app.utils.geometry_limits import geometry_exceeds_limit
+from app.services.job_store import get_job
+
+class BulkImportCancelled(Exception):
+    """Raised when the bulk job is marked cancelled in job_store (cooperative stop)."""
+
+
+def _raise_if_bulk_cancelled(bulk_import_job_id: str | None) -> None:
+    if not bulk_import_job_id:
+        return
+    j = get_job(bulk_import_job_id)
+    if j is not None and j.status == "cancelled":
+        raise BulkImportCancelled()
+
+
+def _update_feature_count_sync(engine: Engine, collection_id: str) -> None:
+    """Recompute collections.feature_count from features (COUNT DISTINCT id)."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT COUNT(DISTINCT id) AS n FROM features WHERE collection_id = :cid"
+            ),
+            {"cid": collection_id},
+        ).first()
+        n = int(row.n) if row and row.n is not None else 0
+        conn.execute(
+            text("UPDATE collections SET feature_count = :n WHERE id = :cid"),
+            {"cid": collection_id, "n": n},
+        )
+        conn.commit()
+
+
+def _sync_delete_bulk_import_rows_and_refresh(engine: Engine, collection_id: str, job_id: str) -> None:
+    """Remove rows tagged with this bulk job and refresh cached count + extent."""
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "DELETE FROM features WHERE collection_id = :cid AND bulk_import_job_id = :jid"
+            ),
+            {"cid": collection_id, "jid": job_id},
+        )
+        conn.commit()
+    _update_feature_count_sync(engine, collection_id)
+    try:
+        collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id)
+    except Exception:
+        pass
+
 
 # Driver for fiona by file extension (lowercase). No shapefile (would require sidecar files).
 # .geojsonseq is the same format as .geojsonl (GeoJSON Seq / newline-delimited GeoJSON).
@@ -126,6 +174,7 @@ def _import_one_source(
     on_progress: Callable[[str, int, int | None], None] | None,
     created_so_far: int,
     now: datetime,
+    bulk_import_job_id: str | None = None,
 ) -> tuple[int, int]:
     """Read one fiona source and insert features with ST_Subdivide (≤256 vertices/row). Returns (created, failed)."""
     import fiona
@@ -136,56 +185,93 @@ def _import_one_source(
 
     with fiona.open(open_path, driver=driver) as src:
         for rec in src:
-            try:
-                geom_dict = rec.get("geometry")
-                props = dict(rec.get("properties") or {})
-                if geom_dict:
-                    base_geom = shape(geom_dict)
-                    geoms = _explode_to_simple_parts(base_geom)
-                    if not geoms:
-                        failed += 1
-                        continue
-                else:
-                    geoms = [None]
-                for geom in geoms:
-                    if geometry_exceeds_limit(geom):
-                        failed += 1
-                        continue
-                    fid = str(uuid7())
-                    if geom is not None and not geom.is_empty and _coord_count(geom) > MAX_COORDS_FOR_DB_SUBDIVIDE:
-                        parts = subdivide_geometry_by_vertices(geom, max_vertices)
-                        wkt_list = []
-                        for p in parts:
-                            if p is None or p.is_empty:
-                                continue
-                            if geometry_exceeds_limit(p):
-                                failed += 1
-                                continue
-                            wkt_list.append(p.wkt)
-                        if not wkt_list:
-                            continue
-                        for sql, params in insert_feature_parts_batched(
-                            fid, collection_id, wkt_list, props if props else None, now
+            _raise_if_bulk_cancelled(bulk_import_job_id)
+            geom_dict = rec.get("geometry")
+            props = dict(rec.get("properties") or {})
+            if geom_dict:
+                base_geom = shape(geom_dict)
+                geoms = _explode_to_simple_parts(base_geom)
+                if not geoms:
+                    failed += 1
+                    continue
+            else:
+                geoms = [None]
+
+            for geom in geoms:
+                _raise_if_bulk_cancelled(bulk_import_job_id)
+                if geometry_exceeds_limit(geom):
+                    failed += 1
+                    continue
+                try:
+                    # Keep the outer transaction healthy even if a single feature insert fails
+                    # (e.g. invalid geometry/properties). This avoids "current transaction is aborted".
+                    with session.begin_nested():
+                        fid = str(uuid7())
+                        if (
+                            geom is not None
+                            and not geom.is_empty
+                            and _coord_count(geom) > MAX_COORDS_FOR_DB_SUBDIVIDE
                         ):
+                            parts = subdivide_geometry_by_vertices(geom, max_vertices)
+                            wkt_list = []
+                            for p in parts:
+                                if p is None or p.is_empty:
+                                    continue
+                                if geometry_exceeds_limit(p):
+                                    failed += 1
+                                    continue
+                                wkt_list.append(p.wkt)
+                            if not wkt_list:
+                                continue
+                            for sql, params in insert_feature_parts_batched(
+                                fid,
+                                collection_id,
+                                wkt_list,
+                                props if props else None,
+                                now,
+                                bulk_import_job_id=bulk_import_job_id,
+                            ):
+                                session.execute(text(sql), params)
+                        else:
+                            wkt = (
+                                geom.wkt
+                                if (geom is not None and not geom.is_empty)
+                                else None
+                            )
+                            sql, params = insert_feature_subdivided_sql(
+                                fid,
+                                collection_id,
+                                wkt,
+                                props if props else None,
+                                now,
+                                max_vertices,
+                                bulk_import_job_id=bulk_import_job_id,
+                            )
                             session.execute(text(sql), params)
-                    else:
-                        wkt = geom.wkt if (geom is not None and not geom.is_empty) else None
-                        sql, params = insert_feature_subdivided_sql(
-                            fid, collection_id, wkt, props if props else None, now, max_vertices
-                        )
-                        session.execute(text(sql), params)
                     created += 1
-            except Exception:
-                failed += 1
-                continue
+                except BulkImportCancelled:
+                    raise
+                except Exception:
+                    failed += 1
+                    continue
 
             if created > 0 and created % batch_size == 0:
-                session.commit()
+                try:
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    raise
+                _raise_if_bulk_cancelled(bulk_import_job_id)
                 if on_progress:
                     on_progress("running", created_so_far + created, None)
 
         if created > 0 and created % batch_size != 0:
-            session.commit()
+            try:
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            _raise_if_bulk_cancelled(bulk_import_job_id)
     return created, failed
 
 
@@ -196,6 +282,7 @@ def run_bulk_import_sync(
     batch_size: int,
     on_progress: Callable[[str, int, int | None], None] | None = None,
     zip_inner_shp_paths: list[str] | None = None,
+    bulk_import_job_id: str | None = None,
 ) -> tuple[int, int, str | None]:
     """
     Read a geospatial file with fiona and insert features into the collection.
@@ -209,10 +296,11 @@ def run_bulk_import_sync(
         on_progress: Optional callback(status, items_created, total_or_none) for job updates.
         zip_inner_shp_paths: When file_path is .zip, list of .shp member paths to import (all of them).
             If non-empty, all listed shapefiles are imported in order into the same collection.
+        bulk_import_job_id: When set, rows are tagged for rollback if the job is cancelled.
 
     Returns:
         (items_created, items_failed, error_message).
-        error_message is set if a fatal error occurred.
+        error_message is "cancelled" if the user cancelled; otherwise set if a fatal error occurred.
     """
     import fiona
 
@@ -254,6 +342,8 @@ def run_bulk_import_sync(
             if not coll:
                 return 0, 0, "Collection not found"
 
+            _raise_if_bulk_cancelled(bulk_import_job_id)
+
             if mode == "replace":
                 if on_progress:
                     on_progress("replacing", 0, None)
@@ -271,9 +361,17 @@ def run_bulk_import_sync(
             now = datetime.utcnow()
 
             for open_path, driver in sources:
+                _raise_if_bulk_cancelled(bulk_import_job_id)
                 created, failed = _import_one_source(
-                    session, open_path, driver, collection_id, batch_size,
-                    on_progress, total_created, now,
+                    session,
+                    open_path,
+                    driver,
+                    collection_id,
+                    batch_size,
+                    on_progress,
+                    total_created,
+                    now,
+                    bulk_import_job_id=bulk_import_job_id,
                 )
                 total_created += created
                 total_failed += failed
@@ -300,6 +398,10 @@ def run_bulk_import_sync(
                 on_progress("completed", total_created, total_created)
             return total_created, total_failed, None
 
+    except BulkImportCancelled:
+        if bulk_import_job_id:
+            _sync_delete_bulk_import_rows_and_refresh(engine, collection_id, bulk_import_job_id)
+        return 0, 0, "cancelled"
     except Exception as e:
         if on_progress:
             on_progress("failed", 0, None)

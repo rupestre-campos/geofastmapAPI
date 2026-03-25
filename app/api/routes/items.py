@@ -20,7 +20,7 @@ from app.crud import styles as styles_crud
 from app.db.session import get_db, AsyncSessionLocal
 from app.models.feature import Feature
 from app.services.bulk_import import list_shp_in_zip
-from app.services.bulk_queue import BulkJobPayload, enqueue
+from app.services.bulk_queue import BulkJobPayload, enqueue, register_bulk_import_job
 from app.services.bulk_storage import get_bulk_storage
 from app.services.job_store import create_job
 from app.schemas.feature import (
@@ -394,6 +394,7 @@ async def bulk_import_items(
             pass
 
     qt = queue_compute_tiles is None or str(queue_compute_tiles).lower() not in ("false", "0", "no", "")
+    register_bulk_import_job(job.job_id, storage_key)
     enqueue(BulkJobPayload(
         job_id=job.job_id,
         collection_id=collection_id,

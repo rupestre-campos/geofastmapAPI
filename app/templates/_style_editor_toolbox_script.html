@@ -3,7 +3,7 @@
 <script>
 (function() {
   const LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
-  const defaultSpec = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, lineEnabled: true, pointEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle' };
+  const baseDefaultSpec = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, lineEnabled: true, pointEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle' };
   var ZOOM_STOP_DEFAULTS = {
     'fill-opacity-zoom-stops': [[0, 0.3], [14, 0.7]],
     'line-width-zoom-stops': [[0, 0.5], [14, 2]],
@@ -337,7 +337,7 @@
     config = config || {};
     var map = config.map;
     var getLayerIds = config.getLayerIds || function() { return {}; };
-    var defaultSpec = config.defaultSpec || defaultSpec;
+    var mergedDefaultSpec = config.defaultSpec || baseDefaultSpec;
     var legendElId = config.legendElId || 'layer-style-legend';
     var onAfterApply = config.onAfterApply;
 
@@ -519,13 +519,17 @@
       });
     };
 
-    applySpecToForm(defaultSpec);
+    applySpecToForm(mergedDefaultSpec);
 
     function bindZoomToggle(id, stopsId) {
       var el = document.getElementById(id);
       var stops = document.getElementById(stopsId);
       if (!el || !stops) return;
-      el.onchange = function() { stops.style.display = this.checked ? '' : 'none'; refreshStyle(); };
+      el.onchange = function() {
+        stops.style.display = this.checked ? '' : 'none';
+        if (this.checked) renderZoomStops(stopsId, null, refreshStyle);
+        else refreshStyle();
+      };
     }
     bindZoomToggle('fill-opacity-by-zoom', 'fill-opacity-zoom-stops');
     bindZoomToggle('line-width-by-zoom', 'line-width-zoom-stops');
@@ -550,7 +554,7 @@
 
     window.GeofastmapStyleEditor = window.GeofastmapStyleEditor || {};
     window.GeofastmapStyleEditor.LINE_DASH = LINE_DASH;
-    window.GeofastmapStyleEditor.defaultSpec = defaultSpec;
+    window.GeofastmapStyleEditor.defaultSpec = mergedDefaultSpec;
     window.GeofastmapStyleEditor.ZOOM_STOP_DEFAULTS = ZOOM_STOP_DEFAULTS;
     window.GeofastmapStyleEditor.getStopsFromContainer = getStopsFromContainer;
     window.GeofastmapStyleEditor.renderZoomStops = renderZoomStops;
@@ -564,7 +568,7 @@
   window.GeofastmapStyleEditor = window.GeofastmapStyleEditor || {};
   window.GeofastmapStyleEditor.initToolbox = initToolbox;
   window.GeofastmapStyleEditor.applyVectorStyleToLayers = applyVectorStyleToLayers;
-  window.GeofastmapStyleEditor.defaultSpec = defaultSpec;
+  window.GeofastmapStyleEditor.defaultSpec = baseDefaultSpec;
   window.GeofastmapStyleEditor.LINE_DASH = LINE_DASH;
   window.GeofastmapStyleEditor.zoomStopsToExpression = zoomStopsToExpression;
   window.GeofastmapStyleEditor.updateLoadStyleTrigger = function() {};

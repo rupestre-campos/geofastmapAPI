@@ -1,0 +1,56 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Deploy from home (Cloudflare Tunnel) – Documentation – GeoFastMap API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Deploy from home (Cloudflare Tunnel)</h2>
+    <p class="meta">
+      Run GeoFastMap API on a PC or small server at home and reach it on the public internet over <strong>HTTPS</strong> without opening inbound ports on your router.
+      The usual path is: <strong>own a domain</strong>, <strong>run a Cloudflare Tunnel</strong>, and <strong>point DNS at Cloudflare</strong> so traffic flows to your tunnel and then to the app on <code>localhost</code>.
+    </p>
+
+    <div class="callout">
+      <strong>Cost (predictable, free tier friendly):</strong>
+      This pattern fits <strong>Cloudflare’s free tier</strong> for tunnels and DNS: there is <strong>no usage-based “hosting” bill</strong> from Cloudflare for typical tunnel and proxy traffic in the way many cloud VMs charge by the hour or by egress.
+      Your main recurring cost is usually <strong>domain registration</strong> (annual).
+      Always confirm current plans on <a href="https://www.cloudflare.com/plans/" rel="noopener noreferrer">Cloudflare’s pricing</a>, but this setup is aimed at <strong>predictable, no-surprise-bills</strong> hosting compared to metered cloud servers.
+    </div>
+
+    <h3>1. Get a domain</h3>
+    <p>
+      Register a domain (for example through <a href="https://www.cloudflare.com/products/registrar/" rel="noopener noreferrer">Cloudflare Registrar</a> or any registrar) and add the zone to your Cloudflare account.
+      If the domain lives elsewhere, change its <strong>nameservers</strong> to the pair Cloudflare gives you so Cloudflare can host DNS and route traffic for your tunnel.
+    </p>
+
+    <h3>2. Create a tunnel</h3>
+    <p>
+      In the <a href="https://one.dash.cloudflare.com/" rel="noopener noreferrer">Cloudflare Zero Trust</a> dashboard, go to <strong>Networks → Tunnels</strong>, create a tunnel, and install <strong><code>cloudflared</code></strong> on the same machine that runs the API (or an always-on host on your LAN).
+      Authenticate the connector with the token Cloudflare provides.
+    </p>
+
+    <h3>3. Route a hostname to the app</h3>
+    <p>
+      In the tunnel configuration, add a <strong>public hostname</strong> (for example <code>api.example.com</code>) that forwards to your local origin, typically <code>http://127.0.0.1:8000</code> if Uvicorn listens on port 8000.
+      Cloudflare terminates TLS; users hit <code>https://api.example.com</code> and <code>cloudflared</code> proxies to your stack.
+    </p>
+
+    <h3>4. Run the stack</h3>
+    <p>
+      Start PostgreSQL, Redis, workers, and the API as usual (Docker Compose or bare metal).
+      Keep <strong><code>cloudflared</code></strong> running (often as a systemd service) so the tunnel stays up.
+      Set <strong><code>AUTH_SECRET_KEY</code></strong> and other production environment variables as described in the repository README (<strong>Configuration</strong> section).
+    </p>
+
+    <p>
+      After DNS propagates, the site is served from your home network while the tunnel handles encryption and inbound connectivity.
+      For exact <code>cloudflared</code> commands and dashboard steps, see Cloudflare’s documentation:
+      <a href="https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/" rel="noopener noreferrer">Cloudflare Tunnel</a>.
+    </p>
+
+    <h3>Related</h3>
+    <ul>
+      <li><a href="{{ base }}/project-docs/deployment-performance?f=html">Deployment &amp; performance</a> — scaling, caching, and <strong>upload limits</strong> when traffic passes through Cloudflare (bulk imports).</li>
+      <li>The same topics are summarized in the repository <code>README.md</code> under <em>Deploying from home with Cloudflare Tunnel</em>.</li>
+    </ul>
+  </div>
+{% endblock %}

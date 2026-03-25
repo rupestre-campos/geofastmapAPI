@@ -168,6 +168,26 @@ For bulk import and tile builds you’ll need workers (same codebase: `python -m
 
 ---
 
+## Deploying from home with Cloudflare Tunnel
+
+You can run GeoFastMap API on a PC or small server at home and reach it on the public internet over **HTTPS** without opening inbound ports on your router. The usual path is: **own a domain**, **run a Cloudflare Tunnel**, and **point DNS at Cloudflare** so traffic flows to your tunnel and then to the app on `localhost`.
+
+**Cost:** This pattern fits **Cloudflare’s free tier** for tunnels and DNS: there is **no usage-based “hosting” bill** from Cloudflare for typical tunnel + proxy traffic in the way many cloud VMs charge by the hour or by egress. Your main recurring cost is usually **domain registration** (annual). Always confirm current plans on [Cloudflare’s pricing](https://www.cloudflare.com/plans/), but this setup is aimed at **predictable, no-surprise-bills** hosting compared to metered cloud servers.
+
+1. **Get a domain** — Register a domain (for example through [Cloudflare Registrar](https://www.cloudflare.com/products/registrar/) or any registrar) and add the zone to your Cloudflare account. If the domain lives elsewhere, change its **nameservers** to the pair Cloudflare gives you so Cloudflare can host DNS and route traffic for your tunnel.
+
+2. **Create a tunnel** — In the [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) dashboard, go to **Networks → Tunnels**, create a tunnel, and install **`cloudflared`** on the same machine that runs the API (or a always-on host on your LAN). Authenticate the connector with the token Cloudflare provides.
+
+3. **Route hostname to the app** — In the tunnel configuration, add a **public hostname** (e.g. `api.example.com`) that forwards to your local origin, typically `http://127.0.0.1:8000` if Uvicorn listens on port 8000. Cloudflare terminates TLS; users hit `https://api.example.com` and `cloudflared` proxies to your stack.
+
+4. **Run the stack** — Start PostgreSQL, Redis, workers, and the API as usual (Docker Compose or bare metal). Keep **`cloudflared`** running (often as a systemd service) so the tunnel stays up. Set **`AUTH_SECRET_KEY`** and other production env vars as in [Configuration](#configuration).
+
+After DNS propagates, the site is served from your home network while the tunnel handles encryption and inbound connectivity. For exact `cloudflared` commands and dashboard steps, see Cloudflare’s documentation: [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
+
+The same guide is available in the **web UI** under **Documentation → Deploy from home (Cloudflare)** (`GET /project-docs/deploy-cloudflare?f=html`).
+
+---
+
 ## Tests
 
 Tests use an in-memory mock DB (no PostgreSQL or Docker required):

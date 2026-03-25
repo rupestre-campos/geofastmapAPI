@@ -1,0 +1,37 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Search documentation – GeoFastMap API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Search documentation</h2>
+
+    {% if not search_query.strip() %}
+      <p class="meta">Enter one or more words in the sidebar search box (at least 2 characters per term) and press <strong>Search</strong>.</p>
+    {% elif total == 0 %}
+      <p class="meta">No results for <strong>{{ search_query|e }}</strong>. Try different keywords (e.g. <em>tiles</em>, <em>bulk</em>, <em>Cloudflare</em>, <em>auth</em>).</p>
+    {% else %}
+      <p class="meta">About <strong>{{ total }}</strong> matching page{% if total != 1 %}s{% endif %} for <strong>{{ search_query|e }}</strong>.</p>
+
+      <ul class="docs-search-results-list">
+        {% for row in results %}
+          <li class="docs-search-hit">
+            <a href="{{ base }}/{{ row.route }}?f=html">{{ row.title|e }}</a>
+            <span class="docs-search-snippet">{{ row.snippet_html|safe }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+
+      {% if total_pages > 1 %}
+        <nav class="docs-search-pagination" aria-label="Search results pages">
+          {% if prev_url %}
+            <a href="{{ prev_url }}" class="btn btn-sm">Previous</a>
+          {% endif %}
+          <span class="meta">Page {{ page }} / {{ total_pages }}</span>
+          {% if next_url %}
+            <a href="{{ next_url }}" class="btn btn-sm">Next</a>
+          {% endif %}
+        </nav>
+      {% endif %}
+    {% endif %}
+  </div>
+{% endblock %}

@@ -48,7 +48,7 @@
     .layers-table-wrap tr.selected td { background: var(--bg-elevated); }
     .vector-style-load-wrap { position: relative; display: inline-flex; }
     .vector-style-load-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); cursor: pointer; min-width: 120px; }
-    .vector-style-load-list { position: absolute; top: 100%; left: 0; margin-top: 2px; min-width: 180px; max-height: 240px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 50; display: none; }
+    .vector-style-load-list { position: absolute; top: 100%; left: 0; margin-top: 2px; min-width: 180px; max-height: 240px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 2000; display: none; }
     .vector-style-load-list.open { display: block; }
     .vector-style-load-group-label { padding: 4px 8px; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
     .vector-style-load-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; font-size: 0.85rem; border: none; background: none; width: 100%; text-align: left; }
@@ -171,6 +171,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofastmap-utils.js?v=2"></script>
+  {% include "_style_editor_toolbox_script.html" %}
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   <script>
     (function() {
@@ -185,83 +186,6 @@
       var DEFAULT_SPEC = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, lineEnabled: true, pointEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle' };
       var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
       function zoomStopsToExpression(stops) { return GeofastmapUtils.zoomStopsToExpression(stops); }
-      function getStopsFromContainer(containerId) {
-        var container = document.getElementById(containerId);
-        if (!container) return [];
-        var list = container.querySelector('.zoom-stops-list');
-        if (!list) return [];
-        var rows = list.querySelectorAll('.zoom-stop-row');
-        var stops = [];
-        var valueType = (container.getAttribute('data-value-type') || 'number') === 'percent';
-        for (var i = 0; i < rows.length; i++) {
-          var zIn = rows[i].querySelector('.zoom-input');
-          var vIn = rows[i].querySelector('.value-input');
-          if (zIn && vIn) {
-            var z = parseFloat(zIn.value);
-            var v = parseFloat(vIn.value);
-            if (isNaN(z)) z = 0;
-            if (valueType && !isNaN(v)) v = v / 100;
-            else if (isNaN(v)) v = 0;
-            stops.push([z, v]);
-          }
-        }
-        stops.sort(function(a, b) { return a[0] - b[0]; });
-        return stops;
-      }
-      function renderZoomStops(containerId, stops, onRefresh) {
-        var container = document.getElementById(containerId);
-        if (!container) return;
-        var list = container.querySelector('.zoom-stops-list');
-        if (!list) return;
-        var valueType = (container.getAttribute('data-value-type') || 'number') === 'percent';
-        var vMin = parseFloat(container.getAttribute('data-value-min')) || 0;
-        var vMax = parseFloat(container.getAttribute('data-value-max')) || 100;
-        var vStep = parseFloat(container.getAttribute('data-value-step')) || 1;
-        var suffix = valueType ? '%' : '';
-        list.innerHTML = '';
-        (stops && stops.length >= 2 ? stops : [[0, valueType ? 0.3 : 1], [14, valueType ? 0.7 : 2]]).forEach(function(s) {
-          var zoom = Number(s[0]);
-          var val = Number(s[1]);
-          if (valueType) val = Math.round(val * 100);
-          var row = document.createElement('div');
-          row.className = 'zoom-stop-row';
-          row.innerHTML = '<label>Zoom <input type="number" class="zoom-input" min="0" max="22" value="' + zoom + '"> → <input type="number" class="value-input" min="' + vMin + '" max="' + vMax + '" step="' + (vStep || 'any') + '" value="' + val + '">' + suffix + '</label> <button type="button" class="btn-remove-stop" title="Remove breakpoint">×</button>';
-          list.appendChild(row);
-        });
-        list.querySelectorAll('.zoom-input, .value-input').forEach(function(inp) {
-          inp.oninput = inp.onchange = function() { if (onRefresh) onRefresh(); };
-        });
-        list.querySelectorAll('.btn-remove-stop').forEach(function(btn) {
-          btn.onclick = function() {
-            var r = btn.closest('.zoom-stop-row');
-            if (list.querySelectorAll('.zoom-stop-row').length <= 2) return;
-            if (r) r.remove();
-            if (onRefresh) onRefresh();
-          };
-        });
-        var addBtn = container.querySelector('.add-zoom-breakpoint');
-        if (addBtn && !addBtn._bound) {
-          addBtn._bound = true;
-          addBtn.onclick = function() {
-            var stopsNow = getStopsFromContainer(containerId);
-            var last = stopsNow[stopsNow.length - 1];
-            var nextZoom = last ? last[0] + 2 : 14;
-            var nextVal = last ? last[1] : (valueType ? 0.7 : 2);
-            if (valueType) nextVal = Math.round(nextVal * 100);
-            var row = document.createElement('div');
-            row.className = 'zoom-stop-row';
-            row.innerHTML = '<label>Zoom <input type="number" class="zoom-input" min="0" max="22" value="' + nextZoom + '"> → <input type="number" class="value-input" min="' + vMin + '" max="' + vMax + '" step="' + (vStep || 'any') + '" value="' + nextVal + '">' + suffix + '</label> <button type="button" class="btn-remove-stop" title="Remove breakpoint">×</button>';
-            list.appendChild(row);
-            row.querySelector('.zoom-input').oninput = row.querySelector('.value-input').oninput = function() { if (onRefresh) onRefresh(); };
-            row.querySelector('.btn-remove-stop').onclick = function() {
-              if (list.querySelectorAll('.zoom-stop-row').length <= 2) return;
-              row.remove();
-              if (onRefresh) onRefresh();
-            };
-            if (onRefresh) onRefresh();
-          };
-        }
-      }
       function paintValue(spec, key, defaultVal) {
         var zoomKey = key === 'fillOpacity' ? 'fillOpacityZoom' : key === 'lineWidth' ? 'lineWidthZoom' : key === 'lineOpacity' ? 'lineOpacityZoom' : key === 'pointSize' ? 'pointSizeZoom' : key === 'pointOpacity' ? 'pointOpacityZoom' : null;
         if (zoomKey && spec[zoomKey] && spec[zoomKey].length >= 2) return zoomStopsToExpression(spec[zoomKey]);
@@ -272,6 +196,7 @@
 
       var state = { layers: [], selectedLayerIndex: null, bbox: initialBbox && initialBbox.length === 4 ? initialBbox.slice() : null, basemap: initialBasemap || null };
       var styleToolboxApplySpec = null;
+      var refreshMapEditRuleFields = function() {};
       // Load layers from saved map definition. Each layer's style_spec is stored with the map (map-specific, not collection/public styles).
       initialLayers.forEach(function(l) {
         var spec = l.style_spec && typeof l.style_spec === 'object' ? Object.assign({}, DEFAULT_SPEC, l.style_spec) : (l.color ? { fillColor: l.color, lineColor: l.color, fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true } : Object.assign({}, DEFAULT_SPEC));
@@ -290,6 +215,19 @@
       var BASEMAPS;
       var basemapList;
 
+      // Expose a stable binder on window. Always overwrite to avoid stale/cached closures.
+      window.ensureStyleToolboxBound = function() {
+        try {
+          var wrap = document.getElementById('style-toolbox');
+          if (!wrap) return;
+          if (!map) return;
+          if (wrap.dataset && wrap.dataset.geofastmapBound === '1') return;
+          if (typeof window.__geofastSetupStyleToolbox === 'function') {
+            window.__geofastSetupStyleToolbox();
+          }
+        } catch (e) { try { console.warn('ensureStyleToolboxBound failed', e); } catch (e2) {} }
+      };
+
       function initMapEditWithBasemaps() {
         var sel = document.getElementById('map-basemap');
         GeofastmapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
@@ -306,6 +244,16 @@
         sel.value = initialId;
         state.basemap = initialId;
         GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), initial);
+
+        // Ensure the style toolbox is wired even before map 'load' completes.
+        // (The toolbox safely no-ops if the target layers don't exist yet.)
+        if (state.selectedLayerIndex == null && state.layers.length > 0) state.selectedLayerIndex = 0;
+        try { if (window.ensureStyleToolboxBound) window.ensureStyleToolboxBound(); } catch (e) {}
+        try { renderLayers(); } catch (e) {}
+        if (state.selectedLayerIndex != null && state.layers[state.selectedLayerIndex] && styleToolboxApplySpec) {
+          try { styleToolboxApplySpec(state.layers[state.selectedLayerIndex].style_spec || DEFAULT_SPEC); } catch (e) {}
+        }
+
         sel.onchange = function() {
           state.basemap = this.value;
           var b = BASEMAPS[this.value] || BASEMAPS.osm;
@@ -574,6 +522,7 @@
             state.selectedLayerIndex = idx;
             renderLayers();
             if (styleToolboxApplySpec) styleToolboxApplySpec(state.layers[idx].style_spec || DEFAULT_SPEC);
+            refreshMapEditRuleFields();
           };
           tr.innerHTML =
             '<td class="drag-handle" title="Drag to reorder">⋮⋮</td>' +
@@ -619,6 +568,10 @@
         });
         setupDragAndDrop();
       }
+
+      // Render the layers table as soon as the page JS runs (it does not depend on map load).
+      // This avoids the table staying hidden if a map-load-only error occurs.
+      try { renderLayers(); } catch (e) {}
 
       function loadPopupIdOptions(sel, idx) {
         var layer = state.layers[idx];
@@ -698,153 +651,103 @@
 
       function setupStyleToolbox() {
         var wrap = document.getElementById('style-toolbox');
-        if (!wrap) return;
-        var fillCheck = document.getElementById('vector-fill-enable');
-        var lineCheck = document.getElementById('vector-line-enable');
-        var pointCheck = document.getElementById('vector-point-enable');
-        var fillColor = document.getElementById('vector-fill-color');
-        var fillOpacity = document.getElementById('vector-fill-opacity');
-        var fillOpacityVal = document.getElementById('vector-fill-opacity-val');
-        var lineColor = document.getElementById('vector-line-color');
-        var lineWidth = document.getElementById('vector-line-width');
-        var lineOpacity = document.getElementById('vector-line-opacity');
-        var lineOpacityVal = document.getElementById('vector-line-opacity-val');
-        var linePattern = document.getElementById('vector-line-pattern');
-        var pointColor = document.getElementById('vector-point-color');
-        var pointOpacity = document.getElementById('vector-point-opacity');
-        var pointOpacityVal = document.getElementById('vector-point-opacity-val');
-        var pointSize = document.getElementById('vector-point-size');
-        var pointIcon = document.getElementById('vector-point-icon');
-        function getCurrentSpec() {
-          var spec = {
-            fillColor: fillColor ? fillColor.value : '#58a6ff',
-            lineColor: lineColor ? lineColor.value : '#58a6ff',
-            fillOpacity: fillOpacity ? fillOpacity.value / 100 : 0.6,
-            lineOpacity: lineOpacity ? lineOpacity.value / 100 : 1,
-            lineWidth: lineWidth ? Math.max(0.5, parseFloat(lineWidth.value) || 1) : 1,
-            linePattern: linePattern ? linePattern.value : 'solid',
-            fillEnabled: fillCheck ? fillCheck.checked : true,
-            lineEnabled: lineCheck ? lineCheck.checked : true,
-            pointEnabled: pointCheck ? pointCheck.checked : true,
-            pointColor: pointColor ? pointColor.value : '#58a6ff',
-            pointOpacity: pointOpacity ? (parseFloat(pointOpacity.value) || 100) / 100 : 1,
-            pointSize: pointSize ? Math.max(1, Math.min(40, parseFloat(pointSize.value) || 8)) : 8,
-            pointIcon: pointIcon ? pointIcon.value : 'circle'
-          };
-          var cb = document.getElementById('fill-opacity-by-zoom');
-          if (cb && cb.checked) {
-            var stops = getStopsFromContainer('fill-opacity-zoom-stops');
-            if (stops.length >= 2) spec.fillOpacityZoom = stops;
-          }
-          cb = document.getElementById('line-width-by-zoom');
-          if (cb && cb.checked) {
-            stops = getStopsFromContainer('line-width-zoom-stops');
-            if (stops.length >= 2) spec.lineWidthZoom = stops;
-          }
-          cb = document.getElementById('line-opacity-by-zoom');
-          if (cb && cb.checked) {
-            stops = getStopsFromContainer('line-opacity-zoom-stops');
-            if (stops.length >= 2) spec.lineOpacityZoom = stops;
-          }
-          cb = document.getElementById('point-size-by-zoom');
-          if (cb && cb.checked) {
-            stops = getStopsFromContainer('point-size-zoom-stops');
-            if (stops.length >= 2) spec.pointSizeZoom = stops;
-          }
-          cb = document.getElementById('point-opacity-by-zoom');
-          if (cb && cb.checked) {
-            stops = getStopsFromContainer('point-opacity-zoom-stops');
-            if (stops.length >= 2) spec.pointOpacityZoom = stops;
-          }
-          return spec;
-        }
-        function applySpecToForm(s) {
-          s = s || {};
-          if (fillColor) fillColor.value = s.fillColor || '#58a6ff';
-          if (lineColor) lineColor.value = s.lineColor || '#58a6ff';
-          if (fillOpacity) { fillOpacity.value = Math.round((s.fillOpacity != null ? s.fillOpacity : 0.6) * 100); if (fillOpacityVal) fillOpacityVal.textContent = fillOpacity.value; }
-          if (lineOpacity) { lineOpacity.value = Math.round((s.lineOpacity != null ? s.lineOpacity : 1) * 100); if (lineOpacityVal) lineOpacityVal.textContent = lineOpacity.value; }
-          if (lineWidth) lineWidth.value = s.lineWidth != null ? s.lineWidth : 1;
-          if (linePattern) linePattern.value = s.linePattern || 'solid';
-          if (fillCheck) fillCheck.checked = s.fillEnabled !== false;
-          if (lineCheck) lineCheck.checked = s.lineEnabled !== false;
-          if (pointCheck) pointCheck.checked = s.pointEnabled !== false;
-          if (pointColor) pointColor.value = s.pointColor || '#58a6ff';
-          if (pointOpacity) { pointOpacity.value = Math.round((s.pointOpacity != null ? s.pointOpacity : 1) * 100); if (pointOpacityVal) pointOpacityVal.textContent = pointOpacity.value; }
-          if (pointSize) pointSize.value = s.pointSize != null ? Math.max(1, Math.min(40, s.pointSize)) : 8;
-          if (pointIcon) pointIcon.value = s.pointIcon || 'circle';
-          var refresh = function() {
-            if (state.selectedLayerIndex !== null && state.layers[state.selectedLayerIndex]) {
-              state.layers[state.selectedLayerIndex].style_spec = getCurrentSpec();
-              applyLayerStyleToMap(state.selectedLayerIndex);
-              renderLayers();
-            }
-          };
-          var zo = document.getElementById('fill-opacity-by-zoom');
-          if (zo) { zo.checked = !!(s.fillOpacityZoom && s.fillOpacityZoom.length >= 2); var el = document.getElementById('fill-opacity-zoom-stops'); if (el) el.style.display = zo.checked ? '' : 'none'; renderZoomStops('fill-opacity-zoom-stops', s.fillOpacityZoom, refresh); }
-          zo = document.getElementById('line-width-by-zoom');
-          if (zo) { zo.checked = !!(s.lineWidthZoom && s.lineWidthZoom.length >= 2); el = document.getElementById('line-width-zoom-stops'); if (el) el.style.display = zo.checked ? '' : 'none'; renderZoomStops('line-width-zoom-stops', s.lineWidthZoom, refresh); }
-          zo = document.getElementById('line-opacity-by-zoom');
-          if (zo) { zo.checked = !!(s.lineOpacityZoom && s.lineOpacityZoom.length >= 2); el = document.getElementById('line-opacity-zoom-stops'); if (el) el.style.display = zo.checked ? '' : 'none'; renderZoomStops('line-opacity-zoom-stops', s.lineOpacityZoom, refresh); }
-          zo = document.getElementById('point-size-by-zoom');
-          if (zo) { zo.checked = !!(s.pointSizeZoom && s.pointSizeZoom.length >= 2); el = document.getElementById('point-size-zoom-stops'); if (el) el.style.display = zo.checked ? '' : 'none'; renderZoomStops('point-size-zoom-stops', s.pointSizeZoom, refresh); }
-          zo = document.getElementById('point-opacity-by-zoom');
-          if (zo) { zo.checked = !!(s.pointOpacityZoom && s.pointOpacityZoom.length >= 2); el = document.getElementById('point-opacity-zoom-stops'); if (el) el.style.display = zo.checked ? '' : 'none'; renderZoomStops('point-opacity-zoom-stops', s.pointOpacityZoom, refresh); }
-          pushSpecToLayer();
-        }
-        styleToolboxApplySpec = applySpecToForm;
-        function pushSpecToLayer() {
-          if (state.selectedLayerIndex === null || !state.layers[state.selectedLayerIndex]) return;
-          state.layers[state.selectedLayerIndex].style_spec = getCurrentSpec();
-          applyLayerStyleToMap(state.selectedLayerIndex);
-          renderLayers();
-        }
-        if (fillCheck) fillCheck.onchange = pushSpecToLayer;
-        if (lineCheck) lineCheck.onchange = pushSpecToLayer;
-        if (pointCheck) pointCheck.onchange = pushSpecToLayer;
-        if (fillColor) fillColor.oninput = pushSpecToLayer;
-        if (fillOpacity) { fillOpacity.oninput = function() { if (fillOpacityVal) fillOpacityVal.textContent = this.value; pushSpecToLayer(); }; }
-        if (lineColor) lineColor.oninput = pushSpecToLayer;
-        if (lineWidth) lineWidth.oninput = pushSpecToLayer;
-        if (lineOpacity) { lineOpacity.oninput = function() { if (lineOpacityVal) lineOpacityVal.textContent = this.value; pushSpecToLayer(); }; }
-        if (linePattern) linePattern.onchange = pushSpecToLayer;
-        if (pointColor) pointColor.oninput = pushSpecToLayer;
-        if (pointOpacity) { pointOpacity.oninput = function() { if (pointOpacityVal) pointOpacityVal.textContent = this.value; pushSpecToLayer(); }; }
-        if (pointSize) pointSize.oninput = pushSpecToLayer;
-        if (pointIcon) pointIcon.onchange = pushSpecToLayer;
-        function bindZoomCb(checkboxId, containerId) {
-          var cb = document.getElementById(checkboxId);
-          var cont = document.getElementById(containerId);
-          if (!cb || !cont) return;
-          cb.onchange = function() {
-            cont.style.display = this.checked ? '' : 'none';
-            if (this.checked) renderZoomStops(containerId, null, pushSpecToLayer);
-            else pushSpecToLayer();
-          };
-        }
-        bindZoomCb('fill-opacity-by-zoom', 'fill-opacity-zoom-stops');
-        bindZoomCb('line-width-by-zoom', 'line-width-zoom-stops');
-        bindZoomCb('line-opacity-by-zoom', 'line-opacity-zoom-stops');
-        bindZoomCb('point-size-by-zoom', 'point-size-zoom-stops');
-        bindZoomCb('point-opacity-by-zoom', 'point-opacity-zoom-stops');
+        if (!wrap || !window.GeofastmapStyleEditor || !window.GeofastmapStyleEditor.initToolbox) return;
+        // Only bind once the map exists; binding too early can break the UI.
+        if (!map) return;
+        // Avoid double-binding handlers if called multiple times.
+        if (wrap.dataset && wrap.dataset.geofastmapBound === '1') return;
 
-        function publicStylesUrl() { return base + '/styles'; }
-        function collectionStylesUrl(cid) { return base + '/collections/' + encodeURIComponent(cid) + '/styles'; }
         var styleListCache = {};
         function styleSpecToLegendCss(spec) {
           spec = spec || {};
           return { fill: spec.fillColor || '#58a6ff', line: spec.lineColor || '#58a6ff', fillOn: spec.fillEnabled !== false };
         }
+        function safeJsonResponse(r) {
+          if (!r) return Promise.reject({ detail: 'Request failed' });
+          if (r.ok) return r.json();
+          return r.text().then(function(t) {
+            try { throw JSON.parse(t); } catch (e) { throw { detail: t || r.statusText || 'Request failed' }; }
+          });
+        }
         function updateLoadStyleTrigger() {
           var sel = document.getElementById('vector-style-select');
           var val = sel ? sel.value : '';
-          var spec = (val && styleListCache[val]) ? styleListCache[val].style_spec : getCurrentSpec();
+          var currentSpec = (window.GeofastmapStyleEditor && typeof window.GeofastmapStyleEditor.getCurrentSpec === 'function')
+            ? window.GeofastmapStyleEditor.getCurrentSpec()
+            : DEFAULT_SPEC;
+          var spec = (val && styleListCache[val]) ? styleListCache[val].style_spec : currentSpec;
           var leg = styleSpecToLegendCss(spec);
           var legendEl = document.getElementById('vector-style-load-legend');
           var labelEl = document.getElementById('vector-style-load-label-text');
           if (legendEl) { legendEl.style.backgroundColor = leg.fillOn ? leg.fill : 'transparent'; legendEl.style.borderColor = leg.line; legendEl.style.opacity = '1'; }
           if (labelEl) labelEl.textContent = (val && styleListCache[val]) ? (styleListCache[val].title || styleListCache[val].id) : 'Current';
         }
+        window.GeofastmapStyleEditor.updateLoadStyleTrigger = updateLoadStyleTrigger;
+
+        refreshMapEditRuleFields = function() {
+          var idx = state.selectedLayerIndex;
+          if (idx == null || !state.layers[idx]) {
+            if (window.GeofastmapStyleEditor.setRuleFieldOptions) window.GeofastmapStyleEditor.setRuleFieldOptions([]);
+            return;
+          }
+          var cid = state.layers[idx].collection_id || state.layers[idx].collectionId;
+          if (!cid) return;
+          fetch(base + '/collections/' + encodeURIComponent(cid) + '/queryables', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(data) {
+              var keys = (data && data.properties && Array.isArray(data.properties)) ? data.properties : [];
+              if (keys.length && window.GeofastmapStyleEditor.setRuleFieldOptions) {
+                window.GeofastmapStyleEditor.setRuleFieldOptions(keys);
+                return;
+              }
+              return fetch(base + '/collections/' + encodeURIComponent(cid) + '/items?limit=1', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+                .then(function(r) { return r.ok ? r.json() : null; })
+                .then(function(fc) {
+                  var feat = fc && fc.features && fc.features[0];
+                  var props = feat && feat.properties && typeof feat.properties === 'object' ? feat.properties : {};
+                  var ks = Object.keys(props || {}).sort();
+                  if (window.GeofastmapStyleEditor.setRuleFieldOptions) window.GeofastmapStyleEditor.setRuleFieldOptions(ks);
+                });
+            })
+            .catch(function() { if (window.GeofastmapStyleEditor.setRuleFieldOptions) window.GeofastmapStyleEditor.setRuleFieldOptions([]); });
+        };
+
+        try {
+          window.GeofastmapStyleEditor.initToolbox({
+            map: map,
+            getLayerIds: function() {
+              if (state.selectedLayerIndex === null || !state.layers[state.selectedLayerIndex]) return {};
+              var sid = sourceId(layerKey(state.layers[state.selectedLayerIndex]));
+              return {
+                fill: sid + '-fill',
+                line: sid + '-line',
+                circle: map.getLayer(sid + '-circle') ? sid + '-circle' : null,
+                symbol: map.getLayer(sid + '-symbol') ? sid + '-symbol' : null
+              };
+            },
+            defaultSpec: DEFAULT_SPEC,
+            legendElId: 'vector-style-load-legend',
+            onAfterApply: function(spec) {
+              if (state.selectedLayerIndex === null || !state.layers[state.selectedLayerIndex]) return;
+              state.layers[state.selectedLayerIndex].style_spec = spec;
+              try { applyLayerStyleToMap(state.selectedLayerIndex); } catch (e) {}
+            }
+          });
+        } catch (e) {
+          // Allow retry later if initialization failed
+          if (wrap.dataset) wrap.dataset.geofastmapBound = '0';
+          try { console.warn('Style toolbox init failed', e); } catch (e2) {}
+          return;
+        }
+        if (wrap.dataset) wrap.dataset.geofastmapBound = '1';
+
+        styleToolboxApplySpec = function(s) {
+          window.GeofastmapStyleEditor.applySpecToForm(s);
+          refreshMapEditRuleFields();
+        };
+
+        function publicStylesUrl() { return base + '/styles'; }
+        function collectionStylesUrl(cid) { return base + '/collections/' + encodeURIComponent(cid) + '/styles'; }
         function addItemToList(sel, listEl, value, label, spec, collectionId) {
           if (value) styleListCache[value] = { id: value.replace(/^p:/, '').replace(/^c:[^:]+:/, ''), title: label, style_spec: spec || {}, collectionId: collectionId || null };
           sel.appendChild(new Option(label, value));
@@ -876,6 +779,25 @@
           })(value);
           listEl.appendChild(item);
         }
+        function getDefaultSaveCollectionIdForMap() {
+          if (state.selectedLayerIndex != null && state.layers[state.selectedLayerIndex]) {
+            return state.layers[state.selectedLayerIndex].collection_id || state.layers[state.selectedLayerIndex].collectionId || '';
+          }
+          if (state.layers.length) return state.layers[0].collection_id || state.layers[0].collectionId || '';
+          return '';
+        }
+        function applyDefaultSaveCollectionSelect() {
+          var saveCollSelect = document.getElementById('save-style-collection');
+          if (!saveCollSelect) return;
+          var defCid = getDefaultSaveCollectionIdForMap();
+          if (!defCid) return;
+          for (var i = 0; i < saveCollSelect.options.length; i++) {
+            if (saveCollSelect.options[i].value === defCid) {
+              saveCollSelect.value = defCid;
+              return;
+            }
+          }
+        }
         function loadStylesList() {
           var sel = document.getElementById('vector-style-select');
           var listEl = document.getElementById('vector-style-load-list');
@@ -883,8 +805,8 @@
           styleListCache = { '': null };
           while (sel.firstChild) sel.removeChild(sel.firstChild);
           if (listEl) listEl.innerHTML = '';
-          addItemToList(sel, listEl, '', 'Current', getCurrentSpec());
-          return fetch(publicStylesUrl(), { headers: { 'Accept': 'application/json' } })
+          addItemToList(sel, listEl, '', 'Current', window.GeofastmapStyleEditor.getCurrentSpec());
+          return fetch(publicStylesUrl(), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
             .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
             .then(function(data) {
               var list = data.styles || [];
@@ -897,39 +819,29 @@
               list.forEach(function(s) {
                 addItemToList(sel, listEl, 'p:' + s.id, s.title || s.id, s.style_spec);
               });
-              return fetch(base + '/collections', { headers: { 'Accept': 'application/json' } });
+              return fetch(base + '/collections', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
             })
             .then(function(r) { return r.ok ? r.json() : { collections: [] }; })
             .then(function(data) {
               var colls = data.collections || [];
-              var loadCollSelect = document.getElementById('load-style-collection');
-              if (loadCollSelect) {
-                while (loadCollSelect.options.length > 1) loadCollSelect.remove(1);
-                colls.forEach(function(c) {
-                  loadCollSelect.add(new Option(c.id || c.title || c.id, c.id));
-                });
-              }
               var saveCollSelect = document.getElementById('save-style-collection');
               if (saveCollSelect) {
                 while (saveCollSelect.options.length > 1) saveCollSelect.remove(1);
                 colls.forEach(function(c) {
                   saveCollSelect.add(new Option(c.id || c.title || c.id, c.id));
                 });
+                applyDefaultSaveCollectionSelect();
               }
               var collectionsToFetch = [];
+              var seen = {};
               if (state.layers && state.layers.length > 0) {
-                var seen = {};
                 state.layers.forEach(function(l) {
                   var cid = l.collection_id || l.collectionId;
-                  if (!seen[cid]) { seen[cid] = true; collectionsToFetch.push({ id: cid, name: cid }); }
+                  if (cid && !seen[cid]) { seen[cid] = true; collectionsToFetch.push({ id: cid, name: cid }); }
                 });
               }
-              if (collectionsToFetch.length === 0 && loadCollSelect && loadCollSelect.value) {
-                var opt = loadCollSelect.options[loadCollSelect.selectedIndex];
-                collectionsToFetch.push({ id: loadCollSelect.value, name: opt ? opt.text : loadCollSelect.value });
-              }
               function fetchOneCollectionStyles(cid, cname) {
-                return fetch(collectionStylesUrl(cid), { headers: { 'Accept': 'application/json' } })
+                return fetch(collectionStylesUrl(cid), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
                   .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
                   .then(function(data) {
                     var list = data.styles || [];
@@ -950,8 +862,6 @@
             })
             .catch(function() { updateLoadStyleTrigger(); });
         }
-        var loadCollSelect = document.getElementById('load-style-collection');
-        if (loadCollSelect) loadCollSelect.onchange = function() { loadStylesList(); };
         var loadTrigger = document.getElementById('vector-style-load-trigger');
         var loadList = document.getElementById('vector-style-load-list');
         if (loadTrigger && loadList) {
@@ -979,10 +889,10 @@
             var styleId = colon >= 0 ? rest.slice(colon + 1) : rest;
             url = collectionStylesUrl(cid) + '/' + encodeURIComponent(styleId);
           } else return;
-          fetch(url, { headers: { 'Accept': 'application/json' } })
-            .then(function(r) { return r.json(); })
+          fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+            .then(safeJsonResponse)
             .then(function(s) {
-              if (s.style_spec) applySpecToForm(s.style_spec);
+              if (s.style_spec) window.GeofastmapStyleEditor.applySpecToForm(s.style_spec);
               updateLoadStyleTrigger();
             })
             .catch(function() {});
@@ -993,8 +903,8 @@
           rep.options.length = 1;
           var saveTo = document.getElementById('save-style-to').value;
           var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl(getSaveCollectionId());
-          fetch(url, { headers: { 'Accept': 'application/json' } })
-            .then(function(r) { return r.json(); })
+          fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
             .then(function(data) {
               (data.styles || []).forEach(function(s) { rep.add(new Option(s.title || s.id, s.id)); });
             })
@@ -1004,8 +914,10 @@
           var isColl = this.value === 'collection';
           document.getElementById('save-style-default-wrap').style.display = isColl ? '' : 'none';
           document.getElementById('save-style-collection').closest('label').style.display = isColl ? '' : 'none';
-          if (isColl) populateReplaceDropdown();
-          else document.getElementById('save-style-replace').options.length = 1;
+          if (isColl) {
+            applyDefaultSaveCollectionSelect();
+            populateReplaceDropdown();
+          } else document.getElementById('save-style-replace').options.length = 1;
         };
         document.getElementById('save-style-collection').onchange = function() { populateReplaceDropdown(); };
         document.getElementById('save-style-collection').closest('label').style.display = 'none';
@@ -1034,16 +946,16 @@
           if (saveTo === 'collection' && !cid) { alert('Select a collection'); return; }
           var method = 'POST';
           var url = saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl(cid);
-          var body = { id: id, style_spec: getCurrentSpec() };
+          var body = { id: id, style_spec: window.GeofastmapStyleEditor.getCurrentSpec() };
           if (title) body.title = title;
           if (saveTo === 'collection') body.set_default = setDefault;
           if (replaceVal) {
             method = 'PUT';
             url = (saveTo === 'public' ? publicStylesUrl() : collectionStylesUrl(cid)) + '/' + encodeURIComponent(id);
-            body = saveTo === 'public' ? { style_spec: getCurrentSpec(), title: title } : { style_spec: getCurrentSpec(), title: title, set_default: setDefault };
+            body = saveTo === 'public' ? { style_spec: window.GeofastmapStyleEditor.getCurrentSpec(), title: title } : { style_spec: window.GeofastmapStyleEditor.getCurrentSpec(), title: title, set_default: setDefault };
           }
-          fetch(url, { method: method, headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body) })
-            .then(function(r) { if (!r.ok) return r.json().then(function(j) { throw j; }); return r.json(); })
+          fetch(url, { method: method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body) })
+            .then(safeJsonResponse)
             .then(function() {
               document.getElementById('save-style-form').style.display = 'none';
               document.getElementById('save-style-id').value = '';
@@ -1056,6 +968,9 @@
         };
         loadStylesList();
       }
+      // Make setup callable without a closure reference (avoids "setupStyleToolbox is not defined"
+      // if some browsers/loads end up calling the binder from a different scope).
+      window.__geofastSetupStyleToolbox = setupStyleToolbox;
 
       function fetchFirst10Collections() {
         var resultsEl = document.getElementById('collection-search-results');
@@ -1155,17 +1070,48 @@
             basemap: state.basemap || null
           }
         };
+        // If this map is already public (or user selected public in sharing card),
+        // include visibility so the backend validates public-layer constraints and can suggest collections to publish.
+        var visRadio = document.querySelector('#sharing-card input[name="sharing_visibility"]:checked');
+        if (visRadio && visRadio.value) payload.visibility = visRadio.value;
         var method = mapId ? 'PUT' : 'POST';
         var url = mapId ? base + '/maps/' + mapId : base + '/maps';
-        fetch(url, { method: method, headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(payload) })
+        fetch(url, { method: method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(payload) })
           .then(function(r) {
             if (!r.ok) return r.json().then(function(j) { throw j; });
-            return r.json();
+            var suggestHeader = r.headers.get('X-Suggest-Make-Public-Collections');
+            return r.json().then(function(j) { return { json: j, suggestHeader: suggestHeader }; });
           })
-          .then(function(data) {
+          .then(function(res) {
+            var data = res && res.json ? res.json : res;
             msgEl.textContent = 'Saved.';
             msgEl.style.color = 'var(--success)';
-            if (!mapId) window.location.href = base + '/maps/' + data.id + '/edit?f=html';
+            if (!mapId) {
+              window.location.href = base + '/maps/' + data.id + '/edit?f=html';
+              return;
+            }
+            // If map is public and some collections are not public, offer to publish them so anonymous users can see the layers.
+            if (res && res.suggestHeader) {
+              try {
+                var suggest = JSON.parse(res.suggestHeader);
+                if (Array.isArray(suggest) && suggest.length) {
+                  var names = suggest.map(function(c) { return (c && (c.title || c.id)) ? (c.title || c.id) : ''; }).filter(Boolean).join(', ');
+                  var ok = confirm('This map is public, but these layer collections are not public yet: ' + names + '.\n\nMake them public now so everyone can see them?');
+                  if (ok) {
+                    var chain = Promise.resolve();
+                    suggest.forEach(function(c) {
+                      if (!c || !c.id) return;
+                      chain = chain.then(function() {
+                        return fetch(base + '/collections/' + encodeURIComponent(c.id), { method: 'PATCH', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({ visibility: 'public' }) })
+                          .then(function(rr) { if (!rr.ok) return rr.text().then(function(t) { throw new Error(t || rr.statusText); }); });
+                      });
+                    });
+                    chain.then(function() { msgEl.textContent = 'Saved. Collections made public.'; msgEl.style.color = 'var(--success)'; })
+                      .catch(function(err) { msgEl.textContent = 'Saved map, but failed to publish collections: ' + (err && err.message ? err.message : err); msgEl.style.color = 'var(--danger)'; });
+                  }
+                }
+              } catch (e) {}
+            }
           })
           .catch(function(e) {
             msgEl.textContent = 'Error: ' + (e.detail || e.message || JSON.stringify(e));
@@ -1261,6 +1207,8 @@
 
       map.on('load', function() {
         map.resize();
+        // Bind toolbox once the map is ready.
+        if (window.ensureStyleToolboxBound) window.ensureStyleToolboxBound();
         if (state.bbox && state.bbox.length === 4) {
           map.fitBounds([[state.bbox[0], state.bbox[1]], [state.bbox[2], state.bbox[3]]], { padding: 60 });
         }
@@ -1359,9 +1307,17 @@
             window._geofastmapPopup = popup;
           }
         });
+        if (window.ensureStyleToolboxBound) window.ensureStyleToolboxBound();
+        // Ensure there is an active layer selected for the style toolbox.
+        if (state.selectedLayerIndex == null && state.layers.length > 0) {
+          state.selectedLayerIndex = 0;
+        }
+        renderLayers();
+        if (state.selectedLayerIndex != null && state.layers[state.selectedLayerIndex] && styleToolboxApplySpec) {
+          styleToolboxApplySpec(state.layers[state.selectedLayerIndex].style_spec || DEFAULT_SPEC);
+          refreshMapEditRuleFields();
+        }
       });
-      setupStyleToolbox();
-      renderLayers();
       }
 
       GeofastmapUtils.fetchBasemaps(base).then(function(result) {
@@ -1370,11 +1326,13 @@
         if (!basemapList.length) { BASEMAPS = GeofastmapUtils.getBasemaps(googleKey); basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; }); }
         initMapEditWithBasemaps();
         runAfterMapReady();
+        if (window.ensureStyleToolboxBound) window.ensureStyleToolboxBound();
       }).catch(function() {
         BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
         basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
         initMapEditWithBasemaps();
         runAfterMapReady();
+        if (window.ensureStyleToolboxBound) window.ensureStyleToolboxBound();
       });
     })();
   </script>

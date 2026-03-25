@@ -92,6 +92,7 @@ def insert_feature_subdivided_sql(
     properties: dict | None,
     now,
     max_vertices: int = 256,
+    bulk_import_job_id: str | None = None,
 ) -> tuple[str, dict]:
     """
     Return (sql, params) to insert one logical feature, subdividing geometry into parts with ≤ max_vertices.
@@ -103,19 +104,20 @@ def insert_feature_subdivided_sql(
         "cid": collection_id,
         "props": props_json,
         "now": now,
+        "bulk_jid": bulk_import_job_id,
     }
     if _is_empty_or_null_wkt(wkt):
         sql = """
-            INSERT INTO features (id, collection_id, part_index, geometry, properties, created_at, updated_at)
-            VALUES (:id, :cid, 0, NULL, CAST(:props AS jsonb), :now, :now)
+            INSERT INTO features (id, collection_id, part_index, geometry, properties, created_at, updated_at, bulk_import_job_id)
+            VALUES (:id, :cid, 0, NULL, CAST(:props AS jsonb), :now, :now, :bulk_jid)
         """
         return sql, params
     params["wkt"] = wkt
     params["max_vertices"] = max_vertices
     sql = """
-        INSERT INTO features (id, collection_id, part_index, geometry, properties, created_at, updated_at)
-        SELECT :id, :cid, (row_number() OVER ())::int - 1, g, CAST(:props AS jsonb), :now, :now
-        FROM ST_Subdivide(ST_GeomFromText(:wkt, 4326), :max_vertices) AS g
+        INSERT INTO features (id, collection_id, part_index, geometry, properties, created_at, updated_at, bulk_import_job_id)
+        SELECT :id, :cid, (row_number() OVER ())::int - 1, g, CAST(:props AS jsonb), :now, :now, :bulk_jid
+        FROM ST_Subdivide(ST_Force2D(ST_GeomFromText(:wkt, 4326)), :max_vertices) AS g
     """
     return sql, params
 
@@ -127,6 +129,7 @@ def insert_feature_parts_batched(
     properties: dict | None,
     now: Any,
     batch_size: int = 80,
+    bulk_import_job_id: str | None = None,
 ) -> Iterator[tuple[str, dict]]:
     """
     Yield (sql, params) for batched INSERT of one logical feature as multiple part_index rows.
@@ -141,6 +144,7 @@ def insert_feature_parts_batched(
             "cid": collection_id,
             "props": props_json,
             "now": now,
+            "bulk_jid": bulk_import_job_id,
         }
         values_parts = []
         for i, wkt in enumerate(chunk):
@@ -150,12 +154,12 @@ def insert_feature_parts_batched(
             params[key] = wkt
             part_idx = start + len(values_parts)
             values_parts.append(
-                f"(:id, :cid, {part_idx}, ST_GeomFromText(:{key}, 4326), CAST(:props AS jsonb), :now, :now)"
+                f"(:id, :cid, {part_idx}, ST_Force2D(ST_GeomFromText(:{key}, 4326)), CAST(:props AS jsonb), :now, :now, :bulk_jid)"
             )
         if not values_parts:
             continue
         sql = """
-            INSERT INTO features (id, collection_id, part_index, geometry, properties, created_at, updated_at)
+            INSERT INTO features (id, collection_id, part_index, geometry, properties, created_at, updated_at, bulk_import_job_id)
             VALUES """
         sql += ", ".join(values_parts)
         yield sql, params

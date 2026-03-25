@@ -649,77 +649,75 @@
         })(value);
         listEl.appendChild(item);
       }
+      function getDefaultSaveCollectionIdForStyleEditor() {
+        if (styleEditorState.activeEditTarget && styleEditorState.activeEditTarget !== 'editor') {
+          var activeEntry = styleEditorState.layersOnMap.filter(function(l) { return l.sourceId === styleEditorState.activeEditTarget; })[0];
+          if (activeEntry && activeEntry.collectionId) return activeEntry.collectionId;
+        }
+        if (styleEditorState.layersOnMap && styleEditorState.layersOnMap.length) {
+          return styleEditorState.layersOnMap[0].collectionId || '';
+        }
+        return '';
+      }
+      function applyDefaultSaveCollectionSelect() {
+        var saveCollSelect = document.getElementById('save-style-collection');
+        if (!saveCollSelect) return;
+        var defCid = getDefaultSaveCollectionIdForStyleEditor();
+        if (!defCid) return;
+        for (var i = 0; i < saveCollSelect.options.length; i++) {
+          if (saveCollSelect.options[i].value === defCid) {
+            saveCollSelect.value = defCid;
+            return;
+          }
+        }
+      }
       function loadStylesList() {
         var sel = document.getElementById('vector-style-select');
         var listEl = document.getElementById('vector-style-load-list');
         if (!sel) return Promise.resolve();
-        var loadCollSelect = document.getElementById('load-style-collection');
-        var selectedCollectionId = loadCollSelect ? (loadCollSelect.value || '') : '';
         styleListCache = { '': null };
         while (sel.firstChild) sel.removeChild(sel.firstChild);
         if (listEl) listEl.innerHTML = '';
 
         addItemToList(sel, listEl, '', 'Current', window.GeofastmapStyleEditor.getCurrentSpec());
 
-        var publicPromise = Promise.resolve();
-        // Only show the "Public styles" group when the selector is set to Public styles.
-        if (!selectedCollectionId) {
-          publicPromise = fetch(publicStylesUrl(), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
-            .then(function(r) { return _safeJsonResponse(r).then(function(j){ return j || { styles: [] }; }); })
-            .then(function(data) {
-              var list = data.styles || [];
-              if (list.length && listEl) {
-                var gl = document.createElement('div');
-                gl.className = 'vector-style-load-group-label';
-                gl.textContent = 'Public styles';
-                listEl.appendChild(gl);
-              }
-              list.forEach(function(s) {
-                var val = 'p:' + s.id;
-                addItemToList(sel, listEl, val, s.title || s.id, s.style_spec);
-              });
-            })
-            .catch(function() { return { styles: [] }; });
-        }
-
-        return publicPromise.then(function() {
-          return fetch(base + '/collections', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
-        })
+        return fetch(publicStylesUrl(), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return _safeJsonResponse(r).then(function(j){ return j || { styles: [] }; }); })
+          .then(function(data) {
+            var list = (data && data.styles) || [];
+            if (list.length && listEl) {
+              var gl = document.createElement('div');
+              gl.className = 'vector-style-load-group-label';
+              gl.textContent = 'Public styles';
+              listEl.appendChild(gl);
+            }
+            list.forEach(function(s) {
+              var val = 'p:' + s.id;
+              addItemToList(sel, listEl, val, s.title || s.id, s.style_spec);
+            });
+            return fetch(base + '/collections', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+          })
+          .catch(function() { return fetch(base + '/collections', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }); })
           .then(function(r) { return _safeJsonResponse(r).then(function(j){ return j || { collections: [] }; }); })
           .then(function(data) {
             var colls = data.collections || [];
-            var prevLoadVal = loadCollSelect ? loadCollSelect.value : '';
-            if (loadCollSelect) {
-              while (loadCollSelect.options.length > 1) loadCollSelect.remove(1);
-              colls.forEach(function(c) {
-                loadCollSelect.add(new Option(c.id || c.title || c.id, c.id));
-              });
-              // Preserve selection across refreshes (otherwise it resets to "Public styles")
-              loadCollSelect.value = prevLoadVal || '';
-            }
             var saveCollSelect = document.getElementById('save-style-collection');
             if (saveCollSelect) {
               while (saveCollSelect.options.length > 1) saveCollSelect.remove(1);
               colls.forEach(function(c) {
                 saveCollSelect.add(new Option(c.id || c.title || c.id, c.id));
               });
+              applyDefaultSaveCollectionSelect();
             }
-            // Which collection styles to show in the Load dropdown:
-            // - If "Public styles" is selected (value=""), show styles for layers currently on the map (if any).
-            // - If a collection is selected, show that collection's styles (plus any layers on the map).
             var collectionsToFetch = [];
-            var seen2 = {};
+            var seen = {};
             if (styleEditorState.layersOnMap && styleEditorState.layersOnMap.length > 0) {
               styleEditorState.layersOnMap.forEach(function(e) {
-                if (e && e.collectionId && !seen2[e.collectionId]) {
-                  seen2[e.collectionId] = e.name || e.collectionId;
-                  collectionsToFetch.push({ id: e.collectionId, name: seen2[e.collectionId] });
+                if (e && e.collectionId && !seen[e.collectionId]) {
+                  seen[e.collectionId] = true;
+                  collectionsToFetch.push({ id: e.collectionId, name: e.name || e.collectionId });
                 }
               });
-            }
-            if (loadCollSelect && loadCollSelect.value && !seen2[loadCollSelect.value]) {
-              var opt = loadCollSelect.options[loadCollSelect.selectedIndex];
-              collectionsToFetch.push({ id: loadCollSelect.value, name: opt ? opt.text : loadCollSelect.value });
             }
             function fetchOneCollectionStyles(cid, cname) {
               return fetch(collectionStylesUrl(cid), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
@@ -744,9 +742,6 @@
           })
           .catch(function() { updateLoadStyleTrigger(); });
       }
-
-      var loadCollSelect = document.getElementById('load-style-collection');
-      if (loadCollSelect) loadCollSelect.onchange = function() { loadStylesList(); };
 
       var loadTrigger = document.getElementById('vector-style-load-trigger');
       var loadList = document.getElementById('vector-style-load-list');
@@ -804,8 +799,10 @@
         var isColl = this.value === 'collection';
         document.getElementById('save-style-default-wrap').style.display = isColl ? '' : 'none';
         document.getElementById('save-style-collection').closest('label').style.display = isColl ? '' : 'none';
-        if (isColl) populateReplaceDropdown();
-        else document.getElementById('save-style-replace').options.length = 1;
+        if (isColl) {
+          applyDefaultSaveCollectionSelect();
+          populateReplaceDropdown();
+        } else document.getElementById('save-style-replace').options.length = 1;
       };
       document.getElementById('save-style-collection').onchange = function() { populateReplaceDropdown(); };
       document.getElementById('save-style-collection').closest('label').style.display = 'none';
@@ -952,6 +949,7 @@
         saveToSel.value = (canSavePublicStyles && saveToSel.querySelector('option[value="public"]')) ? 'public' : 'collection';
         document.getElementById('save-style-default-wrap').style.display = saveToSel.value === 'collection' ? '' : 'none';
         document.getElementById('save-style-collection').closest('label').style.display = saveToSel.value === 'collection' ? '' : 'none';
+        if (saveToSel.value === 'collection') applyDefaultSaveCollectionSelect();
         populateReplaceDropdown();
       };
       document.getElementById('btn-save-style-cancel').onclick = function() {

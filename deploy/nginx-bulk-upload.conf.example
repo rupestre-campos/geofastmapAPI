@@ -1,0 +1,19 @@
+# Snippet for nginx in front of GeoFastMap (bulk upload: POST /collections/*/items/bulk).
+# Default client_max_body_size is 1m, which returns 413 for large GeoJSON uploads.
+#
+# If you use Cloudflare (or Cloudflare Tunnel), HTTP upload size is capped by Cloudflare
+# (often 100 MB on Free/Pro) before traffic reaches your machine—this file does not help that.
+# Use localhost/LAN for huge uploads, or split files under the limit.
+#
+# Put inside the same server { } or location / { } that proxies to uvicorn, or include this file.
+#
+# 0 = no limit (nginx); or set e.g. 12g to cap uploads.
+client_max_body_size 0;
+
+# Large uploads can take many minutes; avoid proxy timeouts.
+proxy_connect_timeout 3600s;
+proxy_send_timeout 3600s;
+proxy_read_timeout 3600s;
+
+# Stream the request body to the app instead of buffering the whole file on nginx first.
+proxy_request_buffering off;

@@ -11,6 +11,10 @@ from typing import Callable
 from app.core.config import get_settings
 
 QUEUE_KEY = "geofastmap:bulk_import_queue"
+BULK_IMPORT_REG_PREFIX = "geofastmap:bulk_import_meta:"
+
+_bulk_reg_lock = threading.Lock()
+_mem_bulk_storage: dict[str, str] = {}
 
 
 @dataclass
@@ -59,6 +63,70 @@ class BulkJobPayload:
             queue_compute_tiles=queue_compute_tiles,
             zip_inner_shp_paths=zip_inner,
         )
+
+
+def register_bulk_import_job(job_id: str, storage_key: str) -> None:
+    """Track bulk jobs so cancel can remove queue entry, delete upload file, and identify job type."""
+    settings = get_settings()
+    if settings.bulk_queue_type == "redis":
+        import redis
+
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        r.set(f"{BULK_IMPORT_REG_PREFIX}{job_id}", storage_key, ex=86400 * 8)
+        return
+    with _bulk_reg_lock:
+        _mem_bulk_storage[job_id] = storage_key
+
+
+def unregister_bulk_import_job(job_id: str) -> None:
+    settings = get_settings()
+    if settings.bulk_queue_type == "redis":
+        import redis
+
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            r.delete(f"{BULK_IMPORT_REG_PREFIX}{job_id}")
+        except Exception:
+            pass
+        return
+    with _bulk_reg_lock:
+        _mem_bulk_storage.pop(job_id, None)
+
+
+def get_bulk_import_storage_key(job_id: str) -> str | None:
+    settings = get_settings()
+    if settings.bulk_queue_type == "redis":
+        import redis
+
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            return r.get(f"{BULK_IMPORT_REG_PREFIX}{job_id}")
+        except Exception:
+            return None
+    with _bulk_reg_lock:
+        return _mem_bulk_storage.get(job_id)
+
+
+def is_registered_bulk_import_job(job_id: str) -> bool:
+    return get_bulk_import_storage_key(job_id) is not None
+
+
+def remove_bulk_job_from_redis_queue(job_id: str) -> int:
+    """Remove at most one queue entry matching job_id. Returns 0 or 1."""
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return 0
+    import redis
+
+    r = redis.from_url(settings.redis_url, decode_responses=True)
+    payloads = r.lrange(QUEUE_KEY, 0, -1) or []
+    for p in payloads:
+        try:
+            if BulkJobPayload.from_json(p).job_id == job_id:
+                return int(r.lrem(QUEUE_KEY, 1, p))
+        except Exception:
+            continue
+    return 0
 
 
 def enqueue(payload: BulkJobPayload) -> None:
