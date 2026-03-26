@@ -37,6 +37,15 @@ from app.services.dynamic_tile_cache import invalidate_collection_cache
 PROPERTIES_READONLY_KEYS = frozenset({"id"})
 
 
+def _bbox_spatial_predicate(envelope):
+    """GiST-friendly bbox filter: && uses index bounds, then ST_Intersects refines (see process_worker)."""
+    return (
+        Feature.geometry.isnot(None)
+        & Feature.geometry.op("&&")(envelope)
+        & ST_Intersects(Feature.geometry, envelope)
+    )
+
+
 def _properties_without_readonly(props: dict | None) -> dict | None:
     """Return a copy of properties with readonly keys (e.g. id) removed. None in -> None out."""
     if props is None:
@@ -184,7 +193,7 @@ def _geojsonl_export_base_stmt(
         .where(Feature.collection_id == collection_id)
     )
     if envelope is not None:
-        stmt = stmt.where(Feature.geometry.isnot(None) & ST_Intersects(Feature.geometry, envelope))
+        stmt = stmt.where(_bbox_spatial_predicate(envelope))
     if datetime_start is not None:
         stmt = stmt.where(Feature.created_at >= datetime_start)
     if datetime_end is not None:
@@ -230,8 +239,7 @@ async def stream_features_geojsonl(
         envelope = ST_MakeEnvelope(minx, miny, maxx, maxy, 4326)
         ids_base = select(Feature.id).where(
             Feature.collection_id == collection_id,
-            Feature.geometry.isnot(None),
-            ST_Intersects(Feature.geometry, envelope),
+            _bbox_spatial_predicate(envelope),
         )
         if datetime_start is not None:
             ids_base = ids_base.where(Feature.created_at >= datetime_start)
@@ -440,7 +448,7 @@ async def list_features_paginated(
     if feature_ids:
         count_distinct = count_distinct.where(Feature.id.in_(list(feature_ids)))
     if bbox is not None:
-        count_distinct = count_distinct.where(Feature.geometry.isnot(None) & ST_Intersects(Feature.geometry, envelope))
+        count_distinct = count_distinct.where(_bbox_spatial_predicate(envelope))
     if datetime_start is not None:
         count_distinct = count_distinct.where(Feature.created_at >= datetime_start)
     if datetime_end is not None:
@@ -584,7 +592,7 @@ async def list_features_paginated(
             if feature_ids:
                 page_ids_stmt = page_ids_stmt.where(Feature.id.in_(list(feature_ids)))
             if bbox is not None:
-                page_ids_stmt = page_ids_stmt.where(Feature.geometry.isnot(None) & ST_Intersects(Feature.geometry, envelope))
+                page_ids_stmt = page_ids_stmt.where(_bbox_spatial_predicate(envelope))
             if datetime_start is not None:
                 page_ids_stmt = page_ids_stmt.where(Feature.created_at >= datetime_start)
             if datetime_end is not None:
@@ -654,29 +662,8 @@ async def list_features_paginated(
                 features.append(f)
             return (features, int(total))
 
-        # Phase 2: build logical features for selected ids.
-        # For bbox queries, prefer DB-side per-id union to guarantee complete geometry per logical id.
-        # (We still keep the "ids first" paging behavior from Phase 1.)
-        if bbox is not None:
-            r_full = await db.execute(
-                text("""
-                    SELECT id, collection_id,
-                           ST_AsText(ST_Union(geometry)) AS geometry_wkt,
-                           (array_agg(properties ORDER BY part_index))[1] AS properties,
-                           min(created_at) AS created_at,
-                           max(updated_at) AS updated_at
-                    FROM features
-                    WHERE collection_id = :cid
-                      AND id = ANY(:ids)
-                    GROUP BY id, collection_id
-                """),
-                {"cid": collection_id, "ids": page_ids},
-            )
-            by_id = {row.id: _row_to_logical_feature(row) for row in r_full.fetchall()}
-            ordered = [by_id[pid] for pid in page_ids if pid in by_id]
-            return (ordered, int(total))
-
-        # Non-bbox path: fetch parts only (no ST_Union/array_agg in DB — fast, releases connection quickly).
+        # Phase 2: fetch parts only, union in Python (same as non-bbox path).
+        # Avoids heavy ST_Union in the DB per page; correctness unchanged (full geometry for each logical id).
         # Aggregate to logical features in Python in parallel (union geometries per id).
         parts_stmt = (
             select(

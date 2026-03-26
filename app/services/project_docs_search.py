@@ -11,6 +11,7 @@ from pathlib import Path
 _DOC_PAGES: list[tuple[str, str]] = [
     ("project_docs/index.html", "project-docs"),
     ("project_docs/collections_items.html", "project-docs/collections-items"),
+    ("project_docs/ogc_clients.html", "project-docs/ogc-clients"),
     ("project_docs/tiles.html", "project-docs/tiles"),
     ("project_docs/jobs.html", "project-docs/jobs"),
     ("project_docs/style_editor.html", "project-docs/style-editor"),

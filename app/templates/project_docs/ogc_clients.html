@@ -1,0 +1,121 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}QGIS, ArcGIS Pro &amp; OGC API Features – Documentation – GeoFastMap API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">QGIS, ArcGIS Pro &amp; OGC API Features</h2>
+    <p class="meta">
+      GeoFastMap exposes an <strong>OGC API – Features</strong>–compatible API. Desktop GIS tools can connect to the same URLs as the browser, using the <strong>service root</strong> below.
+      Visibility of collections follows <a href="{{ base }}/project-docs/auth-permissions?f=html">Auth &amp; permissions</a> (public / logged / private).
+    </p>
+
+    <h3>Which URL to use</h3>
+    <p>
+      Point the client at the <strong>API base URL</strong> (the site root for this deployment). The server responds with the OGC landing document (JSON) and links to <code>/collections</code>, conformance, etc.
+    </p>
+    <ul>
+      <li><strong>This deployment (example)</strong>: <code>{{ base }}/</code></li>
+      <li><strong>Collections list (same API)</strong>: <code>{{ base }}/collections</code></li>
+    </ul>
+    <p class="meta">
+      Use <code>https://</code> in production. If your hostname is behind a reverse proxy or tunnel, use the <strong>public</strong> URL clients will reach (not an internal Docker name).
+    </p>
+
+    <h3>Anonymous (no login)</h3>
+    <p>
+      Connect <strong>without</strong> username or password. You will only see collections whose visibility is <strong>public</strong> (and any other rules your server applies to anonymous users).
+    </p>
+    <div class="callout">
+      <strong>Service URL for GIS clients:</strong><br>
+      <code>{{ base }}/</code>
+    </div>
+
+    <h3>With username and password (your private &amp; shared collections)</h3>
+    <p>
+      GeoFastMap accepts <strong>HTTP Basic</strong> authentication for API and GIS clients (same users as the web login). After you authenticate, the API can return <strong>private</strong> collections you own or that are shared with you, plus <strong>logged</strong> collections (any signed-in user), and <strong>public</strong> ones.
+    </p>
+    <div class="callout">
+      <strong>Service URL (unchanged):</strong> <code>{{ base }}/</code><br>
+      <strong>Authentication:</strong> <strong>Basic</strong> / <strong>HTTP Basic</strong> — enter your <strong>username</strong> and <strong>password</strong> in the connection dialog (not in the URL path).
+    </div>
+    <p class="meta">
+      Do not embed passwords in shared project files if others should not access your account; use a shared <strong>public</strong> collection or a dedicated <strong>viewer</strong> account when appropriate.
+    </p>
+
+    <h3>QGIS (3.16+)</h3>
+    <ol>
+      <li>Open <strong>Data Source Manager</strong> (Ctrl+L) or the <strong>Browser</strong> panel.</li>
+      <li>Choose <strong>Vector</strong> (or look for <strong>OGC API – Features</strong> under the browser, depending on version).</li>
+      <li>Set the connection type to <strong>OGC API – Features</strong> if shown.</li>
+      <li><strong>URL / Service URL:</strong> <code>{{ base }}/</code> (same as anonymous).</li>
+      <li><strong>Authentication:</strong> leave empty for anonymous; for your collections, open <strong>Authentication</strong> / credentials and choose Basic with your username and password.</li>
+      <li>Connect and pick a collection (layer) to add.</li>
+    </ol>
+    <p class="meta">
+      Menu names vary slightly by QGIS version; search the help for “OGC API Features” if the entry moved.
+    </p>
+
+    <h3>ArcGIS Pro</h3>
+    <ol>
+      <li>On the <strong>Map</strong> tab, use <strong>Add Data</strong> and look for <strong>OGC API – Features</strong> / <strong>Data from Path</strong> (wording depends on version).</li>
+      <li><strong>Server URL / Service URL:</strong> <code>{{ base }}/</code></li>
+      <li>If prompted for security, choose <strong>HTTP Basic</strong> (or “Username and password”) and enter your GeoFastMap credentials to see non-public collections.</li>
+      <li>Select the collection(s) to add to the map.</li>
+    </ol>
+    <p class="meta">
+      Ensure your ArcGIS Pro version supports OGC API – Features; older builds may only support WFS 2.x.
+    </p>
+
+    <h3>Vector tiles (MVT): static and dynamic</h3>
+    <p>
+      GeoFastMap can also serve collections as <strong>vector tiles</strong> (Mapbox Vector Tiles / MVT). Some desktop GIS clients (including QGIS) can add MVT layers directly.
+      Vector tiles are usually much faster for browsing large layers than fetching full GeoJSON features.
+      See <a href="{{ base }}/project-docs/tiles?f=html">Tiles (static &amp; dynamic)</a> for background and trade-offs.
+    </p>
+
+    <h3>TileJSON URL (recommended)</h3>
+    <p>
+      Each collection exposes a <strong>TileJSON</strong> document at:
+    </p>
+    <div class="callout">
+      <code>{{ base }}/collections/&lt;collection_id&gt;/tiles</code>
+    </div>
+    <ul>
+      <li>When static tiles exist, TileJSON lists <strong>static</strong> first, then <strong>dynamic</strong>.</li>
+      <li>The TileJSON <code>vector_layers[0].id</code> is the <strong>source-layer</strong> name clients must use.</li>
+    </ul>
+
+    <h3>Direct tile URLs (Z/X/Y templates)</h3>
+    <p>
+      If your GIS client does not accept TileJSON, you can also use direct MVT templates:
+    </p>
+    <ul>
+      <li><strong>Static tiles (prebuilt)</strong>: <code>{{ base }}/collections/&lt;collection_id&gt;/tiles/static/{z}/{x}/{y}.pbf</code></li>
+      <li><strong>Dynamic tiles (from PostGIS)</strong>: <code>{{ base }}/collections/&lt;collection_id&gt;/tiles/dynamic/{z}/{x}/{y}.pbf</code></li>
+    </ul>
+    <p class="meta">
+      Static tiles require a build job first (UI: <code>/collections/&lt;id&gt;/tiles/build?f=html</code>). If static tiles are not built yet, the static endpoint returns 404.
+    </p>
+
+    <h3>QGIS: adding an MVT layer</h3>
+    <ol>
+      <li>Open <strong>Data Source Manager</strong> → <strong>Vector Tiles</strong>.</li>
+      <li>Use <strong>New</strong> and add either the TileJSON URL (<code>/collections/&lt;id&gt;/tiles</code>) or a direct URL template.</li>
+      <li>If the collection is not public, set <strong>authentication</strong> (Basic) for the same host so tile requests include your credentials.</li>
+      <li>Add the layer. If prompted for a layer name/source-layer, use the id from TileJSON: <code>vector_layers[0].id</code>.</li>
+    </ol>
+
+    <h3>Troubleshooting</h3>
+    <ul>
+      <li><strong>Empty list or only some layers:</strong> check collection visibility and whether you used Basic auth for private data.</li>
+      <li><strong>Certificate / HTTPS errors:</strong> fix the certificate or use a trusted URL on your network.</li>
+      <li><strong>401 / access denied:</strong> wrong password, or account not allowed to see that collection (see <a href="{{ base }}/project-docs/auth-permissions?f=html">Auth &amp; permissions</a>).</li>
+      <li><strong>MVT layer shows but has no features:</strong> verify the client is using the correct <strong>source-layer</strong> name from TileJSON (<code>vector_layers[0].id</code>).</li>
+      <li><strong>Static tiles 404:</strong> build static tiles first at <code>/collections/&lt;id&gt;/tiles/build?f=html</code> (or use dynamic tiles).</li>
+    </ul>
+
+    <p class="meta">
+      More detail on items, filters, and limits: <a href="{{ base }}/project-docs/collections-items?f=html">Collections &amp; items</a>.
+    </p>
+  </div>
+{% endblock %}

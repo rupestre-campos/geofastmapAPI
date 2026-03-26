@@ -65,6 +65,16 @@ async def docs_collections_items(
     return html_response("project_docs/collections_items.html", **_ctx(request, current_user))
 
 
+@router.get("/project-docs/ogc-clients", summary="Docs: QGIS, ArcGIS Pro & OGC API Features")
+async def docs_ogc_clients(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html")
+    return html_response("project_docs/ogc_clients.html", **_ctx(request, current_user))
+
+
 @router.get("/project-docs/jobs", summary="Docs: jobs")
 async def docs_jobs(
     request: Request,
