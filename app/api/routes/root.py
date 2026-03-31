@@ -51,6 +51,7 @@ Disallow: /
 
 Allow: /$
 Allow: /collections$
+Allow: /privacy$
 """
 
 
@@ -138,6 +139,28 @@ async def api_info_edit_page(
         api_title=info.title,
         api_description=info.description or "",
         api_contact=info.contact or "",
+        username=current_user.username if current_user else None,
+        is_admin=current_user.is_admin if current_user else False,
+    )
+
+
+@router.get(
+    "/privacy",
+    summary="Privacy (HTML)",
+    description="Short privacy notice for API and Android app (use ?f=html or Accept: text/html).",
+    include_in_schema=True,
+)
+async def privacy_page(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
+    """Privacy note suitable for linking from Google Play and similar stores."""
+    if not wants_html(request):
+        return RedirectResponse(url=_base_url(request) + "/privacy?f=html", status_code=302)
+    base = _base_url(request)
+    return html_response(
+        "privacy.html",
+        base=base,
         username=current_user.username if current_user else None,
         is_admin=current_user.is_admin if current_user else False,
     )

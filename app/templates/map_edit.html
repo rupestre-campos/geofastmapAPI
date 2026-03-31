@@ -377,6 +377,19 @@
       function layerKey(layer) { return (layer && (layer.layer_id || layer.collectionId)) || (layer && layer.collection_id) || ''; }
       function sourceId(collectionIdOrKey) { return 'layer-' + String(collectionIdOrKey).replace(/[^a-zA-Z0-9_-]/g, '_'); }
 
+      var _syncRunId = 0;
+      function safeBeforeLayerId(beforeId) {
+        try { return (beforeId && map && map.getLayer && map.getLayer(beforeId)) ? beforeId : undefined; } catch (e) { return undefined; }
+      }
+      function safeAddLayer(layerDef, beforeId) {
+        try {
+          map.addLayer(layerDef, safeBeforeLayerId(beforeId));
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+
       function addPointLayers(sid, layerId, s, insertBeforeId) {
         var ptColor = s.pointColor || DEFAULT_SPEC.pointColor;
         var ptSize = paintValue(s, 'pointSize', 8);
@@ -389,15 +402,21 @@
         var circlePaint = { 'circle-color': ptColor, 'circle-radius': typeof ptSize === 'number' ? ptSize : ptSizeNum, 'circle-stroke-width': 0, 'circle-opacity': ptOpacity };
         var circleOpt = { id: sid + '-circle', type: 'circle', source: sid, filter: pointFilter, paint: circlePaint };
         if (layerId) circleOpt['source-layer'] = layerId;
-        map.addLayer(circleOpt, insertBeforeId);
-        if (typeof ptSize !== 'number') map.setPaintProperty(sid + '-circle', 'circle-radius', ptSize);
-        map.setLayoutProperty(sid + '-circle', 'visibility', circleVisible ? 'visible' : 'none');
+        var circleAdded = safeAddLayer(circleOpt, insertBeforeId);
+        if (circleAdded) {
+          if (typeof ptSize !== 'number') {
+            try { map.setPaintProperty(sid + '-circle', 'circle-radius', ptSize); } catch (e) {}
+          }
+          try { map.setLayoutProperty(sid + '-circle', 'visibility', circleVisible ? 'visible' : 'none'); } catch (e) {}
+        }
         if (window._mapEditPinImageLoaded) {
           var iconSize = typeof ptSize === 'number' ? ptSize / 12 : ['/', ptSize, 12];
           var symOpt = { id: sid + '-symbol', type: 'symbol', source: sid, filter: pointFilter, layout: { 'icon-image': 'geofastmap-pin', 'icon-size': iconSize, 'icon-allow-overlap': true }, paint: { 'icon-color': ptColor, 'icon-opacity': ptOpacity } };
           if (layerId) symOpt['source-layer'] = layerId;
-          map.addLayer(symOpt, insertBeforeId);
-          map.setLayoutProperty(sid + '-symbol', 'visibility', symbolVisible ? 'visible' : 'none');
+          var symbolAdded = safeAddLayer(symOpt, insertBeforeId);
+          if (symbolAdded) {
+            try { map.setLayoutProperty(sid + '-symbol', 'visibility', symbolVisible ? 'visible' : 'none'); } catch (e) {}
+          }
         }
       }
 
@@ -418,8 +437,8 @@
         var lineVisible = p ? p.lineEnabled : (s.lineEnabled !== false);
         var lineDash = p ? p.lineDash : (LINE_DASH[s.linePattern] || LINE_DASH.solid);
         function addLayers(vlId) {
-          map.addLayer({ id: sid + '-fill', type: 'fill', source: sid, 'source-layer': vlId, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } }, beforeId);
-          map.addLayer({ id: sid + '-line', type: 'line', source: sid, 'source-layer': vlId, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } }, beforeId);
+          safeAddLayer({ id: sid + '-fill', type: 'fill', source: sid, 'source-layer': vlId, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } }, beforeId);
+          safeAddLayer({ id: sid + '-line', type: 'line', source: sid, 'source-layer': vlId, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } }, beforeId);
           addPointLayers(sid, vlId, s, beforeId);
         }
         if (layer.tiles_url) {
@@ -445,8 +464,8 @@
               if (!fc.features || fc.features.length === 0) { resolve(sid + '-fill'); return; }
               if (map.getSource(sid)) { resolve(sid + '-fill'); return; }
               map.addSource(sid, { type: 'geojson', data: fc });
-              map.addLayer({ id: sid + '-fill', type: 'fill', source: sid, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } }, beforeId);
-              map.addLayer({ id: sid + '-line', type: 'line', source: sid, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } }, beforeId);
+              safeAddLayer({ id: sid + '-fill', type: 'fill', source: sid, filter: notPointFilter, layout: { visibility: fillVisible ? 'visible' : 'none' }, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } }, beforeId);
+              safeAddLayer({ id: sid + '-line', type: 'line', source: sid, filter: notPointFilter, layout: { visibility: lineVisible ? 'visible' : 'none' }, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } }, beforeId);
               addPointLayers(sid, null, s, beforeId);
               resolve(sid + '-fill');
             })
@@ -523,10 +542,13 @@
       }
 
       function syncMapFromState() {
+        var runId = ++_syncRunId;
         var beforeId;
         function addNext(i) {
+          if (runId !== _syncRunId) return;
           if (i >= state.layers.length) return;
           addLayerToMap(state.layers[i], state.layers[i].style_spec, i, beforeId).then(function(firstId) {
+            if (runId !== _syncRunId) return;
             beforeId = firstId;
             if (i === 0) trySetInitialExtentFromFirstLayer();
             addNext(i + 1);

@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Privacy – GeoFastMap{% endblock %}
+{% block head %}
+  <style>
+    .privacy-doc h1 { font-size: 1.5rem; margin: 0 0 1rem; font-weight: 700; }
+    .privacy-doc .updated { color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .privacy-doc section { margin-bottom: 1.5rem; }
+    .privacy-doc h2 { font-size: 1.1rem; margin: 0 0 0.5rem; color: var(--text); font-weight: 600; }
+    .privacy-doc p, .privacy-doc ul { margin: 0 0 0.75rem; color: var(--text); }
+    .privacy-doc ul { padding-left: 1.25rem; }
+  </style>
+{% endblock %}
+{% block content %}
+  <article class="privacy-doc">
+    <h1>Privacy</h1>
+    <p class="updated">Last updated: 27 March 2026</p>
+
+    <p>This page summarizes how GeoFastMap treats data for the <strong>public API</strong> and our <strong>Android</strong> apps. You may link to this URL from your app store listing or in-app disclosures.</p>
+
+    <section>
+      <h2>API (GeoFastMap server)</h2>
+      <p>We do <strong>not</strong> use the API to collect personal data for advertising, analytics, profiling, or resale. The API exists to serve geospatial data and related operations you request.</p>
+      <p>We do not run third-party trackers or analytics scripts in API responses intended for automated clients.</p>
+    </section>
+
+    <section>
+      <h2>GeoFastMap Lite (Android)</h2>
+      <p><strong>GeoFastMap Lite</strong> does <strong>not</strong> connect to our servers. Nothing you do in the app is sent to us over the network for that app.</p>
+      <p>Language and localization you choose in the app are <strong>not</strong> transmitted to us. They only control how the interface appears on your device for you to see locally.</p>
+    </section>
+
+    <section>
+      <h2>Other GeoFastMap Android apps</h2>
+      <p>Other GeoFastMap Android applications (if offered) do <strong>not</strong> collect personal data from your device for our own analytics, advertising, or profiling. We do not request access to contacts, photos, or device identifiers for tracking purposes.</p>
+      <p>If an app connects to GeoFastMap services over the network, use of those services follows the API section above.</p>
+    </section>
+
+    <section>
+      <h2>Accounts and content you provide</h2>
+      <p>If this deployment uses sign-in, credentials and data you upload (for example maps or layers you save) are stored only to operate the service you chose. That is not the same as collecting data for unrelated marketing or analytics.</p>
+    </section>
+
+    <p><a href="{{ base }}/?f=html">&larr; Back to home</a></p>
+  </article>
+{% endblock %}
