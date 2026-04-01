@@ -5,14 +5,111 @@
   <style>
     .stac-item-meta { font-size: 0.9rem; color: var(--text-secondary); }
     .stac-item-thumb { max-width: min(100%, 480px); border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: var(--space); }
-    .stac-raster-controls { display: flex; flex-wrap: wrap; gap: var(--space); align-items: flex-end; margin-bottom: var(--space); }
-    .stac-raster-controls .form-row { margin: 0; min-width: 8rem; }
+    .stac-raster-controls {
+      display: grid;
+      /* Keep a compact, readable layout even on large screens (like the half-width view). */
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem 1rem;
+      align-items: end;
+      margin-bottom: var(--space);
+    }
+    @media (max-width: 620px) {
+      .stac-raster-controls { grid-template-columns: 1fr; }
+    }
+    .stac-raster-controls .form-row { margin: 0; min-width: 0; }
     .stac-raster-controls label { font-size: 0.85rem; }
-    .stac-raster-controls input[type="text"], .stac-raster-controls select { max-width: 12rem; }
+    .stac-raster-controls input[type="text"], .stac-raster-controls select { max-width: 100%; }
+    .stac-raster-controls input[type="range"] { width: 10rem; }
+    .stac-raster-controls .stac-mode-row { min-width: 12rem; }
+    .stac-actions-row { margin-top: 0.9rem; display: flex; justify-content: flex-start; gap: 0.75rem; flex-wrap: wrap; }
+    .stac-actions-row .btn { min-width: 10rem; }
+    .stac-advanced-block { display: none; margin-top: var(--space); }
+    .stac-advanced-block.is-open { display: block; }
+    .stac-rgb-grid { display: grid; gap: 0.6rem 0.75rem; align-items: start; }
+    @media (min-width: 720px) { .stac-rgb-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    .stac-rgb-grid .form-row label { min-height: 1.15em; }
+    .stac-rgb-grid select { width: 100%; }
+    .stac-inline-hint { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem; }
+    .stac-cf-details {
+      margin-top: var(--space);
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--border);
+      max-width: 44rem;
+    }
+    .stac-cf-summary {
+      cursor: pointer;
+      list-style: none;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      user-select: none;
+    }
+    .stac-cf-summary::-webkit-details-marker { display: none; }
+    .stac-cf-summary::before { content: '▸ '; display: inline-block; transition: transform 0.15s; }
+    details[open] > .stac-cf-summary::before { transform: rotate(90deg); }
+    .stac-cf-details-inner { padding-top: 0.75rem; }
+    .stac-cf-mode-row { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-bottom: 0.65rem; align-items: center; }
+    .stac-cf-mode-row label { display: inline-flex; gap: 0.35rem; align-items: center; cursor: pointer; margin: 0; }
+    .stac-cf-op-block {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
+      margin-bottom: 0.55rem; padding: 0.45rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .stac-cf-op-block:last-of-type { border-bottom: none; }
+    .stac-cf-op-block .stac-cf-include-main { min-width: 9rem; font-weight: 500; }
+    .stac-cf-op-block .stac-cf-include-main input { margin-right: 0.35rem; }
+    .stac-cf-bands-row {
+      display: flex; flex-wrap: wrap; gap: 0.75rem 1rem; align-items: center;
+      margin: 0.5rem 0 0.25rem 0;
+      padding-top: 0.5rem;
+      border-top: 1px dashed var(--border);
+    }
+    .stac-cf-bands-row .stac-cf-bands-label { font-size: 0.85rem; color: var(--text-secondary); margin-right: 0.25rem; }
+    .stac-cf-bands-row label { display: inline-flex; gap: 0.35rem; align-items: center; margin: 0; cursor: pointer; font-size: 0.9rem; }
+    #stac-cf-preview { margin: 0.5rem 0 0 0; word-break: break-word; }
     #stac-item-map { min-height: 320px; }
+    /* Basemap attribution: bottom-left (not inline in controls) */
+    #stac-item-map { position: relative; }
+    #stac-item-map .map-controls { position: relative; z-index: 2; }
+    #stac-item-map #map-basemap-copyright {
+      position: absolute;
+      left: 12px;
+      bottom: 10px;
+      z-index: 1;
+      display: none;
+      padding: 6px 8px;
+      background: rgba(0,0,0,0.45);
+      color: #fff;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.18);
+      max-width: min(65vw, 520px) !important;
+      backdrop-filter: blur(6px);
+    }
     .props-view-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
     .props-view-table th { text-align: left; padding: 6px 8px; font-weight: 600; font-size: 0.85rem; color: var(--text-secondary); border-bottom: 1px solid var(--border); }
     .props-view-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); word-break: break-word; }
+    .stac-download-details { margin-bottom: var(--space); }
+    .stac-download-details > summary {
+      list-style: none;
+      cursor: pointer;
+      user-select: none;
+      padding: var(--space) var(--space);
+      font-weight: 600;
+      font-size: 1rem;
+      color: var(--text);
+      border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    }
+    .stac-download-details > summary::-webkit-details-marker { display: none; }
+    .stac-download-details > summary::before {
+      content: '▸ ';
+      display: inline-block;
+      transition: transform 0.15s;
+      color: var(--text-secondary);
+    }
+    .stac-download-details[open] > summary::before { transform: rotate(90deg); }
+    .stac-download-details[open] > summary { border-bottom: 1px solid var(--border); }
+    .stac-download-inner { padding: 0 var(--space) var(--space); }
+    .stac-download-href { font-size: 0.8rem; word-break: break-all; }
   </style>
 {% endblock %}
 {% block content %}
@@ -21,6 +118,66 @@
     <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › <a href="{{ base }}/stac?f=html">STAC search</a> › {{ catalog_title }}</p>
     <p class="stac-item-meta">Collection <code>{{ collection_id }}</code> · Catalog <code>{{ catalog_id }}</code></p>
   </header>
+
+  {% set amap = stac_item.assets if stac_item.assets is mapping else {} %}
+  <div class="card">
+    <details class="stac-download-details">
+      <summary>Download links</summary>
+      <div class="stac-download-inner">
+        {% set dl_rows = namespace(n=0) %}
+        <table class="props-view-table">
+          <thead>
+            <tr><th>Band / asset</th><th>Direct link (from STAC)</th></tr>
+          </thead>
+          <tbody>
+            {% for asset_key in amap|sort %}
+              {% set meta = amap[asset_key] %}
+              {% if meta is mapping %}
+                {% set href = meta.get('href') %}
+                {% if href is string and href|trim %}
+                  {% set href = href|trim %}
+                  {% set bands = meta.get('raster:bands') if meta.get('raster:bands') else meta.get('eo:bands') %}
+                  {% if bands is sequence and bands is not string and bands|length > 0 %}
+                    {% set dl_rows.n = dl_rows.n + 1 %}
+                    <tr>
+                      <td>
+                        <code>{{ asset_key }}</code>
+                        <span class="meta"> — bands 1–{{ bands|length }} (same file)</span>
+                        {%- set j = joiner(', ') -%}
+                        {%- set _bandlbl = namespace(s='') -%}
+                        {%- for b in bands -%}
+                          {%- if b is mapping -%}
+                            {%- set lbl = b.get('common_name') or b.get('name') -%}
+                            {%- if lbl -%}
+                              {%- set _bandlbl.s = _bandlbl.s + j() + lbl -%}
+                            {%- endif -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {%- if _bandlbl.s -%}
+                          <span class="meta"> · {{ _bandlbl.s }}</span>
+                        {%- endif -%}
+                      </td>
+                      <td><a class="stac-download-href" href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ href }}</a></td>
+                    </tr>
+                  {% else %}
+                    {% set dl_rows.n = dl_rows.n + 1 %}
+                    <tr>
+                      <td><code>{{ asset_key }}</code>{% if meta.get('title') %}<span class="meta"> — {{ meta.title }}</span>{% endif %}</td>
+                      <td><a class="stac-download-href" href="{{ href }}" target="_blank" rel="noopener noreferrer">{{ href }}</a></td>
+                    </tr>
+                  {% endif %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {% if dl_rows.n == 0 %}
+              <tr><td colspan="2" class="meta">No asset <code>href</code> entries in this item.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+        <p class="stac-inline-hint" style="margin-top:0.75rem;">Each row uses the <code>href</code> published on the item for that asset. Multi-band assets list a single row (same file) with band range and optional band labels from metadata.</p>
+      </div>
+    </details>
+  </div>
 
   <div class="card">
     <div class="card-header">
@@ -54,7 +211,7 @@
     {% elif not tile_assets %}
     <p class="meta">No GeoTIFF / COG-style assets were detected on this item for Titiler. Use the thumbnail or upstream link if available.</p>
     {% else %}
-    <p class="meta">Tiles are proxied through this API to Titiler. Adjust bands and rescale if the preview is dark or tinted.</p>
+    <p class="meta">Tiles are proxied through this API to Titiler. Use RGB band selection, rescale, expression, and color formula to build custom composites. <strong>View state</strong> (map extent, basemap, render options, opacity, color formula) is kept in the page URL so you can reload or share the link.</p>
     <div class="stac-raster-controls">
       <div class="form-row">
         <label for="stac-asset-select">Asset</label>
@@ -64,19 +221,166 @@
           {% endfor %}
         </select>
       </div>
-      <div class="form-row">
-        <label for="stac-bidx">Bands (bidx)</label>
-        <input type="text" id="stac-bidx" placeholder="e.g. 1,2,3" autocomplete="off" title="Forwarded to Titiler as bidx">
+      <div class="form-row stac-mode-row">
+        <label for="stac-render-mode">Render mode</label>
+        <select id="stac-render-mode">
+          <option value="rgb_bands" selected>RGB (bands of selected asset)</option>
+          <option value="rgb_assets">RGB (3 assets: false color)</option>
+          <option value="single">Single band</option>
+          <option value="expression">Expression (e.g. NDVI)</option>
+        </select>
       </div>
       <div class="form-row">
         <label for="stac-rescale">Rescale</label>
-        <input type="text" id="stac-rescale" placeholder="e.g. 0,2500" autocomplete="off" title="Per-band min,max comma-separated">
+        <input type="text" id="stac-rescale" value="" placeholder="min,max" autocomplete="off" title="Mode defaults: RGB bands = empty; expression = -1,1; single / RGB assets = 0,4000. Min,max for all modes (RGB repeats per band in the tile request).">
       </div>
       <div class="form-row">
         <label for="stac-raster-opacity">Opacity</label>
-        <input type="range" id="stac-raster-opacity" min="0" max="100" value="100" style="width:8rem">
+        <input type="range" id="stac-raster-opacity" min="0" max="100" value="100">
       </div>
-      <button type="button" class="btn btn-sm btn-primary" id="stac-apply-raster">Apply</button>
+    </div>
+
+    <div id="stac-rgb-bands-block" class="stac-advanced-block is-open">
+      <div class="stac-rgb-grid">
+        <div class="form-row">
+          <label for="stac-band-r">Red band</label>
+          <select id="stac-band-r"></select>
+        </div>
+        <div class="form-row">
+          <label for="stac-band-g">Green band</label>
+          <select id="stac-band-g"></select>
+        </div>
+        <div class="form-row">
+          <label for="stac-band-b">Blue band</label>
+          <select id="stac-band-b"></select>
+        </div>
+      </div>
+    </div>
+
+    <div id="stac-rgb-assets-block" class="stac-advanced-block">
+      <div class="stac-rgb-grid">
+        <div class="form-row">
+          <label for="stac-asset-r">Red channel asset</label>
+          <select id="stac-asset-r"></select>
+        </div>
+        <div class="form-row">
+          <label for="stac-asset-g">Green channel asset</label>
+          <select id="stac-asset-g"></select>
+        </div>
+        <div class="form-row">
+          <label for="stac-asset-b">Blue channel asset</label>
+          <select id="stac-asset-b"></select>
+        </div>
+      </div>
+    </div>
+
+    <div id="stac-single-block" class="stac-advanced-block">
+      <div class="form-row" style="max-width: 18rem;">
+        <label for="stac-band-single">Band</label>
+        <select id="stac-band-single"></select>
+      </div>
+    </div>
+
+    <div id="stac-expr-block" class="stac-advanced-block">
+      <div class="form-row" style="max-width: 44rem;">
+        <label for="stac-expression">Expression</label>
+        <input type="text" id="stac-expression" placeholder="e.g. b8-b4 or nir-red" autocomplete="off">
+        <p class="stac-inline-hint">Use <code>b1</code>…<code>bn</code> for bands of the <strong>Asset</strong> above, or band names from metadata (<code>red</code>, <code>nir</code>, …). To mix <strong>different assets</strong> from this item, type their asset keys as identifiers (e.g. <code>nir-red</code> or <code>b1-b2</code> after keys are resolved) — each asset becomes one layer (<code>b1</code>, <code>b2</code>, …) via Titiler. <code>visual</code> is often 3 bands only; pick analytic / reflectance products for multi-band math.</p>
+        <p class="stac-inline-hint" id="stac-expression-preview" style="margin-top:0.35rem;"></p>
+      </div>
+    </div>
+
+    <div id="stac-colormap-block" class="stac-advanced-block">
+      <div class="form-row" style="max-width: 28rem;">
+        <label for="stac-colormap">Colormap</label>
+        <select id="stac-colormap" title="Titiler colormap_name — maps single-channel / expression output to RGB. Use with rescale.">
+          <option value="">Default (grayscale)</option>
+          <optgroup label="Perceptual">
+            <option value="viridis">viridis</option>
+            <option value="viridis_r">viridis (reversed)</option>
+            <option value="plasma">plasma</option>
+            <option value="inferno">inferno</option>
+            <option value="magma">magma</option>
+            <option value="cividis">cividis</option>
+            <option value="turbo">turbo</option>
+          </optgroup>
+          <optgroup label="Classic">
+            <option value="rainbow">rainbow</option>
+            <option value="jet">jet</option>
+            <option value="terrain">terrain</option>
+            <option value="gist_earth">gist_earth</option>
+            <option value="hot">hot</option>
+            <option value="cool">cool</option>
+            <option value="spring">spring</option>
+            <option value="summer">summer</option>
+            <option value="autumn">autumn</option>
+            <option value="winter">winter</option>
+          </optgroup>
+          <optgroup label="Diverging / qualitative">
+            <option value="RdYlGn">RdYlGn</option>
+            <option value="Spectral">Spectral</option>
+            <option value="coolwarm">coolwarm</option>
+            <option value="BrBG">BrBG</option>
+          </optgroup>
+          <optgroup label="Grayscale / misc">
+            <option value="gray">gray</option>
+            <option value="bone">bone</option>
+            <option value="pink">pink</option>
+            <option value="copper">copper</option>
+          </optgroup>
+        </select>
+        <p class="stac-inline-hint" style="margin-top:0.35rem;">Applies to <strong>single band</strong> and <strong>expression</strong> (one output channel). Set <strong>Rescale</strong> so values span the map range (e.g. NDVI <code>-1,1</code>). More names: <a href="https://developmentseed.org/titiler/endpoints/colormaps/" target="_blank" rel="noopener">Titiler colormaps</a>.</p>
+      </div>
+    </div>
+
+    <details class="stac-cf-details" id="stac-cf-details">
+      <summary class="stac-cf-summary">Color formula <span class="meta">(optional, advanced)</span></summary>
+      <div class="stac-cf-details-inner">
+        <p class="stac-inline-hint" style="margin-top:0;">Collapsed by default. Enable steps below and combine them (order: gamma → sigmoidal → saturation). Values stay filled when you toggle steps on or off.</p>
+        <div class="stac-cf-mode-row">
+          <label><input type="radio" name="stac-cf-mode" id="stac-cf-mode-builder" value="builder" checked> Builder</label>
+          <label><input type="radio" name="stac-cf-mode" id="stac-cf-mode-custom" value="custom"> Custom text</label>
+        </div>
+        <input type="hidden" id="stac-color-formula" value="">
+
+        <div id="stac-cf-builder-wrap">
+          <div class="stac-cf-op-block">
+            <label class="stac-cf-include-main"><input type="checkbox" id="stac-cf-include-gamma"> Gamma</label>
+            <label for="stac-cf-gamma-val" class="meta">Factor</label>
+            <input type="number" id="stac-cf-gamma-val" step="0.05" min="0.1" max="20" value="1.2" title="Gamma factor" style="width: 5rem;">
+          </div>
+          <div class="stac-cf-op-block">
+            <label class="stac-cf-include-main"><input type="checkbox" id="stac-cf-include-sigmoidal"> Sigmoidal</label>
+            <label for="stac-cf-sig-str" class="meta">Strength</label>
+            <input type="number" id="stac-cf-sig-str" step="0.5" min="0" max="50" value="22" style="width: 4.5rem;">
+            <label for="stac-cf-sig-bias" class="meta">Bias</label>
+            <input type="number" id="stac-cf-sig-bias" step="0.01" min="0" max="1" value="0.1" style="width: 4rem;">
+          </div>
+          <div class="stac-cf-op-block">
+            <label class="stac-cf-include-main"><input type="checkbox" id="stac-cf-include-sat"> Saturation</label>
+            <label for="stac-cf-sat-val" class="meta">Multiplier</label>
+            <input type="number" id="stac-cf-sat-val" step="0.05" min="0" max="5" value="1.2" title="Saturation multiplier" style="width: 5rem;">
+          </div>
+          <div id="stac-cf-bands-wrap" class="stac-cf-bands-row">
+            <span class="stac-cf-bands-label">Bands for gamma &amp; sigmoidal</span>
+            <label><input type="checkbox" id="stac-cf-band-r" checked> R</label>
+            <label><input type="checkbox" id="stac-cf-band-g" checked> G</label>
+            <label><input type="checkbox" id="stac-cf-band-b" checked> B</label>
+          </div>
+          <p class="stac-inline-hint" id="stac-cf-preview" aria-live="polite"></p>
+        </div>
+
+        <div id="stac-cf-custom-wrap" style="display: none;">
+          <div class="form-row" style="max-width: 44rem;">
+            <label for="stac-cf-custom">color_formula string</label>
+            <input type="text" id="stac-cf-custom" class="stac-cf-custom-input" placeholder="e.g. gamma rg 1.3, sigmoidal rgb 22 0.1" autocomplete="off" title="Passed through to Titiler as color_formula">
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <div class="stac-actions-row">
+      <button type="button" class="btn btn-primary" id="stac-apply-raster">Apply</button>
     </div>
     {% endif %}
   </div>
@@ -114,10 +418,17 @@
     var stacItem = {{ stac_item | tojson }};
     var titilerConfigured = {{ titiler_configured | tojson }};
     var tileAssetsLen = {{ tile_assets | length }};
+    var tileAssetKeys = {{ tile_assets | map(attribute='key') | list | tojson }};
 
     var map;
     var BASEMAPS;
     var basemapList;
+    /** Restored from URL before initMap; consumed when the map loads. */
+    var stacViewerPendingBasemap = null;
+    var stacViewerPendingBbox = null;
+    var stacViewerApplyingUrl = false;
+    /** Query keys owned by the viewer (replaced on each sync). */
+    var STAC_VIEWER_KEYS = ['asset', 'mode', 'rescale', 'opacity', 'br', 'bg', 'bb', 'ar', 'ag', 'ab', 'band', 'expr', 'cmap', 'basemap', 'bbox', 'cf_mode', 'cf_custom', 'cf_inc_g', 'cf_inc_s', 'cf_inc_sat', 'cf_gv', 'cf_ss', 'cf_sb', 'cf_sv', 'cf_cr', 'cf_cg', 'cf_cb', 'cf_open'];
 
     function bboxFromGeom(geom) {
       if (!geom || !geom.coordinates) return null;
@@ -134,17 +445,449 @@
       return bboxFromGeom(stacItem.geometry);
     }
 
+    var stacViewerUrlPushTimer = null;
+    function scheduleStacViewerUrlPush() {
+      if (stacViewerApplyingUrl) return;
+      if (stacViewerUrlPushTimer) clearTimeout(stacViewerUrlPushTimer);
+      stacViewerUrlPushTimer = setTimeout(function() {
+        stacViewerUrlPushTimer = null;
+        pushStacViewerUrl();
+      }, 80);
+    }
+
+    function pushStacViewerUrl() {
+      if (stacViewerApplyingUrl) return;
+      try {
+        var u = new URL(window.location.href);
+        for (var i = 0; i < STAC_VIEWER_KEYS.length; i++) u.searchParams.delete(STAC_VIEWER_KEYS[i]);
+        var collected = collectStacViewerParams();
+        collected.forEach(function(value, key) {
+          u.searchParams.set(key, value);
+        });
+        history.replaceState(null, '', u.toString());
+      } catch (e) {}
+    }
+
+    function collectStacViewerParams() {
+      var p = new URLSearchParams();
+      var assetSel = document.getElementById('stac-asset-select');
+      if (!assetSel) {
+        var bmapOnly = document.getElementById('map-basemap');
+        if (bmapOnly && bmapOnly.value) p.set('basemap', bmapOnly.value);
+        if (map && map.loaded()) {
+          var bx = map.getBounds();
+          p.set('bbox', [bx.getWest(), bx.getSouth(), bx.getEast(), bx.getNorth()].map(function(x) { return Number(x.toFixed(5)); }).join(','));
+        }
+        return p;
+      }
+      if (assetSel && assetSel.value) p.set('asset', assetSel.value);
+      var modeEl = document.getElementById('stac-render-mode');
+      if (modeEl && modeEl.value) p.set('mode', modeEl.value);
+      var rescaleEl = document.getElementById('stac-rescale');
+      if (rescaleEl && rescaleEl.value.trim()) p.set('rescale', rescaleEl.value.trim());
+      var opEl = document.getElementById('stac-raster-opacity');
+      if (opEl) p.set('opacity', String(parseInt(opEl.value, 10) || 0));
+      var br = document.getElementById('stac-band-r');
+      var bg = document.getElementById('stac-band-g');
+      var bb = document.getElementById('stac-band-b');
+      if (br && br.value) p.set('br', br.value);
+      if (bg && bg.value) p.set('bg', bg.value);
+      if (bb && bb.value) p.set('bb', bb.value);
+      var ar = document.getElementById('stac-asset-r');
+      var ag = document.getElementById('stac-asset-g');
+      var ab = document.getElementById('stac-asset-b');
+      if (ar && ar.value) p.set('ar', ar.value);
+      if (ag && ag.value) p.set('ag', ag.value);
+      if (ab && ab.value) p.set('ab', ab.value);
+      var bs = document.getElementById('stac-band-single');
+      if (bs && bs.value) p.set('band', bs.value);
+      var ex = document.getElementById('stac-expression');
+      if (ex && ex.value.trim()) p.set('expr', ex.value.trim());
+      var cmapEl = document.getElementById('stac-colormap');
+      var modeForCmap = modeEl && modeEl.value;
+      if (cmapEl && cmapEl.value && (modeForCmap === 'single' || modeForCmap === 'expression')) {
+        p.set('cmap', cmapEl.value);
+      }
+      var bmap = document.getElementById('map-basemap');
+      if (bmap && bmap.value) p.set('basemap', bmap.value);
+      if (map && map.loaded()) {
+        var b = map.getBounds();
+        p.set('bbox', [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map(function(x) { return Number(x.toFixed(5)); }).join(','));
+      }
+      var cfMode = document.querySelector('input[name="stac-cf-mode"]:checked');
+      if (cfMode) p.set('cf_mode', cfMode.value);
+      var cu = document.getElementById('stac-cf-custom');
+      if (cu && cu.value.trim()) p.set('cf_custom', cu.value.trim());
+      var ig = document.getElementById('stac-cf-include-gamma');
+      var is = document.getElementById('stac-cf-include-sigmoidal');
+      var isa = document.getElementById('stac-cf-include-sat');
+      if (ig) p.set('cf_inc_g', ig.checked ? '1' : '0');
+      if (is) p.set('cf_inc_s', is.checked ? '1' : '0');
+      if (isa) p.set('cf_inc_sat', isa.checked ? '1' : '0');
+      var gv = document.getElementById('stac-cf-gamma-val');
+      var ss = document.getElementById('stac-cf-sig-str');
+      var sb = document.getElementById('stac-cf-sig-bias');
+      var sv = document.getElementById('stac-cf-sat-val');
+      if (gv) p.set('cf_gv', gv.value);
+      if (ss) p.set('cf_ss', ss.value);
+      if (sb) p.set('cf_sb', sb.value);
+      if (sv) p.set('cf_sv', sv.value);
+      var cfr = document.getElementById('stac-cf-band-r');
+      var cfg = document.getElementById('stac-cf-band-g');
+      var cfb = document.getElementById('stac-cf-band-b');
+      if (cfr) p.set('cf_cr', cfr.checked ? '1' : '0');
+      if (cfg) p.set('cf_cg', cfg.checked ? '1' : '0');
+      if (cfb) p.set('cf_cb', cfb.checked ? '1' : '0');
+      var det = document.getElementById('stac-cf-details');
+      if (det && det.open) p.set('cf_open', '1');
+      return p;
+    }
+
+    function selectIfOptionExists(sel, value) {
+      if (!sel || value === undefined || value === null || value === '') return false;
+      var v = String(value);
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === v) {
+          sel.value = v;
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function applyStacViewerParamsFromUrl() {
+      var u;
+      try { u = new URL(window.location.href); } catch (e) { return; }
+      var has = false;
+      for (var h = 0; h < STAC_VIEWER_KEYS.length; h++) {
+        if (u.searchParams.has(STAC_VIEWER_KEYS[h])) { has = true; break; }
+      }
+      if (!has) return;
+
+      stacViewerApplyingUrl = true;
+      try {
+        var assetSel = document.getElementById('stac-asset-select');
+        var assetP = u.searchParams.get('asset');
+        if (assetSel && assetP) selectIfOptionExists(assetSel, assetP);
+        if (typeof refreshBandSelectors === 'function') refreshBandSelectors();
+
+        var modeP = u.searchParams.get('mode');
+        var modeEl = document.getElementById('stac-render-mode');
+        if (modeEl && modeP && /^(rgb_bands|rgb_assets|single|expression)$/.test(modeP)) {
+          modeEl.value = modeP;
+          setMode(modeP, { skipRescaleDefault: true, skipExpressionAssetDefault: true });
+        }
+
+        if (u.searchParams.has('rescale')) {
+          var re = document.getElementById('stac-rescale');
+          if (re) re.value = u.searchParams.get('rescale') || '';
+        } else if (modeEl && modeEl.value) {
+          applyRescaleDefaultForMode(modeEl.value);
+        }
+
+        var op = u.searchParams.get('opacity');
+        if (op !== null) {
+          var opEl = document.getElementById('stac-raster-opacity');
+          if (opEl) {
+            var oi = parseInt(op, 10);
+            if (isFinite(oi)) opEl.value = String(Math.max(0, Math.min(100, oi)));
+          }
+        }
+
+        selectIfOptionExists(document.getElementById('stac-band-r'), u.searchParams.get('br'));
+        selectIfOptionExists(document.getElementById('stac-band-g'), u.searchParams.get('bg'));
+        selectIfOptionExists(document.getElementById('stac-band-b'), u.searchParams.get('bb'));
+        selectIfOptionExists(document.getElementById('stac-asset-r'), u.searchParams.get('ar'));
+        selectIfOptionExists(document.getElementById('stac-asset-g'), u.searchParams.get('ag'));
+        selectIfOptionExists(document.getElementById('stac-asset-b'), u.searchParams.get('ab'));
+        selectIfOptionExists(document.getElementById('stac-band-single'), u.searchParams.get('band'));
+
+        var exprP = u.searchParams.get('expr');
+        if (exprP !== null) {
+          var exEl = document.getElementById('stac-expression');
+          if (exEl) exEl.value = exprP;
+        }
+        var cmapP = u.searchParams.get('cmap');
+        if (cmapP !== null) {
+          var cmEl = document.getElementById('stac-colormap');
+          if (cmEl) {
+            if (!selectIfOptionExists(cmEl, cmapP)) cmEl.value = '';
+          }
+        }
+
+        var bm = u.searchParams.get('basemap');
+        if (bm) stacViewerPendingBasemap = bm;
+
+        var bboxStr = u.searchParams.get('bbox');
+        if (bboxStr) {
+          var parts = bboxStr.split(',');
+          if (parts.length === 4) {
+            var w = parseFloat(parts[0]);
+            var s0 = parseFloat(parts[1]);
+            var e = parseFloat(parts[2]);
+            var n = parseFloat(parts[3]);
+            if (isFinite(w) && isFinite(s0) && isFinite(e) && isFinite(n) && w < e && s0 < n) {
+              stacViewerPendingBbox = [w, s0, e, n];
+            }
+          }
+        }
+
+        var cfm = u.searchParams.get('cf_mode');
+        if (cfm === 'custom' || cfm === 'builder') {
+          var mb = document.getElementById('stac-cf-mode-builder');
+          var mc = document.getElementById('stac-cf-mode-custom');
+          if (cfm === 'custom' && mc) {
+            mc.checked = true;
+            setCfModeUi('custom');
+          } else if (cfm === 'builder' && mb) {
+            mb.checked = true;
+            setCfModeUi('builder');
+          }
+        }
+        var cfc = u.searchParams.get('cf_custom');
+        if (cfc !== null) {
+          var cu = document.getElementById('stac-cf-custom');
+          if (cu) cu.value = cfc;
+        }
+        function setChk(id, name) {
+          var v = u.searchParams.get(name);
+          if (v === null) return;
+          var el = document.getElementById(id);
+          if (el) el.checked = v === '1' || v === 'true';
+        }
+        setChk('stac-cf-include-gamma', 'cf_inc_g');
+        setChk('stac-cf-include-sigmoidal', 'cf_inc_s');
+        setChk('stac-cf-include-sat', 'cf_inc_sat');
+        function setNum(id, name) {
+          var v = u.searchParams.get(name);
+          if (v === null || v === '') return;
+          var el = document.getElementById(id);
+          if (el) el.value = v;
+        }
+        setNum('stac-cf-gamma-val', 'cf_gv');
+        setNum('stac-cf-sig-str', 'cf_ss');
+        setNum('stac-cf-sig-bias', 'cf_sb');
+        setNum('stac-cf-sat-val', 'cf_sv');
+        setChk('stac-cf-band-r', 'cf_cr');
+        setChk('stac-cf-band-g', 'cf_cg');
+        setChk('stac-cf-band-b', 'cf_cb');
+
+        if (u.searchParams.get('cf_open') === '1') {
+          var det = document.getElementById('stac-cf-details');
+          if (det) det.open = true;
+        }
+
+        syncColorFormula();
+        if (typeof updateExpressionPreview === 'function') updateExpressionPreview();
+      } finally {
+        stacViewerApplyingUrl = false;
+        setTimeout(function() { scheduleStacViewerUrlPush(); }, 0);
+      }
+    }
+
+    function bindStacViewerUrlSync() {
+      function bindInput(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('change', scheduleStacViewerUrlPush);
+        el.addEventListener('input', scheduleStacViewerUrlPush);
+      }
+      function bindChange(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('change', scheduleStacViewerUrlPush);
+      }
+      bindChange('stac-asset-select');
+      bindChange('stac-render-mode');
+      bindChange('stac-colormap');
+      bindInput('stac-rescale');
+      bindInput('stac-raster-opacity');
+      ['stac-cf-mode-builder', 'stac-cf-mode-custom'].forEach(bindChange);
+      ['stac-cf-include-gamma', 'stac-cf-include-sigmoidal', 'stac-cf-include-sat', 'stac-cf-band-r', 'stac-cf-band-g', 'stac-cf-band-b'].forEach(bindChange);
+      bindInput('stac-cf-gamma-val');
+      bindInput('stac-cf-sig-str');
+      bindInput('stac-cf-sig-bias');
+      bindInput('stac-cf-sat-val');
+      bindInput('stac-cf-custom');
+      var det = document.getElementById('stac-cf-details');
+      if (det) det.addEventListener('toggle', scheduleStacViewerUrlPush);
+    }
+
+    function bandTokenCf() {
+      var r = document.getElementById('stac-cf-band-r');
+      var g = document.getElementById('stac-cf-band-g');
+      var b = document.getElementById('stac-cf-band-b');
+      if (!r || !g || !b) return '';
+      return (r.checked ? 'r' : '') + (g.checked ? 'g' : '') + (b.checked ? 'b' : '');
+    }
+
+    function syncColorFormula() {
+      var hidden = document.getElementById('stac-color-formula');
+      var preview = document.getElementById('stac-cf-preview');
+      if (!hidden) return;
+      var modeEl = document.querySelector('input[name="stac-cf-mode"]:checked');
+      var mode = modeEl ? modeEl.value : 'builder';
+      if (mode === 'custom') {
+        var cu = document.getElementById('stac-cf-custom');
+        hidden.value = cu && cu.value.trim() ? cu.value.trim() : '';
+        if (preview) preview.textContent = hidden.value ? ('Sent to Titiler: ' + hidden.value) : 'No color formula.';
+        return;
+      }
+      var incG = document.getElementById('stac-cf-include-gamma');
+      var incS = document.getElementById('stac-cf-include-sigmoidal');
+      var incSat = document.getElementById('stac-cf-include-sat');
+      var gOn = incG && incG.checked;
+      var sOn = incS && incS.checked;
+      var satOn = incSat && incSat.checked;
+      var bands = bandTokenCf();
+      var needBands = gOn || sOn;
+      if (needBands && !bands) {
+        hidden.value = '';
+        if (preview) preview.textContent = 'Gamma and/or sigmoidal enabled: select at least one band (R, G, or B).';
+        return;
+      }
+      var parts = [];
+      if (gOn) {
+        var gv = document.getElementById('stac-cf-gamma-val');
+        parts.push('gamma ' + bands + ' ' + (gv ? gv.value : '1'));
+      }
+      if (sOn) {
+        var st = document.getElementById('stac-cf-sig-str');
+        var bi = document.getElementById('stac-cf-sig-bias');
+        parts.push('sigmoidal ' + bands + ' ' + (st ? st.value : '0') + ' ' + (bi ? bi.value : '0'));
+      }
+      if (satOn) {
+        var sv = document.getElementById('stac-cf-sat-val');
+        parts.push('saturation ' + (sv ? String(sv.value) : '1'));
+      }
+      hidden.value = parts.join(', ');
+      if (preview) {
+        if (!hidden.value) {
+          preview.textContent = 'No color formula (enable steps above, or use Custom text).';
+        } else {
+          preview.textContent = 'Sent to Titiler: ' + hidden.value;
+        }
+      }
+    }
+
+    function setCfModeUi(mode) {
+      var bw = document.getElementById('stac-cf-builder-wrap');
+      var cw = document.getElementById('stac-cf-custom-wrap');
+      if (bw) bw.style.display = mode === 'builder' ? 'block' : 'none';
+      if (cw) cw.style.display = mode === 'custom' ? 'block' : 'none';
+      syncColorFormula();
+      if (map && map.loaded()) addOrRefreshRaster();
+    }
+
+    function initColorFormulaPanel() {
+      function cfMaybeRefresh() {
+        syncColorFormula();
+        if (map && map.loaded()) addOrRefreshRaster();
+      }
+      var mb = document.getElementById('stac-cf-mode-builder');
+      var mc = document.getElementById('stac-cf-mode-custom');
+      if (mb) mb.addEventListener('change', function() { if (mb.checked) setCfModeUi('builder'); });
+      if (mc) mc.addEventListener('change', function() { if (mc.checked) setCfModeUi('custom'); });
+      ['stac-cf-include-gamma', 'stac-cf-include-sigmoidal', 'stac-cf-include-sat'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('change', cfMaybeRefresh);
+      });
+      ['stac-cf-gamma-val', 'stac-cf-sig-str', 'stac-cf-sig-bias', 'stac-cf-sat-val'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('input', syncColorFormula);
+        el.addEventListener('change', cfMaybeRefresh);
+      });
+      var cu = document.getElementById('stac-cf-custom');
+      if (cu) {
+        cu.addEventListener('input', syncColorFormula);
+        cu.addEventListener('change', cfMaybeRefresh);
+      }
+      ['stac-cf-band-r', 'stac-cf-band-g', 'stac-cf-band-b'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('change', cfMaybeRefresh);
+      });
+      syncColorFormula();
+    }
+
     function buildTileUrl(assetKey) {
-      var path = base + '/stac/catalogs/' + encodeURIComponent(catalogId)
+      var basePath = base + '/stac/catalogs/' + encodeURIComponent(catalogId)
         + '/collections/' + encodeURIComponent(collectionId)
         + '/items/' + encodeURIComponent(itemId)
-        + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png?asset=' + encodeURIComponent(assetKey);
+        + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png';
+      var path = basePath;
       var qs = [];
-      var r = document.getElementById('stac-rescale');
-      var b = document.getElementById('stac-bidx');
-      if (r && r.value.trim()) qs.push('rescale=' + encodeURIComponent(r.value.trim()));
-      if (b && b.value.trim()) qs.push('bidx=' + encodeURIComponent(b.value.trim()));
-      return qs.length ? path + '&' + qs.join('&') : path;
+      var rescaleEl = document.getElementById('stac-rescale');
+      var rescaleVal = rescaleEl && rescaleEl.value.trim() ? rescaleEl.value.trim() : '';
+      function pushRescaleOnce() {
+        if (rescaleVal) qs.push('rescale=' + encodeURIComponent(rescaleVal));
+      }
+      function pushRescaleRgb() {
+        if (!rescaleVal) return;
+        var enc = encodeURIComponent(rescaleVal);
+        qs.push('rescale=' + enc);
+        qs.push('rescale=' + enc);
+        qs.push('rescale=' + enc);
+      }
+      var cf = document.getElementById('stac-color-formula');
+      if (cf && cf.value.trim()) qs.push('color_formula=' + encodeURIComponent(cf.value.trim()));
+
+      function appendColormapName(qsArr) {
+        var cm = document.getElementById('stac-colormap');
+        if (cm && cm.value) qsArr.push('colormap_name=' + encodeURIComponent(cm.value));
+      }
+
+      var modeEl = document.getElementById('stac-render-mode');
+      var mode = modeEl ? modeEl.value : 'rgb_bands';
+      if (mode === 'expression') {
+        var ex = document.getElementById('stac-expression');
+        if (ex && ex.value.trim()) {
+          var rawEx = ex.value.trim();
+          var n = normalizeExpressionForTitiler(rawEx, assetKey);
+          var vopts = n.multiAssetCount
+            ? { multiAssetCount: n.multiAssetCount }
+            : { assetKey: n.cogAssetKey };
+          if (!titilerExpressionValidationError(n.normalizedExpr, vopts)) {
+            if (n.path === 'stac' && n.assets && n.assets.length >= 2) {
+              for (var ai = 0; ai < n.assets.length; ai++) {
+                qs.push('assets=' + encodeURIComponent(n.assets[ai]));
+              }
+              qs.push('asset_as_band=true');
+              qs.push('expression=' + encodeURIComponent(n.normalizedExpr));
+            } else {
+              qs.push('asset=' + encodeURIComponent(n.cogAssetKey));
+              qs.push('expression=' + encodeURIComponent(n.normalizedExpr));
+            }
+          }
+        }
+        pushRescaleOnce();
+        appendColormapName(qs);
+      } else if (mode === 'single') {
+        qs.push('asset=' + encodeURIComponent(assetKey));
+        var s = document.getElementById('stac-band-single');
+        if (s && s.value) qs.push('bidx=' + encodeURIComponent(String(s.value)));
+        pushRescaleOnce();
+        appendColormapName(qs);
+      } else if (mode === 'rgb_assets') {
+        var ar = document.getElementById('stac-asset-r');
+        var ag = document.getElementById('stac-asset-g');
+        var ab = document.getElementById('stac-asset-b');
+        if (ar && ar.value) qs.push('assets=' + encodeURIComponent(String(ar.value)));
+        if (ag && ag.value) qs.push('assets=' + encodeURIComponent(String(ag.value)));
+        if (ab && ab.value) qs.push('assets=' + encodeURIComponent(String(ab.value)));
+        qs.push('asset_as_band=true');
+        pushRescaleRgb();
+      } else {
+        qs.push('asset=' + encodeURIComponent(assetKey));
+        var br = document.getElementById('stac-band-r');
+        var bg = document.getElementById('stac-band-g');
+        var bb = document.getElementById('stac-band-b');
+        if (br && br.value) qs.push('bidx=' + encodeURIComponent(String(br.value)));
+        if (bg && bg.value) qs.push('bidx=' + encodeURIComponent(String(bg.value)));
+        if (bb && bb.value) qs.push('bidx=' + encodeURIComponent(String(bb.value)));
+        pushRescaleRgb();
+      }
+      return qs.length ? path + '?' + qs.join('&') : path;
     }
 
     function removeRasterLayer() {
@@ -153,17 +896,39 @@
       if (map.getSource('stac-raster')) map.removeSource('stac-raster');
     }
 
+    // Removed: compute-rescale-from-data flow (not working as intended).
+
     function addOrRefreshRaster() {
       if (!titilerConfigured || !tileAssetsLen) return;
+      syncColorFormula();
+      updateExpressionPreview();
       var sel = document.getElementById('stac-asset-select');
       if (!sel || !sel.value) return;
+      var modeEl = document.getElementById('stac-render-mode');
+      var mode = modeEl ? modeEl.value : 'rgb_bands';
+      var assetKey = sel.value;
+      if (mode === 'expression') {
+        var exEl = document.getElementById('stac-expression');
+        if (exEl && exEl.value.trim()) {
+          var nEx = normalizeExpressionForTitiler(exEl.value.trim(), assetKey);
+          var voptsEx = nEx.multiAssetCount
+            ? { multiAssetCount: nEx.multiAssetCount }
+            : { assetKey: nEx.cogAssetKey };
+          if (titilerExpressionValidationError(nEx.normalizedExpr, voptsEx)) {
+            removeRasterLayer();
+            return;
+          }
+        }
+      }
       removeRasterLayer();
       var before = map.getLayer('stac-footprint-line') ? 'stac-footprint-line'
         : (map.getLayer('stac-footprint-circle') ? 'stac-footprint-circle' : undefined);
       map.addSource('stac-raster', {
         type: 'raster',
-        tiles: [buildTileUrl(sel.value)],
+        tiles: [buildTileUrl(assetKey)],
         tileSize: 256,
+        // Avoid requesting very high z where COGs often return slow/empty tiles (checkerboard effect).
+        maxzoom: 18,
         attribution: 'STAC / Titiler'
       });
       map.addLayer({
@@ -192,13 +957,18 @@
       if (!el || typeof maplibregl === 'undefined') return;
       var sel = document.getElementById('map-basemap');
       GeofastmapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
-      var initialId = null;
-      try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch (e) {}
+      var initialId = stacViewerPendingBasemap;
+      if (!initialId || !BASEMAPS[initialId]) {
+        initialId = null;
+        try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch (e) {}
+      }
       if (!initialId && basemapList.length) initialId = basemapList[0].id;
       if (!initialId && BASEMAPS.osm) initialId = 'osm';
       var initial = (initialId && BASEMAPS[initialId]) ? BASEMAPS[initialId] : (BASEMAPS.osm || (basemapList[0] && BASEMAPS[basemapList[0].id]));
       if (!initial) return;
       if (sel) sel.value = initialId || (sel.options[0] && sel.options[0].value);
+      var stacUrlBasemapFromViewer = !!(stacViewerPendingBasemap && BASEMAPS[stacViewerPendingBasemap]);
+      stacViewerPendingBasemap = null;
       var mapStyle = GeofastmapUtils.buildMapStyleWithBasemap(initial);
       map = new maplibregl.Map({
         container: 'stac-item-map',
@@ -211,11 +981,17 @@
       map.addControl(new maplibregl.NavigationControl(), 'top-right');
       map.on('load', function() {
         GeofastmapUtils.setupFullscreenForMap(map, 'stac-item-map-fs');
-        try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s] && sel) sel.value = s; } catch (e) {}
+        if (!stacUrlBasemapFromViewer) {
+          try {
+            var s = localStorage.getItem('geofastmap-basemap');
+            if (s && BASEMAPS[s] && sel) sel.value = s;
+          } catch (e) {}
+        }
         applyBasemapFromSelect();
         sel.onchange = function() {
           try { localStorage.setItem('geofastmap-basemap', this.value); } catch (e) {}
           applyBasemapFromSelect();
+          scheduleStacViewerUrlPush();
         };
 
         var fc = {
@@ -251,9 +1027,30 @@
 
         if (titilerConfigured && tileAssetsLen) addOrRefreshRaster();
 
-        var bb = itemBbox();
+        var bb = null;
+        if (stacViewerPendingBbox && stacViewerPendingBbox.length === 4) {
+          var w = stacViewerPendingBbox[0];
+          var s0 = stacViewerPendingBbox[1];
+          var e = stacViewerPendingBbox[2];
+          var n = stacViewerPendingBbox[3];
+          if (isFinite(w) && isFinite(s0) && isFinite(e) && isFinite(n) && w < e && s0 < n) {
+            bb = [[w, s0], [e, n]];
+          }
+        }
+        stacViewerPendingBbox = null;
+        if (!bb) bb = itemBbox();
         if (bb) map.fitBounds(bb, { padding: 48, maxZoom: 14, duration: 0 });
         else map.fitBounds([[-180, -85], [180, 85]], { padding: 20, duration: 0 });
+
+        map.once('idle', function() {
+          scheduleStacViewerUrlPush();
+        });
+        var moveEndTimer = null;
+        map.on('moveend', function() {
+          if (stacViewerApplyingUrl) return;
+          if (moveEndTimer) clearTimeout(moveEndTimer);
+          moveEndTimer = setTimeout(function() { scheduleStacViewerUrlPush(); }, 450);
+        });
       });
     }
 
@@ -286,8 +1083,10 @@
 
     document.getElementById('stac-apply-raster') && document.getElementById('stac-apply-raster').addEventListener('click', function() {
       if (map && map.loaded()) addOrRefreshRaster();
+      scheduleStacViewerUrlPush();
     });
     document.getElementById('stac-asset-select') && document.getElementById('stac-asset-select').addEventListener('change', function() {
+      updateExpressionPreview();
       if (map && map.loaded()) addOrRefreshRaster();
     });
     document.getElementById('stac-raster-opacity') && document.getElementById('stac-raster-opacity').addEventListener('input', function() {
@@ -295,5 +1094,459 @@
         map.setPaintProperty('stac-raster', 'raster-opacity', parseInt(this.value, 10) / 100);
       }
     });
+
+    function bandsMetaForAsset(assetKey) {
+      try {
+        if (!assetKey) return [];
+        var a = stacItem.assets && stacItem.assets[assetKey];
+        if (!a || typeof a !== 'object') return [];
+        var rb = a['raster:bands'];
+        if (Array.isArray(rb) && rb.length) return rb;
+        var eb = a['eo:bands'];
+        if (Array.isArray(eb) && eb.length) return eb;
+        return [];
+      } catch (e) { return []; }
+    }
+
+    function bandCountForAssetKey(assetKey) {
+      var m = bandsMetaForAsset(assetKey);
+      return m.length;
+    }
+
+    function escapeRegex(s) {
+      return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    /**
+     * Map STAC eo:bands / raster:bands common_name and name to b1..bn for rio-tiler numexpr.
+     * Longer aliases are substituted first. Literal b4, b8, etc. are left unchanged.
+     */
+    /** QA / mask–style assets: poor defaults for band-math (often 1 band). Same idea as populateRgbAssetSelects fallbackTopN. */
+    function isPoorExpressionAssetKey(k) {
+      return /(^|[^a-z])(aot|scl|wvp|qa|mask|cloud|snow|cirrus)([^a-z]|$)/i.test(String(k));
+    }
+
+    /**
+     * Replace STAC item asset keys (exact identifiers) with b1, b2, … in order of first appearance.
+     * Used to drive Titiler /stac/tiles with repeated assets + asset_as_band=true.
+     */
+    function substituteAssetKeysInExpression(expr, tileKeys) {
+      if (!expr || !tileKeys || !tileKeys.length) return null;
+      var sorted = tileKeys.slice().sort(function(a, b) { return b.length - a.length; });
+      var used = [];
+      var seen = {};
+      var out = '';
+      var i = 0;
+      while (i < expr.length) {
+        var atBoundary = (i === 0 || !/[A-Za-z0-9_]/.test(expr[i - 1]));
+        var matchedKey = null;
+        var matchedLen = 0;
+        if (atBoundary) {
+          for (var j = 0; j < sorted.length; j++) {
+            var k = sorted[j];
+            if (expr.slice(i, i + k.length) !== k) continue;
+            var end = i + k.length;
+            var cend = expr[end];
+            if (cend !== undefined && /[A-Za-z0-9_]/.test(cend)) continue;
+            matchedKey = k;
+            matchedLen = k.length;
+            break;
+          }
+        }
+        if (matchedKey) {
+          if (!seen[matchedKey]) {
+            seen[matchedKey] = used.length + 1;
+            used.push(matchedKey);
+          }
+          out += 'b' + seen[matchedKey];
+          i += matchedLen;
+        } else {
+          out += expr[i];
+          i++;
+        }
+      }
+      if (used.length === 0) return null;
+      return { assets: used, expr: out };
+    }
+
+    /**
+     * After common_name/name → bN substitution, reject leftover identifiers and bM when M > listed band count.
+     * opts: { assetKey } for single COG, or { multiAssetCount: N } for stacked assets.
+     */
+    function titilerExpressionValidationError(normalizedExpr, opts) {
+      opts = opts || {};
+      if (!normalizedExpr || !String(normalizedExpr).trim()) return null;
+      var s = String(normalizedExpr).trim();
+      var stripped = s;
+      stripped = stripped.replace(/\bb\d+\b/gi, ' ');
+      stripped = stripped.replace(/\d+\.?\d*([eE][+-]?\d+)?/g, ' ');
+      stripped = stripped.replace(/[+\-*/(),]/g, ' ');
+      stripped = stripped.trim();
+      if (stripped) {
+        var parts = stripped.split(/\s+/).filter(Boolean);
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i];
+          if (/^[a-z_][a-z0-9_]*$/i.test(p)) {
+            return 'Unresolved name "' + p + '". Use b1, b2, …, band names from metadata, or asset keys from this item for multi-asset math.';
+          }
+        }
+      }
+      var mac = opts.multiAssetCount;
+      if (typeof mac === 'number' && mac > 0) {
+        var reM = /\bb(\d+)\b/gi;
+        var m;
+        var maxB = 0;
+        while ((m = reM.exec(s)) !== null) {
+          var bi = parseInt(m[1], 10);
+          if (bi > maxB) maxB = bi;
+        }
+        if (maxB > mac) {
+          return 'Expression uses b' + maxB + ' but only ' + mac + ' asset layer(s) are stacked (first asset key → b1, second → b2, …).';
+        }
+        return null;
+      }
+      var assetKey = opts.assetKey;
+      if (!assetKey) return null;
+      var bc = bandCountForAssetKey(assetKey);
+      if (bc > 0) {
+        var re = /\bb(\d+)\b/gi;
+        var m2;
+        var maxB2 = 0;
+        while ((m2 = re.exec(s)) !== null) {
+          var bj = parseInt(m2[1], 10);
+          if (bj > maxB2) maxB2 = bj;
+        }
+        if (maxB2 > bc) {
+          return 'Expression uses b' + maxB2 + ' but metadata lists only ' + bc + ' band(s) for this asset. Pick a multi-band reflectance asset (avoid AOT/SCL/WVP for NDVI-style math), or use multiple asset keys to mix separate COGs.';
+        }
+      }
+      return null;
+    }
+
+    function substituteBandNamesInExpression(expr, assetKey) {
+      if (!expr || !assetKey) return expr;
+      var meta = bandsMetaForAsset(assetKey);
+      if (!meta || !meta.length) return expr;
+      var aliases = [];
+      for (var i = 0; i < meta.length; i++) {
+        var idx = i + 1;
+        var m = meta[i];
+        if (!m || typeof m !== 'object') continue;
+        var seen = {};
+        function addAlias(s) {
+          if (!s || typeof s !== 'string') return;
+          var t = s.trim();
+          if (t.length < 2) return;
+          var low = t.toLowerCase();
+          if (seen[low]) return;
+          seen[low] = true;
+          aliases.push({
+            re: new RegExp('\\b' + escapeRegex(t) + '\\b', 'gi'),
+            repl: 'b' + idx
+          });
+        }
+        addAlias(m.common_name);
+        addAlias(m.name);
+      }
+      aliases.sort(function(a, b) { return b.re.source.length - a.re.source.length; });
+      var out = expr;
+      for (var j = 0; j < aliases.length; j++) {
+        out = out.replace(aliases[j].re, aliases[j].repl);
+      }
+      return out;
+    }
+
+    /**
+     * Resolve expression: multi-asset keys → /stac/tiles; otherwise band names on one COG (/cog/tiles).
+     */
+    function normalizeExpressionForTitiler(raw, primaryAssetKey) {
+      var multi = substituteAssetKeysInExpression(raw, tileAssetKeys);
+      if (multi && multi.assets.length >= 2) {
+        return {
+          path: 'stac',
+          assets: multi.assets,
+          normalizedExpr: multi.expr,
+          multiAssetCount: multi.assets.length,
+          cogAssetKey: primaryAssetKey
+        };
+      }
+      if (multi && multi.assets.length === 1) {
+        var afterBand = substituteBandNamesInExpression(multi.expr, multi.assets[0]);
+        return {
+          path: 'cog',
+          assets: null,
+          normalizedExpr: afterBand,
+          multiAssetCount: 0,
+          cogAssetKey: multi.assets[0]
+        };
+      }
+      var norm = substituteBandNamesInExpression(raw, primaryAssetKey);
+      return {
+        path: 'cog',
+        assets: null,
+        normalizedExpr: norm,
+        multiAssetCount: 0,
+        cogAssetKey: primaryAssetKey
+      };
+    }
+
+    function applyExpressionModeAssetDefault() {
+      var sel = document.getElementById('stac-asset-select');
+      if (!sel || !sel.options.length) return;
+      var keys = [];
+      for (var i = 0; i < sel.options.length; i++) keys.push(sel.options[i].value);
+      var pool = keys.filter(function(k) { return !isPoorExpressionAssetKey(k); });
+      if (!pool.length) pool = keys;
+
+      var bestOver3 = null;
+      var bestCount = 0;
+      var bestKey = null;
+      var nonVisual = null;
+      for (var j = 0; j < pool.length; j++) {
+        var k = pool[j];
+        var n = bandCountForAssetKey(k);
+        if (n > bestCount) {
+          bestCount = n;
+          bestKey = k;
+        }
+        if (n > 3 && !bestOver3) bestOver3 = k;
+        if (nonVisual === null && String(k).toLowerCase() !== 'visual') nonVisual = k;
+      }
+      var pick = bestOver3 || (bestCount > 3 ? bestKey : null) || nonVisual || pool[0];
+      if (pick) sel.value = pick;
+      refreshBandSelectors();
+    }
+
+    function updateExpressionPreview() {
+      var ex = document.getElementById('stac-expression');
+      var prev = document.getElementById('stac-expression-preview');
+      var sel = document.getElementById('stac-asset-select');
+      if (!prev) return;
+      prev.style.color = '';
+      if (!ex || !sel || !ex.value.trim()) {
+        prev.textContent = '';
+        return;
+      }
+      var raw = ex.value.trim();
+      var n = normalizeExpressionForTitiler(raw, sel.value);
+      var vopts = n.multiAssetCount
+        ? { multiAssetCount: n.multiAssetCount }
+        : { assetKey: n.cogAssetKey };
+      var err = titilerExpressionValidationError(n.normalizedExpr, vopts);
+      var sub = n.normalizedExpr;
+      var bandHint;
+      if (n.path === 'stac' && n.assets && n.assets.length >= 2) {
+        bandHint = 'Multi-asset stack: ' + n.assets.join(' → ') + ' maps to b1…b' + n.assets.length + ' (one band per asset).';
+      } else {
+        var bc = bandCountForAssetKey(n.cogAssetKey);
+        bandHint = bc
+          ? ('COG "' + n.cogAssetKey + '" has ' + bc + ' band(s) in metadata.')
+          : ('No band metadata for "' + n.cogAssetKey + '": use b1, b2, … that exist on the COG.');
+      }
+      if (err) {
+        prev.style.color = '#cf222e';
+        prev.textContent = err + (sub !== raw ? (' — Resolved so far: ' + sub + '.') : '') + ' ' + bandHint;
+        return;
+      }
+      if (sub !== raw) {
+        prev.textContent = 'Titiler expression: ' + sub + ' — ' + bandHint;
+      } else {
+        prev.textContent = bandHint;
+      }
+    }
+
+    function bandLabel(i, meta) {
+      var idx = 'b' + String(i);
+      if (!meta || typeof meta !== 'object') return idx;
+      var common = meta.common_name ? String(meta.common_name) : '';
+      var name = meta.name ? String(meta.name) : '';
+      var desc = meta.description ? String(meta.description) : '';
+      var gsd = (meta.gsd !== undefined && meta.gsd !== null && meta.gsd !== '') ? String(meta.gsd) + 'm' : '';
+      var parts = [idx];
+      if (common) parts.push(common);
+      if (name) parts.push(name);
+      else if (desc) parts.push(desc);
+      if (gsd) parts.push(gsd);
+      return parts.join(' - ');
+    }
+
+    function populateBandSelect(selectEl, assetKey, chosenValue) {
+      if (!selectEl) return;
+      var prev = chosenValue || selectEl.value;
+      selectEl.innerHTML = '';
+      var meta = bandsMetaForAsset(assetKey);
+      if (meta.length) {
+        for (var i = 1; i <= meta.length; i++) {
+          var o = document.createElement('option');
+          o.value = String(i);
+          o.textContent = bandLabel(i, meta[i - 1]);
+          selectEl.appendChild(o);
+        }
+      } else {
+        // Avoid out-of-range errors when band count is unknown (e.g. 3-band visual assets).
+        var max = 3;
+        for (var j = 1; j <= max; j++) {
+          var o2 = document.createElement('option');
+          o2.value = String(j);
+          o2.textContent = 'b' + String(j);
+          selectEl.appendChild(o2);
+        }
+      }
+      if (prev && selectEl.querySelector('option[value=\"' + prev + '\"]')) selectEl.value = prev;
+    }
+
+    function refreshBandSelectors() {
+      // Only used for single-band mode; populate from the currently selected asset.
+      var assetSel = document.getElementById('stac-asset-select');
+      var assetKey = assetSel && assetSel.value ? assetSel.value : null;
+      populateBandSelect(document.getElementById('stac-band-r'), assetKey, '1');
+      populateBandSelect(document.getElementById('stac-band-g'), assetKey, '2');
+      populateBandSelect(document.getElementById('stac-band-b'), assetKey, '3');
+      populateBandSelect(document.getElementById('stac-band-single'), assetKey, '1');
+    }
+
+    function applyRescaleDefaultForMode(mode) {
+      var el = document.getElementById('stac-rescale');
+      if (!el) return;
+      if (mode === 'expression') el.value = '-1,1';
+      else if (mode === 'rgb_bands') el.value = '';
+      else el.value = '0,4000';
+    }
+
+    function setMode(mode, opts) {
+      opts = opts || {};
+      var rgbBands = document.getElementById('stac-rgb-bands-block');
+      var rgbAssets = document.getElementById('stac-rgb-assets-block');
+      var single = document.getElementById('stac-single-block');
+      var expr = document.getElementById('stac-expr-block');
+      var cmapBlock = document.getElementById('stac-colormap-block');
+      function show(el, on) { if (!el) return; el.classList.toggle('is-open', !!on); }
+      show(rgbBands, mode === 'rgb_bands');
+      show(rgbAssets, mode === 'rgb_assets');
+      show(single, mode === 'single');
+      show(expr, mode === 'expression');
+      show(cmapBlock, mode === 'single' || mode === 'expression');
+      if (!opts.skipRescaleDefault) applyRescaleDefaultForMode(mode);
+      if (mode === 'expression' && !opts.skipExpressionAssetDefault) applyExpressionModeAssetDefault();
+      updateExpressionPreview();
+    }
+
+    var modeEl = document.getElementById('stac-render-mode');
+    if (modeEl) {
+      setMode(modeEl.value, {});
+      modeEl.addEventListener('change', function() { setMode(this.value, {}); });
+    }
+
+    ['stac-band-r','stac-band-g','stac-band-b','stac-band-single','stac-expression','stac-rescale','stac-colormap','stac-asset-r','stac-asset-g','stac-asset-b'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', function() {
+        if (map && map.loaded()) addOrRefreshRaster();
+        scheduleStacViewerUrlPush();
+      });
+    });
+    var stacExprEl = document.getElementById('stac-expression');
+    if (stacExprEl) stacExprEl.addEventListener('input', function() {
+      updateExpressionPreview();
+      scheduleStacViewerUrlPush();
+    });
+
+    var assetSel = document.getElementById('stac-asset-select');
+    if (assetSel) assetSel.addEventListener('change', function() { refreshBandSelectors(); });
+    refreshBandSelectors();
+
+    function assetOptionLabel(assetKey) {
+      var meta = bandsMetaForAsset(assetKey);
+      if (!meta || !meta.length) return String(assetKey);
+      // For single-band assets, label by band metadata.
+      var m = meta[0];
+      var common = m && m.common_name ? String(m.common_name) : '';
+      var name = m && m.name ? String(m.name) : '';
+      var desc = m && m.description ? String(m.description) : '';
+      var gsd = (m && m.gsd !== undefined && m.gsd !== null && m.gsd !== '') ? String(m.gsd) + 'm' : '';
+      var parts = [];
+      if (name) parts.push(name);
+      else if (desc) parts.push(desc);
+      if (common) parts.push(common);
+      if (gsd) parts.push(gsd);
+      var tail = parts.length ? (' - ' + parts.join(' - ')) : '';
+      return String(assetKey) + tail;
+    }
+
+    function populateRgbAssetSelects() {
+      var rSel = document.getElementById('stac-asset-r');
+      var gSel = document.getElementById('stac-asset-g');
+      var bSel = document.getElementById('stac-asset-b');
+      if (!rSel || !gSel || !bSel) return;
+      var assets = stacItem.assets && typeof stacItem.assets === 'object' ? stacItem.assets : {};
+      var keys = Object.keys(assets).filter(function(k) { return k !== 'visual' && k !== 'thumbnail' && k !== 'preview'; });
+      function fill(sel) {
+        sel.innerHTML = '';
+        keys.forEach(function(k) {
+          var opt = document.createElement('option');
+          opt.value = k;
+          opt.textContent = assetOptionLabel(k);
+          sel.appendChild(opt);
+        });
+      }
+      fill(rSel); fill(gSel); fill(bSel);
+
+      function pickByCommon(want) {
+        want = String(want).toLowerCase();
+        for (var i = 0; i < keys.length; i++) {
+          var k = keys[i];
+          var meta = bandsMetaForAsset(k);
+          if (meta && meta[0] && meta[0].common_name && String(meta[0].common_name).toLowerCase() === want) return k;
+        }
+        return null;
+      }
+      function pickByKeyRegex(rx) {
+        for (var i = 0; i < keys.length; i++) {
+          var k = keys[i];
+          if (rx.test(String(k).toLowerCase())) return k;
+        }
+        return null;
+      }
+      function fallbackTopN(n) {
+        // Avoid common QA/mask products as defaults (often look black).
+        var bad = /(^|[^a-z])(aot|scl|wvp|qa|mask|cloud|snow|cirrus)([^a-z]|$)/i;
+        var good = keys.filter(function(k) { return !bad.test(String(k)); });
+        var use = good.length ? good : keys;
+        return use.slice(0, n);
+      }
+
+      var mainAssetSel = document.getElementById('stac-asset-select');
+      var preferTrueColor = mainAssetSel && String(mainAssetSel.value || '').toLowerCase() === 'visual';
+
+      var blue = pickByCommon('blue') || pickByKeyRegex(/(^|[^a-z])blue([^a-z]|$)/) || pickByKeyRegex(/(^|[^a-z])b02([^a-z]|$)/);
+      var green = pickByCommon('green') || pickByKeyRegex(/(^|[^a-z])green([^a-z]|$)/) || pickByKeyRegex(/(^|[^a-z])b03([^a-z]|$)/);
+      var red = pickByCommon('red') || pickByKeyRegex(/(^|[^a-z])red([^a-z]|$)/) || pickByKeyRegex(/(^|[^a-z])b04([^a-z]|$)/);
+      var nir = pickByCommon('nir') || pickByKeyRegex(/(^|[^a-z])nir([^a-z]|$)/) || pickByKeyRegex(/(^|[^a-z])b08([^a-z]|$)/);
+
+      if (preferTrueColor) {
+        if (red) rSel.value = red;
+        if (green) gSel.value = green;
+        if (blue) bSel.value = blue;
+      } else {
+        // Default false color: NIR, Red, Green (if present).
+        if (nir) rSel.value = nir;
+        if (red) gSel.value = red;
+        if (green) bSel.value = green;
+      }
+
+      // Final fallback: pick 3 non-QA-ish assets so we don't default to AOT.
+      var picked = fallbackTopN(3);
+      if (!rSel.value && picked[0]) rSel.value = picked[0];
+      if (!gSel.value && picked[1]) gSel.value = picked[1];
+      if (!bSel.value && picked[2]) bSel.value = picked[2];
+    }
+
+    populateRgbAssetSelects();
+    initColorFormulaPanel();
+    applyStacViewerParamsFromUrl();
+    bindStacViewerUrlSync();
+
+    // Removed: default rescale autofill and compute-range button wiring.
+
   </script>
 {% endblock %}

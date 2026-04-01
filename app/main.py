@@ -64,6 +64,9 @@ async def lifespan(app: FastAPI):
                 must_change_password=True,
             )
     yield
+    from app.services.titiler_http import close_titiler_http_client
+
+    await close_titiler_http_client()
 
 
 async def http_exception_redirect_to_login(request: Request, exc):

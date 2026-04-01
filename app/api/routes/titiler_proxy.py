@@ -13,6 +13,7 @@ from app.core.permissions import can_see_collection
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.db.session import get_db
+from app.services.titiler_http import get_titiler_http_client
 
 router = APIRouter()
 
@@ -79,10 +80,9 @@ async def titiler_proxy_tile(
     params = dict(request.query_params)
     params["url"] = cog_url
 
-    timeout = float(settings.stac_search_http_timeout_seconds)
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            r = await client.get(f"{base}{forward_path}", params=params)
+        client = get_titiler_http_client()
+        r = await client.get(f"{base}{forward_path}", params=params)
     except httpx.RequestError as e:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

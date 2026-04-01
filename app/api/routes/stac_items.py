@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,14 +14,38 @@ from app.core.html import html_response, wants_html
 from app.crud import stac_catalogs as stac_catalogs_crud
 from app.db.session import get_db
 from app.services.stac_item_client import (
+    StacCatalogRef,
     default_tile_asset_key,
     get_asset_href,
     get_stac_item_cached,
     get_thumbnail_href,
     list_tile_assets,
 )
+from app.services.titiler_http import get_titiler_http_client
+from app.services.titiler_tile_cache import cache_key_for_titiler_request, get_cached_tile, set_cached_tile
 
 router = APIRouter()
+
+# Hot path: tile requests must not query Postgres every time (browser limits ~6 concurrent connections
+# per host; DB pool + session work per tile was a major bottleneck).
+_CATALOG_REF_CACHE: dict[str, tuple[float, StacCatalogRef]] = {}
+_CATALOG_REF_CACHE_TTL = 120.0
+_CATALOG_REF_LOCK = asyncio.Lock()
+
+
+async def _get_enabled_catalog_ref_for_tiles(db: AsyncSession, catalog_id: str) -> StacCatalogRef:
+    now = time.monotonic()
+    async with _CATALOG_REF_LOCK:
+        hit = _CATALOG_REF_CACHE.get(catalog_id)
+        if hit and (now - hit[0]) < _CATALOG_REF_CACHE_TTL:
+            return hit[1]
+    row = await stac_catalogs_crud.get_catalog(db, catalog_id)
+    if row is None or not row.enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="STAC catalog not found")
+    ref = StacCatalogRef(id=row.id, stac_api_root_url=row.stac_api_root_url)
+    async with _CATALOG_REF_LOCK:
+        _CATALOG_REF_CACHE[catalog_id] = (now, ref)
+    return ref
 
 
 async def _get_enabled_catalog(db: AsyncSession, catalog_id: str):
@@ -84,7 +111,7 @@ async def stac_item_detail(
 @router.get(
     "/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}/titiler/tiles/{tile_matrix_set_id}/{z:int}/{x:int}/{y:int}.{ext}",
     summary="Proxy STAC asset to Titiler (raster tiles)",
-    description="Requires TITILER_INTERNAL_URL. Query param `asset` selects the STAC asset key; other params are forwarded to Titiler (bidx, rescale, etc.).",
+    description="Requires TITILER_INTERNAL_URL. Either query param `asset` (single asset via /cog/tiles) or repeated `assets` (multi-asset via /stac/tiles). Other params are forwarded to Titiler (bidx, rescale, expression, color_formula, etc.).",
 )
 async def stac_item_titiler_tile(
     request: Request,
@@ -96,11 +123,9 @@ async def stac_item_titiler_tile(
     x: int,
     y: int,
     ext: str,
-    asset: str,
+    asset: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    if not asset or not asset.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query param `asset` is required")
     settings = get_settings()
     base_t = settings.titiler_internal_url.rstrip("/")
     if not base_t:
@@ -109,10 +134,9 @@ async def stac_item_titiler_tile(
             detail="Titiler not configured (set TITILER_INTERNAL_URL)",
         )
 
-    catalog = await _get_enabled_catalog(db, catalog_id)
+    catalog_ref = await _get_enabled_catalog_ref_for_tiles(db, catalog_id)
     try:
-        item = await get_stac_item_cached(catalog, collection_id, item_id)
-        cog_url = get_asset_href(item, asset.strip())
+        item = await get_stac_item_cached(catalog_ref, collection_id, item_id)
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown or invalid asset key")
     except ValueError as e:
@@ -123,31 +147,242 @@ async def stac_item_titiler_tile(
             detail=f"Could not load STAC item: {e!s}",
         ) from e
 
-    forward_path = f"/cog/tiles/{tile_matrix_set_id}/{z}/{x}/{y}.{ext}"
-    param_pairs: list[tuple[str, str]] = [
-        (k, v) for k, v in request.query_params.multi_items() if k != "asset"
-    ]
-    param_pairs.append(("url", cog_url))
+    # If `assets` is provided (repeat param), proxy through Titiler's /stac/tiles (multi-asset).
+    requested_assets = [v for (k, v) in request.query_params.multi_items() if k == "assets" and v]
+    if requested_assets:
+        # Prefer upstream item self href if present; otherwise build from catalog root.
+        item_url = None
+        try:
+            for L in item.get("links") or []:
+                if isinstance(L, dict) and L.get("rel") == "self" and L.get("href"):
+                    item_url = str(L["href"])
+                    break
+        except Exception:
+            item_url = None
+        if not item_url:
+            item_url = f"{catalog_ref.stac_api_root_url.rstrip('/')}/collections/{collection_id}/items/{item_id}"
 
-    timeout = float(settings.stac_search_http_timeout_seconds)
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        forward_path = f"/stac/tiles/{tile_matrix_set_id}/{z}/{x}/{y}.{ext}"
+        param_pairs: list[tuple[str, str]] = [
+            (k, v) for k, v in request.query_params.multi_items() if k not in ("asset",)
+        ]
+        # Ensure required params exist.
+        param_pairs.append(("url", item_url))
+        # Always pass assets (repeat).
+        # (They are already in param_pairs, but we keep them as-is.)
+    else:
+        if not asset or not str(asset).strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query param `asset` (or `assets`) is required")
+        cog_url = get_asset_href(item, str(asset).strip())
+        forward_path = f"/cog/tiles/{tile_matrix_set_id}/{z}/{x}/{y}.{ext}"
+        param_pairs = [(k, v) for k, v in request.query_params.multi_items() if k != "asset"]
+        param_pairs.append(("url", cog_url))
+
+    cache_key = cache_key_for_titiler_request(forward_path, param_pairs)
+    cached = get_cached_tile(cache_key)
+    if cached is not None:
+        body, ct = cached
+        return Response(
+            content=body,
+            media_type=ct,
+            headers={
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=86400",
+                "X-Tile-Cache": "HIT",
+                "X-Titiler-Upstream-Ms": "0",
+                "X-Titiler-Upstream-Attempts": "0",
+            },
+        )
+
+    client = get_titiler_http_client()
+    r: httpx.Response | None = None
+    titiler_upstream_ms = 0.0
+    titiler_attempts = 0
+    for attempt in range(2):
+        t0 = time.perf_counter()
+        try:
             r = await client.get(f"{base_t}{forward_path}", params=param_pairs)
-    except httpx.RequestError as e:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Titiler request failed: {e}",
-        ) from e
+        except httpx.RequestError as e:
+            titiler_attempts += 1
+            titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
+            if attempt == 0:
+                await asyncio.sleep(0.08)
+                continue
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Titiler request failed: {e}",
+                headers={
+                    "X-Titiler-Upstream-Ms": str(max(0, int(round(titiler_upstream_ms)))),
+                    "X-Titiler-Upstream-Attempts": str(titiler_attempts),
+                },
+            ) from e
+        titiler_attempts += 1
+        titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
+        if r.status_code in (502, 503, 504) and attempt == 0:
+            await asyncio.sleep(0.08)
+            continue
+        break
+    assert r is not None
+
+    ms_header = str(max(0, int(round(titiler_upstream_ms))))
+    att_header = str(titiler_attempts)
 
     if r.status_code >= 400:
         raise HTTPException(
             status_code=r.status_code,
             detail=r.text[:2000] if r.text else "Titiler error",
+            headers={
+                "X-Titiler-Upstream-Ms": ms_header,
+                "X-Titiler-Upstream-Attempts": att_header,
+            },
         )
 
     ct = r.headers.get("content-type", "image/png")
+    set_cached_tile(cache_key, r.content, ct)
     return Response(
         content=r.content,
         media_type=ct,
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=86400",
+            "X-Titiler-Upstream-Ms": ms_header,
+            "X-Titiler-Upstream-Attempts": att_header,
+        },
     )
+
+
+@router.get(
+    "/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}/titiler/suggest-rescale",
+    summary="Suggest rescale for Titiler rendering (percentiles)",
+)
+async def stac_item_titiler_suggest_rescale(
+    request: Request,
+    catalog_id: str,
+    collection_id: str,
+    item_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Compute a reasonable `rescale=min,max` suggestion using Titiler statistics percentiles.
+
+    Supports either:
+    - `asset=<key>` + optional repeated `bidx=<n>` (defaults to 1..3 when absent)
+    - repeated `assets=<key>` (RGB assets mode) + `asset_as_band=true`
+    """
+    settings = get_settings()
+    base_t = settings.titiler_internal_url.rstrip("/")
+    if not base_t:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Titiler not configured")
+
+    catalog_ref = await _get_enabled_catalog_ref_for_tiles(db, catalog_id)
+    try:
+        item = await get_stac_item_cached(catalog_ref, collection_id, item_id)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Could not load STAC item: {e!s}") from e
+
+    q = request.query_params
+    assets = [v for (k, v) in q.multi_items() if k == "assets" and v]
+    asset = q.get("asset")
+    bidx_list = [v for (k, v) in q.multi_items() if k == "bidx" and v]
+
+    # Percentiles
+    params: list[tuple[str, str]] = [("p", "2"), ("p", "98")]
+
+    if assets:
+        # /stac/statistics
+        item_url = None
+        try:
+            for L in item.get("links") or []:
+                if isinstance(L, dict) and L.get("rel") == "self" and L.get("href"):
+                    item_url = str(L["href"])
+                    break
+        except Exception:
+            item_url = None
+        if not item_url:
+            item_url = f"{catalog_ref.stac_api_root_url.rstrip('/')}/collections/{collection_id}/items/{item_id}"
+        params.append(("url", item_url))
+        for a in assets:
+            params.append(("assets", a))
+        if q.get("asset_as_band"):
+            params.append(("asset_as_band", q.get("asset_as_band") or "true"))
+        stats_url = f"{base_t}/stac/statistics"
+    else:
+        # /cog/statistics
+        if not asset:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provide `asset` or repeated `assets`")
+        cog_url = get_asset_href(item, asset.strip())
+        params.append(("url", cog_url))
+        if bidx_list:
+            for b in bidx_list:
+                params.append(("bidx", b))
+        else:
+            params.extend([("bidx", "1"), ("bidx", "2"), ("bidx", "3")])
+        stats_url = f"{base_t}/cog/statistics"
+
+    try:
+        client = get_titiler_http_client()
+        r = await client.get(stats_url, params=params, headers={"Accept": "application/json"})
+        r.raise_for_status()
+        data = r.json()
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Titiler statistics failed: {e!s}") from e
+
+    # Titiler returns per-band/asset stats; derive one combined min/max to match our single rescale input.
+    def _float(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    def _pick_percentile(perc: object, key: str) -> float | None:
+        """Extract percentile value from common Titiler shapes."""
+        if isinstance(perc, dict):
+            for k in (key, f"{key}.0", f"{int(key):d}", f"p{key}"):
+                if k in perc:
+                    return _float(perc.get(k))
+        if isinstance(perc, list):
+            # Rare shapes: [{"percentile": 2, "value": ...}, ...] or [[2, ...], ...]
+            for entry in perc:
+                if isinstance(entry, dict) and "percentile" in entry and "value" in entry:
+                    if str(entry.get("percentile")) in (key, f"{key}.0"):
+                        return _float(entry.get("value"))
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    if str(entry[0]) in (key, f"{key}.0"):
+                        return _float(entry[1])
+        return None
+
+    mins: list[float] = []
+    maxs: list[float] = []
+
+    # Common shapes:
+    # - { "statistics": { "1": { "percentile_2": .., "percentile_98": .. }, ... } }
+    # - { "statistics": [ { "percentile_2": .., "percentile_98": .. }, ... ] }
+    stats = data.get("statistics") if isinstance(data, dict) else None
+    if isinstance(stats, dict):
+        for v in stats.values():
+            if not isinstance(v, dict):
+                continue
+            perc = v.get("percentiles")
+            lo = _pick_percentile(perc, "2") or _float(v.get("percentile_2") or v.get("percentile_02") or v.get("p2"))
+            hi = _pick_percentile(perc, "98") or _float(v.get("percentile_98") or v.get("p98"))
+            if lo is not None and hi is not None:
+                mins.append(lo)
+                maxs.append(hi)
+    elif isinstance(stats, list):
+        for v in stats:
+            if not isinstance(v, dict):
+                continue
+            perc = v.get("percentiles")
+            lo = _pick_percentile(perc, "2") or _float(v.get("percentile_2") or v.get("percentile_02") or v.get("p2"))
+            hi = _pick_percentile(perc, "98") or _float(v.get("percentile_98") or v.get("p98"))
+            if lo is not None and hi is not None:
+                mins.append(lo)
+                maxs.append(hi)
+
+    if not mins or not maxs:
+        return {"suggested": "", "detail": "No percentile stats returned"}
+
+    lo = min(mins)
+    hi = max(maxs)
+    # Clamp nonsensical ranges
+    if hi <= lo:
+        return {"suggested": "", "detail": "Invalid percentile range"}
+    return {"suggested": f"{lo:.0f},{hi:.0f}", "p2": lo, "p98": hi}

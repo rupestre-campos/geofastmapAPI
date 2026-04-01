@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     titiler_internal_secret: str = ""
     # Base URL reachable from the Titiler container for internal COG fetch (e.g. http://api:8000).
     raster_internal_fetch_base_url: str = ""
+    # Redis cache for proxied Titiler raster tiles (STAC item viewer). 0 = disabled.
+    # Cold tiles still cost GDAL+network; repeats (pan/zoom back) hit Redis ~1–5 ms.
+    titiler_tile_cache_ttl_seconds: int = 3600
+    # Do not store responses larger than this (bytes); avoids huge entries from mistakes.
+    titiler_tile_cache_max_body_bytes: int = 4 * 1024 * 1024
     # Federated STAC Item Search: Redis cache TTL (seconds). 0 = no cache.
     stac_search_cache_ttl_seconds: int = 300
     stac_search_http_timeout_seconds: float = 60.0

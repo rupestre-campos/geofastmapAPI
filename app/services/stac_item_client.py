@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, NamedTuple, Union
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -15,16 +15,25 @@ from app.models.stac_catalog import StacCatalog
 _CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_LOCK = asyncio.Lock()
 _CACHE_TTL = 90.0
+# Single-flight: concurrent tile requests share one upstream STAC GET per cache key.
+_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
 
 
-def stac_item_href(catalog: StacCatalog, collection_id: str, item_id: str) -> str:
+class StacCatalogRef(NamedTuple):
+    """Minimal catalog fields for STAC item fetch (avoids ORM / DB on hot tile paths when cached)."""
+
+    id: str
+    stac_api_root_url: str
+
+
+def stac_item_href(catalog: Union[StacCatalog, StacCatalogRef], collection_id: str, item_id: str) -> str:
     root = catalog.stac_api_root_url.rstrip("/")
     c = quote(collection_id, safe="")
     i = quote(item_id, safe="")
     return f"{root}/collections/{c}/items/{i}"
 
 
-async def fetch_stac_item_json(catalog: StacCatalog, collection_id: str, item_id: str) -> dict[str, Any]:
+async def fetch_stac_item_json(catalog: Union[StacCatalog, StacCatalogRef], collection_id: str, item_id: str) -> dict[str, Any]:
     """GET Item JSON from upstream STAC API."""
     url = stac_item_href(catalog, collection_id, item_id)
     timeout = get_settings().stac_search_http_timeout_seconds
@@ -37,17 +46,30 @@ async def fetch_stac_item_json(catalog: StacCatalog, collection_id: str, item_id
     return data
 
 
-async def get_stac_item_cached(catalog: StacCatalog, collection_id: str, item_id: str) -> dict[str, Any]:
+async def get_stac_item_cached(catalog: Union[StacCatalog, StacCatalogRef], collection_id: str, item_id: str) -> dict[str, Any]:
     key = f"{catalog.id}:{collection_id}:{item_id}"
     now = time.monotonic()
     async with _CACHE_LOCK:
         hit = _CACHE.get(key)
         if hit and (now - hit[0]) < _CACHE_TTL:
             return hit[1]
-    data = await fetch_stac_item_json(catalog, collection_id, item_id)
-    async with _CACHE_LOCK:
-        _CACHE[key] = (now, data)
-    return data
+        if key not in _INFLIGHT:
+
+            async def _fetch_and_store() -> dict[str, Any]:
+                try:
+                    data = await fetch_stac_item_json(catalog, collection_id, item_id)
+                except BaseException:
+                    async with _CACHE_LOCK:
+                        _INFLIGHT.pop(key, None)
+                    raise
+                async with _CACHE_LOCK:
+                    _CACHE[key] = (time.monotonic(), data)
+                    _INFLIGHT.pop(key, None)
+                return data
+
+            _INFLIGHT[key] = asyncio.create_task(_fetch_and_store())
+        task = _INFLIGHT[key]
+    return await task
 
 
 def _looks_private_or_loopback_host(host: str) -> bool:

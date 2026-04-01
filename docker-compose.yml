@@ -1,3 +1,21 @@
+# Single TiTiler process (stock image = one uvicorn worker). Parallelism: GDAL_CACHEMAX + RIO_TILER_MAX_THREADS.
+# Target host footprint ~4 CPUs / 8G for this container — adjust cpus/mem_* if needed.
+x-titiler-env: &titiler_env
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  CPL_TMPDIR: "/tmp"
+  PYTHONWARNINGS: "ignore"
+  GDAL_CACHEMAX: "75%"
+  GDAL_INGESTED_BYTES_AT_OPEN: "65536"
+  GDAL_DISABLE_READDIR_ON_OPEN: "EMPTY_DIR"
+  GDAL_HTTP_MERGE_CONSECUTIVE_RANGES: "YES"
+  GDAL_HTTP_MULTIPLEX: "YES"
+  GDAL_HTTP_VERSION: "2"
+  VSI_CACHE: "TRUE"
+  VSI_CACHE_SIZE: "536870912"
+  CPL_VSIL_CURL_CACHE_SIZE: "536870912"
+  RIO_TILER_MAX_THREADS: "16"
+
 services:
   db:
     image: postgis/postgis:16-3.4-alpine
@@ -53,6 +71,8 @@ services:
       TILES_STORAGE_PATH: /data/tiles
       RASTER_STORAGE_PATH: /data/rasters
       TITILER_INTERNAL_URL: http://titiler:8000
+      # Redis-backed cache for STAC Titiler proxy tiles (repeat pan/zoom); 0 disables.
+      TITILER_TILE_CACHE_TTL_SECONDS: "3600"
       RASTER_INTERNAL_FETCH_BASE_URL: http://api:8000
       TITILER_INTERNAL_SECRET: dev-titiler-internal-secret-change-in-production
       ENVIRONMENT: docker
@@ -146,11 +166,19 @@ services:
     volumes:
       - geofastmap_rasters:/data/rasters
     environment:
-      HOST: 0.0.0.0
-      PORT: 8000
-    # Not exposed to host; API proxies with auth. Internal port 8000.
+      <<: *titiler_env
     expose:
       - "8000"
+    cpus: "4"
+    mem_limit: 8g
+    mem_reservation: 2g
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+        reservations:
+          memory: 2G
 
 volumes:
   geofastmap_pgdata:

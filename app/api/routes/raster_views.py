@@ -15,6 +15,7 @@ from app.core.config import get_settings
 from app.core.permissions import can_see_raster_view
 from app.crud import raster_views as raster_views_crud
 from app.db.session import get_db
+from app.services.titiler_http import get_titiler_http_client
 from app.models.collection import VISIBILITY_PRIVATE
 from app.models.user import User
 
@@ -121,10 +122,9 @@ async def titiler_mosaic_tile(
     params = dict(request.query_params)
     params["url"] = mosaic_url
 
-    timeout = float(settings.stac_search_http_timeout_seconds)
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            r = await client.get(f"{base}{forward_path}", params=params)
+        client = get_titiler_http_client()
+        r = await client.get(f"{base}{forward_path}", params=params)
     except httpx.RequestError as e:
         raise HTTPException(status_code=502, detail=f"Titiler request failed: {e}") from e
 
