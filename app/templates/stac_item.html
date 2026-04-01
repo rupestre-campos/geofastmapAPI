@@ -140,6 +140,22 @@
     <p class="stac-item-meta">Collection <code>{{ collection_id }}</code> · Catalog <code>{{ catalog_id }}</code></p>
   </header>
 
+  {% if username %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <button type="button" class="btn btn-primary" id="btn-stac-add-to-map" {% if not titiler_configured or not tile_assets %}disabled{% endif %}>Add to map</button>
+      </div>
+    </div>
+    {% if not titiler_configured or not tile_assets %}
+    <p class="meta" style="margin:0;">Add to map requires Titiler and at least one raster-capable asset on this item.</p>
+    {% else %}
+    <p class="meta" style="margin:0;">Adds the current preview (asset, bands, rescale, expression, etc.) as a raster layer on a map.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
   {% set amap = stac_item.assets if stac_item.assets is mapping else {} %}
   <div class="card">
     <details class="stac-download-details">
@@ -423,6 +439,46 @@
       </div>
     </div>
   </div>
+
+  {% if username %}
+  <div id="stac-add-to-map-modal" class="modal" role="dialog" aria-hidden="true">
+    <div class="modal-backdrop" id="stac-add-to-map-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">Add this imagery to a map</h3>
+        <button type="button" class="modal-close" id="stac-add-to-map-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="meta">Uses the <strong>current</strong> Titiler settings from this page (Apply updates the URL used for tiles).</p>
+        <div class="form-row" style="margin-top:12px;">
+          <label><input type="radio" name="stac-add-to-map-choice" value="new" checked> Create new map</label>
+        </div>
+        <div class="form-row">
+          <label><input type="radio" name="stac-add-to-map-choice" value="existing"> Add to existing map</label>
+        </div>
+        <div class="form-row" id="stac-add-to-map-new-wrap">
+          <label>Map name</label>
+          <input type="text" id="stac-add-to-map-name" placeholder="STAC imagery" style="width:100%;max-width:320px;">
+        </div>
+        <div class="form-row" id="stac-add-to-map-existing-wrap" style="display:none;">
+          <label>Existing map</label>
+          <select id="stac-add-to-map-select" style="min-width:200px;"></select>
+        </div>
+        <div class="form-row" id="stac-add-to-map-public-wrap" style="display:none;margin-top:10px;">
+          <label style="display:flex;gap:8px;align-items:flex-start;max-width:36rem;">
+            <input type="checkbox" id="stac-add-to-map-public-grant" style="margin-top:4px;">
+            <span>This map is <strong>public</strong>. Allow anyone viewing the map to load this imagery anonymously (we record that you approved this).</span>
+          </label>
+        </div>
+        <div class="btn-group" style="margin-top:16px;">
+          <button type="button" class="btn btn-primary" id="stac-add-to-map-submit">Add</button>
+          <button type="button" class="btn" id="stac-add-to-map-cancel">Cancel</button>
+        </div>
+        <p id="stac-add-to-map-message" class="meta" style="margin-top:8px;"></p>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   <div class="card">
     <h2 class="card-title">Properties</h2>
@@ -1571,7 +1627,204 @@
     applyStacViewerParamsFromUrl();
     bindStacViewerUrlSync();
 
-    // Removed: default rescale autofill and compute-range button wiring.
+    function stacLayerIdForMap() {
+      return 'stac-' + String(catalogId).replace(/[^a-zA-Z0-9_-]/g, '_') + '-' + String(collectionId).replace(/[^a-zA-Z0-9_-]/g, '_') + '-' + String(itemId).replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
+    function getStacTitilerUrlForMapLayer() {
+      if (!titilerConfigured || !tileAssetsLen) return '';
+      var sel = document.getElementById('stac-asset-select');
+      if (!sel || !sel.value) return '';
+      return buildTileUrl(sel.value);
+    }
+    function newStacRasterLayerPayload() {
+      var tu = getStacTitilerUrlForMapLayer();
+      if (!tu) throw new Error('Could not build tile URL. Set preview options and use Apply so the URL matches what you want.');
+      var viewerPath = '/stac/catalogs/' + encodeURIComponent(catalogId) + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(itemId) + '?f=html';
+      return {
+        collection_id: '_stac',
+        order: 0,
+        style_spec: { rasterOpacity: 1 },
+        popup: false,
+        tiles_url: tu,
+        layer_id: stacLayerIdForMap(),
+        raster_tiles: true,
+        stac_catalog_id: catalogId,
+        stac_collection_id: collectionId,
+        stac_item_id: itemId,
+        stac_viewer_path: viewerPath
+      };
+    }
+
+    (function() {
+      var btn = document.getElementById('btn-stac-add-to-map');
+      if (!btn) return;
+      var modal = document.getElementById('stac-add-to-map-modal');
+      var backdrop = document.getElementById('stac-add-to-map-backdrop');
+      var closeBtn = document.getElementById('stac-add-to-map-close');
+      var cancelBtn = document.getElementById('stac-add-to-map-cancel');
+      var nameInput = document.getElementById('stac-add-to-map-name');
+      var mapSelect = document.getElementById('stac-add-to-map-select');
+      var newWrap = document.getElementById('stac-add-to-map-new-wrap');
+      var existingWrap = document.getElementById('stac-add-to-map-existing-wrap');
+      var publicWrap = document.getElementById('stac-add-to-map-public-wrap');
+      var publicGrantCb = document.getElementById('stac-add-to-map-public-grant');
+      var submitBtn = document.getElementById('stac-add-to-map-submit');
+      var msgEl = document.getElementById('stac-add-to-map-message');
+      function closeModal() { if (modal) modal.setAttribute('aria-hidden', 'true'); }
+      function updatePublicGrantUi() {
+        if (!publicWrap) return;
+        var choice = document.querySelector('input[name="stac-add-to-map-choice"]:checked');
+        if (!choice || choice.value !== 'existing') {
+          publicWrap.style.display = 'none';
+          return;
+        }
+        var opt = mapSelect && mapSelect.options[mapSelect.selectedIndex];
+        var vis = opt && opt.getAttribute('data-visibility');
+        publicWrap.style.display = vis === 'public' ? 'block' : 'none';
+        if (vis !== 'public' && publicGrantCb) publicGrantCb.checked = false;
+      }
+      btn.onclick = function() {
+        if (!titilerConfigured || !tileAssetsLen) return;
+        try { scheduleStacViewerUrlPush(); } catch (e) {}
+        msgEl.textContent = '';
+        nameInput.value = 'STAC: ' + itemId;
+        document.querySelector('input[name="stac-add-to-map-choice"][value="new"]').checked = true;
+        newWrap.style.display = '';
+        existingWrap.style.display = 'none';
+        if (publicWrap) publicWrap.style.display = 'none';
+        modal.setAttribute('aria-hidden', 'false');
+        mapSelect.innerHTML = '<option value="">Loading…</option>';
+        fetch(base + '/maps', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var list = data.maps || [];
+            mapSelect.innerHTML = list.length ? '' : '<option value="">No maps yet</option>';
+            list.forEach(function(m) {
+              var opt = document.createElement('option');
+              opt.value = m.id;
+              opt.setAttribute('data-visibility', m.visibility || 'private');
+              opt.textContent = (m.name || m.id) + (m.visibility === 'public' ? ' (public)' : '');
+              mapSelect.appendChild(opt);
+            });
+            updatePublicGrantUi();
+          })
+          .catch(function() { mapSelect.innerHTML = '<option value="">Load failed</option>'; });
+      };
+      backdrop.onclick = closeModal;
+      closeBtn.onclick = closeModal;
+      cancelBtn.onclick = closeModal;
+      document.querySelectorAll('input[name="stac-add-to-map-choice"]').forEach(function(r) {
+        r.onchange = function() {
+          newWrap.style.display = this.value === 'new' ? '' : 'none';
+          existingWrap.style.display = this.value === 'existing' ? '' : 'none';
+          updatePublicGrantUi();
+        };
+      });
+      if (mapSelect) mapSelect.onchange = updatePublicGrantUi;
+      submitBtn.onclick = function() {
+        var choice = document.querySelector('input[name="stac-add-to-map-choice"]:checked');
+        if (!choice) return;
+        msgEl.textContent = '';
+        msgEl.style.color = '';
+        var layerPayload;
+        try {
+          layerPayload = newStacRasterLayerPayload();
+        } catch (e) {
+          msgEl.textContent = e.message || String(e);
+          msgEl.style.color = 'var(--danger)';
+          return;
+        }
+        if (choice.value === 'new') {
+          var nm = nameInput.value.trim() || ('STAC: ' + itemId);
+          submitBtn.disabled = true;
+          msgEl.textContent = 'Creating map…';
+          fetch(base + '/maps', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({
+              name: nm,
+              description: null,
+              thumbnail: null,
+              definition: { layers: [layerPayload], bbox: null, basemap: null }
+            })
+          })
+            .then(function(r) {
+              if (!r.ok) return r.json().then(function(j) { throw j; });
+              return r.json();
+            })
+            .then(function(data) {
+              window.location.href = base + '/maps/' + data.id + '/edit?f=html';
+            })
+            .catch(function(e) {
+              msgEl.textContent = 'Error: ' + (e.detail || (e.message || JSON.stringify(e)));
+              msgEl.style.color = 'var(--danger)';
+              submitBtn.disabled = false;
+            });
+          return;
+        }
+        var mapId = mapSelect.value;
+        if (!mapId) { msgEl.textContent = 'Select a map.'; msgEl.style.color = 'var(--danger)'; return; }
+        var opt = mapSelect.options[mapSelect.selectedIndex];
+        var mapVis = opt && opt.getAttribute('data-visibility');
+        function putLayer() {
+          submitBtn.disabled = true;
+          msgEl.textContent = 'Adding layer…';
+          fetch(base + '/maps/' + mapId, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+            .then(function(r) {
+              if (!r.ok) throw new Error('Map not found');
+              return r.json();
+            })
+            .then(function(mapData) {
+              var def = mapData.definition || {};
+              var layers = Array.isArray(def.layers) ? def.layers.slice() : [];
+              var layer = layerPayload;
+              layer.order = layers.length;
+              layers.push(layer);
+              return fetch(base + '/maps/' + mapId, {
+                method: 'PUT',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ definition: { layers: layers, bbox: def.bbox || null, basemap: def.basemap || null } })
+              });
+            })
+            .then(function(r) {
+              if (!r.ok) return r.json().then(function(j) { throw j; });
+              window.location.href = base + '/maps/' + mapId + '/edit?f=html';
+            })
+            .catch(function(e) {
+              msgEl.textContent = 'Error: ' + (e.detail || (e.message || JSON.stringify(e)));
+              msgEl.style.color = 'var(--danger)';
+              submitBtn.disabled = false;
+            });
+        }
+        if (mapVis === 'public') {
+          if (!publicGrantCb || !publicGrantCb.checked) {
+            msgEl.textContent = 'This map is public. Check the box to allow anonymous viewers to load this imagery, or pick a non-public map.';
+            msgEl.style.color = 'var(--danger)';
+            return;
+          }
+          submitBtn.disabled = true;
+          msgEl.textContent = 'Recording approval…';
+          fetch(base + '/stac/catalogs/' + encodeURIComponent(catalogId) + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(itemId) + '/public-tile-grant', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' }
+          })
+            .then(function(r) {
+              if (!r.ok) return r.json().then(function(j) { throw j; });
+              return putLayer();
+            })
+            .catch(function(e) {
+              msgEl.textContent = 'Error: ' + (e.detail || (e.message || JSON.stringify(e)));
+              msgEl.style.color = 'var(--danger)';
+              submitBtn.disabled = false;
+            });
+        } else {
+          putLayer();
+        }
+      };
+    })();
 
   </script>
 {% endblock %}

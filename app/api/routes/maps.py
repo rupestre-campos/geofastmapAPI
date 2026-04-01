@@ -48,7 +48,7 @@ def _map_layer_collection_ids(definition: dict | None) -> list[str]:
         if not isinstance(lyr, dict):
             continue
         cid = lyr.get("collection_id") or lyr.get("collectionId")
-        if cid and isinstance(cid, str) and cid not in seen:
+        if cid and isinstance(cid, str) and cid != "_stac" and cid not in seen:
             seen.add(cid)
             out.append(cid)
     return out
@@ -63,7 +63,7 @@ async def _can_edit_by_collection_for_map_layers(
     out: dict[str, bool] = {}
     for lyr in (definition or {}).get("layers") or []:
         cid = lyr.get("collection_id") or lyr.get("collectionId")
-        if not cid or cid in out:
+        if not cid or cid == "_stac" or cid in out:
             continue
         coll = await collections_crud.get_collection(db, cid)
         if coll:
@@ -83,6 +83,7 @@ def _map_to_read(m, base: str | None = None) -> dict:
         "description": m.description,
         "thumbnail": thumbnail,
         "definition": m.definition or {},
+        "visibility": getattr(m, "visibility", "private"),
         "created_at": m.created_at.isoformat() + "Z" if isinstance(m.created_at, datetime) else m.created_at,
         "updated_at": m.updated_at.isoformat() + "Z" if isinstance(m.updated_at, datetime) else m.updated_at,
     }
@@ -97,10 +98,49 @@ def _collection_ids_from_definition(definition: dict) -> list[str]:
         if not isinstance(layer, dict):
             continue
         cid = layer.get("collection_id") or layer.get("collectionId")
-        if cid and isinstance(cid, str) and cid not in seen:
+        if cid and isinstance(cid, str) and cid != "_stac" and cid not in seen:
             seen.add(cid)
             out.append(cid)
     return out
+
+
+async def _stac_grants_missing_for_public_map(db: AsyncSession, definition: dict) -> list[dict]:
+    """STAC raster layers on a public map need a public-tile-grant for anonymous viewers."""
+    from app.crud import stac_public_tile_grants as stac_pg
+
+    missing: list[dict] = []
+    for lyr in definition.get("layers") or []:
+        if not isinstance(lyr, dict):
+            continue
+        if not lyr.get("raster_tiles") or not lyr.get("tiles_url"):
+            continue
+        cat = lyr.get("stac_catalog_id") or lyr.get("stacCatalogId")
+        coll = lyr.get("stac_collection_id") or lyr.get("stacCollectionId")
+        item = lyr.get("stac_item_id") or lyr.get("stacItemId")
+        if not cat or not coll or not item:
+            continue
+        if not await stac_pg.has_grant(db, str(cat), str(coll), str(item)):
+            missing.append(
+                {
+                    "catalog_id": str(cat),
+                    "stac_collection_id": str(coll),
+                    "stac_item_id": str(item),
+                    "title": f"STAC item {item}",
+                }
+            )
+    return missing
+
+
+def _merged_map_visibility(payload: dict, row) -> str:
+    if payload.get("visibility") is not None:
+        return str(payload["visibility"])
+    return getattr(row, "visibility", "private") or "private"
+
+
+def _merged_map_definition(payload: dict, row) -> dict:
+    if payload.get("definition") is not None:
+        return payload["definition"] if isinstance(payload["definition"], dict) else {}
+    return row.definition or {}
 
 
 async def _check_map_public_layers(
@@ -337,7 +377,8 @@ async def check_map_public_layers(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     definition = row.definition or {}
     blocking, suggest = await _check_map_public_layers(db, definition, current_user)
-    return {"blocking": blocking, "suggest": suggest}
+    stac_missing = await _stac_grants_missing_for_public_map(db, definition)
+    return {"blocking": blocking, "suggest": suggest, "stac_grants_missing": stac_missing}
 
 
 @router.put(
@@ -360,10 +401,10 @@ async def update_map(
     payload = data.model_dump(exclude_unset=True)
     if payload.get("thumbnail") == _thumbnail_url(base, map_id):
         payload.pop("thumbnail", None)
-    # If setting visibility to public, ensure user can make all layers public.
-    if payload.get("visibility") == "public":
-        definition = payload.get("definition") if "definition" in payload else (row.definition or {})
-        blocking, _ = await _check_map_public_layers(db, definition, current_user)
+    merged_def = _merged_map_definition(payload, row)
+    merged_vis = _merged_map_visibility(payload, row)
+    if merged_vis == "public":
+        blocking, _ = await _check_map_public_layers(db, merged_def, current_user)
         if blocking:
             names = ", ".join(f"{c['title']} ({c['id']})" for c in blocking)
             raise HTTPException(
@@ -373,13 +414,25 @@ async def update_map(
                     "collections_blocking": blocking,
                 },
             )
+        stac_miss = await _stac_grants_missing_for_public_map(db, merged_def)
+        if stac_miss:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "message": (
+                        "This map is public but some STAC imagery layers are not approved for anonymous viewing. "
+                        "Allow public tiles for those items (from the item viewer) or remove the layers."
+                    ),
+                    "stac_grants_blocking": stac_miss,
+                },
+            )
     if payload:
         data = MapUpdate(**payload)
     row = await maps_crud.update_map(db, map_id, data if payload else MapUpdate())
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Map not found")
     headers = {}
-    if payload.get("visibility") == "public":
+    if merged_vis == "public":
         _, suggest = await _check_map_public_layers(db, row.definition or {}, current_user)
         if suggest:
             headers["X-Suggest-Make-Public-Collections"] = json.dumps(suggest)
@@ -409,10 +462,10 @@ async def patch_map(
     payload = data.model_dump(exclude_unset=True)
     if payload.get("thumbnail") == _thumbnail_url(base, map_id):
         payload.pop("thumbnail", None)
-    # If setting visibility to public, ensure user can make all layers public (no viewer-only layers).
-    if payload.get("visibility") == "public":
-        definition = payload.get("definition") if "definition" in payload else (row.definition or {})
-        blocking, suggest = await _check_map_public_layers(db, definition, current_user)
+    merged_def = _merged_map_definition(payload, row)
+    merged_vis = _merged_map_visibility(payload, row)
+    if merged_vis == "public":
+        blocking, suggest = await _check_map_public_layers(db, merged_def, current_user)
         if blocking:
             names = ", ".join(f"{c['title']} ({c['id']})" for c in blocking)
             raise HTTPException(
@@ -422,13 +475,25 @@ async def patch_map(
                     "collections_blocking": blocking,
                 },
             )
+        stac_miss = await _stac_grants_missing_for_public_map(db, merged_def)
+        if stac_miss:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "message": (
+                        "This map is public but some STAC imagery layers are not approved for anonymous viewing. "
+                        "Allow public tiles for those items (from the item viewer) or remove the layers."
+                    ),
+                    "stac_grants_blocking": stac_miss,
+                },
+            )
     if payload:
         row = await maps_crud.update_map(db, map_id, MapUpdate(**payload))
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Map not found")
     # If we just set visibility to public and some layers are not public but user can edit them, suggest making them public.
     headers: dict[str, str] = {}
-    if payload.get("visibility") == "public":
+    if merged_vis == "public":
         definition = row.definition or {}
         _, suggest = await _check_map_public_layers(db, definition, current_user)
         if suggest:

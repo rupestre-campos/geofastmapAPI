@@ -12,6 +12,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_optional, get_current_user_required
+from app.crud import stac_public_tile_grants as stac_public_grants_crud
 from app.core.config import get_settings
 from app.core.html import html_response, wants_html
 from app.models.user import User
@@ -57,6 +58,60 @@ async def _get_enabled_catalog(db: AsyncSession, catalog_id: str):
     if row is None or not row.enabled:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="STAC catalog not found")
     return row
+
+
+async def _titiler_session_or_public_grant(
+    db: AsyncSession,
+    catalog_id: str,
+    collection_id: str,
+    item_id: str,
+    current_user: User | None,
+) -> None:
+    """Logged-in users always; anonymous only if a public-tile grant exists."""
+    if current_user is not None:
+        return
+    if await stac_public_grants_crud.has_grant(db, catalog_id, collection_id, item_id):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required",
+        headers={"WWW-Authenticate": "Basic"},
+    )
+
+
+@router.get(
+    "/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}/public-tile-grant",
+    summary="Whether anonymous users may load Titiler tiles (public map viewers)",
+)
+async def get_stac_public_tile_grant_flag(
+    catalog_id: str,
+    collection_id: str,
+    item_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    ok = await stac_public_grants_crud.has_grant(db, catalog_id, collection_id, item_id)
+    return {"granted": ok}
+
+
+@router.post(
+    "/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}/public-tile-grant",
+    summary="Allow anonymous Titiler tile access for this item (owner consent, for public maps)",
+)
+async def post_stac_public_tile_grant(
+    catalog_id: str,
+    collection_id: str,
+    item_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_required),
+):
+    await stac_public_grants_crud.ensure_grant(
+        db,
+        catalog_id=catalog_id,
+        stac_collection_id=collection_id,
+        stac_item_id=item_id,
+        granted_by_user_id=current_user.id,
+    )
+    return {"granted": True}
 
 
 @router.get(
@@ -144,8 +199,11 @@ async def stac_item_titiler_tile(
     ext: str,
     asset: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user_required),
+    current_user: User | None = Depends(get_current_user_optional),
 ):
+    await _titiler_session_or_public_grant(
+        db, catalog_id, collection_id, item_id, current_user
+    )
     settings = get_settings()
     base_t = settings.titiler_internal_url.rstrip("/")
     if not base_t:
@@ -279,7 +337,7 @@ async def stac_item_titiler_suggest_rescale(
     collection_id: str,
     item_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user_required),
+    current_user: User | None = Depends(get_current_user_optional),
 ):
     """
     Compute a reasonable `rescale=min,max` suggestion using Titiler statistics percentiles.
@@ -288,6 +346,9 @@ async def stac_item_titiler_suggest_rescale(
     - `asset=<key>` + optional repeated `bidx=<n>` (defaults to 1..3 when absent)
     - repeated `assets=<key>` (RGB assets mode) + `asset_as_band=true`
     """
+    await _titiler_session_or_public_grant(
+        db, catalog_id, collection_id, item_id, current_user
+    )
     settings = get_settings()
     base_t = settings.titiler_internal_url.rstrip("/")
     if not base_t:

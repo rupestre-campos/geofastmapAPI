@@ -266,6 +266,10 @@
       var layerStyleVisibility = {};
       function setLayerVisibility(layerKeyVal, visible) {
         var sid = sourceId(layerKeyVal);
+        if (map.getLayer(sid + '-raster')) {
+          map.setLayoutProperty(sid + '-raster', 'visibility', visible ? 'visible' : 'none');
+          return;
+        }
         var intended = layerStyleVisibility[layerKeyVal];
         ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {
           var layerId = sid + suf;
@@ -311,11 +315,22 @@
           icon.className = 'map-legend-icon';
           icon.style.backgroundColor = (style.fillVisible !== false) ? fillColor : 'transparent';
           icon.style.borderColor = lineColor;
-          var label = document.createElement('span');
-          label.className = 'map-legend-label';
-          label.title = cid;
-          var displayName = layerDisplayNameForLegend(cid);
-          label.textContent = layer.tiles_url ? (displayName + ' (dynamic)') : displayName;
+          var label;
+          if (layer.raster_tiles && layer.stac_viewer_path) {
+            label = document.createElement('a');
+            label.className = 'map-legend-label';
+            label.href = base + layer.stac_viewer_path;
+            label.target = '_blank';
+            label.rel = 'noopener noreferrer';
+            label.textContent = 'STAC · ' + (layer.stac_item_id || 'item') + ' (raster)';
+            label.title = 'Open STAC image viewer';
+          } else {
+            label = document.createElement('span');
+            label.className = 'map-legend-label';
+            label.title = cid;
+            var displayName = layerDisplayNameForLegend(cid);
+            label.textContent = layer.tiles_url ? (displayName + ' (dynamic)') : displayName;
+          }
           var cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.checked = true;
@@ -673,6 +688,15 @@
           var cid = layer.collection_id || layer.collectionId;
           var lk = layerKey(layer);
           var sid = sourceId(lk);
+          if (layer.raster_tiles && layer.tiles_url) {
+            if (map.getSource(sid)) { resolve(sid + '-raster'); return; }
+            var ro = (style && style.rasterOpacity != null) ? Number(style.rasterOpacity) : ((layer.style_spec && layer.style_spec.rasterOpacity != null) ? Number(layer.style_spec.rasterOpacity) : 1);
+            if (!isFinite(ro) || ro < 0) ro = 1;
+            map.addSource(sid, { type: 'raster', tiles: [layer.tiles_url], tileSize: 256, maxzoom: 18 });
+            map.addLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
+            resolve(sid + '-raster');
+            return;
+          }
           if (map.getSource(sid)) { resolve(sid + '-line'); return; }
           var fillColor = style.fillColor;
           var lineColor = style.lineColor;

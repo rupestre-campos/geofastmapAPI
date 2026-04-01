@@ -10,17 +10,31 @@ from pydantic import BaseModel, Field
 class MapLayer(BaseModel):
     """Single layer in a map definition. Style is stored with the map (not linked to collection or public styles)."""
 
-    collection_id: str = Field(..., description="Collection id")
+    collection_id: str = Field(
+        ...,
+        description="GeoFast collection id, or placeholder _stac for STAC Titiler raster layers",
+    )
     color: str | None = Field(None, description="Fill/line color hex (legacy); use style_spec when present")
     order: int = Field(0, description="Display order (0 = bottom)")
     style_spec: dict | None = Field(
         None,
-        description="Map-layer style override: fillColor, lineColor, fillOpacity, lineOpacity, lineWidth, linePattern, fillEnabled, lineEnabled, pointEnabled, pointColor, pointSize, pointOpacity, pointIcon; and optionally fillOpacityZoom, lineWidthZoom, lineOpacityZoom, pointSizeZoom, pointOpacityZoom (zoom breakpoints). Stored with the map, not with the collection.",
+        description="Map-layer style override: fillColor, lineColor, fillOpacity, lineOpacity, lineWidth, linePattern, fillEnabled, lineEnabled, pointEnabled, pointColor, pointSize, pointOpacity, pointIcon; rasterOpacity for raster_tiles; and optionally fillOpacityZoom, lineWidthZoom, lineOpacityZoom, pointSizeZoom, pointOpacityZoom (zoom breakpoints). Stored with the map, not with the collection.",
     )
     popup: bool = Field(False, description="Show popup on click for this layer")
     popup_id_property: str | None = Field(None, description="Property name to show as the identifier in popups (e.g. name, code). When unset, feature id is used.")
-    tiles_url: str | None = Field(None, description="When set, use this vector tile URL (dynamic tiles) instead of TileJSON")
+    tiles_url: str | None = Field(
+        None,
+        description="When set: vector tile URL (dynamic PBF) or absolute raster tile URL (PNG) when raster_tiles is true",
+    )
     layer_id: str | None = Field(None, description="Optional unique id for this layer when using tiles_url (e.g. items-{coll}, item-{id})")
+    raster_tiles: bool = Field(False, description="When true, tiles_url is a MapLibre raster source (e.g. Titiler PNG tiles)")
+    stac_catalog_id: str | None = Field(None, description="STAC catalog id (when raster_tiles)")
+    stac_collection_id: str | None = Field(None, description="STAC collection id on that catalog")
+    stac_item_id: str | None = Field(None, description="STAC item id")
+    stac_viewer_path: str | None = Field(
+        None,
+        description="Path to HTML viewer for this item (e.g. /stac/catalogs/.../items/...?f=html)",
+    )
 
 
 class MapDefinition(BaseModel):

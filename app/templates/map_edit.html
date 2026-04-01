@@ -219,7 +219,7 @@
       var initialBbox = {{ map_definition.bbox | tojson if map_definition and map_definition.bbox is defined else 'null' }};
       var initialBasemap = {{ map_definition.basemap | tojson if map_definition and map_definition.basemap is defined else 'null' }};
 
-      var DEFAULT_SPEC = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, lineEnabled: true, pointEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle' };
+      var DEFAULT_SPEC = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, lineEnabled: true, pointEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle', rasterOpacity: 1 };
       var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
       function zoomStopsToExpression(stops) { return GeofastmapUtils.zoomStopsToExpression(stops); }
       function paintValue(spec, key, defaultVal) {
@@ -243,7 +243,12 @@
           popup: l.popup === true,
           popup_id_property: l.popup_id_property || null,
           tiles_url: l.tiles_url || null,
-          layer_id: l.layer_id || null
+          layer_id: l.layer_id || null,
+          raster_tiles: l.raster_tiles === true,
+          stac_catalog_id: l.stac_catalog_id || null,
+          stac_collection_id: l.stac_collection_id || null,
+          stac_item_id: l.stac_item_id || null,
+          stac_viewer_path: l.stac_viewer_path || null
         });
       });
 
@@ -355,6 +360,7 @@
       function trySetInitialExtentFromFirstLayer() {
         if (state.bbox != null || state.layers.length === 0) return;
         var layer = state.layers[0];
+        if (layer.raster_tiles) return;
         var cid = layer.collection_id || layer.collectionId;
         var p;
         if (layer.tiles_url) {
@@ -424,8 +430,21 @@
         if (!map.getSource) return Promise.resolve();
         var cid = layer.collection_id || layer.collectionId;
         var sid = sourceId(layerKey(layer));
-        if (map.getSource(sid)) { applyLayerStyleToMap(index); return Promise.resolve(sid + '-fill'); }
         var s = styleSpec || DEFAULT_SPEC;
+        if (layer.raster_tiles && layer.tiles_url) {
+          return new Promise(function(resolve) {
+            if (map.getSource(sid)) {
+              applyLayerStyleToMap(index);
+              return resolve(sid + '-raster');
+            }
+            var ro = (s.rasterOpacity != null) ? Number(s.rasterOpacity) : 1;
+            if (!isFinite(ro) || ro < 0) ro = 1;
+            map.addSource(sid, { type: 'raster', tiles: [layer.tiles_url], tileSize: 256, maxzoom: 18 });
+            safeAddLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
+            resolve(sid + '-raster');
+          });
+        }
+        if (map.getSource(sid)) { applyLayerStyleToMap(index); return Promise.resolve(sid + '-fill'); }
         var p = (window.GeofastmapUtils && window.GeofastmapUtils.specToPaint) ? window.GeofastmapUtils.specToPaint(s) : null;
         var fillColor = p ? p.fillColor : (s.fillColor || DEFAULT_SPEC.fillColor);
         var fillOpacity = p ? p.fillOpacity : paintValue(s, 'fillOpacity', DEFAULT_SPEC.fillOpacity);
@@ -498,6 +517,12 @@
         if (!layer || !map.getSource) return;
         var sid = sourceId(layerKey(layer));
         var s = layer.style_spec || DEFAULT_SPEC;
+        if (layer.raster_tiles && layer.tiles_url && map.getLayer(sid + '-raster')) {
+          var ro = (s.rasterOpacity != null) ? Number(s.rasterOpacity) : 1;
+          if (!isFinite(ro) || ro < 0) ro = 1;
+          map.setPaintProperty(sid + '-raster', 'raster-opacity', ro);
+          return;
+        }
         var p = (window.GeofastmapUtils && window.GeofastmapUtils.specToPaint) ? window.GeofastmapUtils.specToPaint(s) : null;
         var fillColor = p ? p.fillColor : (s.fillColor || DEFAULT_SPEC.fillColor);
         var fillOpacity = p ? p.fillOpacity : paintValue(s, 'fillOpacity', DEFAULT_SPEC.fillOpacity);
@@ -590,12 +615,24 @@
           icon.style.backgroundColor = (s.fillEnabled !== false) ? fill : 'transparent';
           icon.style.borderColor = line;
 
-          var label = document.createElement('span');
-          label.className = 'map-edit-legend-label';
+          var label;
           var cid = layer.collection_id || layer.collectionId || '';
-          label.title = cid;
-          var displayName = layerDisplayNameForLegend(cid);
-          label.textContent = (displayName || cid) + (layer.tiles_url ? ' (dynamic)' : '');
+          if (layer.raster_tiles && layer.stac_viewer_path) {
+            label = document.createElement('a');
+            label.className = 'map-edit-legend-label';
+            label.href = base + layer.stac_viewer_path;
+            label.target = '_blank';
+            label.rel = 'noopener noreferrer';
+            var si = layer.stac_item_id || 'item';
+            label.textContent = 'STAC · ' + si + ' (raster)';
+            label.title = 'Open STAC image viewer';
+          } else {
+            label = document.createElement('span');
+            label.className = 'map-edit-legend-label';
+            label.title = cid;
+            var displayName = layerDisplayNameForLegend(cid);
+            label.textContent = (displayName || cid) + (layer.tiles_url ? ' (dynamic)' : '');
+          }
 
           var cb = document.createElement('input');
           cb.type = 'checkbox';
@@ -604,7 +641,12 @@
           cb.onchange = function() {
             var i = parseInt(row.dataset.index, 10);
             var on = !!cb.checked;
-            var sid = sourceId(layerKey(state.layers[i]));
+            var lyr = state.layers[i];
+            var sid = sourceId(layerKey(lyr));
+            if (lyr.raster_tiles && lyr.tiles_url) {
+              if (map.getLayer(sid + '-raster')) map.setLayoutProperty(sid + '-raster', 'visibility', on ? 'visible' : 'none');
+              return;
+            }
             ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {
               var id = sid + suf;
               if (!map.getLayer(id)) return;
@@ -612,7 +654,6 @@
                 map.setLayoutProperty(id, 'visibility', 'none');
                 return;
               }
-              // When turning back on, reapply intended visibility for this style.
               try { applyLayerStyleToMap(i); } catch (e) {}
             });
           };
@@ -667,15 +708,23 @@
           tr.dataset.index = idx;
           if (state.selectedLayerIndex === idx) tr.classList.add('selected');
           tr.onclick = function(e) {
-            if (e.target.closest('.btn-remove-layer') || e.target.closest('.drag-handle') || e.target.closest('input') || e.target.closest('label')) return;
+            if (e.target.closest('.btn-remove-layer') || e.target.closest('.drag-handle') || e.target.closest('input') || e.target.closest('label') || e.target.closest('a')) return;
             state.selectedLayerIndex = idx;
             renderLayers();
             if (styleToolboxApplySpec) styleToolboxApplySpec(state.layers[idx].style_spec || DEFAULT_SPEC);
             refreshMapEditRuleFields();
           };
+          var nameCell;
+          if (layer.raster_tiles && layer.stac_viewer_path) {
+            var si = escapeHtml(layer.stac_item_id || 'item');
+            var vp = escapeHtml(layer.stac_viewer_path);
+            nameCell = '<a href="' + base + vp + '" target="_blank" rel="noopener noreferrer"><code>STAC · ' + si + '</code></a> <span class="meta">(raster)</span>';
+          } else {
+            nameCell = '<code>' + escapeHtml(label) + '</code>';
+          }
           tr.innerHTML =
             '<td class="drag-handle" title="Drag to reorder">⋮⋮</td>' +
-            '<td><code>' + escapeHtml(label) + '</code></td>' +
+            '<td>' + nameCell + '</td>' +
             '<td><label><input type="checkbox" data-index="' + idx + '" data-prop="popup"' + (layer.popup ? ' checked' : '') + ' title="Show popup on click"> Popup</label></td>' +
             '<td><select class="popup-id-select" data-index="' + idx + '" data-collection-id="' + escapeHtml(layer.collection_id || layer.collectionId || '') + '" title="Property to show as identifier in popup"><option value="">(feature id)</option></select></td>' +
             '<td><button type="button" class="btn btn-danger btn-sm btn-remove-layer" data-index="' + idx + '">Remove</button></td>';
@@ -692,6 +741,7 @@
             if (state.selectedLayerIndex === i) state.selectedLayerIndex = null;
             else if (state.selectedLayerIndex != null && state.selectedLayerIndex > i) state.selectedLayerIndex--;
             if (map.getSource(sid)) {
+              if (map.getLayer(sid + '-raster')) map.removeLayer(sid + '-raster');
               if (map.getLayer(sid + '-symbol')) map.removeLayer(sid + '-symbol');
               if (map.getLayer(sid + '-circle')) map.removeLayer(sid + '-circle');
               if (map.getLayer(sid + '-line')) map.removeLayer(sid + '-line');
@@ -731,7 +781,10 @@
         var layer = state.layers[idx];
         if (!layer || !sel) return;
         var cid = layer.collection_id || layer.collectionId;
-        if (!cid) return;
+        if (!cid || cid === '_stac' || layer.raster_tiles) {
+          sel.innerHTML = '<option value="">(n/a)</option>';
+          return;
+        }
         var currentVal = (layer.popup_id_property || '');
         if (sel.options.length > 1) return;
         fetch(base + '/collections/' + encodeURIComponent(cid) + '/items?limit=1', { headers: { 'Accept': 'application/json' } })
@@ -1247,7 +1300,20 @@
           definition: {
             layers: state.layers.map(function(l, i) {
               var spec = l.style_spec && typeof l.style_spec === 'object' ? JSON.parse(JSON.stringify(l.style_spec)) : null;
-              return { collection_id: l.collection_id, order: i, style_spec: spec, popup: l.popup === true, popup_id_property: l.popup_id_property || null, tiles_url: l.tiles_url || null, layer_id: l.layer_id || null };
+              return {
+                collection_id: l.collection_id,
+                order: i,
+                style_spec: spec,
+                popup: l.popup === true,
+                popup_id_property: l.popup_id_property || null,
+                tiles_url: l.tiles_url || null,
+                layer_id: l.layer_id || null,
+                raster_tiles: l.raster_tiles === true,
+                stac_catalog_id: l.stac_catalog_id || null,
+                stac_collection_id: l.stac_collection_id || null,
+                stac_item_id: l.stac_item_id || null,
+                stac_viewer_path: l.stac_viewer_path || null
+              };
             }),
             bbox: state.bbox,
             basemap: state.basemap || null
