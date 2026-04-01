@@ -72,6 +72,7 @@ def _landing_links(base: str) -> list:
         Link(href=base + "/?f=html", rel="alternate", type="text/html"),
         Link(href=base + "/conformance", rel="conformance", type="application/json"),
         Link(href=base + "/collections", rel="data", type="application/json"),
+        Link(href=base + "/stac", rel="stac", type="application/json", title="Federated STAC search and catalogs"),
         Link(href=base + "/collections", rel="tiles", type="application/json", title="Collection tiles (TileJSON per collection)"),
         Link(href=base + "/styles", rel="styles", type="application/json", title="OGC API - Styles: public (global) styles"),
         Link(href=base + "/processes", rel="processes", type="application/json", title="OGC API - Processes (intersection, erase)"),

@@ -309,6 +309,7 @@ async def get_collection(
             default_style={"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec} if default_style else None,
             collection_styles_url=f"{base}/collections/{collection_id}/styles",
             can_edit_collection=can_edit,
+            stac_source=getattr(collection, "stac_source", None),
         )
     return out.model_copy(
         update={

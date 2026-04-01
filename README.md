@@ -90,6 +90,11 @@ Create a collection, add data (upload or API), then use **View items**, **Build 
 | `GET /collections/{id}/tiles` | TileJSON (dynamic and/or static tiles) |
 | `POST /collections/{id}/tiles/build` | Request static tile build (returns job id) |
 | `GET /collections/{id}/tiles/static/{z}/{x}/{y}.pbf` | Static vector tiles (PMTiles/MBTiles) |
+| `GET /stac`, `POST /stac/search` | Federated STAC Item Search; `GET /stac?f=html` browse; catalog admin at `POST/PUT/DELETE /stac/catalogs` |
+| `POST /collections/{id}/rasters` | Upload GeoTIFF (EPSG:4326) → COG on disk + feature with footprint |
+| `GET /collections/{id}/coverages/{feature_id}` | Download COG; PNG tiles at `.../coverages/{id}/tiles/{z}/{x}/{y}.png` |
+| `GET /collections/{id}/coverages/{feature_id}/titiler/tiles/...` | Proxy to Titiler (requires `TITILER_INTERNAL_URL`) |
+| `POST /raster-views` | Save MosaicJSON + metadata; tile proxy at `GET /raster-views/{id}/titiler/tiles/...` |
 | `GET /collections/{id}/styles` | Collection styles |
 | `GET /styles` | Global (public) styles |
 | `GET /processes` | List processes (intersection, erase); `?f=html` → processing UI |

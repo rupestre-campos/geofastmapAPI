@@ -757,6 +757,46 @@ async def create_feature(db: AsyncSession, data: FeatureCreate) -> Feature:
     return feature
 
 
+async def create_feature_with_id(db: AsyncSession, data: FeatureCreate, feature_id: str) -> Feature:
+    """Like create_feature but uses a caller-supplied id (e.g. raster COG path alignment)."""
+    from shapely.geometry import shape
+    from shapely.validation import make_valid
+
+    geom_dict = data.geometry.model_dump() if data.geometry else None
+    geom = None
+    if geom_dict:
+        geom = shape(geom_dict)
+        if not geom.is_valid:
+            geom = make_valid(geom)
+        if geom.is_empty:
+            geom = None
+    if geom is not None:
+        check_geometry_size_limit(geom)
+    props = _properties_without_readonly(data.properties)
+    fid = feature_id
+    max_vertices = get_settings().features_subdivide_max_vertices
+    now = datetime.now(timezone.utc)
+    if geom is not None and _coord_count(geom) > MAX_COORDS_FOR_DB_SUBDIVIDE:
+        parts = subdivide_geometry_by_vertices(geom, max_vertices)
+        wkt_list = [p.wkt for p in parts if p is not None and not p.is_empty]
+        for sql, params in insert_feature_parts_batched(fid, data.collection_id, wkt_list, props, now):
+            await db.execute(text(sql), params)
+    else:
+        wkt = geom.wkt if geom is not None else None
+        sql, params = insert_feature_subdivided_sql(fid, data.collection_id, wkt, props, now, max_vertices)
+        await db.execute(text(sql), params)
+    await db.execute(
+        update(Collection)
+        .where(Collection.id == data.collection_id)
+        .values(feature_count=Collection.feature_count + 1)
+    )
+    await db.commit()
+    invalidate_collection_cache(data.collection_id)
+    feature = await get_feature(db, data.collection_id, fid)
+    assert feature is not None
+    return feature
+
+
 async def replace_feature(
     db: AsyncSession, collection_id: str, feature_id: str, data: FeatureReplace
 ) -> bool:

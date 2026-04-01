@@ -9,7 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.collection import Collection, VISIBILITY_LOGGED, VISIBILITY_PRIVATE, VISIBILITY_PUBLIC
 from app.models.map import Map
-from app.models.resource_share import RESOURCE_TYPE_COLLECTION, RESOURCE_TYPE_MAP, RESOURCE_TYPE_STYLE, ROLE_EDITOR, ROLE_VIEWER
+from app.models.resource_share import (
+    RESOURCE_TYPE_COLLECTION,
+    RESOURCE_TYPE_MAP,
+    RESOURCE_TYPE_RASTER_VIEW,
+    RESOURCE_TYPE_STYLE,
+    ROLE_EDITOR,
+    ROLE_VIEWER,
+)
 from app.models.resource_share import ResourceShare, style_resource_id
 from app.models.user import User
 
@@ -150,6 +157,44 @@ async def can_see_style(
         if role in (ROLE_VIEWER, ROLE_EDITOR):
             return True
     return False
+
+
+async def can_see_raster_view(
+    db: AsyncSession,
+    owner_id: int | None,
+    visibility: str,
+    view_id: str,
+    user: User | None,
+) -> bool:
+    if user and user.is_admin:
+        return True
+    if visibility == VISIBILITY_PUBLIC:
+        return True
+    if user and visibility == VISIBILITY_LOGGED:
+        return True
+    if user and owner_id == user.id:
+        return True
+    if user:
+        role = await get_share_role(db, RESOURCE_TYPE_RASTER_VIEW, view_id, user.username)
+        if role in (ROLE_VIEWER, ROLE_EDITOR):
+            return True
+    return False
+
+
+async def can_edit_raster_view(
+    db: AsyncSession,
+    owner_id: int | None,
+    view_id: str,
+    user: User | None,
+) -> bool:
+    if not user:
+        return False
+    if user.is_admin:
+        return True
+    if owner_id == user.id:
+        return True
+    role = await get_share_role(db, RESOURCE_TYPE_RASTER_VIEW, view_id, user.username)
+    return role == ROLE_EDITOR
 
 
 async def can_edit_style(

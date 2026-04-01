@@ -1,0 +1,545 @@
+{% extends "base.html" %}
+{% block title %}STAC search – GeoFastMap API{% endblock %}
+{% block head %}
+  {% include '_map_popup_css.html' %}
+  <style>
+    .stac-form-grid { display: grid; gap: var(--space); }
+    @media (min-width: 720px) {
+      .stac-form-grid-2 { grid-template-columns: 1fr 1fr; }
+    }
+    .stac-target-hint { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem; }
+    .stac-bbox-block { display: flex; flex-direction: column; gap: 0.35rem; }
+    .stac-bbox-block .stac-sync-label {
+      margin: 0.15rem 0 0;
+      font-weight: normal;
+      font-size: 0.88rem;
+      line-height: 1.35;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }
+    .stac-bbox-block .stac-sync-label input { margin-top: 0.2rem; flex-shrink: 0; }
+    .stac-date-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 0.75rem;
+    }
+    .stac-date-row input[type="date"] { min-width: 10rem; max-width: 100%; }
+    .stac-date-sep { color: var(--text-secondary); font-size: 0.9rem; }
+    .stac-cloud-hint { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem; }
+    #stac-collections-select {
+      width: 100%;
+      min-height: 8.5rem;
+      font-size: 0.9rem;
+    }
+    .stac-collections-hint { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem; }
+    .items-table-card .table-scroll-wrap {
+      overflow: auto;
+      max-height: min(55vh, 480px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: var(--space);
+    }
+    .items-table-card #stac-results-table thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--card);
+      box-shadow: 0 1px 0 var(--border);
+    }
+    /* Basemap attribution: bottom-left (not inline in controls) */
+    #stac-map { position: relative; }
+    #stac-map .map-controls { position: relative; z-index: 2; }
+    #stac-map #map-basemap-copyright {
+      position: absolute;
+      left: 12px;
+      bottom: 10px;
+      z-index: 1;
+      display: none;
+      padding: 6px 8px;
+      background: rgba(0,0,0,0.45);
+      color: #fff;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.18);
+      max-width: min(65vw, 520px) !important;
+      backdrop-filter: blur(6px);
+    }
+    .pagination {
+      display: flex;
+      align-items: center;
+      gap: var(--space);
+      flex-wrap: wrap;
+      margin-top: var(--space);
+      padding-top: var(--space);
+      border-top: 1px solid var(--border);
+    }
+    .pagination-info { color: var(--text-secondary); font-size: 0.85rem; }
+    .btn-disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
+    .stac-msg-error { color: var(--danger, #c44); margin-top: 0.5rem; }
+    .stac-partial-warning { border-left: 3px solid var(--warning, #d4a017); }
+    .stac-partial-warning ul { margin: 0.5rem 0 0 1.1rem; }
+    form select[name="stac_target"] { max-width: 100%; }
+    #stac-collections-status { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.35rem; min-height: 1.2em; }
+    .stac-time-range-label { display: block; font-weight: 600; margin-bottom: 0.35rem; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Federated STAC search</h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › STAC</p>
+    {% if submitted %}
+    <p class="meta" id="stac-summary">{{ number_matched }} matched, {{ number_returned }} on this page</p>
+    {% else %}
+    <p class="meta">Choose where to search, set filters, then search. Pan/zoom the map to set bbox.</p>
+    {% endif %}
+  </header>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Search</h2>
+      <div class="card-actions">
+        {% if is_admin %}
+        <a href="{{ manage_url }}" class="btn btn-sm">Manage STAC endpoints</a>
+        {% endif %}
+      </div>
+    </div>
+    <form method="get" action="{{ base }}/stac" id="stac-search-form" class="stac-form-grid">
+      <input type="hidden" name="f" value="html">
+      <input type="hidden" name="submitted" value="true">
+
+      <div class="form-row">
+        <label for="stac-target-select">Search using</label>
+        <select name="stac_target" id="stac-target-select" required>
+          <option value="all" {% if stac_target == 'all' %}selected{% endif %}>All registered STAC endpoints</option>
+          <option value="geofastmap" {% if stac_target == 'geofastmap' %}selected{% endif %}>This GeoFastMap API (federated hub)</option>
+          {% for c in catalogs %}
+          <option value="{{ c.id }}" {% if stac_target == c.id %}selected{% endif %}>{{ c.title }}</option>
+          {% endfor %}
+        </select>
+        <p class="stac-target-hint"><strong>This GeoFastMap API</strong> runs the same federated search as <em>All registered STAC endpoints</em> when multiple endpoints are registered. Pick a single endpoint above to limit the search.</p>
+      </div>
+
+      <div class="stac-form-grid stac-form-grid-2">
+        <div class="form-row stac-bbox-block">
+          <label for="stac-bbox-input">Bounding box <span class="meta">(minx, miny, maxx, maxy WGS84)</span></label>
+          <input type="text" name="bbox" id="stac-bbox-input" value="{{ bbox }}" placeholder="Updates from map when enabled below" autocomplete="off">
+          <label class="stac-sync-label" for="stac-sync-bbox">
+            <input type="checkbox" id="stac-sync-bbox" checked>
+            <span>Update bbox from map when the map moves</span>
+          </label>
+        </div>
+        <div class="form-row">
+          <span class="stac-time-range-label">Time range <span class="meta">(UTC, optional)</span></span>
+          <div class="stac-date-row">
+            <input type="date" name="date_start" id="stac-date-start" value="{{ date_start }}" title="Start date" autocomplete="off">
+            <span class="stac-date-sep">to</span>
+            <input type="date" name="date_end" id="stac-date-end" value="{{ date_end }}" title="End date" autocomplete="off">
+          </div>
+          <label for="stac-cloud-cover" style="margin-top:0.65rem">Max cloud cover (%)</label>
+          <input type="number" name="cloud_cover_max" id="stac-cloud-cover" min="0" max="100" step="1"
+            {% if cloud_cover_max is not none %}value="{{ cloud_cover_max }}"{% endif %}
+            placeholder="Any" title="Items with eo:cloud_cover at most this value (STAC Query extension)">
+          <p class="stac-cloud-hint">Requires upstream STAC APIs that support the Query extension for <code>eo:cloud_cover</code>. Leave empty to ignore.</p>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label for="stac-collections-select">Collections <span class="meta">(optional; hold Ctrl/Cmd to select several)</span></label>
+        <p id="stac-collections-status" aria-live="polite"></p>
+        <select name="collections" id="stac-collections-select" multiple size="10">
+        </select>
+        <p class="stac-collections-hint">Lists collections from the STAC endpoint(s) chosen above. Change “Search using” to refresh the list.</p>
+      </div>
+
+      <div class="form-row">
+        <label for="stac-limit">Results per page</label>
+        <input type="number" name="limit" id="stac-limit" value="{{ limit }}" min="1" max="{{ max_page_limit }}" required>
+      </div>
+
+      <input type="hidden" name="offset" id="stac-offset" value="{{ offset }}">
+
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary">Search</button>
+      </div>
+      {% if search_error %}
+      <p class="stac-msg-error" role="alert">{{ search_error }}</p>
+      {% endif %}
+    </form>
+  </div>
+
+  {% if submitted and catalog_errors and not search_error %}
+  <div class="card stac-partial-warning" role="status">
+    <p><strong>Some STAC endpoints did not return results.</strong> Any items below come only from catalogs that responded successfully.</p>
+    <ul class="meta">
+      {% for e in catalog_errors %}
+      <li>
+        {% set ns = namespace(label=e.catalog_id) %}
+        {% for c in catalogs %}{% if c.id == e.catalog_id %}{% set ns.label = c.title %}{% endif %}{% endfor %}
+        <strong>{{ ns.label }}</strong> (<code>{{ e.catalog_id }}</code>): {{ e.detail }}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <div class="card items-table-card">
+    <div class="card-header">
+      <h2 class="card-title">Results</h2>
+    </div>
+    {% if submitted and not search_error %}
+    {% if features %}
+    <div class="table-scroll-wrap">
+      <table id="stac-results-table">
+        <thead>
+          <tr>
+            <th>View</th>
+            <th>Item id</th>
+            <th>Collection</th>
+            <th>Source catalog</th>
+            <th>Acquired</th>
+            <th>Cloud cover</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in features %}
+          {% set props = f.properties if f.properties is mapping else {} %}
+          {% set dt = props.get('datetime') or props.get('start_datetime') or '' %}
+          {% set cloud = props.get('eo:cloud_cover') %}
+          {% set ns = namespace(item_href='') %}
+          {% for L in (f.links or []) %}
+            {% if not ns.item_href and L is mapping and L.get('rel') == 'self' and L.get('href') %}
+              {% set ns.item_href = L.get('href') %}
+            {% endif %}
+          {% endfor %}
+          {% set src_cat = props.get('geofast:sourceCatalog') %}
+          {% set nsc = namespace(coll='') %}
+          {% if 'collection' in f and f['collection'] %}{% set nsc.coll = f['collection'] %}
+          {% elif 'collection' in props and props['collection'] %}{% set nsc.coll = props['collection'] %}
+          {% endif %}
+          <tr>
+            <td>
+              {% if src_cat and nsc.coll %}
+              <a href="{{ base }}/stac/catalogs/{{ src_cat | urlencode }}/collections/{{ nsc.coll | urlencode }}/items/{{ f.id | urlencode }}?f=html">View</a>
+              {% if ns.item_href %} · <a href="{{ ns.item_href }}" target="_blank" rel="noopener">Upstream</a>{% endif %}
+              {% elif ns.item_href %}
+              <a href="{{ ns.item_href }}" target="_blank" rel="noopener">Upstream</a>
+              {% else %}—{% endif %}
+            </td>
+            <td><code>{{ f.id }}</code></td>
+            <td>{% if nsc.coll %}<code>{{ nsc.coll }}</code>{% else %}—{% endif %}</td>
+            <td>{{ props.get('geofast:sourceCatalog', '—') }}</td>
+            <td>{{ dt }}</td>
+            <td>{% if cloud is not none %}{{ cloud }}{% else %}—{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if prev_page_url or next_page_url %}
+    <div class="pagination">
+      {% if prev_page_url %}
+      <a href="{{ prev_page_url }}" class="btn">← Previous</a>
+      {% else %}
+      <span class="btn btn-disabled" aria-disabled="true">← Previous</span>
+      {% endif %}
+      <span class="pagination-info">{% if number_returned %}{{ offset + 1 }}–{{ offset + number_returned }} of {{ number_matched }}{% else %}0 of {{ number_matched }}{% endif %}</span>
+      {% if next_page_url %}
+      <a href="{{ next_page_url }}" class="btn">Next →</a>
+      {% else %}
+      <span class="btn btn-disabled" aria-disabled="true">Next →</span>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    <p class="meta">No items on this page. Try a larger bbox or different filters.</p>
+    {% endif %}
+    {% elif submitted and search_error %}
+    <p class="meta">Fix the error above and try again.</p>
+    {% else %}
+    <p class="meta">Run a search to see STAC items here. Adjust the map, then <strong>Search</strong>.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Map</h2>
+    </div>
+    <div id="stac-map" class="map-container">
+      <div class="map-controls">
+        {% include '_basemap_selector.html' %}
+        <button type="button" class="btn btn-sm" id="stac-toggle-results" title="Show or hide search results on the map">Hide results</button>
+        <button type="button" class="btn btn-sm btn-fullscreen" id="stac-map-fullscreen-btn" title="View map full screen">Fullscreen</button>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
+  <script>
+    var featuresGeojson = {{ features_geojson | tojson }};
+    var initialBboxStr = {{ (bbox or '') | tojson }};
+    var base = {{ base | tojson }};
+    var googleKey = {{ google_maps_api_key | tojson }};
+    var stacSelectedCollections = {{ collections_selected | tojson }};
+
+    function parseBbox(s) {
+      if (!s || !String(s).trim()) return null;
+      var p = String(s).split(',').map(function(x) { return parseFloat(x.trim()); });
+      if (p.length !== 4 || p.some(function(x) { return isNaN(x); })) return null;
+      return [[p[0], p[1]], [p[2], p[3]]];
+    }
+
+    function bboxFromMap(m) {
+      var b = m.getBounds();
+      return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map(function(x) { return Number(x.toFixed(6)); }).join(',');
+    }
+
+    var map;
+    var BASEMAPS;
+    var basemapList;
+
+    function applyBasemapFromSelect() {
+      var sel = document.getElementById('map-basemap');
+      if (!sel || !map || !map.getSource('basemap')) return;
+      var v = sel.value;
+      var cfg = BASEMAPS[v];
+      if (!cfg) return;
+      var before = map.getLayer('stac-results-fill') ? 'stac-results-fill' : undefined;
+      GeofastmapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: before });
+      GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
+    }
+
+    function addStacResultsLayer() {
+      if (!map) return;
+      if (map.getLayer('stac-results-line')) map.removeLayer('stac-results-line');
+      if (map.getLayer('stac-results-fill')) map.removeLayer('stac-results-fill');
+      if (map.getLayer('stac-results-circle')) map.removeLayer('stac-results-circle');
+      if (map.getSource('stac-results')) map.removeSource('stac-results');
+      var fc = featuresGeojson && featuresGeojson.features ? featuresGeojson : { type: 'FeatureCollection', features: [] };
+      map.addSource('stac-results', { type: 'geojson', data: fc });
+      var notPoint = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
+      var pointFilter = ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]];
+      map.addLayer({
+        id: 'stac-results-fill',
+        type: 'fill',
+        source: 'stac-results',
+        filter: notPoint,
+        paint: { 'fill-color': '#58a6ff', 'fill-opacity': 0.22 }
+      });
+      map.addLayer({
+        id: 'stac-results-line',
+        type: 'line',
+        source: 'stac-results',
+        filter: notPoint,
+        paint: { 'line-color': '#58a6ff', 'line-width': 2 }
+      });
+      map.addLayer({
+        id: 'stac-results-circle',
+        type: 'circle',
+        source: 'stac-results',
+        filter: pointFilter,
+        paint: { 'circle-color': '#58a6ff', 'circle-radius': 6, 'circle-opacity': 0.9 }
+      });
+      if (fc.features && fc.features.length) {
+        var bb = new maplibregl.LngLatBounds();
+        fc.features.forEach(function(f) {
+          if (!f.geometry) return;
+          var g = f.geometry;
+          if (g.type === 'Point') bb.extend(g.coordinates);
+          else if (g.type === 'Polygon' && g.coordinates && g.coordinates[0]) {
+            g.coordinates[0].forEach(function(c) { bb.extend(c); });
+          } else if (g.type === 'MultiPolygon') {
+            (g.coordinates || []).forEach(function(poly) {
+              (poly[0] || []).forEach(function(c) { bb.extend(c); });
+            });
+          } else if (g.type === 'LineString') {
+            (g.coordinates || []).forEach(function(c) { bb.extend(c); });
+          } else if (g.type === 'MultiPoint') {
+            (g.coordinates || []).forEach(function(c) { bb.extend(c); });
+          }
+        });
+        if (!bb.isEmpty()) map.fitBounds(bb, { padding: 48, maxZoom: 12, duration: 0 });
+      }
+    }
+
+    function initStacMap() {
+      var el = document.getElementById('stac-map');
+      if (!el || typeof maplibregl === 'undefined') return;
+      var sel = document.getElementById('map-basemap');
+      GeofastmapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
+      var initialId = null;
+      try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch (e) {}
+      if (!initialId && basemapList && basemapList.length) initialId = basemapList[0].id;
+      if (!initialId && BASEMAPS.osm) initialId = 'osm';
+      var initial = (initialId && BASEMAPS[initialId]) ? BASEMAPS[initialId] : (BASEMAPS.osm || (basemapList[0] && BASEMAPS[basemapList[0].id]));
+      if (!initial) return;
+      if (sel) sel.value = initialId || (sel.options[0] && sel.options[0].value);
+      var mapStyle = GeofastmapUtils.buildMapStyleWithBasemap(initial);
+      map = new maplibregl.Map({
+        container: 'stac-map',
+        style: mapStyle,
+        center: [0, 20],
+        zoom: 2,
+        renderWorldCopies: false
+      });
+      GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
+      map.addControl(new maplibregl.NavigationControl(), 'top-right');
+      map.on('load', function() {
+        GeofastmapUtils.setupFullscreenForMap(map, 'stac-map-fullscreen-btn');
+        try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s] && sel) sel.value = s; } catch (e) {}
+        applyBasemapFromSelect();
+        addStacResultsLayer();
+        setupResultsToggle();
+        setupResultsPopup();
+        var bb = parseBbox(initialBboxStr);
+        var hasFeat = featuresGeojson && featuresGeojson.features && featuresGeojson.features.length;
+        if (bb) map.fitBounds(bb, { padding: 40, duration: 0, maxZoom: 10 });
+        else if (!hasFeat) map.fitBounds([[-180, -85], [180, 85]], { padding: 20, duration: 0 });
+        sel.onchange = function() {
+          try { localStorage.setItem('geofastmap-basemap', this.value); } catch (e) {}
+          applyBasemapFromSelect();
+        };
+        var bboxInput = document.getElementById('stac-bbox-input');
+        var syncEl = document.getElementById('stac-sync-bbox');
+        function syncBboxFromMap() {
+          if (!bboxInput || !syncEl || !syncEl.checked) return;
+          bboxInput.value = bboxFromMap(map);
+        }
+        map.on('moveend', syncBboxFromMap);
+      });
+    }
+
+    function setResultsVisibility(visible) {
+      if (!map) return;
+      ['stac-results-fill', 'stac-results-line', 'stac-results-circle'].forEach(function(id) {
+        if (!map.getLayer(id)) return;
+        map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none');
+      });
+    }
+
+    function setupResultsToggle() {
+      var btn = document.getElementById('stac-toggle-results');
+      if (!btn || !map) return;
+      var visible = true;
+      btn.textContent = 'Hide results';
+      btn.onclick = function() {
+        visible = !visible;
+        setResultsVisibility(visible);
+        btn.textContent = visible ? 'Hide results' : 'Show results';
+      };
+    }
+
+    function viewerUrlForFeature(f) {
+      if (!f) return null;
+      var props = f.properties || {};
+      var catalogId = props['geofast:sourceCatalog'];
+      var collectionId = props.collection || f.collection;
+      var itemId = f.id || props.id || props['id'];
+      if (!catalogId || !collectionId || !itemId) return null;
+      return base + '/stac/catalogs/' + encodeURIComponent(String(catalogId))
+        + '/collections/' + encodeURIComponent(String(collectionId))
+        + '/items/' + encodeURIComponent(String(itemId)) + '?f=html';
+    }
+
+    function setupResultsPopup() {
+      if (!map) return;
+      var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
+      var layerIds = ['stac-results-fill', 'stac-results-line', 'stac-results-circle'];
+      function setCursor(on) { try { map.getCanvas().style.cursor = on ? 'pointer' : ''; } catch (e) {} }
+      layerIds.forEach(function(id) {
+        if (!map.getLayer(id)) return;
+        map.on('mouseenter', id, function() { setCursor(true); });
+        map.on('mouseleave', id, function() { setCursor(false); });
+        map.on('click', id, function(e) {
+          var feat = e.features && e.features[0];
+          if (!feat) return;
+          var p = feat.properties || {};
+          var itemId = feat.id || p.id || p['id'] || '';
+          var dt = p.datetime || p.start_datetime || '';
+          var src = p['geofast:sourceCatalog'] || '';
+          var coll = p.collection || feat.collection || '';
+          var cloud = (p['eo:cloud_cover'] !== undefined && p['eo:cloud_cover'] !== null) ? p['eo:cloud_cover'] : '';
+          var viewUrl = viewerUrlForFeature(feat);
+          var html = ''
+            + '<div class="map-popup-title"><strong>' + GeofastmapUtils.escapeHtml(String(itemId)) + '</strong></div>'
+            + (viewUrl ? '<div class="map-popup-row"><a class="btn btn-sm" href="' + GeofastmapUtils.escapeHtml(viewUrl) + '">View image</a></div>' : '')
+            + (src ? '<div class="map-popup-row"><strong>Catalog</strong> ' + GeofastmapUtils.escapeHtml(String(src)) + '</div>' : '')
+            + (coll ? '<div class="map-popup-row"><strong>Collection</strong> ' + GeofastmapUtils.escapeHtml(String(coll)) + '</div>' : '')
+            + (dt ? '<div class="map-popup-row"><strong>Datetime</strong> ' + GeofastmapUtils.escapeHtml(String(dt)) + '</div>' : '')
+            + (cloud !== '' ? '<div class="map-popup-row"><strong>Cloud cover</strong> ' + GeofastmapUtils.escapeHtml(String(cloud)) + '</div>' : '');
+          popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+        });
+      });
+    }
+
+    function populateStacCollections(groups) {
+      var sel = document.getElementById('stac-collections-select');
+      var statusEl = document.getElementById('stac-collections-status');
+      if (!sel) return;
+      var selected = {};
+      (stacSelectedCollections || []).forEach(function(id) { selected[id] = true; });
+      sel.innerHTML = '';
+      var total = 0;
+      (groups || []).forEach(function(g) {
+        var og = document.createElement('optgroup');
+        og.label = (g.catalog_title || g.catalog_id || 'Catalog');
+        (g.collections || []).forEach(function(c) {
+          var o = document.createElement('option');
+          o.value = c.id;
+          var label = c.title && c.title !== c.id ? (c.id + ' — ' + c.title) : c.id;
+          o.textContent = label;
+          if (selected[c.id]) o.selected = true;
+          og.appendChild(o);
+          total += 1;
+        });
+        sel.appendChild(og);
+      });
+      if (statusEl) {
+        statusEl.textContent = total ? (total + ' collection' + (total !== 1 ? 's' : '') + ' listed') : 'No collections returned for this selection.';
+      }
+    }
+
+    function loadStacCollections() {
+      var target = document.getElementById('stac-target-select');
+      var statusEl = document.getElementById('stac-collections-status');
+      if (!target) return;
+      var st = encodeURIComponent(target.value || 'all');
+      if (statusEl) statusEl.textContent = 'Loading collections…';
+      fetch(base + '/stac/available-collections?stac_target=' + st, { headers: { Accept: 'application/json' } })
+        .then(function(r) { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+        .then(function(data) { populateStacCollections(data.groups); })
+        .catch(function() {
+          populateStacCollections([]);
+          if (statusEl) statusEl.textContent = 'Could not load collections.';
+        });
+    }
+
+    var targetSel = document.getElementById('stac-target-select');
+    if (targetSel) targetSel.addEventListener('change', loadStacCollections);
+
+    GeofastmapUtils.fetchBasemaps(base).then(function(result) {
+      BASEMAPS = result.byId;
+      basemapList = result.basemaps;
+      if (!basemapList.length) {
+        BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
+        basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
+      }
+      initStacMap();
+    }).catch(function() {
+      BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
+      basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
+      initStacMap();
+    });
+
+    loadStacCollections();
+
+    document.getElementById('stac-search-form').addEventListener('submit', function() {
+      var o = document.getElementById('stac-offset');
+      if (o) o.value = '0';
+      var cc = document.getElementById('stac-cloud-cover');
+      if (cc && (cc.value === '' || cc.value === null)) cc.removeAttribute('name');
+    });
+  </script>
+{% endblock %}

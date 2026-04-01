@@ -265,6 +265,7 @@ async def create_collection(
         title=data.title,
         description=data.description,
         extent=data.extent.model_dump() if data.extent else None,
+        stac_source=data.stac_source,
         owner_id=owner_id,
         visibility=visibility,
     )
@@ -284,6 +285,7 @@ async def replace_collection(
     collection.title = data.title
     collection.description = data.description
     collection.extent = data.extent.model_dump() if data.extent else None
+    collection.stac_source = data.stac_source
     await db.commit()
     await db.refresh(collection)
     return collection
@@ -307,6 +309,8 @@ async def patch_collection(
             collection.visibility = data.visibility
     if "viewer_can_edit" in data.model_fields_set and data.viewer_can_edit is not None:
         collection.viewer_can_edit = data.viewer_can_edit
+    if "stac_source" in data.model_fields_set:
+        collection.stac_source = data.stac_source
     await db.commit()
     await db.refresh(collection)
     return collection

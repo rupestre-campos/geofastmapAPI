@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}STAC endpoints – GeoFastMap API{% endblock %}
+{% block head %}
+  <style>
+    .admin-catalog-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .admin-catalog-table th, .admin-catalog-table td { padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); text-align: left; }
+    .admin-catalog-table code { font-size: 0.8rem; word-break: break-all; }
+    .modal { display: none; position: fixed; inset: 0; z-index: 1000; align-items: center; justify-content: center; padding: 1.5rem; }
+    .modal[aria-hidden="false"] { display: flex; }
+    .modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.6); cursor: pointer; }
+    .modal-content { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); max-width: 90vw; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+    .modal-header { display: flex; align-items: center; justify-content: space-between; padding: var(--space) var(--space-lg); border-bottom: 1px solid var(--border); }
+    .modal-title { margin: 0; font-size: 1rem; }
+    .modal-close { background: none; border: none; color: var(--text-secondary); font-size: 1.5rem; cursor: pointer; padding: 0 0.25rem; line-height: 1; }
+    .modal-body { padding: var(--space-lg); overflow: auto; flex: 1; min-height: 0; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>STAC API endpoints</h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › <a href="{{ search_url }}">STAC search</a> › Manage</p>
+    <p class="meta">Register STAC API roots used by federated Item Search. JSON API: <code>POST /stac/catalogs</code>, <code>PUT /stac/catalogs/{id}</code>, <code>DELETE /stac/catalogs/{id}</code>.</p>
+  </header>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Add endpoint</h2>
+    </div>
+    <form id="stac-add-form" class="stac-form-grid">
+      <div class="form-row">
+        <label>Title</label>
+        <input type="text" id="stac-add-title" required placeholder="e.g. Element84 Earth Search" style="max-width:420px;">
+      </div>
+      <div class="form-row">
+        <label>STAC API root URL</label>
+        <input type="url" id="stac-add-url" required placeholder="https://earth-search.aws.element84.com/v1" style="max-width:520px;">
+      </div>
+      <div class="form-row">
+        <label class="checkbox-inline"><input type="checkbox" id="stac-add-enabled" checked> Enabled</label>
+      </div>
+      <div class="form-row">
+        <label>Notes <span class="meta">(optional)</span></label>
+        <input type="text" id="stac-add-notes" placeholder="Short description" style="max-width:420px;">
+      </div>
+      <button type="submit" class="btn btn-primary">Add catalog</button>
+      <span id="stac-add-msg" class="meta"></span>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Registered endpoints</h2>
+    </div>
+    {% if admin_catalogs %}
+    <div class="table-scroll-wrap" style="overflow:auto;">
+      <table class="admin-catalog-table">
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>ID</th>
+            <th>URL</th>
+            <th>Enabled</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in admin_catalogs %}
+          <tr data-catalog-id="{{ c.id }}">
+            <td>{{ c.title }}</td>
+            <td><code>{{ c.id }}</code></td>
+            <td><code>{{ c.stac_api_root_url }}</code></td>
+            <td>{% if c.enabled %}yes{% else %}no{% endif %}</td>
+            <td>
+              <button type="button" class="btn btn-sm stac-edit-btn" data-id="{{ c.id }}" data-title="{{ c.title | e }}" data-url="{{ c.stac_api_root_url | e }}" data-enabled="{{ 'true' if c.enabled else 'false' }}" data-notes="{{ (c.notes or '') | e }}">Edit</button>
+              <button type="button" class="btn btn-sm stac-del-btn" data-id="{{ c.id }}">Delete</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="meta">No catalogs yet.</p>
+    {% endif %}
+    <p style="margin-top:1rem;"><a href="{{ search_url }}" class="btn">← Back to STAC search</a></p>
+  </div>
+
+  <div id="stac-edit-modal" class="modal" role="dialog" aria-hidden="true">
+    <div class="modal-backdrop" id="stac-edit-backdrop"></div>
+    <div class="modal-content" style="max-width:520px;">
+      <div class="modal-header">
+        <h3 class="modal-title">Edit STAC endpoint</h3>
+        <button type="button" class="modal-close" id="stac-edit-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="stac-edit-id">
+        <div class="form-row">
+          <label>Title</label>
+          <input type="text" id="stac-edit-title" style="width:100%">
+        </div>
+        <div class="form-row">
+          <label>STAC API root URL</label>
+          <input type="url" id="stac-edit-url" style="width:100%">
+        </div>
+        <div class="form-row">
+          <label class="checkbox-inline"><input type="checkbox" id="stac-edit-enabled"> Enabled</label>
+        </div>
+        <div class="form-row">
+          <label>Notes</label>
+          <input type="text" id="stac-edit-notes" style="width:100%">
+        </div>
+        <div class="btn-group" style="margin-top:1rem;">
+          <button type="button" class="btn btn-primary" id="stac-edit-save">Save</button>
+          <button type="button" class="btn" id="stac-edit-cancel">Cancel</button>
+        </div>
+        <p id="stac-edit-msg" class="meta" style="margin-top:0.5rem;"></p>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+{% block script %}
+  <script>
+    var base = {{ base | tojson }};
+    function stacApiJson(method, url, body) {
+      var opts = { method: method, credentials: 'same-origin', headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' } };
+      if (body) opts.body = JSON.stringify(body);
+      return fetch(url, opts).then(function(r) {
+        return r.text().then(function(t) {
+          var j = null;
+          try { j = JSON.parse(t); } catch (e) {}
+          return { ok: r.ok, status: r.status, json: j, text: t };
+        });
+      });
+    }
+    document.getElementById('stac-add-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      var msg = document.getElementById('stac-add-msg');
+      msg.textContent = 'Saving…';
+      stacApiJson('POST', base + '/stac/catalogs', {
+        title: document.getElementById('stac-add-title').value.trim(),
+        stac_api_root_url: document.getElementById('stac-add-url').value.trim(),
+        enabled: document.getElementById('stac-add-enabled').checked,
+        notes: document.getElementById('stac-add-notes').value.trim() || null
+      }).then(function(res) {
+        if (res.ok) { msg.textContent = 'Saved. Reloading…'; window.location.reload(); }
+        else { msg.textContent = res.text || res.status; }
+      });
+    });
+    document.querySelectorAll('.stac-del-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var id = btn.getAttribute('data-id');
+        if (!id || !confirm('Delete this STAC endpoint?')) return;
+        stacApiJson('DELETE', base + '/stac/catalogs/' + encodeURIComponent(id), null).then(function(res) {
+          if (res.ok || res.status === 204) window.location.reload();
+          else alert(res.text || res.status);
+        });
+      });
+    });
+    var modal = document.getElementById('stac-edit-modal');
+    function closeEdit() { if (modal) modal.setAttribute('aria-hidden', 'true'); }
+    document.querySelectorAll('.stac-edit-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        document.getElementById('stac-edit-id').value = btn.getAttribute('data-id');
+        document.getElementById('stac-edit-title').value = btn.getAttribute('data-title') || '';
+        document.getElementById('stac-edit-url').value = btn.getAttribute('data-url') || '';
+        document.getElementById('stac-edit-enabled').checked = btn.getAttribute('data-enabled') === 'true';
+        document.getElementById('stac-edit-notes').value = btn.getAttribute('data-notes') || '';
+        document.getElementById('stac-edit-msg').textContent = '';
+        if (modal) modal.setAttribute('aria-hidden', 'false');
+      });
+    });
+    document.getElementById('stac-edit-backdrop').addEventListener('click', closeEdit);
+    document.getElementById('stac-edit-close').addEventListener('click', closeEdit);
+    document.getElementById('stac-edit-cancel').addEventListener('click', closeEdit);
+    document.getElementById('stac-edit-save').addEventListener('click', function() {
+      var id = document.getElementById('stac-edit-id').value;
+      var msg = document.getElementById('stac-edit-msg');
+      msg.textContent = 'Saving…';
+      stacApiJson('PUT', base + '/stac/catalogs/' + encodeURIComponent(id), {
+        title: document.getElementById('stac-edit-title').value.trim(),
+        stac_api_root_url: document.getElementById('stac-edit-url').value.trim(),
+        enabled: document.getElementById('stac-edit-enabled').checked,
+        notes: document.getElementById('stac-edit-notes').value.trim() || null
+      }).then(function(res) {
+        if (res.ok) { msg.textContent = 'Saved. Reloading…'; window.location.reload(); }
+        else { msg.textContent = res.text || res.status; }
+      });
+    });
+  </script>
+{% endblock %}

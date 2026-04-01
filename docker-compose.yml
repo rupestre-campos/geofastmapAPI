@@ -51,6 +51,10 @@ services:
       BULK_STORAGE_PATH: /data/bulk-uploads
       PROCESS_QUEUE_TYPE: redis
       TILES_STORAGE_PATH: /data/tiles
+      RASTER_STORAGE_PATH: /data/rasters
+      TITILER_INTERNAL_URL: http://titiler:8000
+      RASTER_INTERNAL_FETCH_BASE_URL: http://api:8000
+      TITILER_INTERNAL_SECRET: dev-titiler-internal-secret-change-in-production
       ENVIRONMENT: docker
     ports:
       - "8000:8000"
@@ -58,6 +62,7 @@ services:
       - .:/app
       - geofastmap_bulk_uploads:/data/bulk-uploads
       - geofastmap_tiles:/data/tiles
+      - geofastmap_rasters:/data/rasters
     command: >
       sh -c "for i in 1 2 3 4 5 6 7 8 9 10; do
                if alembic upgrade head; then exec uvicorn app.main:app --host 0.0.0.0 --port 8000; fi;
@@ -135,8 +140,21 @@ services:
       - .:/app
     command: python -m app.process_worker_main
 
+  titiler:
+    image: ghcr.io/developmentseed/titiler:latest
+    container_name: geofastmap_titiler
+    volumes:
+      - geofastmap_rasters:/data/rasters
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+    # Not exposed to host; API proxies with auth. Internal port 8000.
+    expose:
+      - "8000"
+
 volumes:
   geofastmap_pgdata:
   geofastmap_bulk_uploads:  # Shared between api and worker for bulk uploads
   geofastmap_tiles:         # Static MBTiles (api + tile_worker)
+  geofastmap_rasters:       # COGs + MosaicJSON views (api + titiler)
 

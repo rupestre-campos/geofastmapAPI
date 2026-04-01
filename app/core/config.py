@@ -77,6 +77,27 @@ class Settings(BaseSettings):
     tippecanoe_maxzoom: int = 16
     google_maps_api_key: str = ""  # optional; for Google Satellite/Hybrid basemaps in HTML
 
+    # Rasters: COG storage (shared with Titiler worker when using file:// URLs)
+    raster_storage_path: str = "/data/rasters"
+    raster_upload_max_bytes: int = 500 * 1024 * 1024  # 500 MiB
+    # Internal Titiler base URL (e.g. http://titiler:8000). Empty = proxy disabled / in-app tiles only.
+    titiler_internal_url: str = ""
+    # Shared secret for Titiler → API internal COG fetch (optional; avoids file:// in Titiler).
+    titiler_internal_secret: str = ""
+    # Base URL reachable from the Titiler container for internal COG fetch (e.g. http://api:8000).
+    raster_internal_fetch_base_url: str = ""
+    # Federated STAC Item Search: Redis cache TTL (seconds). 0 = no cache.
+    stac_search_cache_ttl_seconds: int = 300
+    stac_search_http_timeout_seconds: float = 60.0
+    # Federated STAC: retry POST /search on transient upstream errors (502/503/504/429).
+    stac_search_http_max_retries: int = 2  # attempts after the first (2 => up to 3 tries per catalog)
+    stac_search_http_retry_backoff_seconds: float = 0.75  # base delay; exponential backoff
+    stac_search_max_catalogs: int = 32
+    # HTML STAC search: max merged features fetched before slicing for pagination (per search).
+    stac_search_html_max_features: int = 2000
+    # Max page size for GET /stac?f=html
+    stac_search_html_max_limit: int = 100
+
     # Auth: session signing key (set in production); empty = no session auth
     auth_secret_key: str = ""
     # Default admin credentials for first-time seed (change after first login)

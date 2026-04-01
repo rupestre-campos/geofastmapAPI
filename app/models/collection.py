@@ -18,6 +18,8 @@ class Collection(Base):
     title: str | None = Column(String, nullable=True)
     description: str | None = Column(Text, nullable=True)
     extent: dict | None = Column(JSON, nullable=True)
+    # Optional link to external STAC: {"catalog_id": "...", "collection_id": "..."}
+    stac_source: dict | None = Column(JSON, nullable=True)
     # Cached total feature count; used when listing items with no filters to avoid COUNT queries.
     feature_count: int = Column(Integer, nullable=False, default=0, server_default="0")
     owner_id: int | None = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)

@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     libsqlite3-dev \
     zlib1g-dev \
+    libgdal-dev \
+    gdal-bin \
     && rm -rf /var/lib/apt/lists/*
 
 # Tippecanoe for static MBTiles (tile worker) - Mapbox outputs MBTiles natively

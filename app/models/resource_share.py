@@ -9,6 +9,7 @@ from app.db.base import Base
 RESOURCE_TYPE_COLLECTION = "collection"
 RESOURCE_TYPE_MAP = "map"
 RESOURCE_TYPE_STYLE = "style"
+RESOURCE_TYPE_RASTER_VIEW = "raster_view"
 
 ROLE_VIEWER = "viewer"
 ROLE_EDITOR = "editor"

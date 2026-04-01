@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic.config import ConfigDict
@@ -63,6 +64,10 @@ class CollectionBase(BaseModel):
     title: str | None = None
     description: str | None = None
     extent: Extent | None = None
+    stac_source: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional link to external STAC: catalog_id, collection_id.",
+    )
 
 
 class CollectionCreate(CollectionBase):
@@ -75,6 +80,7 @@ class CollectionReplace(BaseModel):
     title: str | None = None
     description: str | None = None
     extent: Extent | None = None
+    stac_source: dict[str, Any] | None = None
 
 
 class CollectionPatch(BaseModel):
@@ -83,6 +89,7 @@ class CollectionPatch(BaseModel):
     title: str | None = None
     description: str | None = None
     extent: Extent | None = None
+    stac_source: dict[str, Any] | None = None
     visibility: str | None = None  # private | logged | public
     viewer_can_edit: bool | None = None  # when True, everyone who can view can edit
 

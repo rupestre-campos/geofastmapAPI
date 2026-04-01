@@ -6,8 +6,22 @@ from app.models.feature import Feature  # noqa: F401
 from app.models.map import Map  # noqa: F401
 from app.models.resource_share import ResourceShare  # noqa: F401
 from app.models.style import Style  # noqa: F401
+from app.models.raster_view import RasterView  # noqa: F401
+from app.models.stac_catalog import StacCatalog  # noqa: F401
 from app.models.user import User  # noqa: F401
 
-__all__ = ["ApiLanding", "Basemap", "Collection", "CollectionTiles", "Feature", "Map", "ResourceShare", "Style", "User"]
+__all__ = [
+    "ApiLanding",
+    "Basemap",
+    "Collection",
+    "CollectionTiles",
+    "Feature",
+    "Map",
+    "RasterView",
+    "ResourceShare",
+    "StacCatalog",
+    "Style",
+    "User",
+]
 
 

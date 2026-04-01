@@ -38,6 +38,10 @@
     <div class="collection-info-value"><code>{{ collection.id }}</code></div>
     <div class="collection-info-label">Description</div>
     <div class="collection-info-value">{{ collection.description or '—' }}</div>
+    {% if stac_source %}
+    <div class="collection-info-label">STAC link</div>
+    <div class="collection-info-value"><code>{{ stac_source | tojson }}</code> <span class="meta">(external catalog / collection)</span></div>
+    {% endif %}
     <div class="collection-info-label">Bbox</div>
     <div class="collection-info-value">
       {% if extent_geojson and extent_geojson.bbox and extent_geojson.bbox[0] %}

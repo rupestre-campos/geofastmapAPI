@@ -13,7 +13,28 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.core.html import wants_html
 
-from app.api.routes import auth, basemaps_api, basemaps_pages, collection_styles, collections, items, jobs, maps, processes, project_docs, root, styles, tiles
+from app.api.routes import (
+    auth,
+    basemaps_api,
+    basemaps_pages,
+    collection_styles,
+    collections,
+    coverages,
+    internal_raster,
+    items,
+    jobs,
+    maps,
+    processes,
+    project_docs,
+    raster_views,
+    rasters,
+    root,
+    stac,
+    stac_items,
+    styles,
+    tiles,
+    titiler_proxy,
+)
 from app.core.config import get_settings
 from app.utils.geometry_limits import GeometryTooLargeError
 from app.middleware.private_html_cache import PrivateHtmlCacheMiddleware
@@ -116,6 +137,13 @@ def create_app() -> FastAPI:
         prefix="/collections",
         tags=["items"],
     )
+    app.include_router(coverages.router, prefix="/collections", tags=["coverages"])
+    app.include_router(titiler_proxy.router, prefix="/collections", tags=["titiler"])
+    app.include_router(rasters.router, prefix="/collections", tags=["rasters"])
+    app.include_router(internal_raster.router, prefix="/internal", tags=["internal"])
+    app.include_router(stac.router, prefix="/stac", tags=["stac"])
+    app.include_router(stac_items.router, prefix="/stac", tags=["stac"])
+    app.include_router(raster_views.router, tags=["raster-views"])
     app.include_router(tiles.router, prefix="/collections", tags=["tiles"])
     app.include_router(collection_styles.router, prefix="/collections", tags=["styles"])
     # Register /styles/basemaps before /styles so it is not captured by /styles/{style_id}.

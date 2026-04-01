@@ -1,0 +1,299 @@
+{% extends "base.html" %}
+{% block title %}STAC item {{ item_id }} – {{ catalog_title }}{% endblock %}
+{% block head %}
+  {% include '_map_popup_css.html' %}
+  <style>
+    .stac-item-meta { font-size: 0.9rem; color: var(--text-secondary); }
+    .stac-item-thumb { max-width: min(100%, 480px); border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: var(--space); }
+    .stac-raster-controls { display: flex; flex-wrap: wrap; gap: var(--space); align-items: flex-end; margin-bottom: var(--space); }
+    .stac-raster-controls .form-row { margin: 0; min-width: 8rem; }
+    .stac-raster-controls label { font-size: 0.85rem; }
+    .stac-raster-controls input[type="text"], .stac-raster-controls select { max-width: 12rem; }
+    #stac-item-map { min-height: 320px; }
+    .props-view-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .props-view-table th { text-align: left; padding: 6px 8px; font-weight: 600; font-size: 0.85rem; color: var(--text-secondary); border-bottom: 1px solid var(--border); }
+    .props-view-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); word-break: break-word; }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>STAC item <code>{{ item_id }}</code></h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › <a href="{{ base }}/stac?f=html">STAC search</a> › {{ catalog_title }}</p>
+    <p class="stac-item-meta">Collection <code>{{ collection_id }}</code> · Catalog <code>{{ catalog_id }}</code></p>
+  </header>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Links</h2>
+    </div>
+    <p class="meta"><a href="{{ base }}/stac/catalogs/{{ catalog_id | urlencode }}/collections/{{ collection_id | urlencode }}/items/{{ item_id | urlencode }}">JSON</a> (same page without <code>?f=html</code>)</p>
+    {% set ns = namespace(self_href='') %}
+    {% for L in (stac_item.links or []) %}
+      {% if not ns.self_href and L is mapping and L.get('rel') == 'self' and L.get('href') %}
+        {% set ns.self_href = L.get('href') %}
+      {% endif %}
+    {% endfor %}
+    {% if ns.self_href %}
+    <p class="meta">Upstream: <a href="{{ ns.self_href }}" target="_blank" rel="noopener">{{ ns.self_href }}</a></p>
+    {% endif %}
+  </div>
+
+  {% if thumbnail_url %}
+  <div class="card">
+    <h2 class="card-title">Thumbnail</h2>
+    <img class="stac-item-thumb" src="{{ thumbnail_url }}" alt="Item thumbnail" loading="lazy">
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Preview imagery (Titiler)</h2>
+    </div>
+    {% if not titiler_configured %}
+    <p class="meta">Set <code>TITILER_INTERNAL_URL</code> (and optional <code>RASTER_INTERNAL_FETCH_BASE_URL</code> / <code>TITILER_INTERNAL_SECRET</code> for local COGs) to enable raster tile previews. Footprint map below still works.</p>
+    {% elif not tile_assets %}
+    <p class="meta">No GeoTIFF / COG-style assets were detected on this item for Titiler. Use the thumbnail or upstream link if available.</p>
+    {% else %}
+    <p class="meta">Tiles are proxied through this API to Titiler. Adjust bands and rescale if the preview is dark or tinted.</p>
+    <div class="stac-raster-controls">
+      <div class="form-row">
+        <label for="stac-asset-select">Asset</label>
+        <select id="stac-asset-select">
+          {% for a in tile_assets %}
+          <option value="{{ a.key }}" {% if a.key == default_tile_asset %}selected{% endif %}>{{ a.key }}{% if a.title != a.key %} — {{ a.title }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="stac-bidx">Bands (bidx)</label>
+        <input type="text" id="stac-bidx" placeholder="e.g. 1,2,3" autocomplete="off" title="Forwarded to Titiler as bidx">
+      </div>
+      <div class="form-row">
+        <label for="stac-rescale">Rescale</label>
+        <input type="text" id="stac-rescale" placeholder="e.g. 0,2500" autocomplete="off" title="Per-band min,max comma-separated">
+      </div>
+      <div class="form-row">
+        <label for="stac-raster-opacity">Opacity</label>
+        <input type="range" id="stac-raster-opacity" min="0" max="100" value="100" style="width:8rem">
+      </div>
+      <button type="button" class="btn btn-sm btn-primary" id="stac-apply-raster">Apply</button>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Map</h2>
+      <div class="card-actions">
+        <button type="button" class="btn btn-sm btn-fullscreen" id="stac-item-map-fs" title="Fullscreen">Fullscreen</button>
+      </div>
+    </div>
+    <div id="stac-item-map" class="map-container">
+      <div class="map-controls">
+        {% include '_basemap_selector.html' %}
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Properties</h2>
+    <table class="props-view-table">
+      <thead><tr><th>Property</th><th>Value</th></tr></thead>
+      <tbody id="stac-props-tbody"></tbody>
+    </table>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
+  <script>
+    var base = {{ base | tojson }};
+    var catalogId = {{ catalog_id | tojson }};
+    var collectionId = {{ collection_id | tojson }};
+    var itemId = {{ item_id | tojson }};
+    var stacItem = {{ stac_item | tojson }};
+    var titilerConfigured = {{ titiler_configured | tojson }};
+    var tileAssetsLen = {{ tile_assets | length }};
+
+    var map;
+    var BASEMAPS;
+    var basemapList;
+
+    function bboxFromGeom(geom) {
+      if (!geom || !geom.coordinates) return null;
+      var flat = function(arr, out) { if (Array.isArray(arr[0])) arr.forEach(function(a) { flat(a, out); }); else out.push(arr[0], arr[1]); };
+      var coords = []; flat(geom.coordinates, coords);
+      var xs = coords.filter(function(_, i) { return i % 2 === 0; });
+      var ys = coords.filter(function(_, i) { return i % 2 === 1; });
+      return xs.length ? [[Math.min.apply(null, xs), Math.min.apply(null, ys)], [Math.max.apply(null, xs), Math.max.apply(null, ys)]] : null;
+    }
+
+    function itemBbox() {
+      var b = stacItem.bbox;
+      if (Array.isArray(b) && b.length >= 4) return [[b[0], b[1]], [b[2], b[3]]];
+      return bboxFromGeom(stacItem.geometry);
+    }
+
+    function buildTileUrl(assetKey) {
+      var path = base + '/stac/catalogs/' + encodeURIComponent(catalogId)
+        + '/collections/' + encodeURIComponent(collectionId)
+        + '/items/' + encodeURIComponent(itemId)
+        + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png?asset=' + encodeURIComponent(assetKey);
+      var qs = [];
+      var r = document.getElementById('stac-rescale');
+      var b = document.getElementById('stac-bidx');
+      if (r && r.value.trim()) qs.push('rescale=' + encodeURIComponent(r.value.trim()));
+      if (b && b.value.trim()) qs.push('bidx=' + encodeURIComponent(b.value.trim()));
+      return qs.length ? path + '&' + qs.join('&') : path;
+    }
+
+    function removeRasterLayer() {
+      if (!map) return;
+      if (map.getLayer('stac-raster')) map.removeLayer('stac-raster');
+      if (map.getSource('stac-raster')) map.removeSource('stac-raster');
+    }
+
+    function addOrRefreshRaster() {
+      if (!titilerConfigured || !tileAssetsLen) return;
+      var sel = document.getElementById('stac-asset-select');
+      if (!sel || !sel.value) return;
+      removeRasterLayer();
+      var before = map.getLayer('stac-footprint-line') ? 'stac-footprint-line'
+        : (map.getLayer('stac-footprint-circle') ? 'stac-footprint-circle' : undefined);
+      map.addSource('stac-raster', {
+        type: 'raster',
+        tiles: [buildTileUrl(sel.value)],
+        tileSize: 256,
+        attribution: 'STAC / Titiler'
+      });
+      map.addLayer({
+        id: 'stac-raster',
+        type: 'raster',
+        source: 'stac-raster',
+        paint: { 'raster-opacity': 1 }
+      }, before);
+      var op = document.getElementById('stac-raster-opacity');
+      if (op) map.setPaintProperty('stac-raster', 'raster-opacity', parseInt(op.value, 10) / 100);
+    }
+
+    function applyBasemapFromSelect() {
+      var sel = document.getElementById('map-basemap');
+      if (!sel || !map || !map.getSource('basemap')) return;
+      var v = sel.value;
+      var cfg = BASEMAPS[v];
+      if (!cfg) return;
+      var before = map.getLayer('stac-footprint-fill') ? 'stac-footprint-fill' : undefined;
+      GeofastmapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: before });
+      GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
+    }
+
+    function initMap() {
+      var el = document.getElementById('stac-item-map');
+      if (!el || typeof maplibregl === 'undefined') return;
+      var sel = document.getElementById('map-basemap');
+      GeofastmapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
+      var initialId = null;
+      try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch (e) {}
+      if (!initialId && basemapList.length) initialId = basemapList[0].id;
+      if (!initialId && BASEMAPS.osm) initialId = 'osm';
+      var initial = (initialId && BASEMAPS[initialId]) ? BASEMAPS[initialId] : (BASEMAPS.osm || (basemapList[0] && BASEMAPS[basemapList[0].id]));
+      if (!initial) return;
+      if (sel) sel.value = initialId || (sel.options[0] && sel.options[0].value);
+      var mapStyle = GeofastmapUtils.buildMapStyleWithBasemap(initial);
+      map = new maplibregl.Map({
+        container: 'stac-item-map',
+        style: mapStyle,
+        center: [0, 20],
+        zoom: 2,
+        renderWorldCopies: false
+      });
+      GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
+      map.addControl(new maplibregl.NavigationControl(), 'top-right');
+      map.on('load', function() {
+        GeofastmapUtils.setupFullscreenForMap(map, 'stac-item-map-fs');
+        try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s] && sel) sel.value = s; } catch (e) {}
+        applyBasemapFromSelect();
+        sel.onchange = function() {
+          try { localStorage.setItem('geofastmap-basemap', this.value); } catch (e) {}
+          applyBasemapFromSelect();
+        };
+
+        var fc = {
+          type: 'FeatureCollection',
+          features: stacItem.geometry ? [{ type: 'Feature', properties: {}, geometry: stacItem.geometry }] : []
+        };
+        if (fc.features.length) {
+          map.addSource('stac-footprint', { type: 'geojson', data: fc });
+          var notPoint = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
+          var pointFilter = ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]];
+          map.addLayer({
+            id: 'stac-footprint-fill',
+            type: 'fill',
+            source: 'stac-footprint',
+            filter: notPoint,
+            paint: { 'fill-color': '#58a6ff', 'fill-opacity': 0.12 }
+          });
+          map.addLayer({
+            id: 'stac-footprint-line',
+            type: 'line',
+            source: 'stac-footprint',
+            filter: notPoint,
+            paint: { 'line-color': '#58a6ff', 'line-width': 2 }
+          });
+          map.addLayer({
+            id: 'stac-footprint-circle',
+            type: 'circle',
+            source: 'stac-footprint',
+            filter: pointFilter,
+            paint: { 'circle-color': '#58a6ff', 'circle-radius': 8, 'circle-opacity': 0.9 }
+          });
+        }
+
+        if (titilerConfigured && tileAssetsLen) addOrRefreshRaster();
+
+        var bb = itemBbox();
+        if (bb) map.fitBounds(bb, { padding: 48, maxZoom: 14, duration: 0 });
+        else map.fitBounds([[-180, -85], [180, 85]], { padding: 20, duration: 0 });
+      });
+    }
+
+    var googleKey = {{ google_maps_api_key | tojson }};
+    GeofastmapUtils.fetchBasemaps(base).then(function(result) {
+      BASEMAPS = result.byId;
+      basemapList = result.basemaps;
+      if (!basemapList.length) {
+        BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
+        basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
+      }
+      initMap();
+    }).catch(function() {
+      BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
+      basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
+      initMap();
+    });
+
+    var props = stacItem.properties && typeof stacItem.properties === 'object' ? stacItem.properties : {};
+    var tbody = document.getElementById('stac-props-tbody');
+    if (tbody) {
+      Object.keys(props).sort().forEach(function(k) {
+        var v = props[k];
+        var valStr = v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td class="prop-key">' + GeofastmapUtils.escapeHtml(k) + '</td><td class="prop-value">' + GeofastmapUtils.escapeHtml(valStr) + '</td>';
+        tbody.appendChild(tr);
+      });
+    }
+
+    document.getElementById('stac-apply-raster') && document.getElementById('stac-apply-raster').addEventListener('click', function() {
+      if (map && map.loaded()) addOrRefreshRaster();
+    });
+    document.getElementById('stac-asset-select') && document.getElementById('stac-asset-select').addEventListener('change', function() {
+      if (map && map.loaded()) addOrRefreshRaster();
+    });
+    document.getElementById('stac-raster-opacity') && document.getElementById('stac-raster-opacity').addEventListener('input', function() {
+      if (map && map.getLayer('stac-raster')) {
+        map.setPaintProperty('stac-raster', 'raster-opacity', parseInt(this.value, 10) / 100);
+      }
+    });
+  </script>
+{% endblock %}
