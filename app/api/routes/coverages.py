@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user_optional
+from app.api.deps import get_current_user_required
+from app.models.user import User
 from app.core.config import get_settings
 from app.core.permissions import can_see_collection
 from app.crud import collections as collections_crud
@@ -39,7 +40,7 @@ async def get_coverage_geotiff(
     collection_id: str,
     feature_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user_required),
 ):
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
@@ -83,7 +84,7 @@ async def get_coverage_tile_png(
     red: int | None = Query(None, ge=1, description="Red band for NDVI (1-based)"),
     nir: int | None = Query(None, ge=1, description="NIR band for NDVI (1-based)"),
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user_required),
 ):
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:

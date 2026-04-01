@@ -7,7 +7,8 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user_optional
+from app.api.deps import get_current_user_required
+from app.models.user import User
 from app.core.config import get_settings
 from app.core.permissions import can_see_collection
 from app.crud import collections as collections_crud
@@ -42,7 +43,7 @@ async def titiler_proxy_tile(
     y: int,
     ext: str,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user_required),
 ):
     settings = get_settings()
     base = settings.titiler_internal_url.rstrip("/")

@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import time
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_user_optional, get_current_user_required
 from app.core.config import get_settings
 from app.core.html import html_response, wants_html
+from app.models.user import User
 from app.crud import stac_catalogs as stac_catalogs_crud
 from app.db.session import get_db
 from app.services.stac_item_client import (
@@ -65,7 +69,21 @@ async def stac_item_detail(
     collection_id: str,
     item_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
 ):
+    base = str(request.base_url).rstrip("/")
+    if not current_user:
+        if wants_html(request):
+            return RedirectResponse(
+                url=f"{base}/auth/login?f=html&next={quote(str(request.url), safe='')}",
+                status_code=status.HTTP_302_FOUND,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
     catalog = await _get_enabled_catalog(db, catalog_id)
     try:
         item = await get_stac_item_cached(catalog, collection_id, item_id)
@@ -90,10 +108,11 @@ async def stac_item_detail(
         tile_assets = list_tile_assets(item)
         default_asset = default_tile_asset_key(item) or ""
         thumb = get_thumbnail_href(item)
-        base = str(request.base_url).rstrip("/")
         return html_response(
             "stac_item.html",
             base=base,
+            username=current_user.username,
+            is_admin=current_user.is_admin,
             catalog_id=catalog_id,
             catalog_title=catalog.title,
             collection_id=collection_id,
@@ -125,6 +144,7 @@ async def stac_item_titiler_tile(
     ext: str,
     asset: str | None = None,
     db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user_required),
 ):
     settings = get_settings()
     base_t = settings.titiler_internal_url.rstrip("/")
@@ -259,6 +279,7 @@ async def stac_item_titiler_suggest_rescale(
     collection_id: str,
     item_id: str,
     db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user_required),
 ):
     """
     Compute a reasonable `rescale=min,max` suggestion using Titiler statistics percentiles.

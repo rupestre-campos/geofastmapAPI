@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user_optional, require_admin
+from app.api.deps import get_current_user_optional, get_current_user_required, require_admin
 from app.core.config import get_settings
 from app.core.html import html_response, wants_html
 from app.crud import stac_catalogs as stac_catalogs_crud
@@ -175,9 +176,16 @@ def _catalog_ids_from_stac_target(
 @router.get("/available-collections", summary="Collections exposed by selected STAC endpoint(s)")
 async def stac_available_collections(
     db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
     stac_target: str = Query("all", description="Same values as STAC search page"),
 ):
     """Returns grouped collection ids/titles for building the HTML multi-select (follows STAC paging)."""
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
     rows_enabled = await stac_catalogs_crud.list_catalogs(db, enabled_only=True)
     enabled_ids = {c.id for c in rows_enabled}
     resolved = _catalog_ids_from_stac_target(stac_target, enabled_ids)
@@ -217,6 +225,17 @@ async def stac_hub(
     """List catalogs; HTML: map + form search + paginated results; JSON: hub links."""
     settings = get_settings()
     base = _base_url(request)
+    if not current_user:
+        if wants_html(request):
+            return RedirectResponse(
+                url=f"{base}/auth/login?f=html&next={quote(str(request.url), safe='')}",
+                status_code=status.HTTP_302_FOUND,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
     max_page = settings.stac_search_html_max_limit
     if limit > max_page:
         limit = max_page
@@ -367,8 +386,14 @@ async def list_stac_catalogs(
     current_user: User | None = Depends(get_current_user_optional),
     include_disabled: bool = Query(False, description="Admin: include disabled catalogs."),
 ):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
     if include_disabled:
-        if current_user is None or not current_user.is_admin:
+        if not current_user.is_admin:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
         rows = await stac_catalogs_crud.list_catalogs(db, enabled_only=False)
     else:
@@ -430,6 +455,7 @@ async def delete_stac_catalog(
 async def stac_item_search(
     body: dict[str, Any],
     db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user_required),
 ):
     """Merge Item Search results from enabled STAC catalogs. Optional body key `catalog_ids` filters catalogs."""
     merged, _errors = await _execute_stac_search(db, body)

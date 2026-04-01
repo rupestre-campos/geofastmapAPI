@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-from app.api.deps import get_current_user_optional, get_current_user_required
+from app.api.deps import get_current_user_required
 from app.core.config import get_settings
 from app.core.permissions import can_see_raster_view
 from app.crud import raster_views as raster_views_crud
@@ -69,7 +69,7 @@ async def create_raster_view(
 async def get_raster_view(
     view_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user_required),
 ):
     row = await raster_views_crud.get_view(db, view_id)
     if row is None:
@@ -92,7 +92,7 @@ async def titiler_mosaic_tile(
     y: int,
     ext: str,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user_required),
 ):
     settings = get_settings()
     base = settings.titiler_internal_url.rstrip("/")

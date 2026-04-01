@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
-from app.api.deps import get_current_user_optional
+from app.api.deps import get_current_user_required
+from app.models.user import User
 from app.core.config import get_settings
 from app.core.permissions import can_edit_collection
 from app.crud import collections as collections_crud
@@ -40,7 +41,7 @@ async def upload_raster(
     file: UploadFile = File(..., description="GeoTIFF in EPSG:4326"),
     title: str | None = Form(None, description="Optional title stored in properties"),
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user_required),
 ):
     settings = get_settings()
     collection = await collections_crud.get_collection(db, collection_id)
