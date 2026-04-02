@@ -21,10 +21,12 @@
     <label for="stac-rescale">Rescale</label>
     <input type="text" id="stac-rescale" value="" placeholder="min,max" autocomplete="off" title="Mode defaults: RGB bands = empty; expression = -1,1; single / RGB assets = 0,4000. Min,max for all modes (RGB repeats per band in the tile request).">
   </div>
+  {% if not raster_style_embed | default(false) %}
   <div class="form-row">
     <label for="stac-raster-opacity">Opacity</label>
     <input type="range" id="stac-raster-opacity" min="0" max="100" value="100">
   </div>
+  {% endif %}
 </div>
 
 <div id="stac-rgb-bands-block" class="stac-advanced-block is-open">
@@ -166,6 +168,8 @@
   </div>
 </details>
 
+{% if not raster_style_embed | default(false) %}
 <div class="stac-actions-row">
   <button type="button" class="btn btn-primary" id="stac-apply-raster">Apply</button>
 </div>
+{% endif %}

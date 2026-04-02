@@ -74,6 +74,18 @@
     .sr-only { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
     .legend-tools-row { border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 4px; }
     .legend-tools-row label { display:flex; align-items:center; gap: 6px; }
+    .map-edit-stac-embed {
+      display: block;
+      width: 100%;
+      min-height: 260px;
+      height: min(52vh, 440px);
+      max-height: min(70vh, 600px);
+      margin-top: 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+      box-sizing: border-box;
+    }
   </style>
 {% endblock %}
 {% block content %}
@@ -186,18 +198,16 @@
     <details id="style-editor-details-raster" class="layer-style-collapsible" style="display:none;">
       <summary>Raster imagery (STAC)</summary>
       <div style="padding:0 var(--space) var(--space);">
-        <p class="meta" style="margin:0 0 10px;">Raster options (asset, bands, rescale, expression, colormap, color formula) — same as the STAC image viewer, without the preview map. Click <strong>Apply to map layer</strong> to copy tile URLs and settings into this map. The slider below adjusts opacity on the <strong>map</strong> (you can also set opacity in the panel, then apply).</p>
-        <div class="form-row" style="align-items:center;gap:12px;flex-wrap:wrap;">
-          <label for="map-edit-raster-opacity" class="label-text">Raster opacity</label>
-          <input type="range" id="map-edit-raster-opacity" min="0" max="100" value="100" style="width:140px;">
+        <p class="meta" style="margin:0 0 12px;">Imagery style (asset, bands, rescale, expression, colormap, color formula). Changes sync to the map as you edit. Use <strong>Opacity</strong> below for how this layer blends on the map.</p>
+        <div class="form-row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
+          <label for="map-edit-raster-opacity" class="label-text">Opacity on map</label>
+          <input type="range" id="map-edit-raster-opacity" min="0" max="100" value="100" style="width:160px;">
           <span id="map-edit-raster-opacity-val" class="meta">100%</span>
         </div>
-        <div class="form-row" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-          <button type="button" class="btn btn-primary btn-sm" id="map-edit-raster-apply-viewer">Apply to map layer</button>
-          <a class="btn btn-sm" id="map-edit-raster-open-tab" href="#" target="_blank" rel="noopener noreferrer">Open viewer in new tab</a>
+        <div class="form-row" style="margin-bottom:8px;">
+          <a class="btn btn-sm" id="map-edit-raster-open-tab" href="#" target="_blank" rel="noopener noreferrer">Open full STAC item in new tab</a>
         </div>
-        <p id="map-edit-raster-apply-msg" class="meta" style="margin:8px 0 0;color:var(--danger);display:none;"></p>
-        <iframe id="map-edit-stac-viewer-iframe" title="STAC raster style" style="width:100%;min-height:360px;max-height:min(75vh,720px);height:480px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-top:12px;background:var(--bg);"></iframe>
+        <iframe id="map-edit-stac-viewer-iframe" class="map-edit-stac-embed" title="Raster style options"></iframe>
       </div>
     </details>
     <details id="style-editor-details-raster-simple" class="layer-style-collapsible" style="display:none;">
@@ -863,52 +873,16 @@
             try { applyLayerStyleToMap(i); } catch (e) {}
           });
         }
-        var applyBtn = document.getElementById('map-edit-raster-apply-viewer');
-        if (applyBtn && !applyBtn.dataset.bound) {
-          applyBtn.dataset.bound = '1';
-          applyBtn.addEventListener('click', function() {
-            var msg = document.getElementById('map-edit-raster-apply-msg');
-            var i = state.selectedLayerIndex;
-            if (i == null || !state.layers[i]) return;
-            var lyr = state.layers[i];
-            if (!lyr.raster_tiles || !(lyr.stac_viewer_path || lyr.stacViewerPath)) return;
-            var iframe = document.getElementById('map-edit-stac-viewer-iframe');
-            if (!iframe || !iframe.contentWindow) {
-              if (msg) { msg.style.display = ''; msg.textContent = 'Viewer not loaded yet.'; }
-              return;
-            }
-            var w = iframe.contentWindow;
-            var fn = w.__geofastStacViewerExportLayer;
-            if (typeof fn !== 'function') {
-              if (msg) { msg.style.display = ''; msg.textContent = 'Wait for the raster style panel to finish loading, then try again.'; }
-              return;
-            }
-            var out = fn();
-            if (!out || !out.ok || !out.layer) {
-              if (msg) { msg.style.display = ''; msg.textContent = (out && out.error) ? out.error : 'Could not read settings from viewer.'; }
-              return;
-            }
-            var pl = out.layer;
-            lyr.tiles_url = pl.tiles_url;
-            lyr.stac_viewer_path = pl.stac_viewer_path;
-            lyr.stac_viewer_query = pl.stac_viewer_query;
-            lyr.layer_id = pl.layer_id || lyr.layer_id;
-            lyr.style_spec = lyr.style_spec || {};
-            if (pl.style_spec && pl.style_spec.rasterOpacity != null) {
-              lyr.style_spec.rasterOpacity = pl.style_spec.rasterOpacity;
-              var op = document.getElementById('map-edit-raster-opacity');
-              var opv = document.getElementById('map-edit-raster-opacity-val');
-              var pct = Math.round(Math.max(0, Math.min(1, Number(pl.style_spec.rasterOpacity))) * 100);
-              if (op) op.value = String(pct);
-              if (opv) opv.textContent = pct + '%';
-            }
-            if (msg) msg.style.display = 'none';
-            var newEmbed = stacRasterStyleEmbedUrl(lyr);
-            iframe.dataset.viewerSrc = newEmbed;
-            removeAllLayerSourcesFromMap();
-            syncMapFromState();
-            renderLayers();
-          });
+      }
+
+      function mergeStacPayloadIntoLayer(lyr, pl) {
+        lyr.tiles_url = pl.tiles_url;
+        lyr.stac_viewer_path = pl.stac_viewer_path;
+        lyr.stac_viewer_query = pl.stac_viewer_query;
+        lyr.layer_id = pl.layer_id || lyr.layer_id;
+        lyr.style_spec = lyr.style_spec || {};
+        if (pl.style_spec && pl.style_spec.rasterOpacity != null) {
+          lyr.style_spec.rasterOpacity = pl.style_spec.rasterOpacity;
         }
       }
 
@@ -924,21 +898,30 @@
         if (lyr.stac_item_id && pl.stac_item_id && String(lyr.stac_item_id) !== String(pl.stac_item_id)) return;
         if (lyr.stac_catalog_id && pl.stac_catalog_id && String(lyr.stac_catalog_id) !== String(pl.stac_catalog_id)) return;
         if (lyr.stac_collection_id && pl.stac_collection_id && String(lyr.stac_collection_id) !== String(pl.stac_collection_id)) return;
-        lyr.tiles_url = pl.tiles_url;
-        lyr.stac_viewer_path = pl.stac_viewer_path;
-        lyr.stac_viewer_query = pl.stac_viewer_query;
-        lyr.layer_id = pl.layer_id || lyr.layer_id;
-        lyr.style_spec = lyr.style_spec || {};
+        var prevTiles = lyr.tiles_url;
+        mergeStacPayloadIntoLayer(lyr, pl);
+        var op = document.getElementById('map-edit-raster-opacity');
+        var opv = document.getElementById('map-edit-raster-opacity-val');
         if (pl.style_spec && pl.style_spec.rasterOpacity != null) {
-          lyr.style_spec.rasterOpacity = pl.style_spec.rasterOpacity;
-          var op = document.getElementById('map-edit-raster-opacity');
-          var opv = document.getElementById('map-edit-raster-opacity-val');
           var pct = Math.round(Math.max(0, Math.min(1, Number(pl.style_spec.rasterOpacity))) * 100);
           if (op) op.value = String(pct);
           if (opv) opv.textContent = pct + '%';
         }
         if (!map || typeof map.loaded !== 'function' || !map.loaded()) return;
         try {
+          if (String(pl.tiles_url || '') === String(prevTiles || '')) {
+            applyLayerStyleToMap(i);
+            return;
+          }
+          var sid = sourceId(layerKey(lyr));
+          var rsrc = map.getSource(sid);
+          if (rsrc && typeof rsrc.setTiles === 'function') {
+            try {
+              rsrc.setTiles([pl.tiles_url]);
+              applyLayerStyleToMap(i);
+              return;
+            } catch (e1) {}
+          }
           removeAllLayerSourcesFromMap();
           syncMapFromState();
           renderLayers();

@@ -359,6 +359,23 @@
     /** Query keys owned by the viewer (replaced on each sync). */
     var STAC_VIEWER_KEYS = ['asset', 'mode', 'rescale', 'opacity', 'br', 'bg', 'bb', 'ar', 'ag', 'ab', 'band', 'expr', 'cmap', 'basemap', 'bbox', 'cf_mode', 'cf_custom', 'cf_inc_g', 'cf_inc_s', 'cf_inc_sat', 'cf_gv', 'cf_ss', 'cf_sb', 'cf_sv', 'cf_cr', 'cf_cg', 'cf_cb', 'cf_open'];
 
+    /** Map editor embed: single opacity slider lives on the parent page. */
+    function mapEditParentOpacity01() {
+      if (!rasterStyleEmbed || !window.parent || window.parent === window) return null;
+      try {
+        var po = window.parent.document.getElementById('map-edit-raster-opacity');
+        if (po) return Math.max(0, Math.min(1, parseInt(po.value, 10) / 100));
+      } catch (e) {}
+      return null;
+    }
+    function getRasterOpacity01() {
+      var v = mapEditParentOpacity01();
+      if (v != null) return v;
+      var opEl = document.getElementById('stac-raster-opacity');
+      if (opEl) return Math.max(0, Math.min(1, parseInt(opEl.value, 10) / 100));
+      return 1;
+    }
+
     function bboxFromGeom(geom) {
       if (!geom || !geom.coordinates) return null;
       var flat = function(arr, out) { if (Array.isArray(arr[0])) arr.forEach(function(a) { flat(a, out); }); else out.push(arr[0], arr[1]); };
@@ -414,8 +431,7 @@
       if (modeEl && modeEl.value) p.set('mode', modeEl.value);
       var rescaleEl = document.getElementById('stac-rescale');
       if (rescaleEl && rescaleEl.value.trim()) p.set('rescale', rescaleEl.value.trim());
-      var opEl = document.getElementById('stac-raster-opacity');
-      if (opEl) p.set('opacity', String(parseInt(opEl.value, 10) || 0));
+      p.set('opacity', String(Math.round(getRasterOpacity01() * 100)));
       var br = document.getElementById('stac-band-r');
       var bg = document.getElementById('stac-band-g');
       var bb = document.getElementById('stac-band-b');
@@ -516,10 +532,20 @@
 
         var op = u.searchParams.get('opacity');
         if (op !== null) {
-          var opEl = document.getElementById('stac-raster-opacity');
-          if (opEl) {
-            var oi = parseInt(op, 10);
-            if (isFinite(oi)) opEl.value = String(Math.max(0, Math.min(100, oi)));
+          var oi = parseInt(op, 10);
+          if (isFinite(oi)) {
+            var pct = Math.max(0, Math.min(100, oi));
+            if (rasterStyleEmbed && window.parent && window.parent !== window) {
+              try {
+                var po = window.parent.document.getElementById('map-edit-raster-opacity');
+                var opv = window.parent.document.getElementById('map-edit-raster-opacity-val');
+                if (po) po.value = String(pct);
+                if (opv) opv.textContent = pct + '%';
+              } catch (e) {}
+            } else {
+              var opEl = document.getElementById('stac-raster-opacity');
+              if (opEl) opEl.value = String(pct);
+            }
           }
         }
 
@@ -867,8 +893,8 @@
         source: 'stac-raster',
         paint: { 'raster-opacity': 1 }
       }, before);
-      var op = document.getElementById('stac-raster-opacity');
-      if (op) map.setPaintProperty('stac-raster', 'raster-opacity', parseInt(op.value, 10) / 100);
+      var roPaint = getRasterOpacity01();
+      if (isFinite(roPaint)) map.setPaintProperty('stac-raster', 'raster-opacity', roPaint);
     }
 
     function applyBasemapFromSelect() {
@@ -1508,8 +1534,7 @@
       if (!tu) throw new Error('Could not build tile URL. Set preview options and use Apply so the URL matches what you want.');
       var viewerPath = '/stac/catalogs/' + encodeURIComponent(catalogId) + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(itemId);
       var viewerQuery = collectViewerQueryStringForMap();
-      var opEl = document.getElementById('stac-raster-opacity');
-      var ro = opEl ? Math.max(0, Math.min(1, parseInt(opEl.value, 10) / 100)) : 1;
+      var ro = getRasterOpacity01();
       if (!isFinite(ro)) ro = 1;
       return {
         collection_id: '_stac',
