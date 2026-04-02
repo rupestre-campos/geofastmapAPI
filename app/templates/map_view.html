@@ -274,7 +274,9 @@
       function layerKey(layer) { return (layer && (layer.layer_id || layer.collectionId)) || (layer && layer.collection_id) || ''; }
       function sourceId(collectionIdOrKey) { return 'layer-' + String(collectionIdOrKey).replace(/[^a-zA-Z0-9_-]/g, '_'); }
       var layerStyleVisibility = {};
+      var layerVisibleState = {};
       function setLayerVisibility(layerKeyVal, visible) {
+        layerVisibleState[layerKeyVal] = !!visible;
         var sid = sourceId(layerKeyVal);
         if (map.getLayer(sid + '-raster')) {
           map.setLayoutProperty(sid + '-raster', 'visibility', visible ? 'visible' : 'none');
@@ -288,6 +290,30 @@
           var v = visible ? ((intended && intended[key] !== undefined) ? intended[key] : 'visible') : 'none';
           map.setLayoutProperty(layerId, 'visibility', v);
         });
+      }
+      function getLayerVisible(layerKeyVal) {
+        if (layerVisibleState[layerKeyVal] !== undefined) return !!layerVisibleState[layerKeyVal];
+        var sid = sourceId(layerKeyVal);
+        try {
+          if (map.getLayer(sid + '-raster')) {
+            return map.getLayoutProperty(sid + '-raster', 'visibility') !== 'none';
+          }
+          var any = false;
+          ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {
+            var id = sid + suf;
+            if (!map.getLayer(id)) return;
+            any = true;
+          });
+          if (!any) return true;
+          for (var i = 0; i < 4; i++) {
+            var id2 = sid + ['-fill', '-line', '-circle', '-symbol'][i];
+            if (!map.getLayer(id2)) continue;
+            if (map.getLayoutProperty(id2, 'visibility') !== 'none') return true;
+          }
+          return false;
+        } catch (e) {
+          return true;
+        }
       }
       function renderLegend() {
         var container = document.getElementById('map-legend');
@@ -343,7 +369,7 @@
           }
           var cb = document.createElement('input');
           cb.type = 'checkbox';
-          cb.checked = true;
+          cb.checked = getLayerVisible(lk);
           cb.title = 'Toggle layer visibility';
           cb.onchange = function() { setLayerVisibility(lk, cb.checked); };
           row.appendChild(icon);

@@ -659,6 +659,34 @@
 
       function escapeHtml(s) { return GeofastmapUtils.escapeHtml(s); }
 
+      var mapEditLayerVisibleState = {};
+      function setMapEditLayerVisible(layerKeyVal, visible) {
+        mapEditLayerVisibleState[layerKeyVal] = !!visible;
+      }
+      function getMapEditLayerVisible(layer) {
+        var lk = layerKey(layer);
+        if (mapEditLayerVisibleState[lk] !== undefined) return !!mapEditLayerVisibleState[lk];
+        var sid = sourceId(lk);
+        try {
+          if (layer.raster_tiles && layer.tiles_url && map.getLayer(sid + '-raster')) {
+            return map.getLayoutProperty(sid + '-raster', 'visibility') !== 'none';
+          }
+          var any = false;
+          ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {
+            if (map.getLayer(sid + suf)) any = true;
+          });
+          if (!any) return true;
+          for (var i = 0; i < 4; i++) {
+            var id = sid + ['-fill', '-line', '-circle', '-symbol'][i];
+            if (!map.getLayer(id)) continue;
+            if (map.getLayoutProperty(id, 'visibility') !== 'none') return true;
+          }
+          return false;
+        } catch (e) {
+          return true;
+        }
+      }
+
       function renderMapEditLegend() {
         var panel = document.getElementById('map-edit-legend');
         var list = document.getElementById('map-edit-legend-list');
@@ -711,12 +739,13 @@
 
           var cb = document.createElement('input');
           cb.type = 'checkbox';
-          cb.checked = true;
+          cb.checked = getMapEditLayerVisible(layer);
           cb.title = 'Toggle layer visibility';
           cb.onchange = function() {
             var i = parseInt(row.dataset.index, 10);
             var on = !!cb.checked;
             var lyr = state.layers[i];
+            setMapEditLayerVisible(layerKey(lyr), on);
             var sid = sourceId(layerKey(lyr));
             if (lyr.raster_tiles && lyr.tiles_url) {
               if (map.getLayer(sid + '-raster')) map.setLayoutProperty(sid + '-raster', 'visibility', on ? 'visible' : 'none');
