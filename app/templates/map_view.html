@@ -97,11 +97,15 @@
           {% for lyr in (map_definition.layers or []) %}
           {% set cid = lyr.collection_id or lyr.collectionId %}
           {% set lid = lyr.layer_id or '' %}
+          {% set is_raster = lyr.raster_tiles | default(false) %}
+          {# Raster / STAC imagery: no feature search — omit from dropdown #}
+          {% if cid and not is_raster and cid != '_stac' %}
           {# Exclude single-feature layers (layer_id "item-<id>"); only full collection layers (static or "items-<cid>") are searchable #}
           {% set single_feature = lid.startswith('item-') and not lid.startswith('items-') %}
-          {% if cid and cid not in seen and not single_feature %}
+          {% if cid not in seen and not single_feature %}
           {% set _ = seen.append(cid) %}
           <option value="{{ cid }}">{{ (collection_titles.get(cid) if collection_titles else None) or cid }}</option>
+          {% endif %}
           {% endif %}
           {% endfor %}
         </select>
@@ -226,6 +230,14 @@
         if (t != null && String(t).trim() !== '') return String(t).trim();
         return cid;
       }
+      function stacLayerViewerHref(layer) {
+        if (!layer || !layer.raster_tiles) return '';
+        var path = layer.stac_viewer_path || layer.stacViewerPath || '';
+        var q = layer.stac_viewer_query != null ? layer.stac_viewer_query : layer.stacViewerQuery;
+        if (!path) return '';
+        if (path.indexOf('?') >= 0) return base + path;
+        return base + path + (q ? '?' + q : '?f=html');
+      }
       var mapBbox = (mapDefinition && mapDefinition.bbox && mapDefinition.bbox.length === 4) ? mapDefinition.bbox : null;
       var mapBasemap = (mapDefinition && mapDefinition.basemap) ? mapDefinition.basemap : null;
 
@@ -247,14 +259,12 @@
         map = new maplibregl.Map({ container: 'map', style: mapStyle, center: [0, 20], zoom: 2, renderWorldCopies: false });
         GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
         if (mapBasemap && BASEMAPS[mapBasemap]) sel.value = mapBasemap; else sel.value = initialId;
-        GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), initial);
         function applyBasemap(key) {
           var b = BASEMAPS[key] || BASEMAPS.osm;
           var layers = map.getStyle() && map.getStyle().layers;
           var firstId = null;
           if (layers) { for (var i = 0; i < layers.length; i++) { if (layers[i].id !== 'basemap' && layers[i].id !== 'basemap-labels') { firstId = layers[i].id; break; } } }
           GeofastmapUtils.applyBasemapToMap(map, b, { beforeLayerId: firstId });
-          GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), b);
         }
         sel.onchange = function() { applyBasemap(this.value); };
       }
@@ -316,14 +326,14 @@
           icon.style.backgroundColor = (style.fillVisible !== false) ? fillColor : 'transparent';
           icon.style.borderColor = lineColor;
           var label;
-          if (layer.raster_tiles && layer.stac_viewer_path) {
+          if (layer.raster_tiles && (layer.stac_viewer_path || layer.stacViewerPath)) {
             label = document.createElement('a');
             label.className = 'map-legend-label';
-            label.href = base + layer.stac_viewer_path;
+            label.href = stacLayerViewerHref(layer);
             label.target = '_blank';
             label.rel = 'noopener noreferrer';
             label.textContent = 'STAC · ' + (layer.stac_item_id || 'item') + ' (raster)';
-            label.title = 'Open STAC image viewer';
+            label.title = 'Open STAC image viewer (saved render params)';
           } else {
             label = document.createElement('span');
             label.className = 'map-legend-label';
@@ -692,7 +702,9 @@
             if (map.getSource(sid)) { resolve(sid + '-raster'); return; }
             var ro = (style && style.rasterOpacity != null) ? Number(style.rasterOpacity) : ((layer.style_spec && layer.style_spec.rasterOpacity != null) ? Number(layer.style_spec.rasterOpacity) : 1);
             if (!isFinite(ro) || ro < 0) ro = 1;
-            map.addSource(sid, { type: 'raster', tiles: [layer.tiles_url], tileSize: 256, maxzoom: 18 });
+            var rsrc = { type: 'raster', tiles: [layer.tiles_url], tileSize: 256, maxzoom: 18 };
+            if (layer.stac_viewer_path || layer.stacViewerPath) rsrc.attribution = 'STAC / Titiler';
+            map.addSource(sid, rsrc);
             map.addLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
             resolve(sid + '-raster');
             return;

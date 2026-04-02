@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Add feature – {{ collection_id }} – GeoFastMap API{% endblock %}
 {% block head %}
+  {% include '_map_popup_css.html' %}
   <link rel="stylesheet" href="https://unpkg.com/@geoman-io/maplibre-geoman-free@0.6.2/dist/maplibre-geoman.css" crossorigin="">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl-geo-editor@0.7.3/dist/maplibre-gl-geo-editor.css" crossorigin="">
   <style>
@@ -106,7 +107,6 @@
       var cfg = BASEMAPS[v];
       if (!cfg) return;
       GeofastmapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: map.getLayer('fill') ? 'fill' : undefined });
-      GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
     }
     var geoEditor = null;
     function getEditorFeatures() {

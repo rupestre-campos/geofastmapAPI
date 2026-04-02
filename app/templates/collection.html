@@ -158,7 +158,6 @@
       if (!cfg) return;
       var beforeId = map.getLayer('results-fill') ? 'results-fill' : (map.getLayer('bbox-line') ? 'bbox-line' : undefined);
       GeofastmapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: beforeId });
-      GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
     }
 
     function initMap() {

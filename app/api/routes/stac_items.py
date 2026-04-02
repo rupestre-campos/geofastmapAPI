@@ -163,6 +163,7 @@ async def stac_item_detail(
         tile_assets = list_tile_assets(item)
         default_asset = default_tile_asset_key(item) or ""
         thumb = get_thumbnail_href(item)
+        embed_raster = request.query_params.get("embed") == "raster"
         return html_response(
             "stac_item.html",
             base=base,
@@ -178,6 +179,8 @@ async def stac_item_detail(
             thumbnail_url=thumb,
             titiler_configured=bool((settings.titiler_internal_url or "").strip()),
             google_maps_api_key=settings.google_maps_api_key or "",
+            raster_style_embed=embed_raster,
+            hide_site_chrome=embed_raster,
         )
     return item
 

@@ -1,0 +1,171 @@
+{# Raster / Titiler controls only (shared by STAC item full page and embed=raster). Requires tile_assets when included. #}
+<div class="stac-raster-controls">
+  <div class="form-row">
+    <label for="stac-asset-select">Asset</label>
+    <select id="stac-asset-select">
+      {% for a in tile_assets %}
+      <option value="{{ a.key }}" {% if a.key == default_tile_asset %}selected{% endif %}>{{ a.key }}{% if a.title != a.key %} — {{ a.title }}{% endif %}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="form-row stac-mode-row">
+    <label for="stac-render-mode">Render mode</label>
+    <select id="stac-render-mode">
+      <option value="rgb_bands" selected>RGB (bands of selected asset)</option>
+      <option value="rgb_assets">RGB (3 assets: false color)</option>
+      <option value="single">Single band</option>
+      <option value="expression">Expression (e.g. NDVI)</option>
+    </select>
+  </div>
+  <div class="form-row">
+    <label for="stac-rescale">Rescale</label>
+    <input type="text" id="stac-rescale" value="" placeholder="min,max" autocomplete="off" title="Mode defaults: RGB bands = empty; expression = -1,1; single / RGB assets = 0,4000. Min,max for all modes (RGB repeats per band in the tile request).">
+  </div>
+  <div class="form-row">
+    <label for="stac-raster-opacity">Opacity</label>
+    <input type="range" id="stac-raster-opacity" min="0" max="100" value="100">
+  </div>
+</div>
+
+<div id="stac-rgb-bands-block" class="stac-advanced-block is-open">
+  <div class="stac-rgb-grid">
+    <div class="form-row">
+      <label for="stac-band-r">Red band</label>
+      <select id="stac-band-r"></select>
+    </div>
+    <div class="form-row">
+      <label for="stac-band-g">Green band</label>
+      <select id="stac-band-g"></select>
+    </div>
+    <div class="form-row">
+      <label for="stac-band-b">Blue band</label>
+      <select id="stac-band-b"></select>
+    </div>
+  </div>
+</div>
+
+<div id="stac-rgb-assets-block" class="stac-advanced-block">
+  <div class="stac-rgb-grid">
+    <div class="form-row">
+      <label for="stac-asset-r">Red channel asset</label>
+      <select id="stac-asset-r"></select>
+    </div>
+    <div class="form-row">
+      <label for="stac-asset-g">Green channel asset</label>
+      <select id="stac-asset-g"></select>
+    </div>
+    <div class="form-row">
+      <label for="stac-asset-b">Blue channel asset</label>
+      <select id="stac-asset-b"></select>
+    </div>
+  </div>
+</div>
+
+<div id="stac-single-block" class="stac-advanced-block">
+  <div class="form-row" style="max-width: 18rem;">
+    <label for="stac-band-single">Band</label>
+    <select id="stac-band-single"></select>
+  </div>
+</div>
+
+<div id="stac-expr-block" class="stac-advanced-block">
+  <div class="form-row" style="max-width: 44rem;">
+    <label for="stac-expression">Expression</label>
+    <input type="text" id="stac-expression" placeholder="e.g. b8-b4 or nir-red" autocomplete="off">
+    <p class="stac-inline-hint">Use <code>b1</code>…<code>bn</code> for bands of the <strong>Asset</strong> above, or band names from metadata (<code>red</code>, <code>nir</code>, …). To mix <strong>different assets</strong> from this item, type their asset keys as identifiers (e.g. <code>nir-red</code> or <code>b1-b2</code> after keys are resolved) — each asset becomes one layer (<code>b1</code>, <code>b2</code>, …) via Titiler. <code>visual</code> is often 3 bands only; pick analytic / reflectance products for multi-band math.</p>
+    <p class="stac-inline-hint" id="stac-expression-preview" style="margin-top:0.35rem;"></p>
+  </div>
+</div>
+
+<div id="stac-colormap-block" class="stac-advanced-block">
+  <div class="form-row" style="max-width: 28rem;">
+    <label for="stac-colormap">Colormap</label>
+    <select id="stac-colormap" title="Titiler colormap_name — maps single-channel / expression output to RGB. Use with rescale.">
+      <option value="">Default (grayscale)</option>
+      <optgroup label="Perceptual">
+        <option value="viridis">viridis</option>
+        <option value="viridis_r">viridis (reversed)</option>
+        <option value="plasma">plasma</option>
+        <option value="inferno">inferno</option>
+        <option value="magma">magma</option>
+        <option value="cividis">cividis</option>
+        <option value="turbo">turbo</option>
+      </optgroup>
+      <optgroup label="Classic">
+        <option value="rainbow">rainbow</option>
+        <option value="jet">jet</option>
+        <option value="terrain">terrain</option>
+        <option value="gist_earth">gist_earth</option>
+        <option value="hot">hot</option>
+        <option value="cool">cool</option>
+        <option value="spring">spring</option>
+        <option value="summer">summer</option>
+        <option value="autumn">autumn</option>
+        <option value="winter">winter</option>
+      </optgroup>
+      <optgroup label="Diverging / qualitative">
+        <option value="RdYlGn">RdYlGn</option>
+        <option value="Spectral">Spectral</option>
+        <option value="coolwarm">coolwarm</option>
+        <option value="BrBG">BrBG</option>
+      </optgroup>
+      <optgroup label="Grayscale / misc">
+        <option value="gray">gray</option>
+        <option value="bone">bone</option>
+        <option value="pink">pink</option>
+        <option value="copper">copper</option>
+      </optgroup>
+    </select>
+    <p class="stac-inline-hint" style="margin-top:0.35rem;">Applies to <strong>single band</strong> and <strong>expression</strong> (one output channel). Set <strong>Rescale</strong> so values span the map range (e.g. NDVI <code>-1,1</code>). More names: <a href="https://developmentseed.org/titiler/endpoints/colormaps/" target="_blank" rel="noopener">Titiler colormaps</a>.</p>
+  </div>
+</div>
+
+<details class="stac-cf-details" id="stac-cf-details">
+  <summary class="stac-cf-summary">Color formula <span class="meta">(optional, advanced)</span></summary>
+  <div class="stac-cf-details-inner">
+    <p class="stac-inline-hint" style="margin-top:0;">Collapsed by default. Enable steps below and combine them (order: gamma → sigmoidal → saturation). Values stay filled when you toggle steps on or off.</p>
+    <div class="stac-cf-mode-row">
+      <label><input type="radio" name="stac-cf-mode" id="stac-cf-mode-builder" value="builder" checked> Builder</label>
+      <label><input type="radio" name="stac-cf-mode" id="stac-cf-mode-custom" value="custom"> Custom text</label>
+    </div>
+    <input type="hidden" id="stac-color-formula" value="">
+
+    <div id="stac-cf-builder-wrap">
+      <div class="stac-cf-op-block">
+        <label class="stac-cf-include-main"><input type="checkbox" id="stac-cf-include-gamma"> Gamma</label>
+        <label for="stac-cf-gamma-val" class="meta">Factor</label>
+        <input type="number" id="stac-cf-gamma-val" step="0.05" min="0.1" max="20" value="1.2" title="Gamma factor" style="width: 5rem;">
+      </div>
+      <div class="stac-cf-op-block">
+        <label class="stac-cf-include-main"><input type="checkbox" id="stac-cf-include-sigmoidal"> Sigmoidal</label>
+        <label for="stac-cf-sig-str" class="meta">Strength</label>
+        <input type="number" id="stac-cf-sig-str" step="0.5" min="0" max="50" value="22" style="width: 4.5rem;">
+        <label for="stac-cf-sig-bias" class="meta">Bias</label>
+        <input type="number" id="stac-cf-sig-bias" step="0.01" min="0" max="1" value="0.1" style="width: 4rem;">
+      </div>
+      <div class="stac-cf-op-block">
+        <label class="stac-cf-include-main"><input type="checkbox" id="stac-cf-include-sat"> Saturation</label>
+        <label for="stac-cf-sat-val" class="meta">Multiplier</label>
+        <input type="number" id="stac-cf-sat-val" step="0.05" min="0" max="5" value="1.2" title="Saturation multiplier" style="width: 5rem;">
+      </div>
+      <div id="stac-cf-bands-wrap" class="stac-cf-bands-row">
+        <span class="stac-cf-bands-label">Bands for gamma &amp; sigmoidal</span>
+        <label><input type="checkbox" id="stac-cf-band-r" checked> R</label>
+        <label><input type="checkbox" id="stac-cf-band-g" checked> G</label>
+        <label><input type="checkbox" id="stac-cf-band-b" checked> B</label>
+      </div>
+      <p class="stac-inline-hint" id="stac-cf-preview" aria-live="polite"></p>
+    </div>
+
+    <div id="stac-cf-custom-wrap" style="display: none;">
+      <div class="form-row" style="max-width: 44rem;">
+        <label for="stac-cf-custom">color_formula string</label>
+        <input type="text" id="stac-cf-custom" class="stac-cf-custom-input" placeholder="e.g. gamma rg 1.3, sigmoidal rgb 22 0.1" autocomplete="off" title="Passed through to Titiler as color_formula">
+      </div>
+    </div>
+  </div>
+</details>
+
+<div class="stac-actions-row">
+  <button type="button" class="btn btn-primary" id="stac-apply-raster">Apply</button>
+</div>

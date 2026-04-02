@@ -186,7 +186,6 @@
       var cfg = BASEMAPS[v];
       if (!cfg) return;
       GeofastmapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: map.getLayer('feature-fill') ? 'feature-fill' : undefined });
-      GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
     }
 
     function initMapItem() {

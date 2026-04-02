@@ -61,6 +61,17 @@
     </div>
   </div>
 </div>
+<div id="make-stac-tiles-public-modal" class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="make-stac-tiles-public-title" aria-hidden="true">
+  <div class="confirm-modal-backdrop" id="make-stac-tiles-public-backdrop"></div>
+  <div class="confirm-modal-content">
+    <div class="confirm-modal-header" id="make-stac-tiles-public-title">STAC imagery on public map</div>
+    <div id="make-stac-tiles-public-message" class="confirm-modal-body"></div>
+    <div class="confirm-modal-actions">
+      <button type="button" class="btn" id="make-stac-tiles-public-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="make-stac-tiles-public-confirm">Allow anonymous tiles and continue</button>
+    </div>
+  </div>
+</div>
 <script>
 (function() {
   var card = document.getElementById('sharing-card');
@@ -101,6 +112,37 @@
     return opts;
   }
 
+  /** Parse JSON from fetch Response; on non-OK or non-JSON body throw Error with a readable message (avoids JSON.parse on HTML error pages). */
+  function parseApiJson(r) {
+    return r.text().then(function(t) {
+      var d = null;
+      try {
+        d = t && t.length ? JSON.parse(t) : {};
+      } catch (parseErr) {
+        var snippet = (t || '').replace(/\s+/g, ' ').slice(0, 280);
+        throw new Error(
+          r.ok
+            ? ('Server returned non-JSON (' + r.status + '): ' + snippet)
+            : ('HTTP ' + r.status + (snippet ? ': ' + snippet : ''))
+        );
+      }
+      if (!r.ok) {
+        var det = d && d.detail;
+        var msg;
+        if (typeof det === 'string') msg = det;
+        else if (Array.isArray(det)) {
+          msg = det.map(function(x) { return (x && (x.msg || x.message)) || ''; }).filter(Boolean).join('; ') || r.statusText;
+        } else if (det && typeof det === 'object') {
+          msg = det.message || JSON.stringify(det);
+        } else {
+          msg = (d && d.message) || r.statusText;
+        }
+        throw new Error(msg || 'Request failed');
+      }
+      return d;
+    });
+  }
+
   function showAddMessage(msg, isError) {
     addMessage.textContent = msg || '';
     addMessage.style.display = msg ? 'block' : 'none';
@@ -117,10 +159,7 @@
 
   function doPatchMap(body, onDone) {
     fetch(patchUrl, fetchOpts('PATCH', body))
-      .then(function(r) {
-        if (!r.ok) return r.json().then(function(d) { throw (d && (d.message || d.detail)) || r.statusText; });
-        return r.json();
-      })
+      .then(parseApiJson)
       .then(function() { showAddMessage('Saved.', false); if (onDone) onDone(); })
       .catch(function(e) { showAddMessage('Failed to save: ' + (e.message || e || 'Unknown'), true); if (onDone) onDone(); })
       .finally(function() { if (saveBtn) saveBtn.disabled = false; });
@@ -141,13 +180,26 @@
       if (saveBtn) saveBtn.disabled = true;
       var checkUrl = patchUrl.replace(/\/$/, '') + '/check-public-layers';
       fetch(checkUrl, fetchOpts('GET'))
-        .then(function(r) { return r.json(); })
+        .then(parseApiJson)
         .then(function(data) {
           var blocking = (data && data.blocking) || [];
           var suggest = (data && data.suggest) || [];
+          var stacMiss = (data && data.stac_grants_missing) || [];
           if (blocking.length) {
             var links = blocking.map(function(c) { return '<a href="' + baseUrl + '/collections/' + encodeURIComponent(c.id) + '/edit?f=html">' + String(c.title || c.id).replace(/</g, '&lt;') + '</a>'; }).join(', ');
             showAddMessageHtml((data.message || 'Cannot make map public: you do not have permission to change these layers.') + ' ' + (blocking.length === 1 ? 'Collection:' : 'Collections:') + ' ' + links, true);
+            if (saveBtn) saveBtn.disabled = false;
+            return;
+          }
+          if (stacMiss.length) {
+            var stModal = document.getElementById('make-stac-tiles-public-modal');
+            var stMsg = document.getElementById('make-stac-tiles-public-message');
+            if (stModal && stMsg) {
+              var stNames = stacMiss.map(function(s) { return s.stac_item_id || s.title || 'item'; }).join(', ');
+              stMsg.textContent = 'This map includes STAC imagery that anonymous viewers cannot load yet (items: ' + stNames + '). Grant anonymous tile access for these items, then we continue with making the map public (and any collection prompts).';
+              stModal.setAttribute('aria-hidden', 'false');
+              window._makeStacTilesPublicPending = { body: body, stacMiss: stacMiss, suggest: suggest };
+            }
             if (saveBtn) saveBtn.disabled = false;
             return;
           }
@@ -172,8 +224,16 @@
     if (saveBtn) saveBtn.disabled = true;
     fetch(patchUrl, fetchOpts('PATCH', body))
       .then(function(r) {
-        if (!r.ok) {
-          return r.json().then(function(data) {
+        var suggestHeader = r.ok ? r.headers.get('X-Suggest-Make-Public-Collections') : null;
+        return r.text().then(function(t) {
+          var data = null;
+          try {
+            data = t && t.length ? JSON.parse(t) : {};
+          } catch (e) {
+            showAddMessage('Failed to save: ' + (t ? t.slice(0, 200) : r.statusText), true);
+            return;
+          }
+          if (!r.ok) {
             var detail = data && data.detail;
             var msg = (detail && (typeof detail === 'string' ? detail : detail.message)) || r.statusText;
             var blocking = detail && detail.collections_blocking;
@@ -183,13 +243,10 @@
             } else {
               showAddMessage('Failed to save: ' + msg, true);
             }
-          }).catch(function() { showAddMessage('Failed to save: ' + r.statusText, true); });
-          return;
-        }
-        showAddMessage('Saved.', false);
-        if (isMap && wantPublic) {
-          var suggestHeader = r.headers.get('X-Suggest-Make-Public-Collections');
-          if (suggestHeader) {
+            return;
+          }
+          showAddMessage('Saved.', false);
+          if (isMap && wantPublic && suggestHeader) {
             try {
               var suggest = JSON.parse(suggestHeader);
               if (suggest && suggest.length) {
@@ -198,7 +255,7 @@
               }
             } catch (err) { /* ignore */ }
           }
-        }
+        });
       })
       .catch(function(e) { showAddMessage('Failed to save: ' + (e.message || 'Unknown'), true); })
       .finally(function() { if (saveBtn) saveBtn.disabled = false; });
@@ -231,6 +288,65 @@
           .catch(function(e) { showAddMessage('Failed: ' + (e.message || 'Unknown'), true); if (saveBtn) saveBtn.disabled = false; });
       };
     }
+  }
+
+  var makeStacModal = document.getElementById('make-stac-tiles-public-modal');
+  var makeStacBackdrop = document.getElementById('make-stac-tiles-public-backdrop');
+  var makeStacCancel = document.getElementById('make-stac-tiles-public-cancel');
+  var makeStacConfirm = document.getElementById('make-stac-tiles-public-confirm');
+  if (makeStacModal && makeStacConfirm && patchUrl.indexOf('/maps/') >= 0) {
+    function closeStacTilesModal() {
+      makeStacModal.setAttribute('aria-hidden', 'true');
+      window._makeStacTilesPublicPending = null;
+    }
+    if (makeStacBackdrop) makeStacBackdrop.onclick = closeStacTilesModal;
+    if (makeStacCancel) makeStacCancel.onclick = closeStacTilesModal;
+    makeStacConfirm.onclick = function() {
+      var pending = window._makeStacTilesPublicPending;
+      if (!pending || !pending.stacMiss || !pending.stacMiss.length) { closeStacTilesModal(); return; }
+      var body = pending.body;
+      closeStacTilesModal();
+      if (saveBtn) saveBtn.disabled = true;
+      var mapCheckUrl = patchUrl.replace(/\/$/, '') + '/check-public-layers';
+      var chain = Promise.resolve();
+      pending.stacMiss.forEach(function(s) {
+        chain = chain.then(function() {
+          return fetch(baseUrl + '/stac/catalogs/' + encodeURIComponent(s.catalog_id) + '/collections/' + encodeURIComponent(s.stac_collection_id) + '/items/' + encodeURIComponent(s.stac_item_id) + '/public-tile-grant', fetchOpts('POST')).then(parseApiJson);
+        });
+      });
+      chain.then(function() { return fetch(mapCheckUrl, fetchOpts('GET')); })
+        .then(parseApiJson)
+        .then(function(data) {
+          var blocking = (data && data.blocking) || [];
+          var suggest = (data && data.suggest) || [];
+          var stacMiss2 = (data && data.stac_grants_missing) || [];
+          if (blocking.length) {
+            var links = blocking.map(function(c) { return '<a href="' + baseUrl + '/collections/' + encodeURIComponent(c.id) + '/edit?f=html">' + String(c.title || c.id).replace(/</g, '&lt;') + '</a>'; }).join(', ');
+            showAddMessageHtml('Cannot make map public. ' + (blocking.length === 1 ? 'Collection:' : 'Collections:') + ' ' + links, true);
+            if (saveBtn) saveBtn.disabled = false;
+            return;
+          }
+          if (stacMiss2.length) {
+            showAddMessage('STAC public access could not be verified. Try granting from the STAC item page, then save again.', true);
+            if (saveBtn) saveBtn.disabled = false;
+            return;
+          }
+          if (suggest.length) {
+            var layersModal = document.getElementById('make-layers-public-modal');
+            var msgEl = document.getElementById('make-layers-public-message');
+            if (layersModal && msgEl) {
+              var names = suggest.map(function(c) { return (c.title || c.id); }).join(', ');
+              msgEl.textContent = 'The following layers are not public: ' + names + '. Make all of them public and then make the map public?';
+              layersModal.setAttribute('aria-hidden', 'false');
+              window._makeLayersPublicPending = { body: body, suggest: suggest };
+            }
+            if (saveBtn) saveBtn.disabled = false;
+            return;
+          }
+          doPatchMap(body);
+        })
+        .catch(function(e) { showAddMessage('Failed: ' + (e.message || e || 'Unknown'), true); if (saveBtn) saveBtn.disabled = false; });
+    };
   }
 
   if (saveBtn) {

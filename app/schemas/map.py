@@ -33,7 +33,11 @@ class MapLayer(BaseModel):
     stac_item_id: str | None = Field(None, description="STAC item id")
     stac_viewer_path: str | None = Field(
         None,
-        description="Path to HTML viewer for this item (e.g. /stac/catalogs/.../items/...?f=html)",
+        description="URL path to STAC HTML viewer without query (e.g. /stac/catalogs/.../items/...)",
+    )
+    stac_viewer_query: str | None = Field(
+        None,
+        description="Query string for viewer (no leading ?), restoring render params e.g. f=html&asset=...",
     )
 
 

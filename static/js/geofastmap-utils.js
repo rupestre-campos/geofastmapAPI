@@ -160,16 +160,19 @@
   function buildMapStyleWithBasemap(basemapConfig) {
     var minZ = basemapConfig.minZoom != null ? basemapConfig.minZoom : 0;
     var maxZ = basemapConfig.maxZoom != null ? basemapConfig.maxZoom : 22;
+    var attr = basemapConfig.copyright ? String(basemapConfig.copyright).trim() : '';
+    var basemapSrc = {
+      type: 'raster',
+      tiles: basemapConfig.tiles,
+      tileSize: 256,
+      minzoom: minZ,
+      maxzoom: maxZ
+    };
+    if (attr) basemapSrc.attribution = attr;
     return {
       version: 8,
       sources: {
-        basemap: {
-          type: 'raster',
-          tiles: basemapConfig.tiles,
-          tileSize: 256,
-          minzoom: minZ,
-          maxzoom: maxZ
-        }
+        basemap: basemapSrc
       },
       layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: minZ, maxzoom: maxZ }]
     };
@@ -234,17 +237,22 @@
       beforeLayerId = options.beforeLayerId;
     }
 
-    map.addSource('basemap', {
+    var attr = basemapConfig.copyright ? String(basemapConfig.copyright).trim() : '';
+    var basemapSrc = {
       type: 'raster',
       tiles: basemapConfig.tiles,
       tileSize: 256,
       minzoom: minZ,
       maxzoom: maxZ
-    });
+    };
+    if (attr) basemapSrc.attribution = attr;
+    map.addSource('basemap', basemapSrc);
     map.addLayer({ id: 'basemap', type: 'raster', source: 'basemap', minzoom: minZ, maxzoom: maxZ }, beforeLayerId);
 
     if (labelsTiles && labelsTiles.length) {
-      map.addSource('basemap-labels', { type: 'raster', tiles: labelsTiles, tileSize: 256, minzoom: minZ, maxzoom: maxZ });
+      var labelsSrc = { type: 'raster', tiles: labelsTiles, tileSize: 256, minzoom: minZ, maxzoom: maxZ };
+      if (attr) labelsSrc.attribution = attr;
+      map.addSource('basemap-labels', labelsSrc);
       map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: minZ, maxzoom: maxZ }, beforeLayerId);
     }
 

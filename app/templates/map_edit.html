@@ -19,8 +19,10 @@
     .layers-table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
     .layers-table-wrap th, .layers-table-wrap td { padding: 6px 8px; text-align: left; border: 1px solid var(--border); background: var(--card); }
     .layers-table-wrap th { font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
-    .layers-table-wrap .drag-handle { cursor: grab; color: var(--text-secondary); padding: 0 4px; user-select: none; }
+    .layers-table-wrap .drag-handle { cursor: grab; color: var(--text-secondary); padding: 0 4px; user-select: none; touch-action: none; -webkit-user-select: none; }
     .layers-table-wrap .drag-handle:active { cursor: grabbing; }
+    .layers-table-wrap .layer-order-cell { white-space: nowrap; }
+    .layers-table-wrap .layer-order-cell .btn-sm { padding: 2px 6px; margin: 0 1px; font-size: 0.75rem; min-width: 1.75rem; }
     .layers-table-wrap input[type="color"] { width: 28px; height: 22px; padding: 2px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
     .layers-table-wrap input[type="number"], .layers-table-wrap input[type="range"] { width: 4em; padding: 2px 4px; }
     .layers-table-wrap select { padding: 2px 4px; font-size: inherit; }
@@ -161,12 +163,12 @@
       </div>
     </div>
     <h2 class="card-title" style="margin-top:var(--space-lg);">Layers</h2>
-    <p class="meta">Reorder layers with the handle, toggle popup on click, or remove. Click a row to select it and edit style in the Style editor below.</p>
+    <p class="meta">Reorder: drag the handle (↑↓ works on touch), or use arrow buttons to move one step; double-arrow buttons move to top or bottom. Click a row to select it — vector layers use the vector style panel; STAC raster layers use the imagery panel below.</p>
     <div class="layers-table-wrap" id="layers-table-wrap" style="display:none;">
       <table>
         <thead>
           <tr>
-            <th></th>
+            <th>Order</th>
             <th>Collection</th>
             <th>Popup</th>
             <th>Popup ID column</th>
@@ -176,10 +178,38 @@
         <tbody id="layers-tbody"></tbody>
       </table>
     </div>
-    <details id="style-editor-details" class="layer-style-collapsible">
-      <summary>Style editor</summary>
-      <p class="meta" style="padding:0 var(--space) var(--space);margin:0;">Select a layer in the table above, then use the controls below to edit its style (fill, line, point, zoom breakpoints). Changes are saved with the map when you click Save map.</p>
+    <details id="style-editor-details-vector" class="layer-style-collapsible">
+      <summary>Vector style</summary>
+      <p class="meta" style="padding:0 var(--space) var(--space);margin:0;">Select a vector layer in the table above, then edit fill, line, point, and zoom breakpoints. Changes are saved with the map when you click Save map.</p>
       {% include "_style_toolbox.html" %}
+    </details>
+    <details id="style-editor-details-raster" class="layer-style-collapsible" style="display:none;">
+      <summary>Raster imagery (STAC)</summary>
+      <div style="padding:0 var(--space) var(--space);">
+        <p class="meta" style="margin:0 0 10px;">Raster options (asset, bands, rescale, expression, colormap, color formula) — same as the STAC image viewer, without the preview map. Click <strong>Apply to map layer</strong> to copy tile URLs and settings into this map. The slider below adjusts opacity on the <strong>map</strong> (you can also set opacity in the panel, then apply).</p>
+        <div class="form-row" style="align-items:center;gap:12px;flex-wrap:wrap;">
+          <label for="map-edit-raster-opacity" class="label-text">Raster opacity</label>
+          <input type="range" id="map-edit-raster-opacity" min="0" max="100" value="100" style="width:140px;">
+          <span id="map-edit-raster-opacity-val" class="meta">100%</span>
+        </div>
+        <div class="form-row" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+          <button type="button" class="btn btn-primary btn-sm" id="map-edit-raster-apply-viewer">Apply to map layer</button>
+          <a class="btn btn-sm" id="map-edit-raster-open-tab" href="#" target="_blank" rel="noopener noreferrer">Open viewer in new tab</a>
+        </div>
+        <p id="map-edit-raster-apply-msg" class="meta" style="margin:8px 0 0;color:var(--danger);display:none;"></p>
+        <iframe id="map-edit-stac-viewer-iframe" title="STAC raster style" style="width:100%;min-height:360px;max-height:min(75vh,720px);height:480px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-top:12px;background:var(--bg);"></iframe>
+      </div>
+    </details>
+    <details id="style-editor-details-raster-simple" class="layer-style-collapsible" style="display:none;">
+      <summary>Raster layer</summary>
+      <div style="padding:0 var(--space) var(--space);">
+        <p class="meta" style="margin:0 0 10px;">Opacity for this raster layer (non-STAC).</p>
+        <div class="form-row" style="align-items:center;gap:12px;">
+          <label for="map-edit-raster-simple-opacity" class="label-text">Raster opacity</label>
+          <input type="range" id="map-edit-raster-simple-opacity" min="0" max="100" value="100" style="width:140px;">
+          <span id="map-edit-raster-simple-opacity-val" class="meta">100%</span>
+        </div>
+      </div>
     </details>
   </div>
 
@@ -216,6 +246,34 @@
         if (t != null && String(t).trim() !== '') return String(t).trim();
         return cid;
       }
+      function stacLayerViewerHref(layer) {
+        if (!layer || !layer.raster_tiles) return '';
+        var path = layer.stac_viewer_path || layer.stacViewerPath || '';
+        var q = layer.stac_viewer_query != null ? layer.stac_viewer_query : layer.stacViewerQuery;
+        if (!path) return '';
+        if (path.indexOf('?') >= 0) return base + path;
+        return base + path + (q ? '?' + q : '?f=html');
+      }
+      /** Raster-style panel only (no map): ?f=html&embed=raster + saved viewer query params. */
+      function stacRasterStyleEmbedUrl(layer) {
+        if (!layer || !layer.raster_tiles) return '';
+        var cat = layer.stac_catalog_id;
+        var coll = layer.stac_collection_id;
+        var item = layer.stac_item_id;
+        if (!cat || !coll || !item) return '';
+        var path = '/stac/catalogs/' + encodeURIComponent(cat) + '/collections/' + encodeURIComponent(coll) + '/items/' + encodeURIComponent(item);
+        var parts = ['f=html', 'embed=raster'];
+        var vq = layer.stac_viewer_query != null ? layer.stac_viewer_query : layer.stacViewerQuery;
+        if (vq) {
+          String(vq).replace(/^\?/, '').split('&').forEach(function(p) {
+            if (!p) return;
+            var k = p.split('=')[0];
+            if (k === 'f' || k === 'embed') return;
+            parts.push(p);
+          });
+        }
+        return base + path + '?' + parts.join('&');
+      }
       var initialBbox = {{ map_definition.bbox | tojson if map_definition and map_definition.bbox is defined else 'null' }};
       var initialBasemap = {{ map_definition.basemap | tojson if map_definition and map_definition.basemap is defined else 'null' }};
 
@@ -248,7 +306,8 @@
           stac_catalog_id: l.stac_catalog_id || null,
           stac_collection_id: l.stac_collection_id || null,
           stac_item_id: l.stac_item_id || null,
-          stac_viewer_path: l.stac_viewer_path || null
+          stac_viewer_path: l.stac_viewer_path || null,
+          stac_viewer_query: l.stac_viewer_query != null ? l.stac_viewer_query : null
         });
       });
 
@@ -284,15 +343,15 @@
         GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
         sel.value = initialId;
         state.basemap = initialId;
-        GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), initial);
 
         // Ensure the style toolbox is wired even before map 'load' completes.
         // (The toolbox safely no-ops if the target layers don't exist yet.)
         if (state.selectedLayerIndex == null && state.layers.length > 0) state.selectedLayerIndex = 0;
         try { if (window.ensureStyleToolboxBound) window.ensureStyleToolboxBound(); } catch (e) {}
         try { renderLayers(); } catch (e) {}
-        if (state.selectedLayerIndex != null && state.layers[state.selectedLayerIndex] && styleToolboxApplySpec) {
-          try { styleToolboxApplySpec(state.layers[state.selectedLayerIndex].style_spec || DEFAULT_SPEC); } catch (e) {}
+        var firstL = state.selectedLayerIndex != null ? state.layers[state.selectedLayerIndex] : null;
+        if (firstL && !firstL.raster_tiles && styleToolboxApplySpec) {
+          try { styleToolboxApplySpec(firstL.style_spec || DEFAULT_SPEC); } catch (e) {}
         }
 
         sel.onchange = function() {
@@ -302,7 +361,6 @@
           var firstId = null;
           if (layers) { for (var i = 0; i < layers.length; i++) { if (layers[i].id !== 'basemap' && layers[i].id !== 'basemap-labels') { firstId = layers[i].id; break; } } }
           GeofastmapUtils.applyBasemapToMap(map, b, { beforeLayerId: firstId });
-          GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), b);
         };
         document.getElementById('btn-set-extent').onclick = function() {
           var b = map.getBounds();
@@ -439,7 +497,9 @@
             }
             var ro = (s.rasterOpacity != null) ? Number(s.rasterOpacity) : 1;
             if (!isFinite(ro) || ro < 0) ro = 1;
-            map.addSource(sid, { type: 'raster', tiles: [layer.tiles_url], tileSize: 256, maxzoom: 18 });
+            var rs = { type: 'raster', tiles: [layer.tiles_url], tileSize: 256, maxzoom: 18 };
+            if (layer.stac_viewer_path || layer.stacViewerPath) rs.attribution = 'STAC / Titiler';
+            map.addSource(sid, rs);
             safeAddLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
             resolve(sid + '-raster');
           });
@@ -521,6 +581,11 @@
           var ro = (s.rasterOpacity != null) ? Number(s.rasterOpacity) : 1;
           if (!isFinite(ro) || ro < 0) ro = 1;
           map.setPaintProperty(sid + '-raster', 'raster-opacity', ro);
+          var rsrc = map.getSource(sid);
+          if (rsrc && typeof rsrc.setTiles === 'function' && layer.tiles_url) {
+            var cur = (rsrc.tiles && rsrc.tiles[0]) != null ? String(rsrc.tiles[0]) : '';
+            if (String(layer.tiles_url) !== cur) rsrc.setTiles([layer.tiles_url]);
+          }
           return;
         }
         var p = (window.GeofastmapUtils && window.GeofastmapUtils.specToPaint) ? window.GeofastmapUtils.specToPaint(s) : null;
@@ -617,15 +682,15 @@
 
           var label;
           var cid = layer.collection_id || layer.collectionId || '';
-          if (layer.raster_tiles && layer.stac_viewer_path) {
+          if (layer.raster_tiles && (layer.stac_viewer_path || layer.stacViewerPath)) {
             label = document.createElement('a');
             label.className = 'map-edit-legend-label';
-            label.href = base + layer.stac_viewer_path;
+            label.href = stacLayerViewerHref(layer);
             label.target = '_blank';
             label.rel = 'noopener noreferrer';
             var si = layer.stac_item_id || 'item';
             label.textContent = 'STAC · ' + si + ' (raster)';
-            label.title = 'Open STAC image viewer';
+            label.title = 'Open STAC image viewer (same render params as saved on the map)';
           } else {
             label = document.createElement('span');
             label.className = 'map-edit-legend-label';
@@ -691,16 +756,208 @@
         }
       }
 
+      function removeAllLayerSourcesFromMap() {
+        if (!map) return;
+        state.layers.forEach(function(layer) {
+          var sid = sourceId(layerKey(layer));
+          if (!map.getSource(sid)) return;
+          if (map.getLayer(sid + '-raster')) map.removeLayer(sid + '-raster');
+          if (map.getLayer(sid + '-symbol')) map.removeLayer(sid + '-symbol');
+          if (map.getLayer(sid + '-circle')) map.removeLayer(sid + '-circle');
+          if (map.getLayer(sid + '-line')) map.removeLayer(sid + '-line');
+          if (map.getLayer(sid + '-fill')) map.removeLayer(sid + '-fill');
+          map.removeSource(sid);
+        });
+      }
+
+      function moveLayerToIndex(fromIdx, toIdx) {
+        if (fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= state.layers.length || toIdx >= state.layers.length) return;
+        var copy = state.layers.slice();
+        var item = copy.splice(fromIdx, 1)[0];
+        copy.splice(toIdx, 0, item);
+        state.layers = copy;
+        var sel = state.selectedLayerIndex;
+        if (sel === fromIdx) state.selectedLayerIndex = toIdx;
+        else if (fromIdx < toIdx) {
+          if (sel > fromIdx && sel <= toIdx) state.selectedLayerIndex--;
+        } else if (fromIdx > toIdx) {
+          if (sel >= toIdx && sel < fromIdx) state.selectedLayerIndex++;
+        }
+        removeAllLayerSourcesFromMap();
+        syncMapFromState();
+        renderLayers();
+      }
+
+      function syncStylePanelsVisibility() {
+        var dv = document.getElementById('style-editor-details-vector');
+        var dr = document.getElementById('style-editor-details-raster');
+        var drs = document.getElementById('style-editor-details-raster-simple');
+        var lyr = state.selectedLayerIndex != null ? state.layers[state.selectedLayerIndex] : null;
+        var isStacRaster = lyr && lyr.raster_tiles && (lyr.stac_viewer_path || lyr.stacViewerPath);
+        var isPlainRaster = lyr && lyr.raster_tiles && !isStacRaster;
+        if (dv) {
+          dv.style.display = (lyr && !lyr.raster_tiles) ? '' : 'none';
+          if (lyr && !lyr.raster_tiles) dv.open = true;
+        }
+        if (dr) {
+          dr.style.display = isStacRaster ? '' : 'none';
+          if (isStacRaster) {
+            dr.open = true;
+            var iframe = document.getElementById('map-edit-stac-viewer-iframe');
+            var openA = document.getElementById('map-edit-raster-open-tab');
+            var embedUrl = stacRasterStyleEmbedUrl(lyr);
+            var fullTabHref = stacLayerViewerHref(lyr);
+            if (openA) openA.href = fullTabHref;
+            if (iframe && embedUrl) {
+              if (iframe.dataset.viewerSrc !== embedUrl) {
+                iframe.src = embedUrl;
+                iframe.dataset.viewerSrc = embedUrl;
+              }
+            }
+            var op = document.getElementById('map-edit-raster-opacity');
+            var opv = document.getElementById('map-edit-raster-opacity-val');
+            var ro = (lyr.style_spec && lyr.style_spec.rasterOpacity != null) ? Number(lyr.style_spec.rasterOpacity) : 1;
+            var pct = Math.round(Math.max(0, Math.min(1, ro)) * 100);
+            if (op) op.value = String(pct);
+            if (opv) opv.textContent = pct + '%';
+          }
+        }
+        if (drs) {
+          drs.style.display = isPlainRaster ? '' : 'none';
+          if (isPlainRaster) {
+            drs.open = true;
+            var op2 = document.getElementById('map-edit-raster-simple-opacity');
+            var opv2 = document.getElementById('map-edit-raster-simple-opacity-val');
+            var ro2 = (lyr.style_spec && lyr.style_spec.rasterOpacity != null) ? Number(lyr.style_spec.rasterOpacity) : 1;
+            var pct2 = Math.round(Math.max(0, Math.min(1, ro2)) * 100);
+            if (op2) op2.value = String(pct2);
+            if (opv2) opv2.textContent = pct2 + '%';
+          }
+        }
+      }
+
+      function wireRasterPanelOnce() {
+        var ro = document.getElementById('map-edit-raster-opacity');
+        if (ro && !ro.dataset.bound) {
+          ro.dataset.bound = '1';
+          ro.addEventListener('input', function() {
+            var v = document.getElementById('map-edit-raster-opacity-val');
+            if (v) v.textContent = ro.value + '%';
+            var i = state.selectedLayerIndex;
+            if (i == null || !state.layers[i] || !state.layers[i].raster_tiles) return;
+            state.layers[i].style_spec = state.layers[i].style_spec || {};
+            state.layers[i].style_spec.rasterOpacity = parseInt(ro.value, 10) / 100;
+            try { applyLayerStyleToMap(i); } catch (e) {}
+          });
+        }
+        var ros = document.getElementById('map-edit-raster-simple-opacity');
+        if (ros && !ros.dataset.bound) {
+          ros.dataset.bound = '1';
+          ros.addEventListener('input', function() {
+            var v = document.getElementById('map-edit-raster-simple-opacity-val');
+            if (v) v.textContent = ros.value + '%';
+            var i = state.selectedLayerIndex;
+            if (i == null || !state.layers[i] || !state.layers[i].raster_tiles) return;
+            state.layers[i].style_spec = state.layers[i].style_spec || {};
+            state.layers[i].style_spec.rasterOpacity = parseInt(ros.value, 10) / 100;
+            try { applyLayerStyleToMap(i); } catch (e) {}
+          });
+        }
+        var applyBtn = document.getElementById('map-edit-raster-apply-viewer');
+        if (applyBtn && !applyBtn.dataset.bound) {
+          applyBtn.dataset.bound = '1';
+          applyBtn.addEventListener('click', function() {
+            var msg = document.getElementById('map-edit-raster-apply-msg');
+            var i = state.selectedLayerIndex;
+            if (i == null || !state.layers[i]) return;
+            var lyr = state.layers[i];
+            if (!lyr.raster_tiles || !(lyr.stac_viewer_path || lyr.stacViewerPath)) return;
+            var iframe = document.getElementById('map-edit-stac-viewer-iframe');
+            if (!iframe || !iframe.contentWindow) {
+              if (msg) { msg.style.display = ''; msg.textContent = 'Viewer not loaded yet.'; }
+              return;
+            }
+            var w = iframe.contentWindow;
+            var fn = w.__geofastStacViewerExportLayer;
+            if (typeof fn !== 'function') {
+              if (msg) { msg.style.display = ''; msg.textContent = 'Wait for the raster style panel to finish loading, then try again.'; }
+              return;
+            }
+            var out = fn();
+            if (!out || !out.ok || !out.layer) {
+              if (msg) { msg.style.display = ''; msg.textContent = (out && out.error) ? out.error : 'Could not read settings from viewer.'; }
+              return;
+            }
+            var pl = out.layer;
+            lyr.tiles_url = pl.tiles_url;
+            lyr.stac_viewer_path = pl.stac_viewer_path;
+            lyr.stac_viewer_query = pl.stac_viewer_query;
+            lyr.layer_id = pl.layer_id || lyr.layer_id;
+            lyr.style_spec = lyr.style_spec || {};
+            if (pl.style_spec && pl.style_spec.rasterOpacity != null) {
+              lyr.style_spec.rasterOpacity = pl.style_spec.rasterOpacity;
+              var op = document.getElementById('map-edit-raster-opacity');
+              var opv = document.getElementById('map-edit-raster-opacity-val');
+              var pct = Math.round(Math.max(0, Math.min(1, Number(pl.style_spec.rasterOpacity))) * 100);
+              if (op) op.value = String(pct);
+              if (opv) opv.textContent = pct + '%';
+            }
+            if (msg) msg.style.display = 'none';
+            var newEmbed = stacRasterStyleEmbedUrl(lyr);
+            iframe.dataset.viewerSrc = newEmbed;
+            removeAllLayerSourcesFromMap();
+            syncMapFromState();
+            renderLayers();
+          });
+        }
+      }
+
+      window.addEventListener('message', function(ev) {
+        if (!ev.data || ev.data.type !== 'geofast-stac-raster-layer' || ev.data.origin !== 'stac-raster-embed') return;
+        if (ev.origin !== window.location.origin) return;
+        var pl = ev.data.layer;
+        if (!pl || !pl.tiles_url) return;
+        var i = state.selectedLayerIndex;
+        if (i == null || !state.layers[i] || !state.layers[i].raster_tiles) return;
+        var lyr = state.layers[i];
+        if (!(lyr.stac_viewer_path || lyr.stacViewerPath)) return;
+        if (lyr.stac_item_id && pl.stac_item_id && String(lyr.stac_item_id) !== String(pl.stac_item_id)) return;
+        if (lyr.stac_catalog_id && pl.stac_catalog_id && String(lyr.stac_catalog_id) !== String(pl.stac_catalog_id)) return;
+        if (lyr.stac_collection_id && pl.stac_collection_id && String(lyr.stac_collection_id) !== String(pl.stac_collection_id)) return;
+        lyr.tiles_url = pl.tiles_url;
+        lyr.stac_viewer_path = pl.stac_viewer_path;
+        lyr.stac_viewer_query = pl.stac_viewer_query;
+        lyr.layer_id = pl.layer_id || lyr.layer_id;
+        lyr.style_spec = lyr.style_spec || {};
+        if (pl.style_spec && pl.style_spec.rasterOpacity != null) {
+          lyr.style_spec.rasterOpacity = pl.style_spec.rasterOpacity;
+          var op = document.getElementById('map-edit-raster-opacity');
+          var opv = document.getElementById('map-edit-raster-opacity-val');
+          var pct = Math.round(Math.max(0, Math.min(1, Number(pl.style_spec.rasterOpacity))) * 100);
+          if (op) op.value = String(pct);
+          if (opv) opv.textContent = pct + '%';
+        }
+        if (!map || typeof map.loaded !== 'function' || !map.loaded()) return;
+        try {
+          removeAllLayerSourcesFromMap();
+          syncMapFromState();
+          renderLayers();
+        } catch (e) {}
+      });
+
       function renderLayers() {
+        wireRasterPanelOnce();
         var wrap = document.getElementById('layers-table-wrap');
         var tbody = document.getElementById('layers-tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
         if (state.layers.length === 0) {
           wrap.style.display = 'none';
+          syncStylePanelsVisibility();
           return;
         }
         wrap.style.display = 'block';
+        var lastIdx = state.layers.length - 1;
         state.layers.forEach(function(layer, idx) {
           var s = layer.style_spec || DEFAULT_SPEC;
           var label = layer.collection_id + (layer.tiles_url ? ' (dynamic)' : '');
@@ -708,29 +965,50 @@
           tr.dataset.index = idx;
           if (state.selectedLayerIndex === idx) tr.classList.add('selected');
           tr.onclick = function(e) {
-            if (e.target.closest('.btn-remove-layer') || e.target.closest('.drag-handle') || e.target.closest('input') || e.target.closest('label') || e.target.closest('a')) return;
+            if (e.target.closest('.btn-remove-layer') || e.target.closest('.drag-handle') || e.target.closest('.layer-order-btn') || e.target.closest('input') || e.target.closest('label') || e.target.closest('a')) return;
             state.selectedLayerIndex = idx;
             renderLayers();
-            if (styleToolboxApplySpec) styleToolboxApplySpec(state.layers[idx].style_spec || DEFAULT_SPEC);
-            refreshMapEditRuleFields();
+            var L = state.layers[idx];
+            if (!L.raster_tiles && styleToolboxApplySpec) {
+              styleToolboxApplySpec(L.style_spec || DEFAULT_SPEC);
+              refreshMapEditRuleFields();
+            }
           };
           var nameCell;
-          if (layer.raster_tiles && layer.stac_viewer_path) {
+          if (layer.raster_tiles && (layer.stac_viewer_path || layer.stacViewerPath)) {
             var si = escapeHtml(layer.stac_item_id || 'item');
-            var vp = escapeHtml(layer.stac_viewer_path);
-            nameCell = '<a href="' + base + vp + '" target="_blank" rel="noopener noreferrer"><code>STAC · ' + si + '</code></a> <span class="meta">(raster)</span>';
+            var href = escapeHtml(stacLayerViewerHref(layer));
+            nameCell = '<a href="' + href + '" target="_blank" rel="noopener noreferrer"><code>STAC · ' + si + '</code></a> <span class="meta">(raster)</span>';
           } else {
             nameCell = '<code>' + escapeHtml(label) + '</code>';
           }
+          var popupCells = layer.raster_tiles
+            ? '<td colspan="2" class="meta" title="Popups apply to vector layers only">—</td>'
+            : '<td><label><input type="checkbox" data-index="' + idx + '" data-prop="popup"' + (layer.popup ? ' checked' : '') + ' title="Show popup on click"> Popup</label></td>' +
+              '<td><select class="popup-id-select" data-index="' + idx + '" data-collection-id="' + escapeHtml(layer.collection_id || layer.collectionId || '') + '" title="Property to show as identifier in popup"><option value="">(feature id)</option></select></td>';
           tr.innerHTML =
-            '<td class="drag-handle" title="Drag to reorder">⋮⋮</td>' +
+            '<td class="layer-order-cell"><span class="drag-handle" title="Drag to reorder">⋮⋮</span> ' +
+            '<button type="button" class="btn btn-sm layer-order-btn" data-layer-order="top" data-index="' + idx + '" title="To top"' + (idx === 0 ? ' disabled' : '') + '>⇈</button>' +
+            '<button type="button" class="btn btn-sm layer-order-btn" data-layer-order="up" data-index="' + idx + '" title="Up"' + (idx === 0 ? ' disabled' : '') + '>↑</button>' +
+            '<button type="button" class="btn btn-sm layer-order-btn" data-layer-order="down" data-index="' + idx + '" title="Down"' + (idx === lastIdx ? ' disabled' : '') + '>↓</button>' +
+            '<button type="button" class="btn btn-sm layer-order-btn" data-layer-order="bottom" data-index="' + idx + '" title="To bottom"' + (idx === lastIdx ? ' disabled' : '') + '>⇊</button></td>' +
             '<td>' + nameCell + '</td>' +
-            '<td><label><input type="checkbox" data-index="' + idx + '" data-prop="popup"' + (layer.popup ? ' checked' : '') + ' title="Show popup on click"> Popup</label></td>' +
-            '<td><select class="popup-id-select" data-index="' + idx + '" data-collection-id="' + escapeHtml(layer.collection_id || layer.collectionId || '') + '" title="Property to show as identifier in popup"><option value="">(feature id)</option></select></td>' +
+            popupCells +
             '<td><button type="button" class="btn btn-danger btn-sm btn-remove-layer" data-index="' + idx + '">Remove</button></td>';
           tbody.appendChild(tr);
           var sel = tr.querySelector('.popup-id-select');
           if (sel) loadPopupIdOptions(sel, idx);
+          tr.querySelectorAll('.layer-order-btn').forEach(function(btn) {
+            btn.onclick = function(ev) {
+              ev.stopPropagation();
+              var act = btn.getAttribute('data-layer-order');
+              var i = parseInt(btn.getAttribute('data-index'), 10);
+              if (act === 'top') moveLayerToIndex(i, 0);
+              else if (act === 'bottom') moveLayerToIndex(i, state.layers.length - 1);
+              else if (act === 'up') moveLayerToIndex(i, i - 1);
+              else if (act === 'down') moveLayerToIndex(i, i + 1);
+            };
+          });
         });
         tbody.querySelectorAll('.btn-remove-layer').forEach(function(btn) {
           btn.onclick = function(e) {
@@ -766,6 +1044,7 @@
           };
         });
         setupDragAndDrop();
+        syncStylePanelsVisibility();
         // Keep the map legend list in sync (if open).
         try {
           var panel = document.getElementById('map-edit-legend');
@@ -815,44 +1094,41 @@
       function setupDragAndDrop() {
         var tbody = document.getElementById('layers-tbody');
         if (!tbody) return;
-        var dragged = null;
-        tbody.querySelectorAll('.drag-handle').forEach(function(handle) {
-          handle.addEventListener('mousedown', function(e) {
-            e.preventDefault();
-            dragged = handle.closest('tr');
-            if (dragged) dragged.classList.add('dragging');
-          });
-        });
-        document.addEventListener('mouseup', function() {
-          if (dragged) { dragged.classList.remove('dragging'); dragged = null; }
-        });
-        document.addEventListener('mousemove', function(e) {
-          if (!dragged) return;
-          var target = e.target.closest('tbody tr');
-          if (target && target.parentNode === tbody && target !== dragged) {
-            var idx = Array.prototype.indexOf.call(tbody.children, target);
-            var dragIdx = Array.prototype.indexOf.call(tbody.children, dragged);
-            if (idx >= 0 && dragIdx >= 0) {
-              var item = state.layers.splice(dragIdx, 1)[0];
-              state.layers.splice(idx, 0, item);
-              if (state.selectedLayerIndex === dragIdx) state.selectedLayerIndex = idx;
-              else if (dragIdx < idx && state.selectedLayerIndex > dragIdx && state.selectedLayerIndex <= idx) state.selectedLayerIndex--;
-              else if (dragIdx > idx && state.selectedLayerIndex >= idx && state.selectedLayerIndex < dragIdx) state.selectedLayerIndex++;
-              state.layers.forEach(function(layer) {
-                var sid = sourceId(layerKey(layer));
-                if (map.getSource(sid)) {
-                  if (map.getLayer(sid + '-symbol')) map.removeLayer(sid + '-symbol');
-                  if (map.getLayer(sid + '-circle')) map.removeLayer(sid + '-circle');
-                  if (map.getLayer(sid + '-line')) map.removeLayer(sid + '-line');
-                  if (map.getLayer(sid + '-fill')) map.removeLayer(sid + '-fill');
-                  map.removeSource(sid);
-                }
-              });
-              syncMapFromState();
-              renderLayers();
-              dragged = null;
-            }
+        var dragStartIdx = null;
+        var dragRow = null;
+        function clearDragVisual() {
+          dragStartIdx = null;
+          if (dragRow) { dragRow.classList.remove('dragging'); dragRow = null; }
+          tbody.querySelectorAll('tr.dragging').forEach(function(r) { r.classList.remove('dragging'); });
+        }
+        function onUp(e) {
+          var endIdx = null;
+          try {
+            var el = document.elementFromPoint(e.clientX, e.clientY);
+            var tr = el && el.closest && el.closest('tbody tr');
+            if (tr && tr.parentNode === tbody) endIdx = parseInt(tr.dataset.index, 10);
+          } catch (err) {}
+          if (dragStartIdx !== null && endIdx !== null && isFinite(endIdx) && dragStartIdx !== endIdx) {
+            moveLayerToIndex(dragStartIdx, endIdx);
           }
+          document.removeEventListener('pointerup', onUp);
+          document.removeEventListener('pointercancel', onUp);
+          clearDragVisual();
+        }
+        tbody.querySelectorAll('.drag-handle').forEach(function(handle) {
+          handle.addEventListener('pointerdown', function(e) {
+            if (e.button === 2) return;
+            e.preventDefault();
+            var tr = handle.closest('tr');
+            if (!tr) return;
+            dragStartIdx = parseInt(tr.dataset.index, 10);
+            if (!isFinite(dragStartIdx)) return;
+            dragRow = tr;
+            tr.classList.add('dragging');
+            try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+            document.addEventListener('pointerup', onUp);
+            document.addEventListener('pointercancel', onUp);
+          });
         });
       }
 
@@ -1288,9 +1564,42 @@
       document.getElementById('btn-save-map').onclick = function() {
         var name = document.getElementById('map-name').value.trim();
         if (!name) { document.getElementById('map-save-message').textContent = 'Enter a name.'; return; }
-        if (window.GeofastmapStyleEditor && typeof window.GeofastmapStyleEditor.getCurrentSpec === 'function' && state.selectedLayerIndex != null && state.layers[state.selectedLayerIndex]) {
-          try { state.layers[state.selectedLayerIndex].style_spec = window.GeofastmapStyleEditor.getCurrentSpec(); } catch (e) {}
+        if (state.selectedLayerIndex != null && state.layers[state.selectedLayerIndex]) {
+          var selL = state.layers[state.selectedLayerIndex];
+          if (selL.raster_tiles) {
+            selL.style_spec = selL.style_spec || {};
+            if (selL.stac_viewer_path || selL.stacViewerPath) {
+              var iframeSv = document.getElementById('map-edit-stac-viewer-iframe');
+              var wSv = iframeSv && iframeSv.contentWindow;
+              var exportFn = wSv && wSv.__geofastStacViewerExportLayer;
+              if (typeof exportFn === 'function') {
+                try {
+                  var exOut = exportFn();
+                  if (exOut && exOut.ok && exOut.layer) {
+                    var pls = exOut.layer;
+                    selL.tiles_url = pls.tiles_url;
+                    selL.stac_viewer_path = pls.stac_viewer_path;
+                    selL.stac_viewer_query = pls.stac_viewer_query;
+                    selL.layer_id = pls.layer_id || selL.layer_id;
+                    if (pls.style_spec && pls.style_spec.rasterOpacity != null) selL.style_spec.rasterOpacity = pls.style_spec.rasterOpacity;
+                  }
+                } catch (eSv) {}
+              }
+              var roEl = document.getElementById('map-edit-raster-opacity');
+              if (roEl) selL.style_spec.rasterOpacity = parseInt(roEl.value, 10) / 100;
+            } else {
+              var roEl2 = document.getElementById('map-edit-raster-simple-opacity');
+              if (roEl2) selL.style_spec.rasterOpacity = parseInt(roEl2.value, 10) / 100;
+            }
+          } else if (window.GeofastmapStyleEditor && typeof window.GeofastmapStyleEditor.getCurrentSpec === 'function') {
+            try { selL.style_spec = window.GeofastmapStyleEditor.getCurrentSpec(); } catch (e) {}
+          }
         }
+        try {
+          if (map && state.selectedLayerIndex != null && state.layers[state.selectedLayerIndex] && state.layers[state.selectedLayerIndex].raster_tiles) {
+            applyLayerStyleToMap(state.selectedLayerIndex);
+          }
+        } catch (eSync) {}
         var msgEl = document.getElementById('map-save-message');
         msgEl.textContent = 'Saving…';
         var payload = {
@@ -1312,7 +1621,8 @@
                 stac_catalog_id: l.stac_catalog_id || null,
                 stac_collection_id: l.stac_collection_id || null,
                 stac_item_id: l.stac_item_id || null,
-                stac_viewer_path: l.stac_viewer_path || null
+                stac_viewer_path: l.stac_viewer_path || null,
+                stac_viewer_query: l.stac_viewer_query != null ? l.stac_viewer_query : null
               };
             }),
             bbox: state.bbox,
@@ -1469,7 +1779,6 @@
           var firstId = null;
           if (layers) { for (var i = 0; i < layers.length; i++) { if (layers[i].id !== 'basemap' && layers[i].id !== 'basemap-labels') { firstId = layers[i].id; break; } } }
           GeofastmapUtils.applyBasemapToMap(map, b, { beforeLayerId: firstId });
-          GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), b);
         }
         var pinSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="36" viewBox="0 0 24 36"><path fill="%2358a6ff" stroke="%23111" stroke-width="1" d="M12 0C5.4 0 0 5.4 0 12c0 9 12 24 12 24s12-15 12-24C24 5.4 18.6 0 12 0z"/></svg>';
         map.loadImage('data:image/svg+xml,' + encodeURIComponent(pinSvg), function(err, img) {

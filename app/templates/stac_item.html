@@ -1,8 +1,11 @@
 {% extends "base.html" %}
-{% block title %}STAC item {{ item_id }} – {{ catalog_title }}{% endblock %}
+{% block title %}{% if raster_style_embed | default(false) %}Raster style — {{ item_id }}{% else %}STAC item {{ item_id }} – {{ catalog_title }}{% endif %}{% endblock %}
 {% block head %}
   {% include '_map_popup_css.html' %}
   <style>
+    {% if raster_style_embed | default(false) %}
+    .stac-raster-embed-panel { max-width: 56rem; margin: 0 auto; }
+    {% endif %}
     .stac-item-meta { font-size: 0.9rem; color: var(--text-secondary); }
     .stac-item-thumb { max-width: min(100%, 480px); border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: var(--space); }
     .stac-raster-controls {
@@ -67,24 +70,8 @@
     .stac-cf-bands-row .stac-cf-bands-label { font-size: 0.85rem; color: var(--text-secondary); margin-right: 0.25rem; }
     .stac-cf-bands-row label { display: inline-flex; gap: 0.35rem; align-items: center; margin: 0; cursor: pointer; font-size: 0.9rem; }
     #stac-cf-preview { margin: 0.5rem 0 0 0; word-break: break-word; }
-    #stac-item-map { min-height: 320px; }
-    /* Basemap attribution: bottom-left (not inline in controls) */
-    #stac-item-map { position: relative; }
+    #stac-item-map { min-height: 320px; position: relative; }
     #stac-item-map .map-controls { position: relative; z-index: 2; }
-    #stac-item-map #map-basemap-copyright {
-      position: absolute;
-      left: 12px;
-      bottom: 10px;
-      z-index: 1;
-      display: none;
-      padding: 6px 8px;
-      background: rgba(0,0,0,0.45);
-      color: #fff;
-      border-radius: 8px;
-      border: 1px solid rgba(255,255,255,0.18);
-      max-width: min(65vw, 520px) !important;
-      backdrop-filter: blur(6px);
-    }
     .props-view-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
     .props-view-table th { text-align: left; padding: 6px 8px; font-weight: 600; font-size: 0.85rem; color: var(--text-secondary); border-bottom: 1px solid var(--border); }
     .props-view-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); word-break: break-word; }
@@ -131,9 +118,30 @@
     .stac-thumb-details[open] > summary::before { transform: rotate(90deg); }
     .stac-thumb-details[open] > summary { border-bottom: 1px solid var(--border); }
     .stac-thumb-inner { padding: 0 var(--space) var(--space); }
+    /* Match item.html: modal hidden until opened */
+    .modal { display: none; position: fixed; inset: 0; z-index: 1000; align-items: center; justify-content: center; padding: 1.5rem; }
+    .modal[aria-hidden="false"] { display: flex; }
+    .modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.6); cursor: pointer; }
+    .modal-content { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); max-width: 90vw; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+    .modal-header { display: flex; align-items: center; justify-content: space-between; padding: var(--space) var(--space-lg); border-bottom: 1px solid var(--border); }
+    .modal-title { margin: 0; font-size: 1rem; }
+    .modal-close { background: none; border: none; color: var(--text-secondary); font-size: 1.5rem; cursor: pointer; padding: 0 0.25rem; line-height: 1; }
+    .modal-close:hover { color: var(--text); }
+    .modal-body { padding: var(--space-lg); overflow: auto; flex: 1; min-height: 0; }
   </style>
 {% endblock %}
 {% block content %}
+{% if raster_style_embed | default(false) %}
+  <div id="stac-raster-embed-root" class="stac-raster-embed-panel">
+    {% if not titiler_configured %}
+    <p class="meta">Set <code>TITILER_INTERNAL_URL</code> (and optional <code>RASTER_INTERNAL_FETCH_BASE_URL</code> / <code>TITILER_INTERNAL_SECRET</code> for local COGs) to enable raster options.</p>
+    {% elif not tile_assets %}
+    <p class="meta">No GeoTIFF / COG-style assets were detected on this item for Titiler.</p>
+    {% else %}
+    {% include "_stac_raster_style_markup.html" %}
+    {% endif %}
+  </div>
+{% else %}
   <header class="page-header">
     <h1>STAC item <code>{{ item_id }}</code></h1>
     <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › <a href="{{ base }}/stac?f=html">STAC search</a> › {{ catalog_title }}</p>
@@ -151,8 +159,53 @@
     {% if not titiler_configured or not tile_assets %}
     <p class="meta" style="margin:0;">Add to map requires Titiler and at least one raster-capable asset on this item.</p>
     {% else %}
-    <p class="meta" style="margin:0;">Adds the current preview (asset, bands, rescale, expression, etc.) as a raster layer on a map.</p>
+    <p class="meta" style="margin:0;">Adds the current preview (use <strong>Apply</strong> first) as a raster layer. For <strong>public maps</strong>, also allow anonymous tile access below.</p>
+    <div class="form-row" style="margin-top:10px;max-width:40rem;">
+      <label style="display:flex;gap:8px;align-items:flex-start;">
+        <input type="checkbox" id="stac-public-tile-grant" style="margin-top:4px;">
+        <span>Allow anonymous viewers to load this imagery on <strong>public</strong> maps (records your consent).</span>
+      </label>
+      <p id="stac-public-tile-grant-msg" class="meta" style="margin:6px 0 0 24px;display:none;"></p>
+    </div>
     {% endif %}
+  </div>
+
+  <div id="stac-add-to-map-modal" class="modal" role="dialog" aria-hidden="true">
+    <div class="modal-backdrop" id="stac-add-to-map-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">Add this imagery to a map</h3>
+        <button type="button" class="modal-close" id="stac-add-to-map-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="meta">Uses the <strong>current</strong> Titiler settings from this page (click <strong>Apply</strong> so the URL matches what you want).</p>
+        <div class="form-row" style="margin-top:12px;">
+          <label><input type="radio" name="stac-add-to-map-choice" value="new" checked> Create new map</label>
+        </div>
+        <div class="form-row">
+          <label><input type="radio" name="stac-add-to-map-choice" value="existing"> Add to existing map</label>
+        </div>
+        <div class="form-row" id="stac-add-to-map-new-wrap">
+          <label>Map name</label>
+          <input type="text" id="stac-add-to-map-name" placeholder="STAC imagery" style="width:100%;max-width:320px;">
+        </div>
+        <div class="form-row" id="stac-add-to-map-existing-wrap" style="display:none;">
+          <label>Existing map</label>
+          <select id="stac-add-to-map-select" style="min-width:200px;"></select>
+        </div>
+        <div class="form-row" id="stac-add-to-map-public-wrap" style="display:none;margin-top:10px;">
+          <label style="display:flex;gap:8px;align-items:flex-start;max-width:36rem;">
+            <input type="checkbox" id="stac-add-to-map-public-grant" style="margin-top:4px;">
+            <span>This map is <strong>public</strong>. Allow anyone viewing the map to load this imagery anonymously (we record that you approved this).</span>
+          </label>
+        </div>
+        <div class="btn-group" style="margin-top:16px;">
+          <button type="button" class="btn btn-primary" id="stac-add-to-map-submit">Add</button>
+          <button type="button" class="btn" id="stac-add-to-map-cancel">Cancel</button>
+        </div>
+        <p id="stac-add-to-map-message" class="meta" style="margin-top:8px;"></p>
+      </div>
+    </div>
   </div>
   {% endif %}
 
@@ -253,176 +306,7 @@
     <p class="meta">No GeoTIFF / COG-style assets were detected on this item for Titiler. Use the thumbnail or upstream link if available.</p>
     {% else %}
     <p class="meta">Tiles are proxied through this API to Titiler. Use RGB band selection, rescale, expression, and color formula to build custom composites. <strong>View state</strong> (map extent, basemap, render options, opacity, color formula) is kept in the page URL so you can reload or share the link.</p>
-    <div class="stac-raster-controls">
-      <div class="form-row">
-        <label for="stac-asset-select">Asset</label>
-        <select id="stac-asset-select">
-          {% for a in tile_assets %}
-          <option value="{{ a.key }}" {% if a.key == default_tile_asset %}selected{% endif %}>{{ a.key }}{% if a.title != a.key %} — {{ a.title }}{% endif %}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="form-row stac-mode-row">
-        <label for="stac-render-mode">Render mode</label>
-        <select id="stac-render-mode">
-          <option value="rgb_bands" selected>RGB (bands of selected asset)</option>
-          <option value="rgb_assets">RGB (3 assets: false color)</option>
-          <option value="single">Single band</option>
-          <option value="expression">Expression (e.g. NDVI)</option>
-        </select>
-      </div>
-      <div class="form-row">
-        <label for="stac-rescale">Rescale</label>
-        <input type="text" id="stac-rescale" value="" placeholder="min,max" autocomplete="off" title="Mode defaults: RGB bands = empty; expression = -1,1; single / RGB assets = 0,4000. Min,max for all modes (RGB repeats per band in the tile request).">
-      </div>
-      <div class="form-row">
-        <label for="stac-raster-opacity">Opacity</label>
-        <input type="range" id="stac-raster-opacity" min="0" max="100" value="100">
-      </div>
-    </div>
-
-    <div id="stac-rgb-bands-block" class="stac-advanced-block is-open">
-      <div class="stac-rgb-grid">
-        <div class="form-row">
-          <label for="stac-band-r">Red band</label>
-          <select id="stac-band-r"></select>
-        </div>
-        <div class="form-row">
-          <label for="stac-band-g">Green band</label>
-          <select id="stac-band-g"></select>
-        </div>
-        <div class="form-row">
-          <label for="stac-band-b">Blue band</label>
-          <select id="stac-band-b"></select>
-        </div>
-      </div>
-    </div>
-
-    <div id="stac-rgb-assets-block" class="stac-advanced-block">
-      <div class="stac-rgb-grid">
-        <div class="form-row">
-          <label for="stac-asset-r">Red channel asset</label>
-          <select id="stac-asset-r"></select>
-        </div>
-        <div class="form-row">
-          <label for="stac-asset-g">Green channel asset</label>
-          <select id="stac-asset-g"></select>
-        </div>
-        <div class="form-row">
-          <label for="stac-asset-b">Blue channel asset</label>
-          <select id="stac-asset-b"></select>
-        </div>
-      </div>
-    </div>
-
-    <div id="stac-single-block" class="stac-advanced-block">
-      <div class="form-row" style="max-width: 18rem;">
-        <label for="stac-band-single">Band</label>
-        <select id="stac-band-single"></select>
-      </div>
-    </div>
-
-    <div id="stac-expr-block" class="stac-advanced-block">
-      <div class="form-row" style="max-width: 44rem;">
-        <label for="stac-expression">Expression</label>
-        <input type="text" id="stac-expression" placeholder="e.g. b8-b4 or nir-red" autocomplete="off">
-        <p class="stac-inline-hint">Use <code>b1</code>…<code>bn</code> for bands of the <strong>Asset</strong> above, or band names from metadata (<code>red</code>, <code>nir</code>, …). To mix <strong>different assets</strong> from this item, type their asset keys as identifiers (e.g. <code>nir-red</code> or <code>b1-b2</code> after keys are resolved) — each asset becomes one layer (<code>b1</code>, <code>b2</code>, …) via Titiler. <code>visual</code> is often 3 bands only; pick analytic / reflectance products for multi-band math.</p>
-        <p class="stac-inline-hint" id="stac-expression-preview" style="margin-top:0.35rem;"></p>
-      </div>
-    </div>
-
-    <div id="stac-colormap-block" class="stac-advanced-block">
-      <div class="form-row" style="max-width: 28rem;">
-        <label for="stac-colormap">Colormap</label>
-        <select id="stac-colormap" title="Titiler colormap_name — maps single-channel / expression output to RGB. Use with rescale.">
-          <option value="">Default (grayscale)</option>
-          <optgroup label="Perceptual">
-            <option value="viridis">viridis</option>
-            <option value="viridis_r">viridis (reversed)</option>
-            <option value="plasma">plasma</option>
-            <option value="inferno">inferno</option>
-            <option value="magma">magma</option>
-            <option value="cividis">cividis</option>
-            <option value="turbo">turbo</option>
-          </optgroup>
-          <optgroup label="Classic">
-            <option value="rainbow">rainbow</option>
-            <option value="jet">jet</option>
-            <option value="terrain">terrain</option>
-            <option value="gist_earth">gist_earth</option>
-            <option value="hot">hot</option>
-            <option value="cool">cool</option>
-            <option value="spring">spring</option>
-            <option value="summer">summer</option>
-            <option value="autumn">autumn</option>
-            <option value="winter">winter</option>
-          </optgroup>
-          <optgroup label="Diverging / qualitative">
-            <option value="RdYlGn">RdYlGn</option>
-            <option value="Spectral">Spectral</option>
-            <option value="coolwarm">coolwarm</option>
-            <option value="BrBG">BrBG</option>
-          </optgroup>
-          <optgroup label="Grayscale / misc">
-            <option value="gray">gray</option>
-            <option value="bone">bone</option>
-            <option value="pink">pink</option>
-            <option value="copper">copper</option>
-          </optgroup>
-        </select>
-        <p class="stac-inline-hint" style="margin-top:0.35rem;">Applies to <strong>single band</strong> and <strong>expression</strong> (one output channel). Set <strong>Rescale</strong> so values span the map range (e.g. NDVI <code>-1,1</code>). More names: <a href="https://developmentseed.org/titiler/endpoints/colormaps/" target="_blank" rel="noopener">Titiler colormaps</a>.</p>
-      </div>
-    </div>
-
-    <details class="stac-cf-details" id="stac-cf-details">
-      <summary class="stac-cf-summary">Color formula <span class="meta">(optional, advanced)</span></summary>
-      <div class="stac-cf-details-inner">
-        <p class="stac-inline-hint" style="margin-top:0;">Collapsed by default. Enable steps below and combine them (order: gamma → sigmoidal → saturation). Values stay filled when you toggle steps on or off.</p>
-        <div class="stac-cf-mode-row">
-          <label><input type="radio" name="stac-cf-mode" id="stac-cf-mode-builder" value="builder" checked> Builder</label>
-          <label><input type="radio" name="stac-cf-mode" id="stac-cf-mode-custom" value="custom"> Custom text</label>
-        </div>
-        <input type="hidden" id="stac-color-formula" value="">
-
-        <div id="stac-cf-builder-wrap">
-          <div class="stac-cf-op-block">
-            <label class="stac-cf-include-main"><input type="checkbox" id="stac-cf-include-gamma"> Gamma</label>
-            <label for="stac-cf-gamma-val" class="meta">Factor</label>
-            <input type="number" id="stac-cf-gamma-val" step="0.05" min="0.1" max="20" value="1.2" title="Gamma factor" style="width: 5rem;">
-          </div>
-          <div class="stac-cf-op-block">
-            <label class="stac-cf-include-main"><input type="checkbox" id="stac-cf-include-sigmoidal"> Sigmoidal</label>
-            <label for="stac-cf-sig-str" class="meta">Strength</label>
-            <input type="number" id="stac-cf-sig-str" step="0.5" min="0" max="50" value="22" style="width: 4.5rem;">
-            <label for="stac-cf-sig-bias" class="meta">Bias</label>
-            <input type="number" id="stac-cf-sig-bias" step="0.01" min="0" max="1" value="0.1" style="width: 4rem;">
-          </div>
-          <div class="stac-cf-op-block">
-            <label class="stac-cf-include-main"><input type="checkbox" id="stac-cf-include-sat"> Saturation</label>
-            <label for="stac-cf-sat-val" class="meta">Multiplier</label>
-            <input type="number" id="stac-cf-sat-val" step="0.05" min="0" max="5" value="1.2" title="Saturation multiplier" style="width: 5rem;">
-          </div>
-          <div id="stac-cf-bands-wrap" class="stac-cf-bands-row">
-            <span class="stac-cf-bands-label">Bands for gamma &amp; sigmoidal</span>
-            <label><input type="checkbox" id="stac-cf-band-r" checked> R</label>
-            <label><input type="checkbox" id="stac-cf-band-g" checked> G</label>
-            <label><input type="checkbox" id="stac-cf-band-b" checked> B</label>
-          </div>
-          <p class="stac-inline-hint" id="stac-cf-preview" aria-live="polite"></p>
-        </div>
-
-        <div id="stac-cf-custom-wrap" style="display: none;">
-          <div class="form-row" style="max-width: 44rem;">
-            <label for="stac-cf-custom">color_formula string</label>
-            <input type="text" id="stac-cf-custom" class="stac-cf-custom-input" placeholder="e.g. gamma rg 1.3, sigmoidal rgb 22 0.1" autocomplete="off" title="Passed through to Titiler as color_formula">
-          </div>
-        </div>
-      </div>
-    </details>
-
-    <div class="stac-actions-row">
-      <button type="button" class="btn btn-primary" id="stac-apply-raster">Apply</button>
-    </div>
+    {% include "_stac_raster_style_markup.html" %}
     {% endif %}
   </div>
 
@@ -440,46 +324,6 @@
     </div>
   </div>
 
-  {% if username %}
-  <div id="stac-add-to-map-modal" class="modal" role="dialog" aria-hidden="true">
-    <div class="modal-backdrop" id="stac-add-to-map-backdrop"></div>
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3 class="modal-title">Add this imagery to a map</h3>
-        <button type="button" class="modal-close" id="stac-add-to-map-close" aria-label="Close">&times;</button>
-      </div>
-      <div class="modal-body">
-        <p class="meta">Uses the <strong>current</strong> Titiler settings from this page (Apply updates the URL used for tiles).</p>
-        <div class="form-row" style="margin-top:12px;">
-          <label><input type="radio" name="stac-add-to-map-choice" value="new" checked> Create new map</label>
-        </div>
-        <div class="form-row">
-          <label><input type="radio" name="stac-add-to-map-choice" value="existing"> Add to existing map</label>
-        </div>
-        <div class="form-row" id="stac-add-to-map-new-wrap">
-          <label>Map name</label>
-          <input type="text" id="stac-add-to-map-name" placeholder="STAC imagery" style="width:100%;max-width:320px;">
-        </div>
-        <div class="form-row" id="stac-add-to-map-existing-wrap" style="display:none;">
-          <label>Existing map</label>
-          <select id="stac-add-to-map-select" style="min-width:200px;"></select>
-        </div>
-        <div class="form-row" id="stac-add-to-map-public-wrap" style="display:none;margin-top:10px;">
-          <label style="display:flex;gap:8px;align-items:flex-start;max-width:36rem;">
-            <input type="checkbox" id="stac-add-to-map-public-grant" style="margin-top:4px;">
-            <span>This map is <strong>public</strong>. Allow anyone viewing the map to load this imagery anonymously (we record that you approved this).</span>
-          </label>
-        </div>
-        <div class="btn-group" style="margin-top:16px;">
-          <button type="button" class="btn btn-primary" id="stac-add-to-map-submit">Add</button>
-          <button type="button" class="btn" id="stac-add-to-map-cancel">Cancel</button>
-        </div>
-        <p id="stac-add-to-map-message" class="meta" style="margin-top:8px;"></p>
-      </div>
-    </div>
-  </div>
-  {% endif %}
-
   <div class="card">
     <h2 class="card-title">Properties</h2>
     <table class="props-view-table">
@@ -487,9 +331,12 @@
       <tbody id="stac-props-tbody"></tbody>
     </table>
   </div>
+{% endif %}
 {% endblock %}
 {% block script %}
+  {% if not raster_style_embed | default(false) %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  {% endif %}
   <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
   <script>
     var base = {{ base | tojson }};
@@ -500,6 +347,7 @@
     var titilerConfigured = {{ titiler_configured | tojson }};
     var tileAssetsLen = {{ tile_assets | length }};
     var tileAssetKeys = {{ tile_assets | map(attribute='key') | list | tojson }};
+    var rasterStyleEmbed = {{ raster_style_embed | default(false) | tojson }};
 
     var map;
     var BASEMAPS;
@@ -981,6 +829,7 @@
 
     function addOrRefreshRaster() {
       if (!titilerConfigured || !tileAssetsLen) return;
+      if (!map || !map.loaded()) return;
       syncColorFormula();
       updateExpressionPreview();
       var sel = document.getElementById('stac-asset-select');
@@ -1030,7 +879,6 @@
       if (!cfg) return;
       var before = map.getLayer('stac-footprint-fill') ? 'stac-footprint-fill' : undefined;
       GeofastmapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: before });
-      GeofastmapUtils.setBasemapCopyright(document.getElementById('map-basemap-copyright'), cfg);
     }
 
     function initMap() {
@@ -1106,7 +954,10 @@
           });
         }
 
-        if (titilerConfigured && tileAssetsLen) addOrRefreshRaster();
+        if (titilerConfigured && tileAssetsLen) {
+          addOrRefreshRaster();
+          map.once('idle', function() { addOrRefreshRaster(); });
+        }
 
         var bb = null;
         if (stacViewerPendingBbox && stacViewerPendingBbox.length === 4) {
@@ -1136,23 +987,28 @@
     }
 
     var googleKey = {{ google_maps_api_key | tojson }};
-    GeofastmapUtils.fetchBasemaps(base).then(function(result) {
-      BASEMAPS = result.byId;
-      basemapList = result.basemaps;
-      if (!basemapList.length) {
+    if (!rasterStyleEmbed) {
+      GeofastmapUtils.fetchBasemaps(base).then(function(result) {
+        BASEMAPS = result.byId;
+        basemapList = result.basemaps;
+        if (!basemapList.length) {
+          BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
+          basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
+        }
+        initMap();
+      }).catch(function() {
         BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
         basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
-      }
-      initMap();
-    }).catch(function() {
-      BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
-      basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
-      initMap();
-    });
+        initMap();
+      });
+    } else {
+      BASEMAPS = {};
+      basemapList = [];
+    }
 
     var props = stacItem.properties && typeof stacItem.properties === 'object' ? stacItem.properties : {};
     var tbody = document.getElementById('stac-props-tbody');
-    if (tbody) {
+    if (tbody && !rasterStyleEmbed) {
       Object.keys(props).sort().forEach(function(k) {
         var v = props[k];
         var valStr = v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
@@ -1625,6 +1481,7 @@
     populateRgbAssetSelects();
     initColorFormulaPanel();
     applyStacViewerParamsFromUrl();
+    refreshBandSelectors();
     bindStacViewerUrlSync();
 
     function stacLayerIdForMap() {
@@ -1636,14 +1493,28 @@
       if (!sel || !sel.value) return '';
       return buildTileUrl(sel.value);
     }
+    function collectViewerQueryStringForMap() {
+      try {
+        scheduleStacViewerUrlPush();
+        var p = collectStacViewerParams();
+        if (!p.has('f')) p.set('f', 'html');
+        return p.toString();
+      } catch (e) {
+        return 'f=html';
+      }
+    }
     function newStacRasterLayerPayload() {
       var tu = getStacTitilerUrlForMapLayer();
       if (!tu) throw new Error('Could not build tile URL. Set preview options and use Apply so the URL matches what you want.');
-      var viewerPath = '/stac/catalogs/' + encodeURIComponent(catalogId) + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(itemId) + '?f=html';
+      var viewerPath = '/stac/catalogs/' + encodeURIComponent(catalogId) + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(itemId);
+      var viewerQuery = collectViewerQueryStringForMap();
+      var opEl = document.getElementById('stac-raster-opacity');
+      var ro = opEl ? Math.max(0, Math.min(1, parseInt(opEl.value, 10) / 100)) : 1;
+      if (!isFinite(ro)) ro = 1;
       return {
         collection_id: '_stac',
         order: 0,
-        style_spec: { rasterOpacity: 1 },
+        style_spec: { rasterOpacity: ro },
         popup: false,
         tiles_url: tu,
         layer_id: stacLayerIdForMap(),
@@ -1651,14 +1522,89 @@
         stac_catalog_id: catalogId,
         stac_collection_id: collectionId,
         stac_item_id: itemId,
-        stac_viewer_path: viewerPath
+        stac_viewer_path: viewerPath,
+        stac_viewer_query: viewerQuery
       };
     }
 
+    /** Called from map edit iframe so "Apply" can sync tiles_url + viewer query from this page. */
+    window.__geofastStacViewerExportLayer = function() {
+      try {
+        return { ok: true, layer: newStacRasterLayerPayload() };
+      } catch (e) {
+        return { ok: false, error: e && e.message ? e.message : String(e) };
+      }
+    };
+
+    /** Push current tile URL + viewer query to parent map editor (debounced). */
+    if (rasterStyleEmbed) {
+      var _embedPushTimer = null;
+      function schedulePushLayerToMapEditor() {
+        if (_embedPushTimer) clearTimeout(_embedPushTimer);
+        _embedPushTimer = setTimeout(function() {
+          _embedPushTimer = null;
+          try {
+            var layer = newStacRasterLayerPayload();
+            if (window.parent && window.parent !== window) {
+              window.parent.postMessage(
+                { type: 'geofast-stac-raster-layer', origin: 'stac-raster-embed', layer: layer },
+                window.location.origin
+              );
+            }
+          } catch (e) {}
+        }, 320);
+      }
+      document.addEventListener('change', function(e) {
+        var t = e.target;
+        if (!t || !t.id) return;
+        if (t.id.indexOf('stac-') === 0 || t.id.indexOf('stac-cf-') === 0) schedulePushLayerToMapEditor();
+      }, true);
+      document.addEventListener('input', function(e) {
+        var t = e.target;
+        if (!t || !t.id) return;
+        if (t.id.indexOf('stac-') === 0 || t.id.indexOf('stac-cf-') === 0) schedulePushLayerToMapEditor();
+      }, true);
+      setTimeout(schedulePushLayerToMapEditor, 450);
+    }
+
     (function() {
+      var grantCb = document.getElementById('stac-public-tile-grant');
+      var grantMsg = document.getElementById('stac-public-tile-grant-msg');
+      if (grantCb && titilerConfigured && grantMsg) {
+        fetch(base + '/stac/catalogs/' + encodeURIComponent(catalogId) + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(itemId) + '/public-tile-grant', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            if (d && d.granted) {
+              grantCb.checked = true;
+              grantCb.disabled = true;
+              grantMsg.style.display = 'block';
+              grantMsg.textContent = 'Public tile access is already enabled for this item.';
+            }
+          })
+          .catch(function() {});
+        grantCb.addEventListener('change', function() {
+          if (!grantCb.checked) { grantCb.checked = true; return; }
+          grantMsg.style.display = 'block';
+          grantMsg.textContent = 'Saving…';
+          grantMsg.style.color = '';
+          fetch(base + '/stac/catalogs/' + encodeURIComponent(catalogId) + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(itemId) + '/public-tile-grant', { method: 'POST', credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+            .then(function(r) { if (!r.ok) return r.json().then(function(j) { throw j; }); return r.json(); })
+            .then(function() {
+              grantCb.disabled = true;
+              grantMsg.textContent = 'Saved. Public maps can show these tiles to anonymous viewers.';
+            })
+            .catch(function(e) {
+              grantMsg.textContent = 'Failed: ' + (e.detail || e.message || 'error');
+              grantMsg.style.color = 'var(--danger)';
+              grantCb.checked = false;
+            });
+        });
+      }
+
       var btn = document.getElementById('btn-stac-add-to-map');
       if (!btn) return;
       var modal = document.getElementById('stac-add-to-map-modal');
+      if (!modal) return;
       var backdrop = document.getElementById('stac-add-to-map-backdrop');
       var closeBtn = document.getElementById('stac-add-to-map-close');
       var cancelBtn = document.getElementById('stac-add-to-map-cancel');
@@ -1670,7 +1616,7 @@
       var publicGrantCb = document.getElementById('stac-add-to-map-public-grant');
       var submitBtn = document.getElementById('stac-add-to-map-submit');
       var msgEl = document.getElementById('stac-add-to-map-message');
-      function closeModal() { if (modal) modal.setAttribute('aria-hidden', 'true'); }
+      function closeModal() { modal.setAttribute('aria-hidden', 'true'); }
       function updatePublicGrantUi() {
         if (!publicWrap) return;
         var choice = document.querySelector('input[name="stac-add-to-map-choice"]:checked');
@@ -1684,20 +1630,25 @@
         if (vis !== 'public' && publicGrantCb) publicGrantCb.checked = false;
       }
       btn.onclick = function() {
-        if (!titilerConfigured || !tileAssetsLen) return;
+        if (!titilerConfigured || !tileAssetsLen) {
+          if (msgEl) { msgEl.textContent = 'Configure Titiler and open a raster-capable asset first.'; msgEl.style.color = 'var(--danger)'; }
+          return;
+        }
         try { scheduleStacViewerUrlPush(); } catch (e) {}
-        msgEl.textContent = '';
-        nameInput.value = 'STAC: ' + itemId;
-        document.querySelector('input[name="stac-add-to-map-choice"][value="new"]').checked = true;
-        newWrap.style.display = '';
-        existingWrap.style.display = 'none';
+        if (msgEl) { msgEl.textContent = ''; msgEl.style.color = ''; }
+        if (nameInput) nameInput.value = 'STAC: ' + itemId;
+        var newRadio = document.querySelector('input[name="stac-add-to-map-choice"][value="new"]');
+        if (newRadio) newRadio.checked = true;
+        if (newWrap) newWrap.style.display = '';
+        if (existingWrap) existingWrap.style.display = 'none';
         if (publicWrap) publicWrap.style.display = 'none';
         modal.setAttribute('aria-hidden', 'false');
-        mapSelect.innerHTML = '<option value="">Loading…</option>';
+        if (mapSelect) mapSelect.innerHTML = '<option value="">Loading…</option>';
         fetch(base + '/maps', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
           .then(function(r) { return r.json(); })
           .then(function(data) {
             var list = data.maps || [];
+            if (!mapSelect) return;
             mapSelect.innerHTML = list.length ? '' : '<option value="">No maps yet</option>';
             list.forEach(function(m) {
               var opt = document.createElement('option');
@@ -1708,20 +1659,21 @@
             });
             updatePublicGrantUi();
           })
-          .catch(function() { mapSelect.innerHTML = '<option value="">Load failed</option>'; });
+          .catch(function() { if (mapSelect) mapSelect.innerHTML = '<option value="">Load failed</option>'; });
       };
-      backdrop.onclick = closeModal;
-      closeBtn.onclick = closeModal;
-      cancelBtn.onclick = closeModal;
+      if (backdrop) backdrop.onclick = closeModal;
+      if (closeBtn) closeBtn.onclick = closeModal;
+      if (cancelBtn) cancelBtn.onclick = closeModal;
       document.querySelectorAll('input[name="stac-add-to-map-choice"]').forEach(function(r) {
         r.onchange = function() {
-          newWrap.style.display = this.value === 'new' ? '' : 'none';
-          existingWrap.style.display = this.value === 'existing' ? '' : 'none';
+          if (newWrap) newWrap.style.display = this.value === 'new' ? '' : 'none';
+          if (existingWrap) existingWrap.style.display = this.value === 'existing' ? '' : 'none';
           updatePublicGrantUi();
         };
       });
       if (mapSelect) mapSelect.onchange = updatePublicGrantUi;
-      submitBtn.onclick = function() {
+      if (!submitBtn || !msgEl) return;
+      submitBtn.addEventListener('click', function() {
         var choice = document.querySelector('input[name="stac-add-to-map-choice"]:checked');
         if (!choice) return;
         msgEl.textContent = '';
@@ -1823,7 +1775,7 @@
         } else {
           putLayer();
         }
-      };
+      });
     })();
 
   </script>

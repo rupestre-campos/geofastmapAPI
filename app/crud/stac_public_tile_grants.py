@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,6 +59,7 @@ async def ensure_grant(
         stac_collection_id=stac_collection_id,
         stac_item_id=stac_item_id,
         granted_by_user_id=granted_by_user_id,
+        created_at=datetime.now(timezone.utc),
     )
     db.add(row)
     try:

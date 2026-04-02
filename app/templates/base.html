@@ -71,6 +71,8 @@
     a:hover { color: var(--accent-hover); text-decoration: underline; }
 
     .container { max-width: 900px; margin: 0 auto; padding: var(--space-lg); }
+    body.embed-chromeless { min-height: auto; }
+    .main--embed { max-width: none; margin: 0; padding: var(--space); }
 
     .nav-bar {
       background: var(--bg-elevated);
@@ -363,7 +365,8 @@
   </style>
   {% block head %}{% endblock %}
 </head>
-<body>
+<body{% if hide_site_chrome | default(false) %} class="embed-chromeless"{% endif %}>
+  {% if not hide_site_chrome | default(false) %}
   <header class="nav-bar">
     <a href="{{ base }}/?f=html" class="brand">GeoFastMap</a>
     <button type="button" class="nav-kebab" id="nav-kebab" aria-label="Open menu" aria-expanded="false" title="Menu">&#9776;</button>
@@ -413,7 +416,8 @@
       </nav>
     </div>
   </div>
-  <main class="container">
+  {% endif %}
+  <main class="container{% if hide_site_chrome | default(false) %} main--embed{% endif %}">
     {% block content %}{% endblock %}
   </main>
   <script>
