@@ -5,7 +5,7 @@ x-titiler-env: &titiler_env
   PORT: "8000"
   CPL_TMPDIR: "/tmp"
   PYTHONWARNINGS: "ignore"
-  GDAL_CACHEMAX: "75%"
+  GDAL_CACHEMAX: "30%"
   GDAL_INGESTED_BYTES_AT_OPEN: "65536"
   GDAL_DISABLE_READDIR_ON_OPEN: "EMPTY_DIR"
   GDAL_HTTP_MERGE_CONSECUTIVE_RANGES: "YES"
@@ -75,6 +75,8 @@ services:
       TITILER_TILE_CACHE_TTL_SECONDS: "3600"
       RASTER_INTERNAL_FETCH_BASE_URL: http://api:8000
       TITILER_INTERNAL_SECRET: dev-titiler-internal-secret-change-in-production
+      # Large mosaics (many COGs) can exceed default 300s Titiler tile reads — raise if needed.
+      TITILER_HTTP_READ_TIMEOUT_SECONDS: "600"
       ENVIRONMENT: docker
     ports:
       - "8000:8000"

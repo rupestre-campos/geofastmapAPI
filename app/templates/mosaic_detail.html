@@ -1,0 +1,268 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} – Mosaic – GeoFastMap{% endblock %}
+{% block head %}
+  {% include '_map_popup_css.html' %}
+  <style>
+    #mosaic-detail-map { height: min(55vh, 480px); width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+    .mosaic-detail-tiles-url { word-break: break-all; font-size: 0.85rem; background: var(--bg-elevated); padding: 8px; border-radius: var(--radius-sm); border: 1px solid var(--border); }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>{{ title | e }}</h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › <a href="{{ base }}/mosaics?f=html">Mosaics</a> › {{ title | e }}</p>
+    <div class="card-actions" style="margin-top:0.75rem;">
+      <button type="button" class="btn btn-primary" id="btn-add-to-map">Add to map</button>
+      {% if can_edit %}
+      <a class="btn" href="{{ base }}/mosaics/planner?f=html&edit_view={{ view_id | e }}">Edit mosaic</a>
+      {% endif %}
+    </div>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Preview</h2>
+    <p class="meta">ZXY template (same origin as your session for private mosaics; public tiles work without login when the mosaic is public or <strong>Public map</strong> is enabled).</p>
+    <div id="mosaic-detail-map" class="map-container">
+      <div class="map-controls">
+        {% include '_basemap_selector.html' %}
+        <label>
+          <input type="checkbox" id="mosaic-layer-visible" checked>
+          Mosaic layer
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Tile URL</h2>
+    <p class="meta">Use in QGIS, MapLibre, or other clients. Replace <code>{z}</code>, <code>{x}</code>, <code>{y}</code> with tile coordinates.</p>
+    <pre class="mosaic-detail-tiles-url" id="mosaic-tiles-url">{{ tiles_url | e }}</pre>
+    <button type="button" class="btn btn-sm" id="btn-copy-tiles-url">Copy URL</button>
+  </div>
+
+  {% if can_edit %}
+  <div class="card">
+    <h2 class="card-title">Sharing</h2>
+    <form id="mosaic-settings-form" class="form-row" style="flex-direction:column;align-items:flex-start;gap:12px;">
+      <label class="checkbox-inline">
+        <input type="checkbox" id="mosaic-allow-public-maps" {% if allow_public_maps %}checked{% endif %}>
+        Allow this mosaic on <strong>public</strong> maps (anonymous viewers can load tiles when the map is public)
+      </label>
+      <p class="meta" style="margin:0;">General visibility (private / logged / public) is separate; use <code>PATCH /raster-views/{{ view_id }}</code> from the API or future UI.</p>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-save-mosaic-settings">Save</button>
+      <span id="mosaic-settings-msg" class="meta" role="status"></span>
+    </form>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2 class="card-title">Add to a map</h2>
+    <p class="meta">Tip: you can also open the map editor directly with:</p>
+    <p><code>{{ base }}/maps/&lt;your-map-id&gt;/edit?f=html&amp;mosaic_view={{ view_id }}</code></p>
+  </div>
+
+  <div id="add-to-map-modal" class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="add-to-map-title" aria-hidden="true">
+    <div class="confirm-modal-backdrop" id="add-to-map-backdrop"></div>
+    <div class="confirm-modal-content" style="max-width: 560px;">
+      <div class="confirm-modal-header" id="add-to-map-title">Add mosaic to a map</div>
+      <div class="confirm-modal-body">
+        <p class="meta" style="margin-top:0;">Choose an existing map to edit, or create a new map with this mosaic prefilled.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.75rem 0 0.25rem;">
+          <a class="btn btn-primary" id="btn-create-map-with-mosaic" href="{{ base }}/maps/new?f=html&mosaic_view={{ view_id | e }}">Create new map</a>
+          <a class="btn" href="{{ base }}/maps?f=html">Browse maps</a>
+        </div>
+        <div style="margin-top:0.75rem;">
+          <div class="meta" id="add-to-map-status" style="min-height:1.2em;"></div>
+          <div id="add-to-map-list" style="display:flex;flex-direction:column;gap:0.35rem; max-height: 240px; overflow:auto;"></div>
+        </div>
+        <div class="meta" style="margin-top:0.75rem;">
+          Or paste a map id:
+          <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.35rem;">
+            <input type="text" id="add-to-map-mapid" placeholder="Map UUID" style="flex:1;min-width:220px;">
+            <button type="button" class="btn" id="btn-open-mapid">Open</button>
+          </div>
+        </div>
+      </div>
+      <div class="confirm-modal-actions">
+        <button type="button" class="btn" id="add-to-map-close">Close</button>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=3"></script>
+  <script>
+    (function() {
+      var base = {{ base | tojson }};
+      var googleKey = {{ google_maps_api_key | tojson }};
+      var viewId = {{ view_id | tojson }};
+      var bbox = {{ bbox | tojson }};
+      var tilesUrl = {{ tiles_url | tojson }};
+      var map = null;
+      var BASEMAPS = {};
+      var basemapList = [];
+
+      function initMosaicPreviewMap() {
+        var sel = document.getElementById('map-basemap');
+        if (!sel) return;
+        GeofastmapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
+        var initialId = null;
+        try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch (e0) {}
+        if (!initialId && basemapList.length) initialId = basemapList[0].id;
+        if (!initialId && BASEMAPS.osm) initialId = 'osm';
+        var initial = (initialId && BASEMAPS[initialId]) ? BASEMAPS[initialId] : (BASEMAPS.osm || (basemapList[0] && BASEMAPS[basemapList[0].id]));
+        if (!initial) return;
+        if (initialId) sel.value = initialId;
+        var mapStyle = GeofastmapUtils.buildMapStyleWithBasemap(initial);
+        map = new maplibregl.Map({
+          container: 'mosaic-detail-map',
+          style: mapStyle,
+          center: [0, 20],
+          zoom: 1,
+          renderWorldCopies: false,
+          attributionControl: { compact: true }
+        });
+        GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
+        map.addControl(new maplibregl.NavigationControl(), 'top-right');
+        map.on('load', function() {
+          map.addSource('mosaic-raster', {
+            type: 'raster',
+            tiles: [tilesUrl],
+            tileSize: 256,
+            maxzoom: 18
+          });
+          map.addLayer({
+            id: 'mosaic-raster-layer',
+            type: 'raster',
+            source: 'mosaic-raster',
+            paint: { 'raster-opacity': 1 }
+          });
+          if (bbox && bbox.length === 4) {
+            map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 40, maxZoom: 12 });
+          }
+          function applyBasemap() {
+            var id = sel.value;
+            var cfg = BASEMAPS[id];
+            if (!cfg) return;
+            if (typeof map.isStyleLoaded === 'function' && !map.isStyleLoaded()) {
+              try { map.once('load', applyBasemap); } catch (e1) {}
+              return;
+            }
+            GeofastmapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: 'mosaic-raster-layer' });
+          }
+          sel.onchange = function() {
+            try { localStorage.setItem('geofastmap-basemap', this.value); } catch (e2) {}
+            applyBasemap();
+          };
+          applyBasemap();
+          var mosaicVis = document.getElementById('mosaic-layer-visible');
+          if (mosaicVis) {
+            mosaicVis.onchange = function() {
+              if (!map.getLayer('mosaic-raster-layer')) return;
+              map.setLayoutProperty('mosaic-raster-layer', 'visibility', this.checked ? 'visible' : 'none');
+            };
+          }
+        });
+      }
+
+      GeofastmapUtils.fetchBasemaps(base).then(function(result) {
+        basemapList = result.basemaps || [];
+        BASEMAPS = result.byId || {};
+        if (!basemapList.length) {
+          BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
+          basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
+        }
+      }).catch(function() {
+        BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
+        basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
+      }).finally(function() {
+        initMosaicPreviewMap();
+      });
+      document.getElementById('btn-copy-tiles-url').onclick = function() {
+        var el = document.getElementById('mosaic-tiles-url');
+        navigator.clipboard.writeText(el.textContent || '').then(function() {
+          var b = document.getElementById('btn-copy-tiles-url');
+          var t = b.textContent;
+          b.textContent = 'Copied';
+          setTimeout(function() { b.textContent = t; }, 1500);
+        });
+      };
+      var saveBtn = document.getElementById('btn-save-mosaic-settings');
+      if (saveBtn) {
+        saveBtn.onclick = function() {
+          var msg = document.getElementById('mosaic-settings-msg');
+          var cb = document.getElementById('mosaic-allow-public-maps');
+          msg.textContent = '';
+          fetch(base + '/raster-views/' + encodeURIComponent(viewId), {
+            method: 'PATCH',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ allow_public_maps: !!(cb && cb.checked) })
+          }).then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || r.status); });
+            return r.json();
+          }).then(function() {
+            msg.textContent = 'Saved.';
+          }).catch(function(e) {
+            msg.textContent = 'Error: ' + (e.message || e);
+          });
+        };
+      }
+
+      function openAddToMapModal() {
+        var modal = document.getElementById('add-to-map-modal');
+        if (!modal) return;
+        modal.setAttribute('aria-hidden', 'false');
+        loadMapsList();
+      }
+      function closeAddToMapModal() {
+        var modal = document.getElementById('add-to-map-modal');
+        if (!modal) return;
+        modal.setAttribute('aria-hidden', 'true');
+      }
+
+      function loadMapsList() {
+        var statusEl = document.getElementById('add-to-map-status');
+        var listEl = document.getElementById('add-to-map-list');
+        if (statusEl) statusEl.textContent = 'Loading your maps…';
+        if (listEl) listEl.innerHTML = '';
+        fetch(base + '/maps?limit=100&offset=0', { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+          .then(function(r) { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+          .then(function(data) {
+            var maps = (data && data.maps) ? data.maps : [];
+            if (!maps.length) {
+              if (statusEl) statusEl.textContent = 'No maps found.';
+              return;
+            }
+            if (statusEl) statusEl.textContent = 'Click a map to open editor:';
+            maps.forEach(function(m) {
+              var a = document.createElement('a');
+              a.className = 'btn btn-sm';
+              a.style.justifyContent = 'flex-start';
+              a.href = base + '/maps/' + encodeURIComponent(m.id) + '/edit?f=html&mosaic_view=' + encodeURIComponent(viewId);
+              a.textContent = (m.name || m.id);
+              listEl.appendChild(a);
+            });
+          })
+          .catch(function(e) {
+            if (statusEl) statusEl.textContent = 'Could not load maps: ' + String(e.message || e);
+          });
+      }
+
+      var btnAddToMap = document.getElementById('btn-add-to-map');
+      if (btnAddToMap) btnAddToMap.onclick = openAddToMapModal;
+      var addBackdrop = document.getElementById('add-to-map-backdrop');
+      if (addBackdrop) addBackdrop.onclick = closeAddToMapModal;
+      var addClose = document.getElementById('add-to-map-close');
+      if (addClose) addClose.onclick = closeAddToMapModal;
+      var btnOpenMapId = document.getElementById('btn-open-mapid');
+      if (btnOpenMapId) btnOpenMapId.onclick = function() {
+        var el = document.getElementById('add-to-map-mapid');
+        var id = (el && el.value ? el.value : '').trim();
+        if (!id) return;
+        window.location.href = base + '/maps/' + encodeURIComponent(id) + '/edit?f=html&mosaic_view=' + encodeURIComponent(viewId);
+      };
+    })();
+  </script>
+{% endblock %}

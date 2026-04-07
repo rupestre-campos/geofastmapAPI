@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Saved mosaics – GeoFastMap{% endblock %}
+{% block head %}
+  {% include '_map_popup_css.html' %}
+  <style>
+    .mosaic-gallery-grid { display: grid; gap: var(--space); grid-template-columns: 1fr; }
+    @media (min-width: 900px) {
+      .mosaic-gallery-grid { grid-template-columns: 1fr 1fr; align-items: start; }
+    }
+    #mosaic-gallery-map { height: min(50vh, 420px); width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+    .mosaic-gallery-filters { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: center; margin-bottom: var(--space); }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Saved mosaics</h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › Mosaics</p>
+    <p class="meta">Mosaics you can access (yours, shared, or public). Use the map to filter by area.</p>
+  </header>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Browse</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/mosaics/planner?f=html" class="btn btn-primary">New mosaic</a>
+      </div>
+    </div>
+    <form method="get" action="{{ base }}/mosaics" class="mosaic-gallery-filters">
+      <input type="hidden" name="f" value="html">
+      <label>Search title <input type="search" name="q" value="{{ q | e }}" placeholder="Name…" style="min-width:12rem;"></label>
+      <label>Bbox <input type="text" name="bbox" value="{{ bbox_filter | e }}" placeholder="minx,miny,maxx,maxy" style="min-width:14rem;"></label>
+      <button type="submit" class="btn btn-primary">Apply</button>
+    </form>
+    <div class="mosaic-gallery-grid">
+      <div id="mosaic-gallery-map" class="map-container"></div>
+      <div class="table-scroll-wrap">
+        <table class="collections-table">
+          <thead>
+            <tr><th>Title</th><th>Visibility</th><th>Public map</th><th>Updated</th></tr>
+          </thead>
+          <tbody>
+            {% for m in mosaics %}
+            <tr>
+              <td><a href="{{ base }}/mosaics/{{ m.id }}?f=html">{{ m.title | e }}</a></td>
+              <td>{{ m.visibility | e }}</td>
+              <td>{% if m.allow_public_maps %}yes{% else %}no{% endif %}</td>
+              <td class="meta">{{ m.updated_at or '—' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="meta">No mosaics yet. <a href="{{ base }}/mosaics/planner?f=html">Create one</a>.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if total > limit %}
+        <p class="meta">Showing {{ offset + 1 }}–{{ offset + mosaics | length }} of {{ total }}. Increase limit or narrow filters.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=2"></script>
+  <script>
+    (function() {
+      var base = {{ base | tojson }};
+      var items = {{ mosaics | tojson }};
+      var ms = GeofastmapUtils.buildMapStyleWithBasemap(GeofastmapUtils.getBasemaps(null).osm);
+      ms.glyphs = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
+      var map = new maplibregl.Map({
+        container: 'mosaic-gallery-map',
+        style: ms,
+        center: [0, 20],
+        zoom: 1
+      });
+      map.addControl(new maplibregl.NavigationControl());
+      map.on('load', function() {
+        var feats = [];
+        (items || []).forEach(function(m) {
+          if (!m.bbox || m.bbox.length < 4) return;
+          var b = m.bbox;
+          feats.push({
+            type: 'Feature',
+            properties: { title: m.title || m.id, id: m.id },
+            geometry: { type: 'Polygon', coordinates: [[[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]], [b[0], b[1]]]] }
+          });
+        });
+        if (!feats.length) return;
+        map.addSource('mosaics', { type: 'geojson', data: { type: 'FeatureCollection', features: feats } });
+        map.addLayer({ id: 'mosaic-fill', type: 'fill', source: 'mosaics', paint: { 'fill-color': '#58a6ff', 'fill-opacity': 0.15 } });
+        map.addLayer({ id: 'mosaic-line', type: 'line', source: 'mosaics', paint: { 'line-color': '#58a6ff', 'line-width': 2 } });
+        var coords = feats.map(function(f) { return f.geometry.coordinates[0].slice(0, 4).map(function(c) { return c; }); });
+        var minx = 180, miny = 90, maxx = -180, maxy = -90;
+        feats.forEach(function(f) {
+          var ring = f.geometry.coordinates[0];
+          ring.forEach(function(c) {
+            if (c[0] < minx) minx = c[0]; if (c[0] > maxx) maxx = c[0];
+            if (c[1] < miny) miny = c[1]; if (c[1] > maxy) maxy = c[1];
+          });
+        });
+        map.fitBounds([[minx, miny], [maxx, maxy]], { padding: 40, maxZoom: 8 });
+      });
+    })();
+  </script>
+{% endblock %}

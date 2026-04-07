@@ -151,6 +151,7 @@
       <input type="text" id="collection-search" placeholder="Search collections with static tiles… (click to list)" autocomplete="off">
       <div id="collection-search-results" class="collection-search-results" aria-live="polite"></div>
     </div>
+    <p class="meta" style="margin-top:var(--space);">Saved <strong>mosaic</strong> (multi-image Titiler layer): <input type="text" id="map-edit-mosaic-id" placeholder="Mosaic view ID" style="max-width:220px;"> <button type="button" class="btn btn-sm" id="map-edit-add-mosaic">Add mosaic layer</button> <a href="{{ base }}/mosaics?f=html">Browse mosaics</a></p>
     <div id="map" class="map-container map-edit-map">
       <div class="map-controls" style="position:absolute;top:8px;left:8px;z-index:10;">
         {% include '_basemap_selector.html' %}
@@ -317,7 +318,8 @@
           stac_collection_id: l.stac_collection_id || null,
           stac_item_id: l.stac_item_id || null,
           stac_viewer_path: l.stac_viewer_path || null,
-          stac_viewer_query: l.stac_viewer_query != null ? l.stac_viewer_query : null
+          stac_viewer_query: l.stac_viewer_query != null ? l.stac_viewer_query : null,
+          mosaic_view_id: l.mosaic_view_id || l.mosaicViewId || null
         });
       });
 
@@ -729,6 +731,14 @@
             var si = layer.stac_item_id || 'item';
             label.textContent = 'STAC · ' + si + ' (raster)';
             label.title = 'Open STAC image viewer (same render params as saved on the map)';
+          } else if (layer.raster_tiles && layer.mosaic_view_id) {
+            label = document.createElement('a');
+            label.className = 'map-edit-legend-label';
+            label.href = base + '/mosaics/' + encodeURIComponent(String(layer.mosaic_view_id)) + '?f=html';
+            label.target = '_blank';
+            label.rel = 'noopener noreferrer';
+            label.textContent = 'Mosaic · ' + String(layer.mosaic_view_id) + ' (raster)';
+            label.title = 'Open saved mosaic';
           } else {
             label = document.createElement('span');
             label.className = 'map-edit-legend-label';
@@ -991,6 +1001,9 @@
             var si = escapeHtml(layer.stac_item_id || 'item');
             var href = escapeHtml(stacLayerViewerHref(layer));
             nameCell = '<a href="' + href + '" target="_blank" rel="noopener noreferrer"><code>STAC · ' + si + '</code></a> <span class="meta">(raster)</span>';
+          } else if (layer.raster_tiles && layer.mosaic_view_id) {
+            var mid = escapeHtml(String(layer.mosaic_view_id));
+            nameCell = '<a href="' + escapeHtml(base + '/mosaics/' + encodeURIComponent(String(layer.mosaic_view_id)) + '?f=html') + '"><code>Mosaic · ' + mid + '</code></a> <span class="meta">(raster)</span>';
           } else {
             nameCell = '<code>' + escapeHtml(label) + '</code>';
           }
@@ -1540,6 +1553,35 @@
           });
       }
 
+      function addMosaicLayer(viewId) {
+        var id = String(viewId || '').trim();
+        if (!id) return;
+        for (var j = 0; j < state.layers.length; j++) {
+          if (state.layers[j].mosaic_view_id && String(state.layers[j].mosaic_view_id) === id) return;
+        }
+        var spec = Object.assign({}, DEFAULT_SPEC);
+        state.layers.push({
+          collection_id: '_mosaic',
+          layer_id: 'mosaic-' + id,
+          order: state.layers.length,
+          style_spec: spec,
+          popup: false,
+          popup_id_property: null,
+          raster_tiles: true,
+          tiles_url: base + '/raster-views/' + encodeURIComponent(id) + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png',
+          mosaic_view_id: id
+        });
+        var prevBefore = state.layers.length > 1 ? sourceId(layerKey(state.layers[state.layers.length - 2])) + '-fill' : undefined;
+        addLayerToMap(state.layers[state.layers.length - 1], spec, state.layers.length - 1, prevBefore).then(function() {
+          if (state.layers.length === 1) trySetInitialExtentFromFirstLayer();
+        });
+        renderLayers();
+      }
+      var btnMosaic = document.getElementById('map-edit-add-mosaic');
+      if (btnMosaic) btnMosaic.onclick = function() {
+        addMosaicLayer(document.getElementById('map-edit-mosaic-id') && document.getElementById('map-edit-mosaic-id').value);
+      };
+
       var searchTimeout = null;
       document.getElementById('collection-search').onfocus = function() {
         var resultsEl = document.getElementById('collection-search-results');
@@ -1634,7 +1676,8 @@
                 stac_collection_id: l.stac_collection_id || null,
                 stac_item_id: l.stac_item_id || null,
                 stac_viewer_path: l.stac_viewer_path || null,
-                stac_viewer_query: l.stac_viewer_query != null ? l.stac_viewer_query : null
+                stac_viewer_query: l.stac_viewer_query != null ? l.stac_viewer_query : null,
+                mosaic_view_id: l.mosaic_view_id || null
               };
             }),
             bbox: state.bbox,
@@ -1797,6 +1840,13 @@
           if (!err && img) { map.addImage('geofastmap-pin', img); window._mapEditPinImageLoaded = true; }
         });
         syncMapFromState();
+        try {
+          var _mpv = new URLSearchParams(window.location.search).get('mosaic_view');
+          if (_mpv) {
+            var ex = state.layers.some(function(l) { return l.mosaic_view_id && String(l.mosaic_view_id) === String(_mpv); });
+            if (!ex) addMosaicLayer(_mpv);
+          }
+        } catch (eMpv) {}
         function getPopupLayerIdsFiltered() {
           var ids = getPopupLayerIds();
           return ids.filter(function(id) { return map.getLayer(id); });

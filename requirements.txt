@@ -9,6 +9,7 @@ pydantic-settings==2.6.1
 python-dotenv==1.0.1
 geoalchemy2==0.18.1
 shapely==2.1.2
+mercantile>=1.2.1
 fiona==1.10.0
 psycopg2-binary==2.9.10
 redis>=5.0.0

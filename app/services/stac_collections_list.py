@@ -95,6 +95,7 @@ async def fetch_collections_grouped(catalogs: list[StacCatalog]) -> list[dict[st
             {
                 "catalog_id": cat.id,
                 "catalog_title": cat.title,
+                "stac_api_root_url": cat.stac_api_root_url,
                 "collections": cols,
             }
         )

@@ -770,6 +770,14 @@
     };
   }
 
+  /** Element84 Earth Search (and compatible) STAC API roots. */
+  function isEarthSearchStacUrl(url) {
+    if (!url) return false;
+    return String(url).toLowerCase().indexOf('earth-search') !== -1;
+  }
+
+  var DEFAULT_EARTH_SEARCH_COLLECTION_ID = 'sentinel-2-l2a';
+
   global.GeofastmapUtils = {
     LINE_DASH: LINE_DASH,
     DEFAULT_STYLE_SPEC: DEFAULT_STYLE_SPEC,
@@ -794,6 +802,8 @@
     layerDisplayName: layerDisplayName,
     attachMultiLayerFeaturePopup: attachMultiLayerFeaturePopup,
     setupLayeredPopupNavigation: setupLayeredPopupNavigation,
-    setupFullscreenForMap: setupFullscreenForMap
+    setupFullscreenForMap: setupFullscreenForMap,
+    isEarthSearchStacUrl: isEarthSearchStacUrl,
+    DEFAULT_EARTH_SEARCH_COLLECTION_ID: DEFAULT_EARTH_SEARCH_COLLECTION_ID
   };
 })(typeof window !== 'undefined' ? window : this);

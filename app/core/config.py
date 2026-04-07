@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     titiler_internal_secret: str = ""
     # Base URL reachable from the Titiler container for internal COG fetch (e.g. http://api:8000).
     raster_internal_fetch_base_url: str = ""
+    # API → Titiler httpx timeouts (mosaic tiles with many COG sources can exceed 60s cold read).
+    titiler_http_connect_timeout_seconds: float = 30.0
+    titiler_http_read_timeout_seconds: float = 300.0
     # Redis cache for proxied Titiler raster tiles (STAC item viewer). 0 = disabled.
     # Cold tiles still cost GDAL+network; repeats (pan/zoom back) hit Redis ~1–5 ms.
     titiler_tile_cache_ttl_seconds: int = 3600

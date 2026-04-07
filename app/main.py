@@ -24,6 +24,7 @@ from app.api.routes import (
     items,
     jobs,
     maps,
+    mosaics,
     processes,
     project_docs,
     raster_views,
@@ -147,6 +148,7 @@ def create_app() -> FastAPI:
     app.include_router(stac.router, prefix="/stac", tags=["stac"])
     app.include_router(stac_items.router, prefix="/stac", tags=["stac"])
     app.include_router(raster_views.router, tags=["raster-views"])
+    app.include_router(mosaics.router, tags=["mosaics"])
     app.include_router(tiles.router, prefix="/collections", tags=["tiles"])
     app.include_router(collection_styles.router, prefix="/collections", tags=["styles"])
     # Register /styles/basemaps before /styles so it is not captured by /styles/{style_id}.

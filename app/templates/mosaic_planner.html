@@ -1,0 +1,1421 @@
+{% extends "base.html" %}
+{% block title %}Mosaic planner – GeoFastMap{% endblock %}
+{% block head %}
+  {% include '_map_popup_css.html' %}
+  <style>
+    #mosaic-planner-map { height: min(55vh, 480px); width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+    .mosaic-planner-form label { display: block; font-weight: 600; margin-bottom: 0.25rem; }
+    .mosaic-planner-form .form-row { margin-bottom: 0.75rem; }
+    .mosaic-msg { margin-top: 0.5rem; font-size: 0.9rem; }
+    .mosaic-msg.error { color: var(--danger, #c44); }
+    .mosaic-planner-results-grid { display: grid; gap: var(--space); grid-template-columns: 1fr; }
+    @media (min-width: 960px) { .mosaic-planner-results-grid { grid-template-columns: 1fr 1fr; align-items: start; } }
+    .mosaic-selected-list { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+    .mosaic-row-block:first-child .mosaic-selected-item { border-top: 0; }
+    .mosaic-selected-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--card); }
+    .mosaic-selected-item.is-active { background: var(--bg-elevated); }
+    .mosaic-selected-item.is-active { box-shadow: inset 0 0 0 2px #ffd166; }
+    .mosaic-selected-item .meta { margin: 0; }
+    .mosaic-row-block { border-bottom: 1px solid var(--border); }
+    .mosaic-row-block:last-child { border-bottom: 0; }
+    .mosaic-swap-details { border-top: 1px solid var(--border); background: var(--bg-elevated); }
+    .mosaic-swap-details .mosaic-swap-summary {
+      cursor: pointer; padding: 8px 10px; font-size: 0.88rem; font-weight: 600; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
+    .mosaic-swap-details .mosaic-swap-summary::-webkit-details-marker { display: none; }
+    .mosaic-swap-details .mosaic-swap-summary::after { content: '▸'; opacity: 0.7; font-size: 0.85rem; }
+    .mosaic-swap-details[open] .mosaic-swap-summary::after { content: '▾'; }
+    .mosaic-swap-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; padding: 0 10px 12px;
+      max-height: min(50vh, 420px); overflow: auto;
+    }
+    .mosaic-swap-card {
+      border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; background: var(--card);
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .mosaic-swap-card .mosaic-swap-thumb-wrap {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      min-height: 0;
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .mosaic-swap-card .mosaic-swap-thumb-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      object-position: center;
+      display: block;
+    }
+    .mosaic-swap-card .mosaic-swap-card-title { font-size: 0.78rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mosaic-swap-card .meta { margin: 0; font-size: 0.75rem; }
+    /* Thumbnail markers removed in favor of polygon thumbnail fill-pattern. */
+    .mp-plan-loading {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 4px;
+      font-size: 0.9rem;
+      color: var(--muted, #8b949e);
+    }
+    .mp-plan-loading[hidden] { display: none !important; }
+    .mp-spinner {
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent, #58a6ff);
+      border-radius: 50%;
+      animation: mp-spin 0.65s linear infinite;
+    }
+    @keyframes mp-spin { to { transform: rotate(360deg); } }
+  </style>
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Mosaic planner</h1>
+    <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › <a href="{{ base }}/mosaics?f=html">Mosaics</a> › Planner</p>
+    <p class="meta">Select a STAC endpoint + raster collection, set filters, then generate a minimal mosaic over the current map viewport (or a drawn polygon AOI).</p>
+    <p class="meta" id="mp-editing-banner" style="display:none;"><strong>Editing saved mosaic.</strong> You can change selection and save changes.</p>
+  </header>
+
+  <div class="card mosaic-planner-form">
+    <h2 class="card-title">Search</h2>
+    <div class="form-row">
+      <label for="mp-catalog">STAC endpoint (catalog)</label>
+      <select id="mp-catalog" required>
+        {% for c in stac_catalogs %}
+        <option value="{{ c.id | e }}">{{ (c.title or c.id) | e }}</option>
+        {% endfor %}
+      </select>
+      <p class="meta" style="margin:0.35rem 0 0;">Collections load from the selected catalog. The bbox is always the map viewport.</p>
+    </div>
+
+    <div class="form-row">
+      <label for="mp-collection-select">Raster collection</label>
+      <select id="mp-collection-select" required></select>
+      <p class="meta" id="mp-collections-status" style="margin:0.35rem 0 0; min-height: 1.2em;"></p>
+    </div>
+
+    <div class="form-row grid-2">
+      <div>
+        <label for="mp-date-start">Start date</label>
+        <input type="date" id="mp-date-start">
+      </div>
+      <div>
+        <label for="mp-date-end">End date</label>
+        <input type="date" id="mp-date-end">
+      </div>
+    </div>
+    <div class="form-row">
+      <label for="mp-cloud">Max cloud %</label>
+      <input type="number" id="mp-cloud" min="0" max="100" step="1">
+    </div>
+
+    <div class="form-row">
+      <label for="mp-sort">Prefer when tying coverage</label>
+      <select id="mp-sort">
+        <option value="lowest_cloud">Lowest cloud cover</option>
+        <option value="newest_first">Newest first</option>
+      </select>
+    </div>
+
+    <div class="form-row">
+      <span class="label-text">Seasons (optional, within date range)</span>
+      <label class="checkbox-inline"><input type="checkbox" name="mp-season" value="spring"> Spring</label>
+      <label class="checkbox-inline"><input type="checkbox" name="mp-season" value="summer"> Summer</label>
+      <label class="checkbox-inline"><input type="checkbox" name="mp-season" value="autumn"> Autumn</label>
+      <label class="checkbox-inline"><input type="checkbox" name="mp-season" value="winter"> Winter</label>
+    </div>
+
+    <div class="form-row">
+      <label for="mp-bbox">Bounding box (WGS84)</label>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;max-width:36rem;">
+        <input type="text" id="mp-bbox" placeholder="minLon, minLat, maxLon, maxLat" autocomplete="off" style="flex:1;min-width:220px;">
+        <button type="button" class="btn btn-sm" id="mp-bbox-apply" title="Pan/zoom the map to this bbox">Apply to map</button>
+      </div>
+      <p class="meta" style="margin:0.35rem 0 0;">Updates from the map as you move; paste four comma-separated numbers and click Apply to fly the viewport there (inverse of syncing from the map).</p>
+    </div>
+
+    <div class="form-row" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;">
+      <button type="button" class="btn btn-primary" id="mp-generate">Generate mosaic</button>
+      <span id="mp-plan-loading" class="mp-plan-loading" hidden role="status" aria-live="polite">
+        <span class="mp-spinner" aria-hidden="true"></span>
+        <span id="mp-plan-loading-label">Preparing mosaic…</span>
+      </span>
+      <span id="mp-msg" class="mosaic-msg" role="status"></span>
+    </div>
+    <div class="form-row" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+      <button type="button" class="btn btn-sm" id="mp-add-image-mode">Add image to fill hole</button>
+      <span class="meta" id="mp-add-image-hint" style="display:none;">Click the map where the mosaic has a hole to add a covering image. Press Esc to cancel.</span>
+    </div>
+
+    <div class="form-row" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">
+      <div style="min-width:220px;flex:1;">
+        <label for="mp-basemap">Basemap</label>
+        <select id="mp-basemap"></select>
+      </div>
+    </div>
+    <div class="form-row">
+      <label class="checkbox-inline" style="margin-top:0.25rem;">
+        <input type="checkbox" id="mp-toggle-footprints" checked>
+        Show image footprints (polygons)
+      </label>
+    </div>
+
+    <p class="meta" style="margin-top:0;">Draw a polygon on the map (double-click to finish) to constrain AOI; otherwise AOI = viewport bbox.</p>
+    <div id="mosaic-planner-map" class="map-container"></div>
+    <p class="meta">After planning, you can swap/remove selected images, then save.</p>
+  </div>
+
+  <div class="card" id="mp-results-card" style="display:none;">
+    <h2 class="card-title">Result</h2>
+    <p class="meta" id="mp-summary"></p>
+    <div class="form-row grid-2" style="align-items:end;">
+      <div>
+        <label for="mp-save-title">Mosaic name</label>
+        <input type="text" id="mp-save-title" placeholder="My mosaic" style="max-width:24rem;">
+      </div>
+      <div>
+        <label style="visibility:hidden;">Save</label>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <button type="button" class="btn btn-primary" id="mp-save">Save mosaic</button>
+          <span id="mp-save-msg" class="mosaic-msg"></span>
+        </div>
+      </div>
+    </div>
+    <div class="mosaic-planner-results-grid">
+      <div>
+        <h3 style="margin-top:0;">Selected images</h3>
+        <p class="meta" style="margin:0 0 8px;">Open <strong>Same-tile alternatives</strong> to swap a footprint using other Sentinel-2 scenes for the same MGRS tile (e.g. 23KNS).</p>
+        <div id="mp-selected-list" class="mosaic-selected-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="mp-confirm-regenerate-modal" class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="mp-confirm-regenerate-title" aria-hidden="true">
+    <div class="confirm-modal-backdrop" id="mp-confirm-regenerate-backdrop"></div>
+    <div class="confirm-modal-content">
+      <div class="confirm-modal-header" id="mp-confirm-regenerate-title">Start a new mosaic?</div>
+      <div class="confirm-modal-body">
+        You already have a mosaic plan in progress. Generating again will discard your current selection (including swaps, added images, and ordering changes).
+      </div>
+      <div class="confirm-modal-actions">
+        <button type="button" class="btn" id="mp-confirm-regenerate-cancel">Cancel</button>
+        <button type="button" class="btn btn-danger" id="mp-confirm-regenerate-confirm">Discard &amp; generate</button>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="https://unpkg.com/@mapbox/mapbox-gl-draw@1.4.3/dist/mapbox-gl-draw.js" crossorigin=""></script>
+  <link rel="stylesheet" href="https://unpkg.com/@mapbox/mapbox-gl-draw@1.4.3/dist/mapbox-gl-draw.css" crossorigin="">
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=3"></script>
+  <script>
+    (function() {
+      var base = {{ base | tojson }};
+      var googleKey = {{ google_maps_api_key | tojson }};
+      var lastPlan = null;
+      var activeKey = null;
+      var expandedSwapKey = null;
+      var editingViewId = null;
+      var mapLoaded = false;
+      var pendingInitSelected = null;
+      var pendingInitBbox = null;
+      var BASEMAPS = {};
+      var basemapList = [];
+      // For per-footprint image overlays (un-georeferenced thumbnails mapped to footprint bbox)
+      // Use stable "slot" indices (row order) for overlay ids so swapping items doesn't blank the map.
+      var _thumbOverlayKeys = [];
+      var _thumbOverlayMeta = {};
+      function _overlaySuffix(slot) {
+        var s = String(slot == null ? '' : slot);
+        return s.replace(/[^a-zA-Z0-9_-]/g, '_');
+      }
+
+      function isoToday() {
+        var d = new Date();
+        var y = d.getUTCFullYear();
+        var m = String(d.getUTCMonth() + 1).padStart(2, '0');
+        var day = String(d.getUTCDate()).padStart(2, '0');
+        return y + '-' + m + '-' + day;
+      }
+
+      function isoOneYearAgo() {
+        var d = new Date();
+        d.setUTCFullYear(d.getUTCFullYear() - 1);
+        var y = d.getUTCFullYear();
+        var m = String(d.getUTCMonth() + 1).padStart(2, '0');
+        var day = String(d.getUTCDate()).padStart(2, '0');
+        return y + '-' + m + '-' + day;
+      }
+
+      function setDefaultsIfEmpty() {
+        var ds = document.getElementById('mp-date-start');
+        var de = document.getElementById('mp-date-end');
+        var cc = document.getElementById('mp-cloud');
+        if (de && !String(de.value || '').trim()) de.value = isoToday();
+        if (ds && !String(ds.value || '').trim()) ds.value = isoOneYearAgo();
+        if (cc && !String(cc.value || '').trim()) cc.value = '25';
+      }
+
+      setDefaultsIfEmpty();
+
+      function initMapWithBasemap(initialId) {
+        var initial = (initialId && BASEMAPS[initialId]) ? BASEMAPS[initialId] : (BASEMAPS.osm || (basemapList[0] && BASEMAPS[basemapList[0].id]));
+        if (!initial) return null;
+        var mapStyle = GeofastmapUtils.buildMapStyleWithBasemap(initial);
+        mapStyle.glyphs = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
+        var map = new maplibregl.Map({
+          container: 'mosaic-planner-map',
+          style: mapStyle,
+          center: [0, 20],
+          zoom: 1,
+          renderWorldCopies: false,
+          attributionControl: { compact: true }
+        });
+        GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
+        map.addControl(new maplibregl.NavigationControl());
+        var draw = new MapboxDraw({ displayControlsDefault: false, controls: { polygon: true, trash: true } });
+        map.addControl(draw);
+        return { map: map, draw: draw, initialId: initialId, initialCfg: initial };
+      }
+
+      function setupBasemapSelector(map) {
+        var sel = document.getElementById('mp-basemap');
+        if (!sel) return;
+        GeofastmapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
+        var initialId = null;
+        try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch (e) {}
+        if (!initialId && basemapList && basemapList.length) initialId = basemapList[0].id;
+        if (!initialId && BASEMAPS.osm) initialId = 'osm';
+        if (initialId) sel.value = initialId;
+        function apply() {
+          var id = sel.value;
+          var cfg = BASEMAPS[id];
+          if (!cfg) return;
+          // MapLibre requires the style to be fully loaded before addSource/addLayer.
+          if (!map || !(typeof map.isStyleLoaded === 'function') || !map.isStyleLoaded()) {
+            try { map.once('load', apply); } catch (e0) {}
+            return;
+          }
+          GeofastmapUtils.applyBasemapToMap(map, cfg);
+        }
+        sel.onchange = function() {
+          try { localStorage.setItem('geofastmap-basemap', this.value); } catch (e2) {}
+          apply();
+        };
+        apply();
+      }
+
+      // Load basemaps first (API -> fallback), then init map
+      GeofastmapUtils.fetchBasemaps(base).then(function(result) {
+        basemapList = result.basemaps || [];
+        BASEMAPS = result.byId || {};
+        if (!basemapList.length) { BASEMAPS = GeofastmapUtils.getBasemaps(googleKey); basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; }); }
+        return true;
+      }).catch(function() {
+        BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
+        basemapList = Object.keys(BASEMAPS).map(function(id) { return { id: id, name: BASEMAPS[id].name || id }; });
+      }).finally(function() {
+        var initialId = null;
+        try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch (e3) {}
+        if (!initialId && basemapList && basemapList.length) initialId = basemapList[0].id;
+        if (!initialId && BASEMAPS.osm) initialId = 'osm';
+        var init = initMapWithBasemap(initialId);
+        if (!init) return;
+        window.__mp_map = init.map;
+        window.__mp_draw = init.draw;
+        setupBasemapSelector(init.map);
+      });
+
+      // Map/draw are created async above
+      function getMap() { return window.__mp_map; }
+      function getDraw() { return window.__mp_draw; }
+
+      function bboxFromMap() {
+        var map = getMap();
+        if (!map) return '-180,-85,180,85';
+        var b = map.getBounds();
+        return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map(function(x) { return Number(x.toFixed(6)); }).join(',');
+      }
+
+      function syncBboxInputFromMap() {
+        var el = document.getElementById('mp-bbox');
+        if (!el) return;
+        el.value = bboxFromMap();
+      }
+
+      function parseBboxInputString(s) {
+        if (!s || !String(s).trim()) return null;
+        var p = String(s).split(',').map(function(x) { return parseFloat(x.trim()); });
+        if (p.length !== 4 || p.some(function(n) { return !isFinite(n); })) return null;
+        var minx = Math.min(p[0], p[2]);
+        var maxx = Math.max(p[0], p[2]);
+        var miny = Math.min(p[1], p[3]);
+        var maxy = Math.max(p[1], p[3]);
+        if (maxx - minx < 1e-8 || maxy - miny < 1e-8) return null;
+        if (minx < -180 || maxx > 180 || miny < -90 || maxy > 90) return null;
+        return [minx, miny, maxx, maxy];
+      }
+
+      function applyBboxToMap() {
+        var el = document.getElementById('mp-bbox');
+        var msg = document.getElementById('mp-msg');
+        if (!el) return;
+        var b = parseBboxInputString(el.value);
+        if (!b) {
+          if (msg) {
+            msg.textContent = 'Invalid bbox. Enter four numbers: min longitude, min latitude, max longitude, max latitude (comma-separated, WGS84).';
+            msg.className = 'mosaic-msg error';
+          }
+          return;
+        }
+        var map = getMap();
+        if (!map) {
+          if (msg) {
+            msg.textContent = 'Map is not ready yet; try again in a moment.';
+            msg.className = 'mosaic-msg error';
+          }
+          return;
+        }
+        try {
+          var maxLat = 85.051129;
+          var south = Math.max(-maxLat, Math.min(maxLat, b[1]));
+          var north = Math.max(-maxLat, Math.min(maxLat, b[3]));
+          map.fitBounds([[b[0], south], [b[2], north]], { padding: 48, maxZoom: 15, duration: 500 });
+          if (msg && msg.className && msg.className.indexOf('error') !== -1) {
+            msg.textContent = '';
+            msg.className = 'mosaic-msg';
+          }
+        } catch (e0) {
+          if (msg) {
+            msg.textContent = 'Could not move map to that bbox.';
+            msg.className = 'mosaic-msg error';
+          }
+        }
+      }
+
+      function hookMapEvents() {
+        var map = getMap();
+        if (!map) return;
+        map.on('moveend', function() { try { syncBboxInputFromMap(); } catch (e) {} });
+        map.on('load', function() {
+        mapLoaded = true;
+        syncBboxInputFromMap();
+        map.addSource('footprints', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        // Tiny fill to make polygons clickable without obscuring imagery.
+        map.addLayer({ id: 'fp-fill', type: 'fill', source: 'footprints', paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.01 } });
+        map.addLayer({ id: 'fp-line', type: 'line', source: 'footprints', paint: { 'line-color': '#58a6ff', 'line-width': 2 } });
+        map.addLayer({ id: 'fp-active', type: 'line', source: 'footprints', filter: ['==', ['get', 'key'], '__none__'], paint: { 'line-color': '#ffd166', 'line-width': 4 } });
+        // Clean up any old thumbnail overlay ids from previous code versions.
+        try {
+          var style = map.getStyle();
+          (style.layers || []).slice().forEach(function(lyr) {
+            if (lyr && lyr.id && String(lyr.id).indexOf('thumbimg-') === 0) {
+              try { map.removeLayer(lyr.id); } catch (e0) {}
+            }
+          });
+          var sources = style.sources || {};
+          Object.keys(sources).forEach(function(sid) {
+            if (String(sid).indexOf('thumbimg-src-') === 0) {
+              try { map.removeSource(sid); } catch (e1) {}
+            }
+          });
+        } catch (e2) {}
+        // Footprint visibility toggle
+        function setFootprintsVisible(v) {
+          var vis = v ? 'visible' : 'none';
+          ['fp-fill', 'fp-line', 'fp-active'].forEach(function(id) {
+            try { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis); } catch (e0) {}
+          });
+        }
+        var fpCb = document.getElementById('mp-toggle-footprints');
+        if (fpCb) {
+          setFootprintsVisible(!!fpCb.checked);
+          fpCb.onchange = function() { setFootprintsVisible(!!fpCb.checked); };
+        }
+
+        // Click footprint to select image
+        map.on('click', function(e) {
+          try {
+            // If we are in "add image" mode, handle elsewhere
+            if (window.__mp_add_mode) return;
+            var feats = map.queryRenderedFeatures(e.point, { layers: ['fp-fill', 'fp-line'] }) || [];
+            if (!feats.length) return;
+            var k = feats[0] && feats[0].properties ? feats[0].properties.key : null;
+            if (!k) return;
+            setActiveKey(String(k));
+          } catch (e0) {}
+        });
+
+        if (pendingInitBbox && pendingInitBbox.length === 4) {
+          try { map.fitBounds([[pendingInitBbox[0], pendingInitBbox[1]], [pendingInitBbox[2], pendingInitBbox[3]]], { padding: 40, maxZoom: 12 }); } catch (e0) {}
+          pendingInitBbox = null;
+        }
+        if (pendingInitSelected) {
+          try {
+            lastPlan = lastPlan || {};
+            lastPlan.selected = pendingInitSelected;
+            pendingInitSelected = null;
+            refreshFootprintsLayer();
+            rebuildSelectedUi();
+            document.getElementById('mp-results-card').style.display = '';
+          } catch (e1) {}
+        }
+        });
+      }
+      // Delay until map exists
+      var _mpHookTimer = setInterval(function() {
+        if (getMap()) { clearInterval(_mpHookTimer); hookMapEvents(); }
+      }, 25);
+
+      function getSeasons() {
+        var boxes = document.querySelectorAll('input[name="mp-season"]:checked');
+        return Array.prototype.map.call(boxes, function(c) { return c.value; });
+      }
+
+      var _mpDefaultPlanLoadingLabel = 'Preparing mosaic…';
+      function setPlanRequestLoading(on, label) {
+        var el = document.getElementById('mp-plan-loading');
+        var btn = document.getElementById('mp-generate');
+        var lab = document.getElementById('mp-plan-loading-label');
+        if (lab) lab.textContent = (label != null && String(label).length) ? String(label) : _mpDefaultPlanLoadingLabel;
+        if (el) el.hidden = !on;
+        if (btn) btn.disabled = !!on;
+      }
+
+      function plannerThumbUrlStable(thumb) {
+        // Stable URL (no cache-buster) so list reorders don't re-request thumbnails.
+        if (!thumb) return '';
+        var s = String(thumb);
+        if (s.indexOf('http') === 0) return base + '/stac/thumbnail?fmt=png&pv=3&u=' + encodeURIComponent(s);
+        return s;
+      }
+
+      function plannerThumbUrlFresh(thumb) {
+        // Fresh URL (cache-buster) for swap grids where the upstream thumb/proxy may have changed.
+        if (!thumb) return '';
+        var s = String(thumb);
+        if (s.indexOf('http') === 0) return base + '/stac/thumbnail?fmt=png&pv=3&u=' + encodeURIComponent(s) + '&t=' + Date.now();
+        return s;
+      }
+
+      function getPlanBodyWithSelected() {
+        var ab = getAoiAndBbox();
+        if (!ab || !ab.bbox) return null;
+        var ds = document.getElementById('mp-date-start').value;
+        var de = document.getElementById('mp-date-end').value;
+        var collectionSel = document.getElementById('mp-collection-select');
+        var collection = (collectionSel && collectionSel.value ? collectionSel.value : '').trim();
+        var body = {
+          catalog_id: document.getElementById('mp-catalog').value,
+          stac_collection_id: collection,
+          bbox: ab.bbox,
+          aoi_geojson: ab.aoi_geojson,
+          date_start: ds || null,
+          date_end: de || null,
+          seasons: getSeasons(),
+          sort_mode: document.getElementById('mp-sort').value,
+          selected: lastPlan && Array.isArray(lastPlan.selected) ? lastPlan.selected : []
+        };
+        var cloud = (document.getElementById('mp-cloud').value || '').trim();
+        if (cloud !== '') body.cloud_cover_max = parseFloat(cloud);
+        return body;
+      }
+
+      function refreshPlanSwapOptions() {
+        var body = getPlanBodyWithSelected();
+        if (!body || !body.selected || !body.selected.length || !body.stac_collection_id) {
+          return Promise.resolve();
+        }
+        return fetch(base + '/mosaics/plan', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(body)
+        }).then(function(r) {
+          if (!r.ok) return r.json().then(function(d) { throw new Error((d && d.detail) ? (typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail)) : r.status); });
+          return r.json();
+        }).then(function(data) {
+          if (lastPlan) lastPlan.swap_options = data.swap_options || {};
+        });
+      }
+
+      function getAoiAndBbox() {
+        var draw = getDraw();
+        if (!draw) return null;
+        var fc = draw.getAll();
+        var features = fc && fc.features ? fc.features : [];
+        var poly = features.find(function(f) { return f.geometry && f.geometry.type === 'Polygon'; });
+        if (poly) {
+          var ring = poly.geometry.coordinates[0];
+          var minx = 180, miny = 90, maxx = -180, maxy = -90;
+          ring.forEach(function(c) {
+            if (c[0] < minx) minx = c[0]; if (c[0] > maxx) maxx = c[0];
+            if (c[1] < miny) miny = c[1]; if (c[1] > maxy) maxy = c[1];
+          });
+          return { aoi_geojson: poly.geometry, bbox: [minx, miny, maxx, maxy] };
+        }
+        var bb = bboxFromMap();
+        var p = bb.split(',').map(function(x) { return parseFloat(x.trim()); });
+        if (p.length === 4 && p.every(function(n) { return isFinite(n); })) {
+          return {
+            bbox: p,
+            aoi_geojson: { type: 'Polygon', coordinates: [[[p[0], p[1]], [p[2], p[1]], [p[2], p[3]], [p[0], p[3]], [p[0], p[1]]]] }
+          };
+        }
+        return null;
+      }
+
+      function setActiveKey(k) {
+        activeKey = k || null;
+        try {
+          var map = getMap();
+          if (!map) return;
+          map.setFilter('fp-active', activeKey ? ['==', ['get', 'key'], String(activeKey)] : ['==', ['get', 'key'], '__none__']);
+        } catch (e) {}
+        try {
+          var list = document.getElementById('mp-selected-list');
+          if (list) {
+            list.querySelectorAll('.mosaic-selected-item').forEach(function(row) {
+              row.classList.toggle('is-active', row.dataset && row.dataset.key === String(activeKey));
+            });
+          }
+        } catch (e2) {}
+      }
+
+      function zoomToFootprint(geom) {
+        try {
+          if (!geom || !geom.coordinates) return;
+          var ring = geom.type === 'Polygon' ? geom.coordinates[0] : (geom.type === 'MultiPolygon' ? geom.coordinates[0][0] : null);
+          if (!ring) return;
+          var minx = 180, miny = 90, maxx = -180, maxy = -90;
+          ring.forEach(function(c) {
+            if (c[0] < minx) minx = c[0]; if (c[0] > maxx) maxx = c[0];
+            if (c[1] < miny) miny = c[1]; if (c[1] > maxy) maxy = c[1];
+          });
+          var map = getMap();
+          if (!map) return;
+          map.fitBounds([[minx, miny], [maxx, maxy]], { padding: 60, maxZoom: 12, duration: 300 });
+        } catch (e) {}
+      }
+
+      function refreshFootprintsLayer() {
+        var map = getMap();
+        if (!map) return;
+        var src = map.getSource('footprints');
+        if (!src || !lastPlan || !lastPlan.selected) return;
+        var feats = lastPlan.selected.map(function(it, idx) {
+          return {
+            type: 'Feature',
+            geometry: it.footprint,
+            properties: {
+              slot: String(idx),
+              key: it.key,
+              id: it.stac_item_id || it.id || '',
+              cloud_cover: it.cloud_cover,
+              thumbnail: it.thumbnail || ''
+            }
+          };
+        });
+        try {
+          src.setData({ type: 'FeatureCollection', features: feats });
+        } catch (e0) {
+          try { console.error('footprints setData failed', e0); } catch (e1) {}
+          return;
+        }
+        syncThumbOverlays(feats);
+      }
+
+      function bboxFromFootprint(geom) {
+        try {
+          if (!geom || !geom.coordinates) return null;
+          var rings = null;
+          if (geom.type === 'Polygon') rings = geom.coordinates;
+          else if (geom.type === 'MultiPolygon') rings = geom.coordinates[0];
+          if (!rings || !rings.length || !rings[0] || !rings[0].length) return null;
+          var coords = rings[0];
+          var minx = 180, miny = 90, maxx = -180, maxy = -90;
+          coords.forEach(function(c) {
+            if (c[0] < minx) minx = c[0]; if (c[0] > maxx) maxx = c[0];
+            if (c[1] < miny) miny = c[1]; if (c[1] > maxy) maxy = c[1];
+          });
+          return [minx, miny, maxx, maxy];
+        } catch (e) { return null; }
+      }
+
+      function removeThumbOverlay(slot) {
+        var map = getMap();
+        if (!map) return;
+        var suf = _overlaySuffix(slot);
+        var lid = 'thumbimg-' + suf;
+        var sid = 'thumbimg-src-' + suf;
+        try { if (map.getLayer(lid)) map.removeLayer(lid); } catch (e1) {}
+        try { if (map.getSource(sid)) map.removeSource(sid); } catch (e2) {}
+        delete _thumbOverlayMeta[String(slot)];
+      }
+
+      function ensureThumbOverlay(slot, thumbUrl, bb) {
+        var map = getMap();
+        if (!mapLoaded || !map) return;
+        if (slot == null || slot === '' || !thumbUrl || !bb) return;
+        var minx = bb[0], miny = bb[1], maxx = bb[2], maxy = bb[3];
+        var suf = _overlaySuffix(slot);
+        var sid = 'thumbimg-src-' + suf;
+        var lid = 'thumbimg-' + suf;
+        var url = base + '/stac/thumbnail?fmt=png&pv=3&u=' + encodeURIComponent(String(thumbUrl));
+        var prev = _thumbOverlayMeta[String(slot)];
+        var bbKey = [minx, miny, maxx, maxy].join(',');
+        if (prev && prev.url === url && prev.bbKey === bbKey && map.getLayer(lid) && map.getSource(sid)) {
+          return; // nothing changed
+        }
+        // If changed, recreate just this overlay
+        try { if (map.getLayer(lid)) map.removeLayer(lid); } catch (e0) {}
+        try { if (map.getSource(sid)) map.removeSource(sid); } catch (e1) {}
+        try {
+          map.addSource(sid, {
+            type: 'image',
+            url: url,
+            coordinates: [[minx, maxy], [maxx, maxy], [maxx, miny], [minx, miny]]
+          });
+          map.addLayer({ id: lid, type: 'raster', source: sid, paint: { 'raster-opacity': 1.0 } }, 'fp-line');
+          _thumbOverlayMeta[String(slot)] = { url: url, bbKey: bbKey };
+        } catch (e2) { try { console.error('ensureThumbOverlay failed', slot, e2); } catch (e3) {} }
+      }
+
+      function reorderThumbLayersBySelection() {
+        var map = getMap();
+        if (!mapLoaded || !map || !lastPlan || !Array.isArray(lastPlan.selected)) return;
+        // List order: first row = top on map, last row = bottom. Move from last slot to first so slot 0 ends up immediately before fp-line (on top of other thumbs).
+        var n = lastPlan.selected.length;
+        for (var idx = n - 1; idx >= 0; idx--) {
+          var lid = 'thumbimg-' + _overlaySuffix(String(idx));
+          try {
+            if (map.getLayer(lid)) map.moveLayer(lid, 'fp-line');
+          } catch (e0) {}
+        }
+      }
+
+      function syncThumbOverlays(feats) {
+        var map = getMap();
+        if (!mapLoaded || !map) return;
+        var want = {};
+        (feats || []).forEach(function(f) {
+          var p = f && f.properties ? f.properties : {};
+          var slot = p.slot;
+          var thumb = p.thumbnail;
+          if (slot == null || slot === '' || !thumb) return;
+          var bb = bboxFromFootprint(f.geometry);
+          if (!bb) return;
+          want[String(slot)] = { thumb: thumb, bb: bb };
+        });
+        // Ensure overlays for current selection first, so a swap doesn't blank the map
+        // if the new overlay fails to load for any reason.
+        Object.keys(want).forEach(function(k) {
+          ensureThumbOverlay(k, want[k].thumb, want[k].bb);
+        });
+        // Then remove overlays that are no longer needed.
+        Object.keys(_thumbOverlayMeta).forEach(function(k) {
+          if (!want[k]) removeThumbOverlay(k);
+        });
+        // Stack: first selected image on top, last behind others.
+        reorderThumbLayersBySelection();
+      }
+
+      function rebuildSelectedUi() {
+        var list = document.getElementById('mp-selected-list');
+        if (!list) return;
+        list.innerHTML = '';
+        var sel = (lastPlan && lastPlan.selected) ? lastPlan.selected.slice() : [];
+        if (!sel.length) {
+          list.innerHTML = '<div class="mosaic-selected-item"><span class="meta">No images selected.</span></div>';
+          expandedSwapKey = null;
+          setActiveKey(null);
+          return;
+        }
+        sel.forEach(function(it, idx) {
+          var block = document.createElement('div');
+          block.className = 'mosaic-row-block';
+          var row = document.createElement('div');
+          row.className = 'mosaic-selected-item';
+          row.dataset.key = it.key;
+          var left = document.createElement('div');
+          left.style.minWidth = '0';
+          left.style.display = 'flex';
+          left.style.gap = '10px';
+          left.style.alignItems = 'center';
+          if (it.thumbnail) {
+            var img = document.createElement('img');
+            img.alt = '';
+            img.width = 46;
+            img.height = 46;
+            img.style.borderRadius = '10px';
+            img.style.border = '1px solid var(--border)';
+            img.style.objectFit = 'cover';
+            img.style.background = 'var(--bg-elevated)';
+            img.loading = 'lazy';
+            img.src = plannerThumbUrlStable(it.thumbnail);
+            left.appendChild(img);
+          }
+          var textWrap = document.createElement('div');
+          textWrap.style.minWidth = '0';
+          var title = document.createElement('div');
+          title.style.fontWeight = '600';
+          title.style.whiteSpace = 'nowrap';
+          title.style.overflow = 'hidden';
+          title.style.textOverflow = 'ellipsis';
+          title.textContent = (it.stac_item_id || it.id || it.key || ('item ' + idx));
+          var meta = document.createElement('p');
+          meta.className = 'meta';
+          var metaBits = [];
+          if (it.mgrs_tile) metaBits.push('tile ' + it.mgrs_tile);
+          metaBits.push('cloud=' + (it.cloud_cover != null ? it.cloud_cover : '—'));
+          meta.textContent = metaBits.join(' · ');
+          textWrap.appendChild(title);
+          textWrap.appendChild(meta);
+          left.appendChild(textWrap);
+          var right = document.createElement('div');
+          right.style.display = 'flex';
+          right.style.gap = '6px';
+          var btnUp = document.createElement('button');
+          btnUp.type = 'button';
+          btnUp.className = 'btn btn-sm';
+          btnUp.textContent = '↑';
+          btnUp.title = 'Move up';
+          btnUp.disabled = idx === 0;
+          btnUp.onclick = function(e) { e.stopPropagation(); moveSelected(it.key, -1); };
+          var btnTop = document.createElement('button');
+          btnTop.type = 'button';
+          btnTop.className = 'btn btn-sm';
+          btnTop.textContent = '⇈';
+          btnTop.title = 'Move to top';
+          btnTop.disabled = idx === 0;
+          btnTop.onclick = function(e) { e.stopPropagation(); moveSelectedTo(it.key, 0); };
+          var btnDown = document.createElement('button');
+          btnDown.type = 'button';
+          btnDown.className = 'btn btn-sm';
+          btnDown.textContent = '↓';
+          btnDown.title = 'Move down';
+          btnDown.disabled = idx === sel.length - 1;
+          btnDown.onclick = function(e) { e.stopPropagation(); moveSelected(it.key, +1); };
+          var btnBottom = document.createElement('button');
+          btnBottom.type = 'button';
+          btnBottom.className = 'btn btn-sm';
+          btnBottom.textContent = '⇊';
+          btnBottom.title = 'Move to bottom';
+          btnBottom.disabled = idx === sel.length - 1;
+          btnBottom.onclick = function(e) { e.stopPropagation(); moveSelectedTo(it.key, sel.length - 1); };
+          var btnRm = document.createElement('button');
+          btnRm.type = 'button';
+          btnRm.className = 'btn btn-danger btn-sm';
+          btnRm.textContent = 'Remove';
+          btnRm.onclick = function(e) { e.stopPropagation(); removeSelected(it.key); };
+          right.appendChild(btnTop);
+          right.appendChild(btnUp);
+          right.appendChild(btnDown);
+          right.appendChild(btnBottom);
+          right.appendChild(btnRm);
+          row.appendChild(left);
+          row.appendChild(right);
+          row.onclick = function() { setActiveKey(it.key); zoomToFootprint(it.footprint); };
+          block.appendChild(row);
+
+          var alts = (lastPlan && lastPlan.swap_options) ? (lastPlan.swap_options[it.key] || []) : [];
+          var det = document.createElement('details');
+          det.className = 'mosaic-swap-details';
+          det.open = expandedSwapKey === it.key;
+          det.addEventListener('toggle', function() {
+            if (det.open) {
+              expandedSwapKey = it.key;
+              setActiveKey(it.key);
+            } else if (expandedSwapKey === it.key) {
+              expandedSwapKey = null;
+            }
+          });
+          var sum = document.createElement('summary');
+          sum.className = 'mosaic-swap-summary';
+          var nAlts = alts.length;
+          var tileLabel = it.mgrs_tile ? ('MGRS ' + it.mgrs_tile + ' · ') : '';
+          var sumLab = document.createElement('span');
+          sumLab.textContent = tileLabel + 'Same-tile alternatives' + (nAlts ? ' (' + nAlts + ')' : '');
+          sum.appendChild(sumLab);
+          det.appendChild(sum);
+          var grid = document.createElement('div');
+          grid.className = 'mosaic-swap-grid';
+          if (!nAlts) {
+            var empty = document.createElement('p');
+            empty.className = 'meta';
+            empty.style.margin = '0';
+            empty.style.gridColumn = '1 / -1';
+            empty.textContent = it.mgrs_tile
+              ? 'No other scenes in the search results for tile ' + it.mgrs_tile + ' with overlapping footprint. Try widening the date range or regenerating the mosaic.'
+              : 'Could not detect a Sentinel-2 MGRS tile id for this item; widen search or check item naming.';
+            grid.appendChild(empty);
+          } else {
+            alts.forEach(function(a) {
+              var card = document.createElement('div');
+              card.className = 'mosaic-swap-card';
+              var thumbWrap = document.createElement('div');
+              thumbWrap.className = 'mosaic-swap-thumb-wrap';
+              if (a.thumbnail) {
+                var ti = document.createElement('img');
+                ti.alt = '';
+                ti.loading = 'lazy';
+                ti.src = plannerThumbUrlFresh(a.thumbnail);
+                thumbWrap.appendChild(ti);
+              }
+              card.appendChild(thumbWrap);
+              var ct = document.createElement('div');
+              ct.className = 'mosaic-swap-card-title';
+              ct.textContent = String(a.id || a.key || '');
+              card.appendChild(ct);
+              var cm = document.createElement('p');
+              cm.className = 'meta';
+              cm.textContent = 'cloud=' + (a.cloud_cover != null ? a.cloud_cover : '—') + (a.mgrs_tile ? (' · ' + a.mgrs_tile) : '');
+              card.appendChild(cm);
+              var bu = document.createElement('button');
+              bu.type = 'button';
+              bu.className = 'btn btn-sm btn-primary';
+              bu.textContent = 'Use';
+              bu.onclick = function(e) {
+                e.stopPropagation();
+                swapSelected(it.key, a);
+              };
+              card.appendChild(bu);
+              card.onclick = function(ev) {
+                if (ev.target === bu) return;
+                try { zoomToFootprint(a.footprint); } catch (e2) {}
+              };
+              grid.appendChild(card);
+            });
+          }
+          det.appendChild(grid);
+          block.appendChild(det);
+          list.appendChild(block);
+        });
+        // After innerHTML rebuild, list rows are new nodes — must re-apply highlight + map filter.
+        var keepKey = activeKey;
+        if (!keepKey || !sel.some(function(x) { return String(x.key) === String(keepKey); })) {
+          keepKey = sel[0].key;
+        }
+        setActiveKey(keepKey);
+      }
+
+      function moveSelected(key, delta) {
+        if (!lastPlan || !Array.isArray(lastPlan.selected)) return;
+        var idx = -1;
+        for (var i = 0; i < lastPlan.selected.length; i++) {
+          if (String(lastPlan.selected[i].key) === String(key)) { idx = i; break; }
+        }
+        if (idx < 0) return;
+        var j = idx + delta;
+        if (j < 0 || j >= lastPlan.selected.length) return;
+        var tmp = lastPlan.selected[idx];
+        lastPlan.selected[idx] = lastPlan.selected[j];
+        lastPlan.selected[j] = tmp;
+        expandedSwapKey = null;
+        setActiveKey(String(key));
+        refreshFootprintsLayer();
+        rebuildSelectedUi();
+      }
+
+      function moveSelectedTo(key, newIdx) {
+        if (!lastPlan || !Array.isArray(lastPlan.selected)) return;
+        var idx = -1;
+        for (var i = 0; i < lastPlan.selected.length; i++) {
+          if (String(lastPlan.selected[i].key) === String(key)) { idx = i; break; }
+        }
+        if (idx < 0) return;
+        var n = lastPlan.selected.length;
+        var j = Math.max(0, Math.min(n - 1, Number(newIdx)));
+        if (j === idx) return;
+        var it = lastPlan.selected.splice(idx, 1)[0];
+        lastPlan.selected.splice(j, 0, it);
+        expandedSwapKey = null;
+        setActiveKey(String(key));
+        refreshFootprintsLayer();
+        rebuildSelectedUi();
+      }
+
+      function removeSelected(key) {
+        if (!lastPlan || !lastPlan.selected) return;
+        lastPlan.selected = lastPlan.selected.filter(function(it) { return it.key !== key; });
+        refreshFootprintsLayer();
+        rebuildSelectedUi();
+      }
+
+      function swapSelected(key, alt) {
+        try {
+          if (!lastPlan || !Array.isArray(lastPlan.selected)) return;
+          var fromKey = String(key);
+          var idx = -1;
+          for (var i = 0; i < lastPlan.selected.length; i++) {
+            if (String(lastPlan.selected[i].key) === fromKey) { idx = i; break; }
+          }
+          if (idx < 0) {
+            try { console.error('swapSelected: could not find key', fromKey, lastPlan.selected.map(function(x) { return x && x.key; })); } catch (e0) {}
+            var m0 = document.getElementById('mp-msg');
+            if (m0) { m0.textContent = 'Could not swap: selected item not found.'; m0.className = 'mosaic-msg error'; }
+            return;
+          }
+          if (!alt || !alt.footprint) {
+            var m1 = document.getElementById('mp-msg');
+            if (m1) { m1.textContent = 'Could not swap: alternative has no footprint.'; m1.className = 'mosaic-msg error'; }
+            return;
+          }
+          var prev = lastPlan.selected[idx] || {};
+          var newKey = String(alt.key || alt.id || alt.stac_item_id || ('alt-' + idx));
+          lastPlan.selected[idx] = {
+            key: newKey,
+            catalog_id: prev.catalog_id,
+            stac_collection_id: prev.stac_collection_id,
+            stac_item_id: alt.id || alt.stac_item_id || alt.key,
+            href: alt.href,
+            thumbnail: alt.thumbnail,
+            cloud_cover: alt.cloud_cover,
+            footprint: alt.footprint,
+            mgrs_tile: alt.mgrs_tile != null && alt.mgrs_tile !== '' ? alt.mgrs_tile : prev.mgrs_tile
+          };
+          setActiveKey(newKey);
+          expandedSwapKey = newKey;
+          refreshPlanSwapOptions().then(function() {
+            refreshFootprintsLayer();
+            rebuildSelectedUi();
+          }).catch(function() {
+            refreshFootprintsLayer();
+            rebuildSelectedUi();
+          });
+        } catch (e2) {
+          try { console.error('swapSelected failed', e2); } catch (e3) {}
+          var m2 = document.getElementById('mp-msg');
+          if (m2) { m2.textContent = 'Swap failed: ' + String(e2.message || e2); m2.className = 'mosaic-msg error'; }
+        }
+      }
+
+      function populateCollections(groups) {
+        var sel = document.getElementById('mp-collection-select');
+        var statusEl = document.getElementById('mp-collections-status');
+        if (!sel) return;
+        sel.innerHTML = '';
+        var total = 0;
+        (groups || []).forEach(function(g) {
+          var og = document.createElement('optgroup');
+          og.label = (g.catalog_title || g.catalog_id || 'Catalog');
+          (g.collections || []).forEach(function(c) {
+            var o = document.createElement('option');
+            o.value = c.id;
+            var label = c.title && c.title !== c.id ? (c.id + ' — ' + c.title) : c.id;
+            o.textContent = label;
+            og.appendChild(o);
+            total += 1;
+          });
+          sel.appendChild(og);
+        });
+        if (statusEl) statusEl.textContent = total ? (total + ' collection' + (total !== 1 ? 's' : '') + ' listed') : 'No collections returned.';
+        try {
+          var catEl = document.getElementById('mp-catalog');
+          var cid = catEl ? String(catEl.value || '') : '';
+          if (cid && GeofastmapUtils.isEarthSearchStacUrl) {
+            (groups || []).forEach(function(g) {
+              if (!g || String(g.catalog_id) !== cid || !GeofastmapUtils.isEarthSearchStacUrl(g.stac_api_root_url)) return;
+              var want = GeofastmapUtils.DEFAULT_EARTH_SEARCH_COLLECTION_ID || 'sentinel-2-l2a';
+              if (sel.querySelector('option[value="' + want + '"]')) sel.value = want;
+            });
+          }
+        } catch (e0) {}
+      }
+
+      function loadCollectionsForCatalog() {
+        var catSel = document.getElementById('mp-catalog');
+        var statusEl = document.getElementById('mp-collections-status');
+        if (!catSel) return;
+        if (statusEl) statusEl.textContent = 'Loading collections…';
+        return fetch(base + '/stac/available-collections?stac_target=' + encodeURIComponent(catSel.value), { headers: { Accept: 'application/json' } })
+          .then(function(r) { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+          .then(function(data) { populateCollections(data.groups); })
+          .catch(function() { populateCollections([]); if (statusEl) statusEl.textContent = 'Could not load collections.'; });
+      }
+
+      var catSelEl = document.getElementById('mp-catalog');
+      if (catSelEl) catSelEl.addEventListener('change', loadCollectionsForCatalog);
+      loadCollectionsForCatalog();
+
+      (function setupBboxPasteApply() {
+        var btn = document.getElementById('mp-bbox-apply');
+        var inp = document.getElementById('mp-bbox');
+        if (btn) btn.onclick = function() { applyBboxToMap(); };
+        if (inp) {
+          inp.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              applyBboxToMap();
+            }
+          });
+        }
+      })();
+
+      function ymdFromDefDate(s) {
+        if (s == null || s === '') return '';
+        var m = /^(\d{4}-\d{2}-\d{2})/.exec(String(s).trim());
+        return m ? m[1] : '';
+      }
+
+      function applyDefinitionToUi(def) {
+        if (!def) return;
+        try {
+          if (def.catalog_id) document.getElementById('mp-catalog').value = String(def.catalog_id);
+        } catch (e0) {}
+        var ds = document.getElementById('mp-date-start');
+        var de = document.getElementById('mp-date-end');
+        var cc = document.getElementById('mp-cloud');
+        if (ds && def.date_start) ds.value = ymdFromDefDate(def.date_start);
+        if (de && def.date_end) de.value = ymdFromDefDate(def.date_end);
+        if (cc && def.cloud_cover_max != null) cc.value = String(def.cloud_cover_max);
+        if (def.sort_mode) {
+          var sm = document.getElementById('mp-sort');
+          if (sm) sm.value = String(def.sort_mode);
+        }
+        // seasons
+        try {
+          var want = Array.isArray(def.seasons) ? def.seasons.map(String) : [];
+          document.querySelectorAll('input[name="mp-season"]').forEach(function(el) {
+            el.checked = want.indexOf(String(el.value)) >= 0;
+          });
+        } catch (e1) {}
+        // collection selection needs collections loaded
+        var collId = def.stac_collection_id ? String(def.stac_collection_id) : '';
+        if (collId) {
+          Promise.resolve(loadCollectionsForCatalog()).then(function() {
+            var sel = document.getElementById('mp-collection-select');
+            if (sel) sel.value = collId;
+          });
+        }
+      }
+
+      function loadExistingMosaicForEdit(viewId) {
+        var banner = document.getElementById('mp-editing-banner');
+        if (banner) banner.style.display = '';
+        var saveBtn = document.getElementById('mp-save');
+        if (saveBtn) saveBtn.textContent = 'Save changes';
+        editingViewId = viewId;
+        fetch(base + '/raster-views/' + encodeURIComponent(viewId), { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+          .then(function(r) { if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || r.status); }); return r.json(); })
+          .then(function(row) {
+            function fitToBbox(b) {
+              if (!b || b.length !== 4) return;
+              try {
+                map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40, maxZoom: 12, duration: 0 });
+                syncBboxInputFromMap();
+              } catch (e0) {}
+            }
+
+            document.getElementById('mp-save-title').value = row.title || '';
+            var def = row.definition || {};
+            applyDefinitionToUi(def);
+            var sel = Array.isArray(def.selected) ? def.selected : [];
+            if (!sel.length) return;
+            // Ensure each selected has a stable key
+            sel = sel.map(function(it, idx) {
+              var k = it.key || it.stac_item_id || it.id || ('item-' + idx);
+              it.key = String(k);
+              return it;
+            });
+            lastPlan = { selected: sel, swap_options: {} };
+            if (row.bbox && row.bbox.length === 4) {
+              if (mapLoaded) fitToBbox(row.bbox);
+              else pendingInitBbox = row.bbox;
+            }
+            if (mapLoaded) {
+              refreshFootprintsLayer();
+              rebuildSelectedUi();
+              document.getElementById('mp-results-card').style.display = '';
+              // Populate swap options for existing selection (so Swap works in edit mode)
+              var def2 = row.definition || {};
+              var body = {
+                catalog_id: String(def2.catalog_id || document.getElementById('mp-catalog').value || ''),
+                stac_collection_id: String(def2.stac_collection_id || document.getElementById('mp-collection-select').value || ''),
+                bbox: (row.bbox && row.bbox.length === 4) ? row.bbox : (function() { var ab = getAoiAndBbox(); return ab ? ab.bbox : null; })(),
+                aoi_geojson: (row.bbox && row.bbox.length === 4) ? { type: 'Polygon', coordinates: [[[row.bbox[0], row.bbox[1]], [row.bbox[2], row.bbox[1]], [row.bbox[2], row.bbox[3]], [row.bbox[0], row.bbox[3]], [row.bbox[0], row.bbox[1]]]] } : null,
+                date_start: def2.date_start || null,
+                date_end: def2.date_end || null,
+                seasons: Array.isArray(def2.seasons) ? def2.seasons : [],
+                cloud_cover_max: (def2.cloud_cover_max != null) ? def2.cloud_cover_max : (function() { var v = (document.getElementById('mp-cloud').value || '').trim(); return v ? parseFloat(v) : null; })(),
+                sort_mode: def2.sort_mode || document.getElementById('mp-sort').value,
+                selected: sel
+              };
+              fetch(base + '/mosaics/plan', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify(body)
+              }).then(function(r) {
+                if (!r.ok) return r.json().then(function(d) { throw new Error((d && d.detail) ? (typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail)) : r.status); });
+                return r.json();
+              }).then(function(data) {
+                lastPlan.swap_options = data.swap_options || {};
+              }).catch(function() {});
+            } else {
+              pendingInitSelected = sel;
+            }
+          })
+          .catch(function(e) {
+            var msg = document.getElementById('mp-save-msg') || document.getElementById('mp-msg');
+            if (msg) { msg.textContent = 'Could not load mosaic for edit: ' + String(e.message || e); msg.className = 'mosaic-msg error'; }
+          });
+      }
+
+      // If opened from mosaic detail: ?edit_view=<id>
+      try {
+        var params = new URLSearchParams(window.location.search || '');
+        var ev = (params.get('edit_view') || '').trim();
+        if (ev) loadExistingMosaicForEdit(ev);
+      } catch (e2) {}
+
+      function doGenerateMosaic() {
+        var msg = document.getElementById('mp-msg');
+        msg.textContent = '';
+        msg.className = 'mosaic-msg';
+        var catalog = document.getElementById('mp-catalog').value;
+        var collectionSel = document.getElementById('mp-collection-select');
+        var collection = (collectionSel && collectionSel.value ? collectionSel.value : '').trim();
+        if (!collection) { msg.textContent = 'Select a raster collection.'; msg.className = 'mosaic-msg error'; return; }
+        var ds = document.getElementById('mp-date-start').value;
+        var de = document.getElementById('mp-date-end').value;
+        if (!ds && !de) { msg.textContent = 'Set at least one date.'; msg.className = 'mosaic-msg error'; return; }
+        var ab = getAoiAndBbox();
+        if (!ab || !ab.bbox) { msg.textContent = 'Move the map or draw a polygon.'; msg.className = 'mosaic-msg error'; return; }
+        var cloud = document.getElementById('mp-cloud').value.trim();
+        var body = {
+          catalog_id: catalog,
+          stac_collection_id: collection,
+          bbox: ab.bbox,
+          aoi_geojson: ab.aoi_geojson,
+          date_start: ds || null,
+          date_end: de || null,
+          seasons: getSeasons(),
+          sort_mode: document.getElementById('mp-sort').value
+        };
+        if (cloud !== '') body.cloud_cover_max = parseFloat(cloud);
+
+        setPlanRequestLoading(true);
+        fetch(base + '/mosaics/plan', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(body)
+        }).then(function(r) {
+          if (!r.ok) return r.json().then(function(d) { throw new Error((d && d.detail) ? (typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail)) : r.status); });
+          return r.json();
+        }).then(function(data) {
+          lastPlan = data;
+          document.getElementById('mp-results-card').style.display = '';
+          var unc = (data.uncovered_fraction != null) ? (Math.round(data.uncovered_fraction * 1000) / 10) : '?';
+          var rounds = (data.void_fill_rounds != null) ? data.void_fill_rounds : 1;
+          document.getElementById('mp-summary').textContent = 'Selected ' + (data.selected && data.selected.length) + ' image(s). Uncovered fraction: ~' + unc + '%. STAC search round(s): ' + rounds + '.';
+          refreshFootprintsLayer();
+          rebuildSelectedUi();
+          if (data && data.stac_errors && data.stac_errors.length) {
+            msg.textContent = 'Warning: some STAC endpoints did not respond. Results may be incomplete.';
+            msg.className = 'mosaic-msg error';
+          } else {
+            msg.textContent = 'Done.';
+          }
+        }).catch(function(e) {
+          msg.textContent = String(e.message || e);
+          msg.className = 'mosaic-msg error';
+        }).finally(function() {
+          setPlanRequestLoading(false);
+        });
+      }
+
+      function resetPlannerStateForNewPlan() {
+        try { lastPlan = null; activeKey = null; expandedSwapKey = null; } catch (e0) {}
+        try { setPlanRequestLoading(false); } catch (eL) {}
+        try {
+          var rc = document.getElementById('mp-results-card');
+          if (rc) rc.style.display = 'none';
+          var sum = document.getElementById('mp-summary');
+          if (sum) sum.textContent = '';
+          var saveMsg = document.getElementById('mp-save-msg');
+          if (saveMsg) { saveMsg.textContent = ''; saveMsg.className = 'mosaic-msg'; }
+        } catch (e1) {}
+        try {
+          var map = getMap();
+          if (map && map.getSource && map.getSource('footprints')) {
+            map.getSource('footprints').setData({ type: 'FeatureCollection', features: [] });
+          }
+        } catch (e2) {}
+      }
+
+      function openRegenerateConfirm() {
+        var m = document.getElementById('mp-confirm-regenerate-modal');
+        if (m) m.setAttribute('aria-hidden', 'false');
+      }
+      function closeRegenerateConfirm() {
+        var m = document.getElementById('mp-confirm-regenerate-modal');
+        if (m) m.setAttribute('aria-hidden', 'true');
+      }
+
+      (function setupRegenerateConfirm() {
+        var backdrop = document.getElementById('mp-confirm-regenerate-backdrop');
+        var cancel = document.getElementById('mp-confirm-regenerate-cancel');
+        var ok = document.getElementById('mp-confirm-regenerate-confirm');
+        if (backdrop) backdrop.onclick = closeRegenerateConfirm;
+        if (cancel) cancel.onclick = closeRegenerateConfirm;
+        if (ok) ok.onclick = function() {
+          closeRegenerateConfirm();
+          resetPlannerStateForNewPlan();
+          doGenerateMosaic();
+        };
+      })();
+
+      document.getElementById('mp-generate').onclick = function() {
+        var hasPlan = !!(lastPlan && Array.isArray(lastPlan.selected) && lastPlan.selected.length);
+        if (hasPlan) { openRegenerateConfirm(); return; }
+        doGenerateMosaic();
+      };
+
+      // Add-image mode: click a "hole" point to append a covering image
+      (function setupAddImageMode() {
+        var btn = document.getElementById('mp-add-image-mode');
+        var hint = document.getElementById('mp-add-image-hint');
+        function setMode(on) {
+          window.__mp_add_mode = !!on;
+          if (hint) hint.style.display = on ? '' : 'none';
+          if (btn) btn.classList.toggle('btn-primary', on);
+        }
+        if (btn) {
+          btn.onclick = function() { setMode(!window.__mp_add_mode); };
+        }
+        window.addEventListener('keydown', function(e) {
+          if (e.key === 'Escape') setMode(false);
+        });
+        // Map click handler is installed in hookMapEvents; here we implement the add flow.
+        var _mpAddTimer = setInterval(function() {
+          var map = getMap();
+          if (!map) return;
+          clearInterval(_mpAddTimer);
+          map.on('click', function(e) {
+            if (!window.__mp_add_mode) return;
+            try {
+              var msg = document.getElementById('mp-msg');
+              if (msg) { msg.textContent = ''; msg.className = 'mosaic-msg'; }
+              var def = {
+                catalog_id: document.getElementById('mp-catalog').value,
+                stac_collection_id: document.getElementById('mp-collection-select').value,
+                date_start: document.getElementById('mp-date-start').value || null,
+                date_end: document.getElementById('mp-date-end').value || null,
+                seasons: getSeasons(),
+                sort_mode: document.getElementById('mp-sort').value
+              };
+              var cloud = (document.getElementById('mp-cloud').value || '').trim();
+              var p = e.lngLat;
+              var d = 0.002; // ~200m-ish at equator; just to build a tiny AOI around click
+              var aoi = { type: 'Polygon', coordinates: [[[p.lng - d, p.lat - d], [p.lng + d, p.lat - d], [p.lng + d, p.lat + d], [p.lng - d, p.lat + d], [p.lng - d, p.lat - d]]] };
+              var body = {
+                catalog_id: def.catalog_id,
+                stac_collection_id: def.stac_collection_id,
+                aoi_geojson: aoi,
+                bbox: null,
+                date_start: def.date_start,
+                date_end: def.date_end,
+                seasons: def.seasons,
+                sort_mode: def.sort_mode
+              };
+              if (cloud !== '') body.cloud_cover_max = parseFloat(cloud);
+              setPlanRequestLoading(true, 'Searching for coverage…');
+              fetch(base + '/mosaics/plan', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify(body)
+              }).then(function(r) {
+                if (!r.ok) return r.json().then(function(d0) { throw new Error((d0 && d0.detail) ? (typeof d0.detail === 'string' ? d0.detail : JSON.stringify(d0.detail)) : r.status); });
+                return r.json();
+              }).then(function(data) {
+                var cand = (data && data.selected && data.selected.length) ? data.selected[0] : null;
+                if (!cand) throw new Error('No image found for that point.');
+                lastPlan = lastPlan || { selected: [], swap_options: {} };
+                lastPlan.selected = Array.isArray(lastPlan.selected) ? lastPlan.selected : [];
+                // Avoid duplicates
+                var exists = lastPlan.selected.some(function(it) { return String(it.key) === String(cand.key); });
+                if (!exists) lastPlan.selected.push(cand);
+                refreshFootprintsLayer();
+                rebuildSelectedUi();
+                if (msg) { msg.textContent = exists ? 'Image already selected.' : 'Added one image.'; msg.className = 'mosaic-msg'; }
+              }).catch(function(err) {
+                if (msg) { msg.textContent = String(err.message || err); msg.className = 'mosaic-msg error'; }
+              }).finally(function() {
+                setPlanRequestLoading(false);
+                setMode(false);
+              });
+            } catch (e2) {
+              try {
+                setPlanRequestLoading(false);
+                var msg2 = document.getElementById('mp-msg');
+                if (msg2) { msg2.textContent = String(e2.message || e2); msg2.className = 'mosaic-msg error'; }
+              } catch (e3) {}
+              setMode(false);
+            }
+          });
+        }, 50);
+      })();
+
+      document.getElementById('mp-save').onclick = function() {
+        var msg = document.getElementById('mp-save-msg');
+        msg.textContent = '';
+        msg.className = 'mosaic-msg';
+        if (!lastPlan || !lastPlan.selected || !lastPlan.selected.length) {
+          msg.textContent = 'Generate a mosaic first.';
+          msg.className = 'mosaic-msg error';
+          return;
+        }
+        var title = (document.getElementById('mp-save-title').value || '').trim();
+        if (!title) { msg.textContent = 'Enter a name.'; msg.className = 'mosaic-msg error'; return; }
+        var catalog = document.getElementById('mp-catalog').value;
+        var collectionSel = document.getElementById('mp-collection-select');
+        var collection = (collectionSel && collectionSel.value ? collectionSel.value : '').trim();
+        var definition = {
+          catalog_id: catalog,
+          stac_collection_id: collection,
+          date_start: document.getElementById('mp-date-start').value || null,
+          date_end: document.getElementById('mp-date-end').value || null,
+          seasons: getSeasons(),
+          sort_mode: document.getElementById('mp-sort').value,
+          search_bbox: (document.getElementById('mp-bbox').value || '').trim(),
+          selected: lastPlan.selected
+        };
+        var url = base + '/raster-views' + (editingViewId ? ('/' + encodeURIComponent(editingViewId)) : '');
+        var method = editingViewId ? 'PATCH' : 'POST';
+        fetch(url, {
+          method: method,
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({
+            title: title,
+            visibility: 'private',
+            mosaic_json: { mosaicjson: '0.0.3', tiles: {}, minzoom: 0, maxzoom: 18 },
+            definition: definition,
+            allow_public_maps: false
+          })
+        }).then(function(r) {
+          if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || r.status); });
+          return r.json();
+        }).then(function(row) {
+          msg.textContent = editingViewId ? 'Saved changes.' : 'Saved. Opening…';
+          if (!editingViewId) window.location.href = base + '/mosaics/' + encodeURIComponent(row.id) + '?f=html';
+        }).catch(function(e) {
+          msg.textContent = String(e.message || e);
+          msg.className = 'mosaic-msg error';
+        });
+      };
+    })();
+  </script>
+{% endblock %}

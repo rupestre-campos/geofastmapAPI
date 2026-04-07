@@ -14,9 +14,15 @@ def get_titiler_http_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
         settings = get_settings()
-        t = float(settings.stac_search_http_timeout_seconds)
+        connect = float(settings.titiler_http_connect_timeout_seconds)
+        read = float(settings.titiler_http_read_timeout_seconds)
         _client = httpx.AsyncClient(
-            timeout=httpx.Timeout(t, connect=30.0),
+            timeout=httpx.Timeout(
+                connect=connect,
+                read=read,
+                write=min(120.0, read),
+                pool=60.0,
+            ),
             limits=httpx.Limits(max_connections=200, max_keepalive_connections=64),
             http2=False,
         )

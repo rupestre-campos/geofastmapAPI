@@ -197,6 +197,15 @@ async def can_edit_raster_view(
     return role == ROLE_EDITOR
 
 
+def can_access_raster_view_tiles_anonymous(*, visibility: str, allow_public_maps: bool) -> bool:
+    """Anonymous tile access: public mosaic, or allow_public_maps for public map embed."""
+    if visibility == VISIBILITY_PUBLIC:
+        return True
+    if allow_public_maps:
+        return True
+    return False
+
+
 async def can_edit_style(
     db: AsyncSession,
     style_owner_id: int | None,

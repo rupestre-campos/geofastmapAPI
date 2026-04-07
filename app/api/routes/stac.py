@@ -6,7 +6,11 @@ from typing import Any
 from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
+import httpx
+from PIL import Image
+import io
+from PIL import ImageFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_optional, get_current_user_required, require_admin
@@ -196,6 +200,70 @@ async def stac_available_collections(
         target_catalogs = [c for c in rows_enabled if c.id in want]
     groups = await fetch_collections_grouped(target_catalogs)
     return {"groups": groups}
+
+
+@router.get("/thumbnail", summary="Proxy STAC thumbnail (for MapLibre loadImage)")
+async def stac_thumbnail_proxy(
+    u: str = Query(..., description="Upstream thumbnail URL (http/https)"),
+    fmt: str = Query("png", description="Output format (png recommended for transparency)"),
+    current_user: User | None = Depends(get_current_user_optional),
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    url = (u or "").strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="Invalid thumbnail url")
+
+    timeout = httpx.Timeout(20.0, connect=10.0)
+    limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+    async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=True) as client:
+        try:
+            r = await client.get(url, headers={"Accept": "image/*,*/*;q=0.8"})
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"Thumbnail fetch failed: {e}") from e
+        if r.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"Thumbnail fetch failed ({r.status_code})")
+        raw = r.content
+
+    # Convert near-black and near-white pixels to alpha (common no-data padding in previews).
+    # We always return PNG when fmt=png so alpha is preserved.
+    fmt_norm = (fmt or "png").strip().lower()
+    if fmt_norm not in ("png",):
+        raise HTTPException(status_code=400, detail="fmt must be png")
+    try:
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        im = Image.open(io.BytesIO(raw))
+        im = im.convert("RGBA")
+        # Near-black: padding / no-data. Near-white: common JPEG border (often off-white / uneven channels).
+        thr_dark = 18
+        # Any channel this high or above counts toward "light" — use min() so uneven JPEG whites still match.
+        # 237: min(r,g,b) — strict; leaves uneven JPEG borders. 200: removes borders but keys bright clouds.
+        thr_white_min = 235
+        data = list(im.getdata())
+        out_data = []
+        for (r0, g0, b0, a0) in data:
+            if a0 and r0 <= thr_dark and g0 <= thr_dark and b0 <= thr_dark:
+                out_data.append((r0, g0, b0, 0))
+            elif a0 and min(r0, g0, b0) >= thr_white_min:
+                out_data.append((r0, g0, b0, 0))
+            else:
+                out_data.append((r0, g0, b0, a0))
+        im.putdata(out_data)
+        out = io.BytesIO()
+        im.save(out, format="PNG", optimize=True)
+        data = out.getvalue()
+        return StreamingResponse(
+            iter([data]),
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    except Exception as e:
+        # If we can't decode/convert, fail loudly; the map overlay needs a decodable image.
+        raise HTTPException(status_code=502, detail=f"Thumbnail decode/convert failed: {e}") from e
 
 
 @router.get("", summary="STAC hubs (JSON or HTML)")
@@ -458,5 +526,5 @@ async def stac_item_search(
     _: User = Depends(get_current_user_required),
 ):
     """Merge Item Search results from enabled STAC catalogs. Optional body key `catalog_ids` filters catalogs."""
-    merged, _errors = await _execute_stac_search(db, body)
-    return merged
+    merged, catalog_errors = await _execute_stac_search(db, body)
+    return {"items": merged, "catalog_errors": catalog_errors}

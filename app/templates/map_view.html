@@ -360,6 +360,15 @@
             label.rel = 'noopener noreferrer';
             label.textContent = 'STAC · ' + (layer.stac_item_id || 'item') + ' (raster)';
             label.title = 'Open STAC image viewer (saved render params)';
+          } else if (layer.raster_tiles && (layer.mosaic_view_id || layer.mosaicViewId)) {
+            var mv = layer.mosaic_view_id || layer.mosaicViewId;
+            label = document.createElement('a');
+            label.className = 'map-legend-label';
+            label.href = base + '/mosaics/' + encodeURIComponent(String(mv)) + '?f=html';
+            label.target = '_blank';
+            label.rel = 'noopener noreferrer';
+            label.textContent = 'Mosaic · ' + String(mv) + ' (raster)';
+            label.title = 'Saved mosaic';
           } else {
             label = document.createElement('span');
             label.className = 'map-legend-label';
