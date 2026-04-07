@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -54,6 +55,9 @@ _VOID_FILL_MAX_ROUNDS = 6
 _VOID_FILL_MIN_UNCOVERED = 0.001
 # Per void round: sample at most this many disconnected gaps (each gets a small STAC bbox like click-to-fill).
 _VOID_PINPOINT_MAX_PARTS = 16
+# Same-pass date mode: split AOI into vertical (N–S) longitude strips; each strip picks one day.
+# True satellite swaths are oblique; we approximate with meridian-aligned columns (see docstrings).
+_SAME_PASS_NUM_STRIPS = 8
 
 
 def mgrs_tile_from_stac_item_id(item_id: str | None) -> str | None:
@@ -437,6 +441,263 @@ def greedy_cover_aoi(
     return selected, remaining if not remaining.is_empty else None, uncovered_frac
 
 
+def _polygonal_part(geom: Any) -> Any | None:
+    """Keep only polygonal pieces; drop lines/points from overlays."""
+    if geom is None or geom.is_empty:
+        return None
+    gt = getattr(geom, "geom_type", None)
+    if gt in ("Polygon", "MultiPolygon"):
+        return geom
+    if gt == "GeometryCollection":
+        polys = [g for g in geom.geoms if getattr(g, "geom_type", "") in ("Polygon", "MultiPolygon")]
+        if not polys:
+            return None
+        u = unary_union(polys)
+        return u if not u.is_empty else None
+    return None
+
+
+def _union_candidate_geoms(selected: list[Candidate]) -> Any | None:
+    if not selected:
+        return None
+    try:
+        u = unary_union([c.geom for c in selected])
+        return u if not u.is_empty else None
+    except Exception:
+        return None
+
+
+def _dedupe_candidates_by_key(cands: list[Candidate]) -> list[Candidate]:
+    seen: set[str] = set()
+    out: list[Candidate] = []
+    for c in cands:
+        if c.key in seen:
+            continue
+        seen.add(c.key)
+        out.append(c)
+    return out
+
+
+def _mean_cloud_candidates(cands: list[Candidate]) -> float:
+    xs = [c.cloud for c in cands if c.cloud is not None]
+    if not xs:
+        return 50.0
+    return float(sum(xs) / len(xs))
+
+
+def _candidate_in_date_window(c: Candidate, start: date, end: date) -> bool:
+    """True if acquisition UTC calendar date falls in [start, end] inclusive."""
+    if c.dt is None:
+        return False
+    try:
+        d = c.dt.date()
+        return start <= d <= end
+    except Exception:
+        return False
+
+
+def _filter_candidates_to_date_window(
+    candidates: list[Candidate], start: date, end: date
+) -> list[Candidate]:
+    return [c for c in candidates if _candidate_in_date_window(c, start, end)]
+
+
+def _pick_best_seven_day_window_from_candidates(
+    candidates: list[Candidate],
+) -> tuple[date, date] | None:
+    """
+    Sliding 7-day UTC window [anchor-3, anchor+3] inclusive (7 calendar days).
+    Not tied to ISO Monday–Sunday: e.g. anchor Sunday includes prior Saturday and following Monday.
+    Picks the window with lowest mean eo:cloud_cover (tie-break: more scenes).
+    """
+    dated = [c for c in candidates if c.dt is not None]
+    if not dated:
+        return None
+
+    anchor_dates = sorted({c.dt.date() for c in dated})
+    best_window: tuple[date, date] | None = None
+    best_key: tuple[float, int] | None = None
+
+    for anchor in anchor_dates:
+        start = anchor - timedelta(days=3)
+        end = anchor + timedelta(days=3)
+        in_win = [c for c in dated if start <= c.dt.date() <= end]
+        if not in_win:
+            continue
+        key = (_mean_cloud_candidates(in_win), -len(in_win))
+        if best_key is None or key < best_key:
+            best_key = key
+            best_window = (start, end)
+
+    return best_window
+
+
+def _aoi_longitude_strips(aoi: Any, n: int) -> list[Any]:
+    """
+    Vertical (north–south) slices of the AOI: columns between lines of longitude.
+
+    Satellite ground tracks are **oblique** (not meridian-aligned); we approximate each pass-day
+    "strip" as one such column so scenes in a column tend to share a pass. Intersection with the AOI
+    still yields **full granule footprints** in the interior and **small clipped pieces** at edges —
+    greedy cover handles both via footprint geometry.
+    """
+    try:
+        g = unary_union(aoi) if getattr(aoi, "geom_type", None) == "MultiPolygon" else aoi
+        if not g.is_valid:
+            g = make_valid(g)
+    except Exception:
+        g = aoi
+    if g.is_empty:
+        return []
+    minx, miny, maxx, maxy = g.bounds
+    width = maxx - minx
+    if width <= 1e-11:
+        return [g] if g.geom_type == "Polygon" else list(g.geoms) if g.geom_type == "MultiPolygon" else []
+    n = max(1, min(n, 48))
+    eps = max(width * 1e-7, 1e-9)
+    strips: list[Any] = []
+    for i in range(n):
+        x0 = minx + (i / n) * width
+        x1 = minx + ((i + 1) / n) * width
+        strip = box(x0 - eps, miny - 0.05, x1 + eps, maxy + 0.05)
+        try:
+            inter = g.intersection(strip)
+            if inter.is_empty:
+                continue
+            if inter.geom_type == "Polygon":
+                strips.append(inter)
+            elif inter.geom_type == "MultiPolygon":
+                for pg in inter.geoms:
+                    if not pg.is_empty and pg.area > 0:
+                        strips.append(pg)
+        except Exception:
+            continue
+    return strips if strips else ([g] if g.geom_type == "Polygon" else list(g.geoms) if g.geom_type == "MultiPolygon" else [])
+
+
+def _best_same_day_cover_for_band(
+    need: Any,
+    pool: list[Candidate],
+    sort_mode: str,
+) -> list[Candidate]:
+    """Among acquisition days, pick the day whose greedy cover minimizes uncovered area on `need`."""
+    by_date: dict[date, list[Candidate]] = defaultdict(list)
+    no_date: list[Candidate] = []
+    for c in pool:
+        if c.dt is None:
+            no_date.append(c)
+            continue
+        by_date[c.dt.date()].append(c)
+
+    best_sel: list[Candidate] = []
+    best_key: tuple[float, float] | None = None  # (uncovered_frac_on_band, mean_cloud)
+
+    for _d, plist in sorted(by_date.items(), key=lambda kv: (_mean_cloud_candidates(kv[1]), kv[0])):
+        sel, _rem, frac = greedy_cover_aoi(need, plist, sort_mode)
+        mean_cl = _mean_cloud_candidates(plist)
+        key = (float(frac), mean_cl)
+        if best_key is None or key < best_key:
+            best_key = key
+            best_sel = sel
+
+    if no_date:
+        sel2, _r2, frac2 = greedy_cover_aoi(need, no_date, sort_mode)
+        mean_nd = _mean_cloud_candidates(no_date)
+        key2 = (float(frac2), mean_nd)
+        if best_key is None or key2 < best_key:
+            best_sel = sel2
+
+    return best_sel
+
+
+def same_pass_date_strips_select(
+    aoi: Polygon,
+    intersecting: list[Candidate],
+    sort_mode: str,
+    *,
+    num_strips: int = _SAME_PASS_NUM_STRIPS,
+) -> tuple[list[Candidate], Polygon | None, float]:
+    """
+    Each vertical (N–S) longitude strip picks one acquisition day that minimizes uncovered area on
+    the **part of that strip not already covered** by granules chosen for earlier strips. Without
+    this, excluding already-used keys from the pool made every column pick extra scenes even when
+    one wide granule already covered multiple columns (many redundant selections vs. the map).
+    Optional gap-fill pass uses any dates for leftover holes.
+    """
+    bands = _aoi_longitude_strips(aoi, num_strips)
+    # West → east (along-track order is approximated; strips are meridian columns, not true swath azimuth)
+    bands.sort(key=lambda p: p.centroid.x)
+
+    selected: list[Candidate] = []
+    used: set[str] = set()
+    aoi_area = float(aoi.area) if aoi.area > 0 else 1.0
+    min_need = max(aoi_area * 1e-10, 1e-16)
+
+    for band in bands:
+        cu = _union_candidate_geoms(selected)
+        try:
+            if cu is None:
+                need = band
+            else:
+                need = band.difference(cu)
+            need = _polygonal_part(need)
+            if need is None or need.is_empty or float(need.area) < min_need:
+                continue
+        except Exception:
+            continue
+
+        pool = []
+        for c in intersecting:
+            if c.key in used:
+                continue
+            try:
+                if c.geom.intersects(need):
+                    pool.append(c)
+            except Exception:
+                continue
+        if not pool:
+            continue
+        for c in _best_same_day_cover_for_band(need, pool, sort_mode):
+            if c.key not in used:
+                selected.append(c)
+                used.add(c.key)
+
+    if not selected:
+        return greedy_cover_aoi(aoi, intersecting, sort_mode)
+
+    try:
+        ugeom = unary_union([c.geom for c in selected])
+        remaining = aoi.difference(ugeom)
+        if remaining.geom_type == "GeometryCollection":
+            polys = [x for x in remaining.geoms if getattr(x, "geom_type", "") in ("Polygon", "MultiPolygon")]
+            remaining = unary_union(polys) if polys else remaining
+        if remaining.is_empty:
+            return _dedupe_candidates_by_key(selected), None, 0.0
+    except Exception:
+        remaining = aoi
+
+    gap_pool = [c for c in intersecting if c.key not in used]
+    if gap_pool and not remaining.is_empty:
+        try:
+            gs, rem_g, _frac_g = greedy_cover_aoi(remaining, gap_pool, sort_mode)
+            for c in gs:
+                if c.key not in used:
+                    selected.append(c)
+                    used.add(c.key)
+            ugeom = unary_union([c.geom for c in selected])
+            remaining = aoi.difference(ugeom)
+            if remaining.geom_type == "GeometryCollection":
+                polys = [x for x in remaining.geoms if getattr(x, "geom_type", "") in ("Polygon", "MultiPolygon")]
+                remaining = unary_union(polys) if polys else remaining
+        except Exception:
+            pass
+
+    if remaining.is_empty:
+        return _dedupe_candidates_by_key(selected), None, 0.0
+    uncovered_frac = float(remaining.area / aoi_area) if aoi_area > 0 else 0.0
+    return _dedupe_candidates_by_key(selected), remaining, uncovered_frac
+
+
 def build_mosaicjson_from_footprints(
     items: list[tuple[str, Polygon]],
     *,
@@ -701,6 +962,9 @@ def plan_mosaic_from_features(
     aoi: Polygon,
     features: list[dict[str, Any]],
     sort_mode: str,
+    *,
+    same_pass_date_strips: bool = False,
+    locked_date_window: tuple[date, date] | None = None,
 ) -> dict[str, Any]:
     """Greedy select + swap options + GeoJSON footprints for the API response."""
     candidates: list[Candidate] = []
@@ -729,12 +993,41 @@ def plan_mosaic_from_features(
                 intersecting.append(c)
         except Exception:
             continue
+    same_seven_day_window_out: dict[str, Any] | None = None
+    if same_pass_date_strips:
+        if locked_date_window is not None:
+            ds, de = locked_date_window
+            intersecting = _filter_candidates_to_date_window(intersecting, ds, de)
+            same_seven_day_window_out = {
+                "start": ds.isoformat(),
+                "end": de.isoformat(),
+                "locked": True,
+            }
+        else:
+            win = _pick_best_seven_day_window_from_candidates(intersecting)
+            if win is not None:
+                ds, de = win
+                in_win = _filter_candidates_to_date_window(intersecting, ds, de)
+                same_seven_day_window_out = {
+                    "start": ds.isoformat(),
+                    "end": de.isoformat(),
+                    "locked": False,
+                    "mean_cloud_in_window": round(_mean_cloud_candidates(in_win), 4),
+                    "candidates_in_window": len(in_win),
+                }
+                intersecting = in_win
+
     if sort_mode == "lowest_cloud":
         intersecting.sort(key=_sort_key_lowest_cloud)
     else:
         intersecting.sort(key=_sort_key_newest)
 
-    selected, remaining_uncovered, uncovered_frac = greedy_cover_aoi(aoi, intersecting, sort_mode)
+    if same_pass_date_strips:
+        selected, remaining_uncovered, uncovered_frac = same_pass_date_strips_select(
+            aoi, intersecting, sort_mode
+        )
+    else:
+        selected, remaining_uncovered, uncovered_frac = greedy_cover_aoi(aoi, intersecting, sort_mode)
 
     selected_keys = {c.key for c in selected}
     swap_options: dict[str, list[dict[str, Any]]] = {}
@@ -800,14 +1093,17 @@ def plan_mosaic_from_features(
         except Exception:
             rem_geo = None
 
-    return {
+    out: dict[str, Any] = {
         "selected": selected_payload,
         "footprints": {"type": "FeatureCollection", "features": footprints},
         "swap_options": swap_options,
         "uncovered_fraction": uncovered_frac,
         "candidates_matched": len(intersecting),
         "remaining_uncovered": rem_geo,
+        "use_same_pass_date_strips": bool(same_pass_date_strips),
+        "same_seven_day_window": same_seven_day_window_out,
     }
+    return out
 
 
 async def plan_mosaic_with_void_fill(
@@ -821,6 +1117,7 @@ async def plan_mosaic_with_void_fill(
     cloud_cover_max: float | None,
     sort_mode: str,
     fetch_limit: int,
+    same_pass_date_strips: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """
     Run an initial STAC search over the full AOI bbox, plan coverage, then repeat STAC search
@@ -833,6 +1130,7 @@ async def plan_mosaic_with_void_fill(
     merged: dict[str, dict[str, Any]] = {}
     all_errors: list[dict[str, str]] = []
     last_result: dict[str, Any] | None = None
+    locked_date_window: tuple[date, date] | None = None
 
     for round_idx in range(_VOID_FILL_MAX_ROUNDS):
         if round_idx == 0:
@@ -889,7 +1187,23 @@ async def plan_mosaic_with_void_fill(
                 last_result["void_fill_stopped"] = "no_new_features"
             break
 
-        last_result = plan_mosaic_from_features(aoi, list(merged.values()), sort_mode)
+        last_result = plan_mosaic_from_features(
+            aoi,
+            list(merged.values()),
+            sort_mode,
+            same_pass_date_strips=same_pass_date_strips,
+            locked_date_window=locked_date_window,
+        )
+        if same_pass_date_strips and locked_date_window is None:
+            sw = last_result.get("same_seven_day_window")
+            if isinstance(sw, dict) and sw.get("start") and sw.get("end"):
+                try:
+                    locked_date_window = (
+                        date.fromisoformat(str(sw["start"])[:10]),
+                        date.fromisoformat(str(sw["end"])[:10]),
+                    )
+                except ValueError:
+                    pass
         last_result["void_fill_rounds"] = round_idx + 1
         last_result["stac_feature_pool_size"] = len(merged)
 
@@ -899,7 +1213,13 @@ async def plan_mosaic_with_void_fill(
             break
 
     if last_result is None:
-        last_result = plan_mosaic_from_features(aoi, [], sort_mode)
+        last_result = plan_mosaic_from_features(
+            aoi,
+            [],
+            sort_mode,
+            same_pass_date_strips=same_pass_date_strips,
+            locked_date_window=locked_date_window,
+        )
         last_result["void_fill_rounds"] = 0
         last_result["stac_feature_pool_size"] = 0
 
@@ -1044,4 +1364,6 @@ def swap_options_for_selected(
         "uncovered_fraction": None,
         "remaining_uncovered": None,
         "candidates_matched": len(intersecting),
+        "use_same_pass_date_strips": False,
+        "same_seven_day_window": None,
     }

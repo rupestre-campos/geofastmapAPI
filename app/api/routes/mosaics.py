@@ -44,6 +44,10 @@ class MosaicPlanBody(BaseModel):
     seasons: list[str] = Field(default_factory=list, description="spring, summer, autumn, winter (northern hemisphere)")
     cloud_cover_max: float | None = Field(None, ge=0, le=100)
     sort_mode: str = Field("lowest_cloud", description="lowest_cloud | newest_first")
+    use_same_pass_date_strips: bool = Field(
+        False,
+        description="If true, restrict to a sliding 7-day UTC date window (best mean cloud), then per-column same-day strips; STAC cloud filter is not applied. Void-fill rounds stay in that window. Gap fill may mix dates.",
+    )
     geofast_collection_id: str | None = None
     geofast_feature_id: str | None = None
     selected: list[dict[str, Any]] | None = Field(
@@ -141,6 +145,8 @@ async def mosaic_plan(
     settings = get_settings()
     cap = min(500, settings.stac_search_max_catalogs * 200)
 
+    cloud_for_search = None if body.use_same_pass_date_strips else body.cloud_cover_max
+
     if body.selected:
         features, stac_errors = await collect_stac_features(
             db,
@@ -161,15 +167,18 @@ async def mosaic_plan(
             aoi=aoi,
             search_bbox=search_bbox,
             datetime_slices=slices,
-            cloud_cover_max=body.cloud_cover_max,
+            cloud_cover_max=cloud_for_search,
             sort_mode=body.sort_mode,
             fetch_limit=cap,
+            same_pass_date_strips=body.use_same_pass_date_strips,
         )
     result["stac_errors"] = stac_errors
     result["search_bbox"] = search_bbox
     result["datetime_slices"] = slices
     result["catalog_id"] = body.catalog_id
     result["stac_collection_id"] = body.stac_collection_id
+    if body.selected:
+        result["use_same_pass_date_strips"] = body.use_same_pass_date_strips
     return result
 
 

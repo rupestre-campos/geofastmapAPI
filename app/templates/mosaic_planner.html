@@ -126,6 +126,14 @@
     </div>
 
     <div class="form-row">
+      <label class="checkbox-inline">
+        <input type="checkbox" id="mp-same-pass-date">
+        Use images around same date
+      </label>
+      <p class="meta" style="margin:0.35rem 0 0;">Planner picks a sliding <strong>7-day UTC window</strong> (e.g. anchor ±3 days so a Sunday scene can pair with Saturday and Monday—not fixed to Mon–Sun ISO weeks). Windows are scored by mean cloud; all strips use only scenes in that window. Each vertical column still prefers one calendar day; another column can use a different day inside the window. Cloud % is not sent to STAC; leftover gaps may still be filled from the pool.</p>
+    </div>
+
+    <div class="form-row">
       <span class="label-text">Seasons (optional, within date range)</span>
       <label class="checkbox-inline"><input type="checkbox" name="mp-season" value="spring"> Spring</label>
       <label class="checkbox-inline"><input type="checkbox" name="mp-season" value="summer"> Summer</label>
@@ -523,6 +531,7 @@
           date_end: de || null,
           seasons: getSeasons(),
           sort_mode: document.getElementById('mp-sort').value,
+          use_same_pass_date_strips: !!(document.getElementById('mp-same-pass-date') && document.getElementById('mp-same-pass-date').checked),
           selected: lastPlan && Array.isArray(lastPlan.selected) ? lastPlan.selected : []
         };
         var cloud = (document.getElementById('mp-cloud').value || '').trim();
@@ -1082,6 +1091,10 @@
           var sm = document.getElementById('mp-sort');
           if (sm) sm.value = String(def.sort_mode);
         }
+        try {
+          var spd = document.getElementById('mp-same-pass-date');
+          if (spd) spd.checked = def.use_same_pass_date_strips === true;
+        } catch (eSp) {}
         // seasons
         try {
           var want = Array.isArray(def.seasons) ? def.seasons.map(String) : [];
@@ -1200,7 +1213,8 @@
           date_start: ds || null,
           date_end: de || null,
           seasons: getSeasons(),
-          sort_mode: document.getElementById('mp-sort').value
+          sort_mode: document.getElementById('mp-sort').value,
+          use_same_pass_date_strips: !!(document.getElementById('mp-same-pass-date') && document.getElementById('mp-same-pass-date').checked)
         };
         if (cloud !== '') body.cloud_cover_max = parseFloat(cloud);
 
@@ -1218,7 +1232,11 @@
           document.getElementById('mp-results-card').style.display = '';
           var unc = (data.uncovered_fraction != null) ? (Math.round(data.uncovered_fraction * 1000) / 10) : '?';
           var rounds = (data.void_fill_rounds != null) ? data.void_fill_rounds : 1;
-          document.getElementById('mp-summary').textContent = 'Selected ' + (data.selected && data.selected.length) + ' image(s). Uncovered fraction: ~' + unc + '%. STAC search round(s): ' + rounds + '.';
+          var sp = data.use_same_pass_date_strips ? ' Same-pass date strips.' : '';
+          if (data.same_seven_day_window && data.same_seven_day_window.start && data.same_seven_day_window.end) {
+            sp += ' 7-day window ' + data.same_seven_day_window.start + ' … ' + data.same_seven_day_window.end + '.';
+          }
+          document.getElementById('mp-summary').textContent = 'Selected ' + (data.selected && data.selected.length) + ' image(s). Uncovered fraction: ~' + unc + '%. STAC search round(s): ' + rounds + '.' + sp;
           refreshFootprintsLayer();
           rebuildSelectedUi();
           if (data && data.stac_errors && data.stac_errors.length) {
@@ -1390,6 +1408,7 @@
           seasons: getSeasons(),
           sort_mode: document.getElementById('mp-sort').value,
           search_bbox: (document.getElementById('mp-bbox').value || '').trim(),
+          use_same_pass_date_strips: !!(document.getElementById('mp-same-pass-date') && document.getElementById('mp-same-pass-date').checked),
           selected: lastPlan.selected
         };
         var url = base + '/raster-views' + (editingViewId ? ('/' + encodeURIComponent(editingViewId)) : '');

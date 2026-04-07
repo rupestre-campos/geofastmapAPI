@@ -3,6 +3,7 @@
 from shapely.geometry import MultiPolygon, box, shape
 
 from app.services.mosaic_plan import (
+    _aoi_longitude_strips,
     build_mosaicjson_from_footprints,
     greedy_cover_aoi,
     mgrs_tile_from_stac_item_id,
@@ -67,6 +68,12 @@ def test_swap_options_filters_same_mgrs_tile():
     assert len(alts) == 1
     assert alts[0]["mgrs_tile"] == "23KNS"
     assert alts[0]["id"] == "S2A_MSIL2A_20250201_N0000_R000_T23KNS_20250201"
+
+
+def test_aoi_longitude_strips_splits_square():
+    g = box(0, 0, 1, 1)
+    strips = _aoi_longitude_strips(g, 4)
+    assert len(strips) >= 2
 
 
 def test_pinpoint_bboxes_one_small_search_per_gap():
