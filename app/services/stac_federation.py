@@ -95,6 +95,29 @@ async def _post_search_with_retries(
                     return None, detail
 
             code = r.status_code
+            # Some upstream STAC APIs don't support the Query extension and return 400 when a "query"
+            # filter is included (even if it's lenient like cloud_cover_max=100). In that case,
+            # retry once without the query filter so searches still work.
+            if code == 400 and isinstance(req_body.get("query"), dict) and attempt == 0:
+                q = req_body.get("query") or {}
+                if isinstance(q, dict) and "eo:cloud_cover" in q:
+                    try:
+                        req_body2 = dict(req_body)
+                        req_body2.pop("query", None)
+                        r2 = await client.post(
+                            url,
+                            json=req_body2,
+                            headers={"Accept": "application/geo+json, application/json"},
+                        )
+                        if 200 <= r2.status_code < 300:
+                            try:
+                                return r2.json(), None
+                            except Exception as e:
+                                detail = f"Invalid JSON in response after dropping query ({e})"
+                                logger.warning("STAC search failed for catalog %s (%s): %s", catalog.id, url, detail)
+                                return None, detail
+                    except httpx.RequestError:
+                        pass
             if code in _RETRYABLE_HTTP_STATUS and attempt < max_attempts - 1:
                 wait = backoff * (2**attempt)
                 if code == 429:
@@ -116,7 +139,21 @@ async def _post_search_with_retries(
                 await asyncio.sleep(wait)
                 continue
 
-            detail = f"HTTP {code}" + (f" {r.reason_phrase}" if r.reason_phrase else "")
+            # Try to include upstream error detail (often JSON with "description"/"detail").
+            extra = ""
+            try:
+                ct = (r.headers.get("content-type") or "").lower()
+                if "json" in ct:
+                    j = r.json()
+                    if isinstance(j, dict):
+                        msg = j.get("detail") or j.get("description") or j.get("message")
+                        if msg:
+                            extra = f": {msg}"
+                elif r.text:
+                    extra = f": {r.text[:200]}"
+            except Exception:
+                pass
+            detail = f"HTTP {code}" + (f" {r.reason_phrase}" if r.reason_phrase else "") + extra
             if code in _RETRYABLE_HTTP_STATUS:
                 logger.warning(
                     "STAC search failed for catalog %s (%s): %s after %s attempts",

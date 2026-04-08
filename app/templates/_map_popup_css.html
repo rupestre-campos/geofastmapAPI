@@ -55,4 +55,22 @@
   .map-popup-desc-value { font-size: 0.9rem; margin-bottom: 8px; color: #000; line-height: 1.3; }
   .map-popup-item a { color: #0566c8; text-decoration: none; font-weight: 500; }
   .map-popup-item a:hover { text-decoration: underline; }
+  /* STAC search popup: theme / base can paint controls dark inside forced-light popups — force neutral. */
+  .maplibregl-popup-content button.stac-popup-load-btn,
+  .maplibregl-popup-content .stac-popup-load-btn {
+    display: inline-block;
+    background: #f6f8fa !important;
+    color: #24292f !important;
+    border: 1px solid #d0d7de !important;
+    box-shadow: none !important;
+    cursor: pointer;
+    font: inherit;
+    line-height: 1.35;
+    margin: 0;
+  }
+  .maplibregl-popup-content button.stac-popup-load-btn:hover,
+  .maplibregl-popup-content .stac-popup-load-btn:hover {
+    background: #eaeef2 !important;
+    color: #24292f !important;
+  }
 </style>
