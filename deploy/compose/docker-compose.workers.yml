@@ -4,6 +4,7 @@ name: geofastmap_api
 
 services:
   worker:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: Dockerfile
@@ -15,6 +16,7 @@ services:
     command: python -m app.worker_main
 
   tile_worker:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: Dockerfile
@@ -28,6 +30,7 @@ services:
     mem_limit: 8g
 
   process_worker:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: Dockerfile

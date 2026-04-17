@@ -4,6 +4,7 @@ name: geofastmap_api
 
 services:
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     container_name: geofastmap_redis
     ports:

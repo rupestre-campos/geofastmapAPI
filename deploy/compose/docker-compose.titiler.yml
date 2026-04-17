@@ -20,6 +20,7 @@ x-titiler-env: &titiler_env
 
 services:
   titiler:
+    restart: unless-stopped
     image: ghcr.io/developmentseed/titiler:latest
     container_name: geofastmap_titiler
     volumes:

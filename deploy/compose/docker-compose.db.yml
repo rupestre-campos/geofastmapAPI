@@ -4,6 +4,7 @@ name: geofastmap_api
 
 services:
   db:
+    restart: unless-stopped
     image: postgis/postgis:16-3.4-alpine
     container_name: geofastmap_db
     shm_size: "256mb"

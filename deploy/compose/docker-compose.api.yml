@@ -4,6 +4,7 @@ name: geofastmap_api
 
 services:
   api:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: Dockerfile
