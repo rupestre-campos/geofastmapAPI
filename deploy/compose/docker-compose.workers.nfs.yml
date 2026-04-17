@@ -1,0 +1,15 @@
+# Override workers to use host bind mounts (NFS/client paths) instead of local named volumes.
+# Use with docker-compose.workers.yml on hosts where /data/* are mounted from shared storage.
+#
+#   docker compose -f deploy/compose/docker-compose.workers.yml -f deploy/compose/docker-compose.workers.nfs.yml up -d --build
+
+name: geofastmap_api
+
+services:
+  worker:
+    volumes:
+      - /data/bulk-uploads:/data/bulk-uploads
+
+  tile_worker:
+    volumes:
+      - /data/tiles:/data/tiles

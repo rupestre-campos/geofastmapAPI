@@ -1,5 +1,7 @@
 # PostGIS only. From repo root:
 #   docker compose -f deploy/compose/docker-compose.db.yml up -d
+name: geofastmap_api
+
 services:
   db:
     image: postgis/postgis:16-3.4-alpine
@@ -16,7 +18,7 @@ services:
       retries: 10
       start_period: 10s
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - geofastmap_pgdata:/var/lib/postgresql/data
       - ../../docker/init-pg_trgm.sql:/docker-entrypoint-initdb.d/02-pg_trgm.sql

@@ -1,5 +1,7 @@
 # API only (external DATABASE_URL / REDIS_URL). Create deploy/env/.env.api first (see deploy/env/api.sample).
 #   docker compose -f deploy/compose/docker-compose.api.yml up -d --build
+name: geofastmap_api
+
 services:
   api:
     build:

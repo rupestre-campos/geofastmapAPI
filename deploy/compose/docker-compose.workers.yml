@@ -1,5 +1,7 @@
 # Bulk, tile, and process workers. Create deploy/env/.env.workers first (see deploy/env/workers.sample).
 #   docker compose -f deploy/compose/docker-compose.workers.yml up -d --build
+name: geofastmap_api
+
 services:
   worker:
     build:

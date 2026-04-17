@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 import zipfile
 from datetime import datetime
 from typing import Callable
@@ -183,7 +184,23 @@ def _import_one_source(
     failed = 0
     max_vertices = get_settings().features_subdivide_max_vertices
 
-    with fiona.open(open_path, driver=driver) as src:
+    # On multi-host NFS, a freshly uploaded ZIP can be briefly visible in directory listing
+    # but not yet fully readable by GDAL on another worker. Retry a few times before failing.
+    last_open_err: Exception | None = None
+    src = None
+    for attempt in range(5):
+        try:
+            src = fiona.open(open_path, driver=driver)
+            break
+        except Exception as e:
+            last_open_err = e
+            if attempt >= 4:
+                raise
+            time.sleep(0.35 * (attempt + 1))
+    if src is None and last_open_err is not None:
+        raise last_open_err
+
+    with src:
         for rec in src:
             _raise_if_bulk_cancelled(bulk_import_job_id)
             geom_dict = rec.get("geometry")

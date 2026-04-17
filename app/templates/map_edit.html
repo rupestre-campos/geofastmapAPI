@@ -1694,7 +1694,10 @@
           .then(function(r) {
             if (!r.ok) return r.json().then(function(j) { throw j; });
             var suggestHeader = r.headers.get('X-Suggest-Make-Public-Collections');
-            return r.json().then(function(j) { return { json: j, suggestHeader: suggestHeader }; });
+            var mosaicSuggestHeader = r.headers.get('X-Suggest-Make-Public-Mosaics');
+            return r.json().then(function(j) {
+              return { json: j, suggestHeader: suggestHeader, mosaicSuggestHeader: mosaicSuggestHeader };
+            });
           })
           .then(function(res) {
             var data = res && res.json ? res.json : res;
@@ -1725,6 +1728,44 @@
                   }
                 }
               } catch (e) {}
+            }
+            // If map is public and some mosaic layers are not public, offer to publish them too.
+            if (res && res.mosaicSuggestHeader) {
+              try {
+                var mosaicSuggest = JSON.parse(res.mosaicSuggestHeader);
+                if (Array.isArray(mosaicSuggest) && mosaicSuggest.length) {
+                  var mosaicNames = mosaicSuggest.map(function(m) {
+                    return (m && (m.title || m.mosaic_view_id)) ? (m.title || m.mosaic_view_id) : '';
+                  }).filter(Boolean).join(', ');
+                  var makeMosaicPublic = confirm(
+                    'This map is public, but these mosaics are not public yet: ' + mosaicNames +
+                    '.\n\nMake them public now so everyone can view the raster layers?'
+                  );
+                  if (makeMosaicPublic) {
+                    var mosaicChain = Promise.resolve();
+                    mosaicSuggest.forEach(function(m) {
+                      if (!m || !m.mosaic_view_id) return;
+                      mosaicChain = mosaicChain.then(function() {
+                        return fetch(base + '/raster-views/' + encodeURIComponent(m.mosaic_view_id), {
+                          method: 'PATCH',
+                          credentials: 'same-origin',
+                          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                          body: JSON.stringify({ visibility: 'public' })
+                        }).then(function(rr) {
+                          if (!rr.ok) return rr.text().then(function(t) { throw new Error(t || rr.statusText); });
+                        });
+                      });
+                    });
+                    mosaicChain.then(function() {
+                      msgEl.textContent = 'Saved. Mosaics made public.';
+                      msgEl.style.color = 'var(--success)';
+                    }).catch(function(err) {
+                      msgEl.textContent = 'Saved map, but failed to publish mosaics: ' + (err && err.message ? err.message : err);
+                      msgEl.style.color = 'var(--danger)';
+                    });
+                  }
+                }
+              } catch (e2) {}
             }
           })
           .catch(function(e) {

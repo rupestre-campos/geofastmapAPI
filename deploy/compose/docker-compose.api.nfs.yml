@@ -1,0 +1,13 @@
+# Override API to use host bind mounts (NFS/client paths) instead of local named volumes.
+# Use with docker-compose.api.yml on hosts where /data/* are mounted from shared storage.
+#
+#   docker compose -f deploy/compose/docker-compose.api.yml -f deploy/compose/docker-compose.api.nfs.yml up -d --build
+
+name: geofastmap_api
+
+services:
+  api:
+    volumes:
+      - /data/bulk-uploads:/data/bulk-uploads
+      - /data/tiles:/data/tiles
+      - /data/rasters:/data/rasters

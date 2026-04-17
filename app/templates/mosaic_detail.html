@@ -44,11 +44,19 @@
   <div class="card">
     <h2 class="card-title">Sharing</h2>
     <form id="mosaic-settings-form" class="form-row" style="flex-direction:column;align-items:flex-start;gap:12px;">
+      <label>
+        Mosaic visibility
+        <select id="mosaic-visibility">
+          <option value="private" {% if visibility == 'private' %}selected{% endif %}>Private</option>
+          <option value="logged" {% if visibility == 'logged' %}selected{% endif %}>Logged-in users</option>
+          <option value="public" {% if visibility == 'public' %}selected{% endif %}>Public</option>
+        </select>
+      </label>
       <label class="checkbox-inline">
         <input type="checkbox" id="mosaic-allow-public-maps" {% if allow_public_maps %}checked{% endif %}>
         Allow this mosaic on <strong>public</strong> maps (anonymous viewers can load tiles when the map is public)
       </label>
-      <p class="meta" style="margin:0;">General visibility (private / logged / public) is separate; use <code>PATCH /raster-views/{{ view_id }}</code> from the API or future UI.</p>
+      <p class="meta" style="margin:0;">Public visibility exposes this mosaic directly; <strong>Allow on public maps</strong> lets public maps use it even when visibility is private/logged.</p>
       <button type="button" class="btn btn-primary btn-sm" id="btn-save-mosaic-settings">Save</button>
       <span id="mosaic-settings-msg" class="meta" role="status"></span>
     </form>
@@ -193,12 +201,16 @@
         saveBtn.onclick = function() {
           var msg = document.getElementById('mosaic-settings-msg');
           var cb = document.getElementById('mosaic-allow-public-maps');
+          var visibility = document.getElementById('mosaic-visibility');
           msg.textContent = '';
           fetch(base + '/raster-views/' + encodeURIComponent(viewId), {
             method: 'PATCH',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({ allow_public_maps: !!(cb && cb.checked) })
+            body: JSON.stringify({
+              allow_public_maps: !!(cb && cb.checked),
+              visibility: visibility && visibility.value ? visibility.value : 'private'
+            })
           }).then(function(r) {
             if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || r.status); });
             return r.json();

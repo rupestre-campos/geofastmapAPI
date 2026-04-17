@@ -32,6 +32,8 @@
 # The upstream image substitutes PERMITTED with sed; values containing "/" (e.g. 192.168.8.0/24)
 # break substitution and leave {{PERMITTED}} in /etc/exports (nothing gets exported).
 # Use wildcard form "a.b.c.*" to approximate a /24 on that LAN (adjust octets to match your network).
+name: geofastmap_api
+
 services:
   nfs:
     image: itsthenetwork/nfs-server-alpine:latest

@@ -1,5 +1,7 @@
 # TiTiler only (rasters volume). Published on host 8001 by default.
 #   docker compose -f deploy/compose/docker-compose.titiler.yml up -d
+name: geofastmap_api
+
 x-titiler-env: &titiler_env
   HOST: "0.0.0.0"
   PORT: "8000"

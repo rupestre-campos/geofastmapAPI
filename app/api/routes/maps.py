@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user_optional
 from app.core.config import get_settings
 from app.core.html import html_response, wants_html
-from app.core.permissions import can_edit_collection, can_edit_map, can_see_map
+from app.core.permissions import (
+    can_edit_collection,
+    can_edit_map,
+    can_edit_raster_view,
+    can_see_map,
+)
 from app.crud import collections as collections_crud
 from app.crud import maps as maps_crud
 from app.crud import resource_share as resource_share_crud
@@ -131,26 +136,39 @@ async def _stac_grants_missing_for_public_map(db: AsyncSession, definition: dict
     return missing
 
 
-async def _mosaic_allow_public_missing_for_public_map(db: AsyncSession, definition: dict) -> list[dict]:
-    """Saved mosaic raster layers on a public map must have allow_public_maps on the view."""
+async def _mosaic_visibility_status_for_public_map(
+    db: AsyncSession, definition: dict, current_user
+) -> tuple[list[dict], list[dict]]:
+    """Saved mosaic raster layers on public maps: return (blocking, suggest-public)."""
     from app.crud import raster_views as rv_crud
 
-    missing: list[dict] = []
+    blocking: list[dict] = []
+    suggest: list[dict] = []
+    seen: set[str] = set()
     for lyr in definition.get("layers") or []:
         if not isinstance(lyr, dict):
             continue
-        if not lyr.get("raster_tiles") or not lyr.get("mosaic_view_id"):
+        if not lyr.get("raster_tiles"):
             continue
         mid = lyr.get("mosaic_view_id") or lyr.get("mosaicViewId")
         if not mid:
             continue
+        mid_s = str(mid)
+        if mid_s in seen:
+            continue
+        seen.add(mid_s)
         row = await rv_crud.get_view(db, str(mid))
         if row is None:
-            missing.append({"mosaic_view_id": str(mid), "title": "Unknown mosaic"})
+            blocking.append({"mosaic_view_id": mid_s, "title": "Unknown mosaic"})
             continue
-        if not getattr(row, "allow_public_maps", False):
-            missing.append({"mosaic_view_id": str(mid), "title": row.title or str(mid)})
-    return missing
+        if getattr(row, "visibility", "private") == VISIBILITY_PUBLIC:
+            continue
+        item = {"mosaic_view_id": mid_s, "title": row.title or mid_s}
+        if await can_edit_raster_view(db, row.owner_id, mid_s, current_user):
+            suggest.append(item)
+        else:
+            blocking.append(item)
+    return (blocking, suggest)
 
 
 def _merged_map_visibility(payload: dict, row) -> str:
@@ -400,12 +418,15 @@ async def check_map_public_layers(
     definition = row.definition or {}
     blocking, suggest = await _check_map_public_layers(db, definition, current_user)
     stac_missing = await _stac_grants_missing_for_public_map(db, definition)
-    mosaic_missing = await _mosaic_allow_public_missing_for_public_map(db, definition)
+    mosaic_blocking, mosaic_suggest = await _mosaic_visibility_status_for_public_map(
+        db, definition, current_user
+    )
     return {
         "blocking": blocking,
         "suggest": suggest,
         "stac_grants_missing": stac_missing,
-        "mosaic_public_missing": mosaic_missing,
+        "mosaic_public_blocking": mosaic_blocking,
+        "mosaic_public_suggest": mosaic_suggest,
     }
 
 
@@ -454,16 +475,19 @@ async def update_map(
                     "stac_grants_blocking": stac_miss,
                 },
             )
-        mosaic_miss = await _mosaic_allow_public_missing_for_public_map(db, merged_def)
-        if mosaic_miss:
+        mosaic_blocking, _ = await _mosaic_visibility_status_for_public_map(
+            db, merged_def, current_user
+        )
+        if mosaic_blocking:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
                     "message": (
-                        "This map is public but some saved mosaic layers are not enabled for public maps. "
-                        "Enable “public map” on each mosaic (mosaic owner or editor) or remove those layers."
+                        "This map is public but some saved mosaic layers are not public and you do not have "
+                        "permission to publish them. Ask a mosaic owner/editor to make them public, "
+                        "or remove those layers."
                     ),
-                    "mosaic_public_blocking": mosaic_miss,
+                    "mosaic_public_blocking": mosaic_blocking,
                 },
             )
     if payload:
@@ -476,6 +500,11 @@ async def update_map(
         _, suggest = await _check_map_public_layers(db, row.definition or {}, current_user)
         if suggest:
             headers["X-Suggest-Make-Public-Collections"] = json.dumps(suggest)
+        _, mosaic_suggest = await _mosaic_visibility_status_for_public_map(
+            db, row.definition or {}, current_user
+        )
+        if mosaic_suggest:
+            headers["X-Suggest-Make-Public-Mosaics"] = json.dumps(mosaic_suggest)
     if headers:
         return JSONResponse(content=_map_to_read(row, base), headers=headers)
     return _map_to_read(row, base)
@@ -527,16 +556,19 @@ async def patch_map(
                     "stac_grants_blocking": stac_miss,
                 },
             )
-        mosaic_miss = await _mosaic_allow_public_missing_for_public_map(db, merged_def)
-        if mosaic_miss:
+        mosaic_blocking, _ = await _mosaic_visibility_status_for_public_map(
+            db, merged_def, current_user
+        )
+        if mosaic_blocking:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
                     "message": (
-                        "This map is public but some saved mosaic layers are not enabled for public maps. "
-                        "Enable “public map” on each mosaic (mosaic owner or editor) or remove those layers."
+                        "This map is public but some saved mosaic layers are not public and you do not have "
+                        "permission to publish them. Ask a mosaic owner/editor to make them public, "
+                        "or remove those layers."
                     ),
-                    "mosaic_public_blocking": mosaic_miss,
+                    "mosaic_public_blocking": mosaic_blocking,
                 },
             )
     if payload:
@@ -550,6 +582,11 @@ async def patch_map(
         _, suggest = await _check_map_public_layers(db, definition, current_user)
         if suggest:
             headers["X-Suggest-Make-Public-Collections"] = json.dumps(suggest)
+        _, mosaic_suggest = await _mosaic_visibility_status_for_public_map(
+            db, definition, current_user
+        )
+        if mosaic_suggest:
+            headers["X-Suggest-Make-Public-Mosaics"] = json.dumps(mosaic_suggest)
     if headers:
         return JSONResponse(content=_map_to_read(row, base), headers=headers)
     return _map_to_read(row, base)

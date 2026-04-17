@@ -2,12 +2,17 @@
 
 These files implement the **split stacks** described in [`docs/DEPLOYMENT.md`](../../docs/DEPLOYMENT.md). Paths are relative to **`deploy/compose/`** (`build.context: ../..`, `env_file: ../env/.env.*`).
 
+All split compose files set `name: geofastmap_api` so DB/API/workers/TiTiler reuse the same Compose project (networks and named volumes) regardless of clone folder name.
+If you need a different project name on one host, run with `-p <project_name>` (or `COMPOSE_PROJECT_NAME`).
+
 | File | Purpose |
 |------|---------|
 | `docker-compose.db.yml` | PostGIS only |
 | `docker-compose.redis.yml` | Redis only |
-| `docker-compose.api.yml` | API only |
+| `docker-compose.api.yml` | API only (named volumes for `/data/*`) |
+| `docker-compose.api.nfs.yml` | **Override:** bind-mount host `/data/bulk-uploads`, `/data/tiles`, `/data/rasters` (use with `docker-compose.api.yml`) |
 | `docker-compose.workers.yml` | Bulk, tile, and process workers |
+| `docker-compose.workers.nfs.yml` | **Override:** bind-mount host `/data/bulk-uploads` and `/data/tiles` (use with `docker-compose.workers.yml`) |
 | `docker-compose.workers.process-only.example.yml` | Example: **only** `process_worker` (optional second host; copy/rename to taste) |
 | `docker-compose.titiler.yml` | TiTiler only (host port **8001**; named volume `geofastmap_rasters`) |
 | `docker-compose.titiler.nfs.yml` | **Override:** bind-mount host **`/data/rasters`** (use with `docker-compose.titiler.yml` on workers / NFS clients) |
@@ -44,6 +49,13 @@ For workers to share **`/data/tiles`**, **`/data/bulk-uploads`**, and **`/data/r
 That guide exports **`/srv/geofast/tiles`**, **`/srv/geofast/bulk-uploads`**, **`/srv/geofast/rasters`** after bind-mounting Docker volume `_data` paths (three **separate** export lines avoid empty listings on clients).
 
 Set `TILES_STORAGE_PATH=/data/tiles` and `BULK_STORAGE_PATH=/data/bulk-uploads` in `deploy/env/.env.workers`; align Titiler with **`/data/rasters`**.
+
+**Important for split hosts:** base API/workers files use local named volumes for `/data/*`. On hosts where `/data/*` is mounted from NFS/SMB, stack the NFS overrides so containers read/write the shared paths:
+
+```bash
+docker compose -f deploy/compose/docker-compose.api.yml -f deploy/compose/docker-compose.api.nfs.yml up -d --build
+docker compose -f deploy/compose/docker-compose.workers.yml -f deploy/compose/docker-compose.workers.nfs.yml up -d --build
+```
 
 **Titiler on a worker:** mount **`/data/rasters`** via NFS (same path as on the primary), then start TiTiler with the bind-mount override so Docker does not use an empty local named volume:
 

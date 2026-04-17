@@ -36,6 +36,15 @@ Pre-made Compose slices live in [`deploy/compose/`](../deploy/compose/) (see [`d
 docker compose -f deploy/compose/docker-compose.api.yml up -d --build
 ```
 
+When API/workers run on hosts that mount shared NFS/SMB at `/data/*`, stack the NFS overrides so containers use host bind mounts (instead of local named volumes):
+
+```bash
+docker compose -f deploy/compose/docker-compose.api.yml -f deploy/compose/docker-compose.api.nfs.yml up -d --build
+docker compose -f deploy/compose/docker-compose.workers.yml -f deploy/compose/docker-compose.workers.nfs.yml up -d --build
+```
+
+Split compose files use a fixed project name (`geofastmap_api`) so services, networks, and volumes are reused even if the repo directory name differs. Override on a host with `docker compose -p <project_name> ...` (or `COMPOSE_PROJECT_NAME`) when needed.
+
 If you need **NFS** so worker hosts see the same **`tiles` / `bulk-uploads` / `rasters`** files as the primary, the **recommended** approach is **kernel NFS on the primary host** (Ubuntu `nfs-kernel-server`), **not** inside Docker: **[`lab/nfs-host-ubuntu.md`](lab/nfs-host-ubuntu.md)** has copy-paste steps, `/etc/exports`, firewall, and worker mount commands.
 
 An **optional** Docker-based NFS helper exists for experiments only—see [`deploy/compose/README.md`](../deploy/compose/README.md) and [`deploy/compose/docker-compose.nfs.yml`](../deploy/compose/docker-compose.nfs.yml). Use only on trusted LANs; never expose NFS to the public internet.
