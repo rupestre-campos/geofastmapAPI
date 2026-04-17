@@ -42,7 +42,7 @@ An **optional** Docker-based NFS helper exists for experiments only—see [`depl
 
 The [`Dockerfile`](../Dockerfile) includes `static/` so the web UI works without bind-mounting the repo.
 
-**Titiler:** set `TITILER_INTERNAL_URL` on the API to your Titiler container or an **nginx** upstream ([`deploy/nginx/titiler-upstream.conf`](../deploy/nginx/titiler-upstream.conf)).
+**Titiler:** set `TITILER_INTERNAL_URL` on the API to your Titiler container or an **nginx** upstream ([`deploy/nginx/titiler-upstream.conf`](../deploy/nginx/titiler-upstream.conf)). On a **worker** with NFS-mounted **`/data/rasters`**, stack [`docker-compose.titiler.yml`](../deploy/compose/docker-compose.titiler.yml) with [`docker-compose.titiler.nfs.yml`](../deploy/compose/docker-compose.titiler.nfs.yml) so rasters are not read from an empty named volume.
 
 **Postgres on bare metal:** install PostGIS + `pg_trgm`, then point `DATABASE_URL` at it; run `alembic upgrade head` once when upgrading.
 

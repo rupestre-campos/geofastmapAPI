@@ -173,7 +173,13 @@ TILES_STORAGE_PATH=/data/tiles
 BULK_STORAGE_PATH=/data/bulk-uploads
 ```
 
-Titiler on the worker should mount or bind **`/data/rasters`** the same way.
+Titiler on the worker should mount **`/data/rasters`** the same way, then run TiTiler with the bind-mount override (not the default named volume):
+
+```bash
+docker compose -f deploy/compose/docker-compose.titiler.yml -f deploy/compose/docker-compose.titiler.nfs.yml up -d
+```
+
+See [`deploy/compose/README.md`](../../deploy/compose/README.md).
 
 ### Persist mounts (`/etc/fstab` on the worker)
 

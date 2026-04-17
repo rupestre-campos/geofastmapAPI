@@ -9,7 +9,8 @@ These files implement the **split stacks** described in [`docs/DEPLOYMENT.md`](.
 | `docker-compose.api.yml` | API only |
 | `docker-compose.workers.yml` | Bulk, tile, and process workers |
 | `docker-compose.workers.process-only.example.yml` | Example: **only** `process_worker` (optional second host; copy/rename to taste) |
-| `docker-compose.titiler.yml` | TiTiler only (host port **8001**) |
+| `docker-compose.titiler.yml` | TiTiler only (host port **8001**; named volume `geofastmap_rasters`) |
+| `docker-compose.titiler.nfs.yml` | **Override:** bind-mount host **`/data/rasters`** (use with `docker-compose.titiler.yml` on workers / NFS clients) |
 | `docker-compose.nfs.yml` | Optional **Docker** NFS helper on primary (see limitations; prefer host NFS in [`docs/lab/nfs-host-ubuntu.md`](../../docs/lab/nfs-host-ubuntu.md)) |
 
 **Env files:** copy [`deploy/env/api.sample`](../env/api.sample) → `deploy/env/.env.api` and [`workers.sample`](../env/workers.sample) → `deploy/env/.env.workers`, then edit.
@@ -43,6 +44,12 @@ For workers to share **`/data/tiles`**, **`/data/bulk-uploads`**, and **`/data/r
 That guide exports **`/srv/geofast/tiles`**, **`/srv/geofast/bulk-uploads`**, **`/srv/geofast/rasters`** after bind-mounting Docker volume `_data` paths (three **separate** export lines avoid empty listings on clients).
 
 Set `TILES_STORAGE_PATH=/data/tiles` and `BULK_STORAGE_PATH=/data/bulk-uploads` in `deploy/env/.env.workers`; align Titiler with **`/data/rasters`**.
+
+**Titiler on a worker:** mount **`/data/rasters`** via NFS (same path as on the primary), then start TiTiler with the bind-mount override so Docker does not use an empty local named volume:
+
+```bash
+docker compose -f deploy/compose/docker-compose.titiler.yml -f deploy/compose/docker-compose.titiler.nfs.yml up -d
+```
 
 ### Optional: Docker NFS helper compose
 

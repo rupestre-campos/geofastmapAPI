@@ -1,0 +1,13 @@
+# Bind-mount rasters for TiTiler (NFS or any host path). Use with the base TiTiler compose so the
+# default named volume `geofastmap_rasters` is not used—on a second host that volume would be empty.
+#
+# Prerequisite: `/data/rasters` on the host (e.g. NFS mount from the primary; see docs/lab/nfs-host-ubuntu.md).
+#
+#   docker compose -f deploy/compose/docker-compose.titiler.yml -f deploy/compose/docker-compose.titiler.nfs.yml up -d
+#
+# Same image, env, and ports (8001:8000) as docker-compose.titiler.yml; only the raster volume differs.
+
+services:
+  titiler:
+    volumes:
+      - /data/rasters:/data/rasters
