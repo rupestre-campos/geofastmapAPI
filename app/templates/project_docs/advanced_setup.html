@@ -1,0 +1,102 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Advanced setup (multi-machine) – Documentation – GeoFastMap API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Advanced setup: distributed on owned hardware</h2>
+
+    <div class="callout">
+      <strong>Work in progress.</strong> This page mirrors the lab guide in the repo. The supported default for everyone is still
+      <strong>single-machine</strong> <code>docker compose up</code>—see
+      <a href="{{ base }}/project-docs/deployment-performance?f=html">Deployment &amp; performance</a> and the
+      <code>README</code> / <code>docs/DEPLOYMENT.md</code> in the repository.
+    </div>
+
+    <h3>Mission</h3>
+    <p class="meta">
+      Run GeoFast across machines you already own, with <strong>no cloud hosting bill</strong> for the app stack (local disks, LAN).
+      A <strong>Raspberry Pi</strong> may run <strong>Cloudflare Tunnel</strong> only as the HTTPS edge—do not run the full Docker stack on the Pi if it hosts other critical services.
+    </p>
+
+    <h3>Hardware this guide is written for</h3>
+    <table style="width:100%; border-collapse:collapse; font-size:0.92rem;">
+      <thead>
+        <tr style="border-bottom:1px solid var(--border);">
+          <th style="text-align:left; padding:6px 8px;">Machine</th>
+          <th style="text-align:left; padding:6px 8px;">Specs</th>
+          <th style="text-align:left; padding:6px 8px;">Role (why)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:6px 8px; vertical-align:top;"><strong>Primary machine</strong></td>
+          <td style="padding:6px 8px;">e.g. 8 cores, 16&nbsp;GB RAM, NVMe</td>
+          <td style="padding:6px 8px;"><strong>Main server:</strong> PostgreSQL, Redis, API, workers, Titiler, all data volumes. In an optional second phase, also <strong>NFS/SMB exports</strong> so worker hosts share <code>/data/...</code> paths.</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:6px 8px; vertical-align:top;"><strong>Small worker machine(s)</strong></td>
+          <td style="padding:6px 8px;">e.g. 2c/4t, 8&nbsp;GB, HDD (optional)</td>
+          <td style="padding:6px 8px;"><strong>Optional extra workers</strong> only—run <code>deploy/compose/docker-compose.workers.yml</code> with DB/Redis on the primary. Use for more <code>process_worker</code> throughput; heavy Tippecanoe on weak disks/RAM is still a poor fit unless storage is shared and fast enough.</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 8px; vertical-align:top;"><strong>Raspberry Pi</strong></td>
+          <td style="padding:6px 8px;">—</td>
+          <td style="padding:6px 8px;"><strong>Edge only:</strong> <code>cloudflared</code> tunnel → one LAN origin (usually the primary API port). Not for Postgres/Redis/Tippecanoe.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Phase 1 — default (recommended first)</h3>
+    <p>
+      Run the <strong>entire</strong> stack on the <strong>primary</strong> machine with the root <code>docker-compose.yml</code> (<code>docker compose up</code>).
+      Point the Cloudflare tunnel private origin to <code>http://&lt;PRIMARY_LAN_IP&gt;:8000</code>.
+      No second host or NFS required.
+    </p>
+    <p><strong>Primary checklist (summary)</strong></p>
+    <ul>
+      <li>Install Docker + Docker Compose.</li>
+      <li>Clone the repo, set production secrets (<code>AUTH_SECRET_KEY</code>, <code>TITILER_INTERNAL_SECRET</code>, DB passwords).</li>
+      <li><code>docker compose up -d --build</code>; verify <code>http://&lt;PRIMARY_IP&gt;:8000</code> on the LAN.</li>
+      <li>Firewall: expose the API port to LAN + Pi only, not the open internet (except via Cloudflare).</li>
+    </ul>
+    <p><strong>Pi checklist (tunnel only)</strong></p>
+    <ul>
+      <li>Install <code>cloudflared</code>; configure tunnel origin to the primary API URL.</li>
+      <li>Do not run GeoFast Docker containers on the Pi for this setup.</li>
+    </ul>
+
+    <h3>Phase 2 — optional small worker machine + primary as file server</h3>
+    <p>
+      Keep Postgres, Redis, API, Titiler, and <strong>all file data</strong> on the <strong>primary</strong>. Export <code>/data/tiles</code>, <code>/data/bulk-uploads</code> (as needed) via <strong>NFS or SMB</strong>; mount those paths <strong>identically</strong> on the worker host before starting workers.
+      On the small machine, run only workers from <code>deploy/compose/docker-compose.workers.yml</code> with <code>DATABASE_URL</code> and <code>REDIS_URL</code> pointing at the primary.
+      A common first step is <strong><code>process_worker</code> only</strong> (more layer / intersection throughput) without exporting rasters.
+    </p>
+    <p class="meta">
+      <strong>NFS (recommended):</strong> run <strong>nfs-kernel-server</strong> on the primary host (outside Docker). Step-by-step commands, <code>/etc/exports</code>, firewall, and worker mounts are in the repository at <code>docs/lab/nfs-host-ubuntu.md</code>.
+      An optional Docker-based helper (<code>deploy/compose/docker-compose.nfs.yml</code>) exists for experiments; see <code>deploy/compose/README.md</code> for caveats.
+    </p>
+    <p class="meta">
+      <strong>Raster / COG:</strong> conversion runs <strong>synchronously in the API</strong> on upload today—keep rasters on the primary unless you add async jobs later.
+    </p>
+    <p class="meta">
+      Multiple <code>process_worker</code> instances usually scale; share one canonical <code>deploy/env/.env.workers</code> (secure-copy from the primary). Avoid accidental duplicate full stacks; prefer <strong>workers-only</strong> compose on the second host.
+    </p>
+
+    <h3>What must match when you split hosts</h3>
+    <ul>
+      <li>One logical <code>DATABASE_URL</code>, one <code>REDIS_URL</code> for all workers talking to the primary.</li>
+      <li>Same <code>BULK_STORAGE_PATH</code> / <code>TILES_STORAGE_PATH</code> <em>on disk</em> wherever those services read or write—typically NFS from the primary with identical mount paths.</li>
+      <li>Same <code>AUTH_SECRET_KEY</code> on every API instance; same <code>TITILER_INTERNAL_SECRET</code> for Titiler internal fetch.</li>
+    </ul>
+
+    <h3>Full write-up in the repo</h3>
+    <p class="meta">
+      The canonical, step-by-step lab guide (including experiment log and env placeholders) lives in the repository at
+      <code>docs/lab/geofast-distributed-experiment.md</code>. Split Compose files: <code>deploy/compose/</code>; env samples: <code>deploy/env/</code>.
+    </p>
+    <p class="meta">
+      Related: <a href="{{ base }}/project-docs/deploy-cloudflare?f=html">Deploy from home (Cloudflare)</a> ·
+      <a href="{{ base }}/project-docs/deployment-performance?f=html">Deployment &amp; performance</a>
+    </p>
+  </div>
+{% endblock %}

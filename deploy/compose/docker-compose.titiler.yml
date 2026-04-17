@@ -1,0 +1,33 @@
+# TiTiler only (rasters volume). Published on host 8001 by default.
+#   docker compose -f deploy/compose/docker-compose.titiler.yml up -d
+x-titiler-env: &titiler_env
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  CPL_TMPDIR: "/tmp"
+  PYTHONWARNINGS: "ignore"
+  GDAL_CACHEMAX: "30%"
+  GDAL_INGESTED_BYTES_AT_OPEN: "65536"
+  GDAL_DISABLE_READDIR_ON_OPEN: "EMPTY_DIR"
+  GDAL_HTTP_MERGE_CONSECUTIVE_RANGES: "YES"
+  GDAL_HTTP_MULTIPLEX: "YES"
+  GDAL_HTTP_VERSION: "2"
+  VSI_CACHE: "TRUE"
+  VSI_CACHE_SIZE: "536870912"
+  CPL_VSIL_CURL_CACHE_SIZE: "536870912"
+  RIO_TILER_MAX_THREADS: "16"
+
+services:
+  titiler:
+    image: ghcr.io/developmentseed/titiler:latest
+    container_name: geofastmap_titiler
+    volumes:
+      - geofastmap_rasters:/data/rasters
+    environment:
+      <<: *titiler_env
+    ports:
+      - "8001:8000"
+    cpus: "4"
+    mem_limit: 8g
+
+volumes:
+  geofastmap_rasters:

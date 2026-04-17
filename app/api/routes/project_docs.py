@@ -155,6 +155,16 @@ async def docs_deployment_performance(
     return html_response("project_docs/deployment_performance.html", **_ctx(request, current_user))
 
 
+@router.get("/project-docs/advanced-setup", summary="Docs: advanced multi-machine setup (WIP)")
+async def docs_advanced_setup(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html")
+    return html_response("project_docs/advanced_setup.html", **_ctx(request, current_user))
+
+
 @router.get("/project-docs/troubleshooting", summary="Docs: troubleshooting")
 async def docs_troubleshooting(
     request: Request,

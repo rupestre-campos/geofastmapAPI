@@ -1,0 +1,39 @@
+# Bulk, tile, and process workers. Create deploy/env/.env.workers first (see deploy/env/workers.sample).
+#   docker compose -f deploy/compose/docker-compose.workers.yml up -d --build
+services:
+  worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: geofastmap_worker
+    env_file:
+      - ../env/.env.workers
+    volumes:
+      - geofastmap_bulk_uploads:/data/bulk-uploads
+    command: python -m app.worker_main
+
+  tile_worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: geofastmap_tile_worker
+    env_file:
+      - ../env/.env.workers
+    volumes:
+      - geofastmap_tiles:/data/tiles
+    command: python -m app.tile_worker_main
+    cpus: "4"
+    mem_limit: 8g
+
+  process_worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: geofastmap_process_worker
+    env_file:
+      - ../env/.env.workers
+    command: python -m app.process_worker_main
+
+volumes:
+  geofastmap_bulk_uploads:
+  geofastmap_tiles:

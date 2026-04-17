@@ -28,6 +28,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 # Copy application code
 COPY app ./app
+COPY static ./static
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
 

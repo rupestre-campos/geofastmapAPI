@@ -21,6 +21,7 @@ _DOC_PAGES: list[tuple[str, str]] = [
     ("project_docs/auth_permissions.html", "project-docs/auth-permissions"),
     ("project_docs/deploy_cloudflare.html", "project-docs/deploy-cloudflare"),
     ("project_docs/deployment_performance.html", "project-docs/deployment-performance"),
+    ("project_docs/advanced_setup.html", "project-docs/advanced-setup"),
     ("project_docs/troubleshooting.html", "project-docs/troubleshooting"),
 ]
 

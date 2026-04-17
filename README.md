@@ -74,6 +74,8 @@ This starts:
 
 Create a collection, add data (upload or API), then use **View items**, **Build tiles**, or **Download GeoJSONL** from the collection page.
 
+**Deploy:** **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** (single machine). **Advanced setup (multi-machine, work in progress):** **[docs/lab/geofast-distributed-experiment.md](docs/lab/geofast-distributed-experiment.md)**.
+
 ---
 
 ## API overview

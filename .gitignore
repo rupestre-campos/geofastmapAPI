@@ -14,6 +14,8 @@ env/
 .env.local
 .env.*.local
 *.env
+deploy/env/.env.api
+deploy/env/.env.workers
 
 # IDE and editors
 .idea/

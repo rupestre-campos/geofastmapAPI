@@ -1,0 +1,14 @@
+# Example: only process_worker on a small worker host (no bulk/tile services).
+# Copy or rename and run:
+#   docker compose -f deploy/compose/docker-compose.workers.process-only.example.yml up -d --build
+# Requires deploy/env/.env.workers with DATABASE_URL and REDIS_URL pointing at the primary.
+# No NFS needed on this host if you only run intersection/erase jobs (no shared tile/bulk paths).
+services:
+  process_worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: geofastmap_process_worker
+    env_file:
+      - ../env/.env.workers
+    command: python -m app.process_worker_main

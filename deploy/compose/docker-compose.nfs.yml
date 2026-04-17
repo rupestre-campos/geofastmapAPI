@@ -1,0 +1,51 @@
+# Optional helper: run a simple NFS export container on the primary host.
+#
+# For reliable production-style NFS, prefer the HOST server (Ubuntu nfs-kernel-server):
+#   docs/lab/nfs-host-ubuntu.md
+#
+# Use this only on trusted LANs and restrict PERMITTED to worker subnet/IPs.
+#
+# IMPORTANT — single host directory for /exports:
+# The kernel NFS server inside the image often rejects exporting /exports when it is built
+# from multiple stacked Docker volume bind mounts (exportfs: "/exports does not support NFS export").
+# Prepare ONE directory on the host (e.g. /srv/geofast) with subdirs tiles, bulk-uploads, rasters
+# that point at your Docker volume data via bind mounts, then mount only that tree into the container.
+#
+# On the primary (once, before `docker compose up` for this file), example:
+#   sudo mkdir -p /srv/geofast/tiles /srv/geofast/bulk-uploads /srv/geofast/rasters
+#   sudo mount --bind /var/lib/docker/volumes/geofast_api_geofastmap_tiles/_data /srv/geofast/tiles
+#   sudo mount --bind /var/lib/docker/volumes/geofast_api_geofastmap_bulk_uploads/_data /srv/geofast/bulk-uploads
+#   sudo mount --bind /var/lib/docker/volumes/geofast_api_geofastmap_rasters/_data /srv/geofast/rasters
+# Add the three `mount --bind` lines to /etc/fstab with `bind` so they survive reboot (adjust volume names if your compose project name differs).
+#
+# Example:
+#   docker compose -f deploy/compose/docker-compose.nfs.yml up -d
+#
+# Exported tree (one filesystem namespace):
+#   <primary>:/exports/tiles
+#   <primary>:/exports/bulk-uploads
+#   <primary>:/exports/rasters
+#
+# Worker hosts mount those paths to /data/tiles, /data/bulk-uploads, /data/rasters (see deploy/compose/README.md).
+#
+# PERMITTED / subnet note:
+# The upstream image substitutes PERMITTED with sed; values containing "/" (e.g. 192.168.8.0/24)
+# break substitution and leave {{PERMITTED}} in /etc/exports (nothing gets exported).
+# Use wildcard form "a.b.c.*" to approximate a /24 on that LAN (adjust octets to match your network).
+services:
+  nfs:
+    image: itsthenetwork/nfs-server-alpine:latest
+    container_name: geofastmap_nfs
+    privileged: true
+    environment:
+      SHARED_DIRECTORY: /exports
+      # Whole 192.168.8.x LAN — change to e.g. 10.0.0.* if needed; do not use CIDR /24 here.
+      PERMITTED: 192.168.8.*
+    ports:
+      - "111:111/tcp"
+      - "111:111/udp"
+      - "2049:2049/tcp"
+      - "2049:2049/udp"
+    volumes:
+      # Single mount: /exports in the container must be one exportable tree on the host.
+      - /srv/geofast:/exports
