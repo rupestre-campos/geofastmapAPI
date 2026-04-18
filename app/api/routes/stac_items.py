@@ -267,7 +267,7 @@ async def stac_item_titiler_tile(
             content=body,
             media_type=ct,
             headers={
-                "Cache-Control": "public, max-age=86400, stale-while-revalidate=86400",
+                "Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable",
                 "X-Tile-Cache": "HIT",
                 "X-Titiler-Upstream-Ms": "0",
                 "X-Titiler-Upstream-Attempts": "0",
@@ -323,12 +323,11 @@ async def stac_item_titiler_tile(
         content=r.content,
         media_type=ct,
         headers={
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=86400",
+            "Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable",
             "X-Titiler-Upstream-Ms": ms_header,
             "X-Titiler-Upstream-Attempts": att_header,
         },
     )
-
 
 @router.get(
     "/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}/titiler/suggest-rescale",
