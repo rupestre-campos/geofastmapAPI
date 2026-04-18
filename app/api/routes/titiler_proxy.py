@@ -100,5 +100,5 @@ async def titiler_proxy_tile(
     return Response(
         content=r.content,
         media_type=ct,
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={"Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable"},
     )

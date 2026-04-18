@@ -7,11 +7,13 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import hashlib
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
+from urllib.parse import quote
 
 from app.api.deps import get_current_user_optional, get_current_user_required
 from app.core.config import get_settings
@@ -283,15 +285,20 @@ async def titiler_mosaic_tile(
     current_user: User | None = Depends(get_current_user_optional),
 ):
     settings = get_settings()
+
     base = settings.titiler_internal_url.rstrip("/")
     if not base:
         raise HTTPException(status_code=503, detail="Titiler not configured")
 
+    # -----------------------------
+    # View validation
+    # -----------------------------
     row = await raster_views_crud.get_view(db, view_id)
     if row is None:
         raise HTTPException(status_code=404, detail="View not found")
 
     allow_pm = getattr(row, "allow_public_maps", False)
+
     if current_user is None:
         if not can_access_raster_view_tiles_anonymous(
             visibility=row.visibility,
@@ -299,60 +306,97 @@ async def titiler_mosaic_tile(
         ):
             raise HTTPException(status_code=404, detail="View not found")
     else:
-        if not await can_see_raster_view(db, row.owner_id, row.visibility, view_id, current_user):
+        if not await can_see_raster_view(
+            db, row.owner_id, row.visibility, view_id, current_user
+        ):
             raise HTTPException(status_code=404, detail="View not found")
 
+    # -----------------------------
+    # Mosaic file validation
+    # -----------------------------
     path = Path(settings.raster_storage_path) / row.json_relative_path
     if not path.exists():
         raise HTTPException(status_code=404, detail="Mosaic JSON missing on disk")
 
+    stat = path.stat()
+
+    # -----------------------------
+    # ETag (cheap + stable)
+    # -----------------------------
+    etag_base = f"{view_id}:{path}:{stat.st_mtime}:{stat.st_size}"
+    etag = hashlib.sha256(etag_base.encode()).hexdigest()
+
+    # Client cache hit → no upstream call at all
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+
+    # -----------------------------
+    # Mosaic URL
+    # -----------------------------
     secret = settings.titiler_internal_secret
     fetch_base = settings.raster_internal_fetch_base_url.rstrip("/")
-    if secret and fetch_base:
-        from urllib.parse import quote
 
-        mosaic_url = f"{fetch_base}/internal/raster-views/{view_id}/mosaic.json?token={quote(secret, safe='')}"
+    if secret and fetch_base:
+        mosaic_url = (
+            f"{fetch_base}/internal/raster-views/{view_id}/mosaic.json"
+            f"?token={quote(secret, safe='')}"
+        )
     else:
         mosaic_url = f"file://{path.resolve()}"
 
-    forward_path = f"/mosaicjson/tiles/{tile_matrix_set_id}/{z}/{x}/{y}.{ext}"
+    forward_path = (
+        f"/mosaicjson/tiles/{tile_matrix_set_id}/{z}/{x}/{y}.{ext}"
+    )
+
     params = dict(request.query_params)
     params["url"] = mosaic_url
 
-    client = get_titiler_http_client()
-    ct_holder: dict[str, str] = {}
+    # -----------------------------
+    # Fetch full tile (NO streaming)
+    # -----------------------------
+    timeout = httpx.Timeout(30.0)
 
-    async def _stream():
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            # Workaround: avoid upstream compression/content-length mismatches for binary tiles
-            # by requesting an identity-encoded response from TiTiler.
-            async with client.stream(
-                "GET",
+            r = await client.get(
                 f"{base}{forward_path}",
                 params=params,
-                headers={"Accept-Encoding": "identity"},
-            ) as r:
-                ct_holder["content-type"] = r.headers.get("content-type") or ""
-                if r.status_code >= 400:
-                    # Read only a small prefix to avoid buffering huge responses
-                    detail = (await r.aread())[:2000]
-                    raise HTTPException(
-                        status_code=r.status_code,
-                        detail=detail.decode("utf-8", errors="replace") if detail else "Titiler error",
-                    )
-                async for chunk in r.aiter_bytes():
-                    yield chunk
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=502, detail=f"Titiler request failed: {e}") from e
+                headers={
+                    "Accept-Encoding": "identity",
+                },
+            )
 
-    # Note: headers are determined up-front; content-type default kept.
-    # We intentionally avoid r.content buffering to keep RAM stable under high tile concurrency.
-    return StreamingResponse(
-        _stream(),
-        media_type="image/png",
+        except httpx.RequestError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Titiler request failed: {e}",
+            ) from e
+
+    # -----------------------------
+    # Error handling
+    # -----------------------------
+    if r.status_code >= 400:
+        detail = r.content[:2000]
+        raise HTTPException(
+            status_code=r.status_code,
+            detail=detail.decode("utf-8", errors="replace")
+            if detail else "Titiler error",
+        )
+
+    # -----------------------------
+    # Response headers optimized for Cloudflare
+    # -----------------------------
+    content_type = r.headers.get("content-type", "image/png")
+
+    return Response(
+        content=r.content,
+        media_type=content_type,
         headers={
-            "Cache-Control": "public, max-age=3600",
-            "Content-Type": ct_holder.get("content-type") or "image/png",
+            # Cloudflare edge caching (IMPORTANT)
+            "Cache-Control": "public, max-age=0, s-maxage=86400",
+
+            # Revalidation support
+            "ETag": etag,
         },
     )
 

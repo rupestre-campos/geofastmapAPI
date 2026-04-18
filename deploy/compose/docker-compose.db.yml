@@ -26,3 +26,5 @@ services:
 
 volumes:
   geofastmap_pgdata:
+    external: true
+    name: geofast_api_geofastmap_pgdata
