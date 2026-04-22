@@ -238,6 +238,29 @@
         if (path.indexOf('?') >= 0) return base + path;
         return base + path + (q ? '?' + q : '?f=html');
       }
+      function mosaicRasterTilesUrlTemplateWithV(baseUrl, viewId, revision) {
+        var u = baseUrl + '/raster-views/' + encodeURIComponent(String(viewId)) + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png';
+        if (revision) u += '?v=' + encodeURIComponent(revision);
+        return u;
+      }
+      function applyMosaicRevisionsToMapLayers() {
+        var tasks = [];
+        layers.forEach(function(l) {
+          if (!l.raster_tiles || !(l.mosaic_view_id || l.mosaicViewId) || !l.tiles_url) return;
+          var mid = l.mosaic_view_id || l.mosaicViewId;
+          tasks.push(
+            fetch(base + '/raster-views/' + encodeURIComponent(String(mid)), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+              .then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(row) {
+                if (row && row.tiles_revision) {
+                  l.tiles_url = mosaicRasterTilesUrlTemplateWithV(base, mid, row.tiles_revision);
+                }
+              })
+              .catch(function() {})
+          );
+        });
+        return Promise.all(tasks);
+      }
       var mapBbox = (mapDefinition && mapDefinition.bbox && mapDefinition.bbox.length === 4) ? mapDefinition.bbox : null;
       var mapBasemap = (mapDefinition && mapDefinition.basemap) ? mapDefinition.basemap : null;
 
@@ -925,19 +948,21 @@
           } catch (e) {}
         });
         if (pinLoadPromise && typeof pinLoadPromise.catch === 'function') pinLoadPromise.catch(function() {});
-        var beforeId = undefined;
-        var i = 0;
-        function next() {
-          if (i >= layers.length) return;
-          var layer = layers[i++];
-          var style = specFromLayer(layer);
-          addCollectionLayer(layer, style, beforeId).then(function(id) {
-            beforeId = id;
-            next();
-          });
-        }
-        renderLegend();
-        next();
+        applyMosaicRevisionsToMapLayers().then(function() {
+          var beforeId = undefined;
+          var i = 0;
+          function next() {
+            if (i >= layers.length) return;
+            var layer = layers[i++];
+            var style = specFromLayer(layer);
+            addCollectionLayer(layer, style, beforeId).then(function(id) {
+              beforeId = id;
+              next();
+            });
+          }
+          renderLegend();
+          next();
+        });
       });
 
       function clearMapSearch() {

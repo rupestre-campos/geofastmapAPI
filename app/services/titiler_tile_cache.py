@@ -40,11 +40,18 @@ def _unpack(raw: bytes) -> tuple[str, bytes] | None:
     return ct, body
 
 
-def cache_key_for_titiler_request(forward_path: str, param_pairs: list[tuple[str, str]]) -> str:
+def cache_key_for_titiler_request(
+    forward_path: str,
+    param_pairs: list[tuple[str, str]],
+    key_extra: str | None = None,
+) -> str:
     """
     Stable key for a Titiler GET: path + exact query pairs (order matters for repeated `assets`).
+    Optional key_extra scopes the key when the same URL can map to different bytes (e.g. mosaic revision).
     """
     lines = [forward_path, *[f"{k}\t{v}" for k, v in param_pairs]]
+    if key_extra:
+        lines.append(f"extra\t{key_extra}")
     raw = "\n".join(lines).encode("utf-8")
     h = hashlib.sha256(raw).hexdigest()
     return f"{PREFIX}{h}"

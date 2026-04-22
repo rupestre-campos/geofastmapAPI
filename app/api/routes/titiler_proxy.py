@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +18,12 @@ from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.db.session import get_db
 from app.services.titiler_http import get_titiler_http_client
+from app.services.titiler_inflight import await_tile_singleflight
+from app.services.titiler_tile_cache import (
+    cache_key_for_titiler_request,
+    get_cached_tile,
+    set_cached_tile,
+)
 
 router = APIRouter()
 
@@ -78,27 +87,85 @@ async def titiler_proxy_tile(
         cog_url = f"file://{p.resolve()}"
 
     forward_path = f"/cog/tiles/{tile_matrix_set_id}/{z}/{x}/{y}.{ext}"
-    params = dict(request.query_params)
-    params["url"] = cog_url
+    param_pairs = [(k, v) for k, v in request.query_params.multi_items()]
+    param_pairs.append(("url", cog_url))
 
-    try:
-        client = get_titiler_http_client()
-        r = await client.get(f"{base}{forward_path}", params=params)
-    except httpx.RequestError as e:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Titiler request failed: {e}",
-        ) from e
-
-    if r.status_code >= 400:
-        raise HTTPException(
-            status_code=r.status_code,
-            detail=r.text[:2000] if r.text else "Titiler error",
+    cache_key = cache_key_for_titiler_request(forward_path, param_pairs)
+    cached = get_cached_tile(cache_key)
+    if cached is not None:
+        body, ct = cached
+        return Response(
+            content=body,
+            media_type=ct,
+            headers={
+                "Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable",
+                "X-Tile-Cache": "HIT",
+                "X-Titiler-Upstream-Ms": "0",
+                "X-Titiler-Upstream-Attempts": "0",
+            },
         )
 
-    ct = r.headers.get("content-type", "image/png")
+    async def _fetch_cog_tile() -> tuple[bytes, str, float, int]:
+        client = get_titiler_http_client()
+        r: httpx.Response | None = None
+        titiler_upstream_ms = 0.0
+        titiler_attempts = 0
+        for attempt in range(2):
+            t0 = time.perf_counter()
+            try:
+                r = await client.get(
+                    f"{base}{forward_path}",
+                    params=param_pairs,
+                    headers={"Accept-Encoding": "identity"},
+                )
+            except httpx.RequestError as e:
+                titiler_attempts += 1
+                titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
+                if attempt == 0:
+                    await asyncio.sleep(0.08)
+                    continue
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Titiler request failed: {e}",
+                    headers={
+                        "X-Titiler-Upstream-Ms": str(max(0, int(round(titiler_upstream_ms)))),
+                        "X-Titiler-Upstream-Attempts": str(titiler_attempts),
+                    },
+                ) from e
+            titiler_attempts += 1
+            titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
+            if r.status_code in (502, 503, 504) and attempt == 0:
+                await asyncio.sleep(0.08)
+                continue
+            break
+        assert r is not None
+        ms_header = str(max(0, int(round(titiler_upstream_ms))))
+        att_header = str(titiler_attempts)
+        if r.status_code >= 400:
+            raise HTTPException(
+                status_code=r.status_code,
+                detail=r.text[:2000] if r.text else "Titiler error",
+                headers={
+                    "X-Titiler-Upstream-Ms": ms_header,
+                    "X-Titiler-Upstream-Attempts": att_header,
+                },
+            )
+        ct = r.headers.get("content-type", "image/png")
+        set_cached_tile(cache_key, r.content, ct)
+        return r.content, ct, titiler_upstream_ms, titiler_attempts
+
+    body, ct, titiler_upstream_ms, titiler_attempts = await await_tile_singleflight(
+        cache_key,
+        _fetch_cog_tile,
+    )
+    ms_header = str(max(0, int(round(titiler_upstream_ms))))
+    att_header = str(titiler_attempts)
     return Response(
-        content=r.content,
+        content=body,
         media_type=ct,
-        headers={"Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable"},
+        headers={
+            "Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable",
+            "X-Titiler-Upstream-Ms": ms_header,
+            "X-Titiler-Upstream-Attempts": att_header,
+        },
     )

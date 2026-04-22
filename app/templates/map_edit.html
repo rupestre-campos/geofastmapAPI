@@ -285,6 +285,29 @@
         }
         return base + path + '?' + parts.join('&');
       }
+      function mosaicRasterTilesUrlTemplateWithV(baseUrl, viewId, revision) {
+        var u = baseUrl + '/raster-views/' + encodeURIComponent(String(viewId)) + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png';
+        if (revision) u += '?v=' + encodeURIComponent(revision);
+        return u;
+      }
+      function refreshMosaicTilesRevisionInStateLayers() {
+        var tasks = [];
+        state.layers.forEach(function(l) {
+          if (!l.raster_tiles || !(l.mosaic_view_id || l.mosaicViewId) || !l.tiles_url) return;
+          var mid = l.mosaic_view_id || l.mosaicViewId;
+          tasks.push(
+            fetch(base + '/raster-views/' + encodeURIComponent(String(mid)), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+              .then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(row) {
+                if (row && row.tiles_revision) {
+                  l.tiles_url = mosaicRasterTilesUrlTemplateWithV(base, mid, row.tiles_revision);
+                }
+              })
+              .catch(function() {})
+          );
+        });
+        return Promise.all(tasks);
+      }
       var initialBbox = {{ map_definition.bbox | tojson if map_definition and map_definition.bbox is defined else 'null' }};
       var initialBasemap = {{ map_definition.basemap | tojson if map_definition and map_definition.basemap is defined else 'null' }};
 
@@ -1559,23 +1582,34 @@
         for (var j = 0; j < state.layers.length; j++) {
           if (state.layers[j].mosaic_view_id && String(state.layers[j].mosaic_view_id) === id) return;
         }
-        var spec = Object.assign({}, DEFAULT_SPEC);
-        state.layers.push({
-          collection_id: '_mosaic',
-          layer_id: 'mosaic-' + id,
-          order: state.layers.length,
-          style_spec: spec,
-          popup: false,
-          popup_id_property: null,
-          raster_tiles: true,
-          tiles_url: base + '/raster-views/' + encodeURIComponent(id) + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png',
-          mosaic_view_id: id
-        });
-        var prevBefore = state.layers.length > 1 ? sourceId(layerKey(state.layers[state.layers.length - 2])) + '-fill' : undefined;
-        addLayerToMap(state.layers[state.layers.length - 1], spec, state.layers.length - 1, prevBefore).then(function() {
-          if (state.layers.length === 1) trySetInitialExtentFromFirstLayer();
-        });
-        renderLayers();
+        function pushAndRender(tilesUrl) {
+          var spec = Object.assign({}, DEFAULT_SPEC);
+          state.layers.push({
+            collection_id: '_mosaic',
+            layer_id: 'mosaic-' + id,
+            order: state.layers.length,
+            style_spec: spec,
+            popup: false,
+            popup_id_property: null,
+            raster_tiles: true,
+            tiles_url: tilesUrl,
+            mosaic_view_id: id
+          });
+          var prevBefore = state.layers.length > 1 ? sourceId(layerKey(state.layers[state.layers.length - 2])) + '-fill' : undefined;
+          addLayerToMap(state.layers[state.layers.length - 1], spec, state.layers.length - 1, prevBefore).then(function() {
+            if (state.layers.length === 1) trySetInitialExtentFromFirstLayer();
+          });
+          renderLayers();
+        }
+        fetch(base + '/raster-views/' + encodeURIComponent(id), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(row) {
+            var rev = row && row.tiles_revision ? row.tiles_revision : '';
+            pushAndRender(mosaicRasterTilesUrlTemplateWithV(base, id, rev));
+          })
+          .catch(function() {
+            pushAndRender(mosaicRasterTilesUrlTemplateWithV(base, id, ''));
+          });
       }
       var btnMosaic = document.getElementById('map-edit-add-mosaic');
       if (btnMosaic) btnMosaic.onclick = function() {
@@ -1880,14 +1914,16 @@
         map.loadImage('data:image/svg+xml,' + encodeURIComponent(pinSvg), function(err, img) {
           if (!err && img) { map.addImage('geofastmap-pin', img); window._mapEditPinImageLoaded = true; }
         });
-        syncMapFromState();
-        try {
-          var _mpv = new URLSearchParams(window.location.search).get('mosaic_view');
-          if (_mpv) {
-            var ex = state.layers.some(function(l) { return l.mosaic_view_id && String(l.mosaic_view_id) === String(_mpv); });
-            if (!ex) addMosaicLayer(_mpv);
-          }
-        } catch (eMpv) {}
+        refreshMosaicTilesRevisionInStateLayers().then(function() {
+          syncMapFromState();
+          try {
+            var _mpv = new URLSearchParams(window.location.search).get('mosaic_view');
+            if (_mpv) {
+              var ex = state.layers.some(function(l) { return l.mosaic_view_id && String(l.mosaic_view_id) === String(_mpv); });
+              if (!ex) addMosaicLayer(_mpv);
+            }
+          } catch (eMpv) {}
+        });
         function getPopupLayerIdsFiltered() {
           var ids = getPopupLayerIds();
           return ids.filter(function(id) { return map.getLayer(id); });

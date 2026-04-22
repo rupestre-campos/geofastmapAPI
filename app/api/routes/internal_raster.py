@@ -92,5 +92,5 @@ async def internal_fetch_mosaic_json(
     return Response(
         content=path.read_bytes(),
         media_type="application/json",
-        headers={"Cache-Control": "private, max-age=60"},
+        headers={"Cache-Control": "private, max-age=0, must-revalidate"},
     )

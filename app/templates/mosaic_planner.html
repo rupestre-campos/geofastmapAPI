@@ -1413,17 +1413,18 @@
         };
         var url = base + '/raster-views' + (editingViewId ? ('/' + encodeURIComponent(editingViewId)) : '');
         var method = editingViewId ? 'PATCH' : 'POST';
+        // PATCH: omit visibility and allow_public_maps so public (or any) sharing stays unchanged.
+        // POST: omit them too — RasterViewCreate defaults to private / allow_public_maps false.
+        var payload = {
+          title: title,
+          mosaic_json: { mosaicjson: '0.0.3', tiles: {}, minzoom: 0, maxzoom: 18 },
+          definition: definition
+        };
         fetch(url, {
           method: method,
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: JSON.stringify({
-            title: title,
-            visibility: 'private',
-            mosaic_json: { mosaicjson: '0.0.3', tiles: {}, minzoom: 0, maxzoom: 18 },
-            definition: definition,
-            allow_public_maps: false
-          })
+          body: JSON.stringify(payload)
         }).then(function(r) {
           if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || r.status); });
           return r.json();

@@ -16,6 +16,7 @@ from app.core.permissions import can_see_collection
 from app.crud import features as features_crud
 from app.crud import stac_catalogs as stac_catalogs_crud
 from app.crud import collections as collections_crud
+from app.api.routes.raster_views import compute_mosaic_tiles_revision
 from app.db.session import get_db
 from app.models.user import User
 from app.services.mosaic_plan import (
@@ -291,8 +292,10 @@ async def mosaic_detail_page(
     settings = get_settings()
     tile_matrix = "WebMercatorQuad"
     ext = "png"
+    rev = compute_mosaic_tiles_revision(settings, view_id, row.json_relative_path)
+    vq = f"?v={rev}" if rev else ""
     tiles_url = (
-        f"{base}/raster-views/{view_id}/titiler/tiles/{tile_matrix}/{{z}}/{{x}}/{{y}}.{ext}"
+        f"{base}/raster-views/{view_id}/titiler/tiles/{tile_matrix}/{{z}}/{{x}}/{{y}}.{ext}{vq}"
     )
     return html_response(
         "mosaic_detail.html",

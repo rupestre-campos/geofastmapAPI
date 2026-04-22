@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from app.core.permissions import (
     can_edit_raster_view,
     can_see_raster_view,
 )
+from app.services.titiler_inflight import await_tile_singleflight
 from app.services.titiler_tile_cache import (
     cache_key_for_titiler_request,
     get_cached_tile,
@@ -42,6 +44,41 @@ from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
 router = APIRouter(prefix="/raster-views", tags=["raster-views"])
+
+# Mosaics are mutable; allow revalidation (CDN + browser) and avoid immutable long-term pinning.
+_MOSAIC_TILE_CACHE_CONTROL = "public, max-age=0, must-revalidate, s-maxage=0"
+# When tile URL includes ?v=<tiles_revision> matching the mosaic file fingerprint, safe to cache hard.
+_MOSAIC_TILE_CACHE_VERSIONED = "public, max-age=31536000, s-maxage=31536000, immutable"
+
+
+def compute_mosaic_tiles_revision(settings: Any, view_id: str, json_relative_path: str) -> str | None:
+    """SHA-256 hex of view_id + mosaic path mtime + size; None if file missing. Matches tile ETag body."""
+    path = Path(settings.raster_storage_path) / json_relative_path
+    if not path.exists():
+        return None
+    stat = path.stat()
+    etag_base = f"{view_id}:{path}:{stat.st_mtime}:{stat.st_size}"
+    return hashlib.sha256(etag_base.encode()).hexdigest()
+
+
+def _etag_header_value(etag_hex: str) -> str:
+    return f'"{etag_hex}"'
+
+
+def _if_none_match_includes_strong_etag(etag_hex: str, if_none_match: str | None) -> bool:
+    if not if_none_match:
+        return False
+    for part in if_none_match.split(","):
+        p = part.strip()
+        if not p or p == "*":
+            continue
+        if p.upper().startswith("W/"):
+            p = p[2:].lstrip()
+        if len(p) >= 2 and p[0] == '"' and p[-1] == '"':
+            p = p[1:-1]
+        if p == etag_hex:
+            return True
+    return False
 
 
 class RasterViewCreate(BaseModel):
@@ -63,11 +100,19 @@ class RasterViewRead(BaseModel):
     owner_id: int | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    # Append ?v={tiles_revision} to mosaic tile URLs for long-lived browser/CDN cache when unchanged.
+    tiles_revision: str | None = None
 
     model_config = {"from_attributes": True}
 
     @classmethod
-    def from_row(cls, row: Any, base: str | None = None) -> "RasterViewRead":
+    def from_row(
+        cls,
+        row: Any,
+        base: str | None = None,
+        *,
+        tiles_revision: str | None = None,
+    ) -> "RasterViewRead":
         d = {
             "id": row.id,
             "title": row.title,
@@ -79,6 +124,7 @@ class RasterViewRead(BaseModel):
             "owner_id": row.owner_id,
             "created_at": row.created_at.isoformat() + "Z" if row.created_at else None,
             "updated_at": row.updated_at.isoformat() + "Z" if row.updated_at else None,
+            "tiles_revision": tiles_revision,
         }
         return cls.model_validate(d)
 
@@ -194,7 +240,8 @@ async def create_raster_view(
         definition=body.definition,
         allow_public_maps=body.allow_public_maps,
     )
-    return RasterViewRead.from_row(row)
+    rev = compute_mosaic_tiles_revision(settings, row.id, row.json_relative_path)
+    return RasterViewRead.from_row(row, tiles_revision=rev)
 
 
 @router.patch("/{view_id}", summary="Update mosaic metadata and/or MosaicJSON")
@@ -258,7 +305,8 @@ async def patch_raster_view(
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="View not found")
-    return RasterViewRead.from_row(updated)
+    rev = compute_mosaic_tiles_revision(settings, updated.id, updated.json_relative_path)
+    return RasterViewRead.from_row(updated, tiles_revision=rev)
 
 
 @router.get("/{view_id}", summary="Get raster view metadata", response_model=RasterViewRead)
@@ -272,13 +320,9 @@ async def get_raster_view(
         raise HTTPException(status_code=404, detail="View not found")
     if not await can_see_raster_view(db, row.owner_id, row.visibility, view_id, current_user):
         raise HTTPException(status_code=404, detail="View not found")
-    return RasterViewRead.from_row(row)
-
-from app.services.titiler_tile_cache import (
-    cache_key_for_titiler_request,
-    get_cached_tile,
-    set_cached_tile,
-)
+    settings = get_settings()
+    rev = compute_mosaic_tiles_revision(settings, row.id, row.json_relative_path)
+    return RasterViewRead.from_row(row, tiles_revision=rev)
 
 
 @router.get(
@@ -324,23 +368,24 @@ async def titiler_mosaic_tile(
             raise HTTPException(status_code=404, detail="View not found")
 
     # -----------------------------
-    # Mosaic file validation
+    # Mosaic file validation + ETag / ?v= tiles_revision
     # -----------------------------
     path = Path(settings.raster_storage_path) / row.json_relative_path
-    if not path.exists():
+    etag = compute_mosaic_tiles_revision(settings, view_id, row.json_relative_path)
+    if etag is None:
         raise HTTPException(status_code=404, detail="Mosaic JSON missing on disk")
 
-    stat = path.stat()
-
-    # -----------------------------
-    # ETag (cheap + stable)
-    # -----------------------------
-    etag_base = f"{view_id}:{path}:{stat.st_mtime}:{stat.st_size}"
-    etag = hashlib.sha256(etag_base.encode()).hexdigest()
+    etag_hdr = _etag_header_value(etag)
+    v_q = request.query_params.get("v")
+    use_versioned_cache = v_q is not None and v_q == etag
+    cc = _MOSAIC_TILE_CACHE_VERSIONED if use_versioned_cache else _MOSAIC_TILE_CACHE_CONTROL
 
     # Client cache hit → no upstream call at all
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers={"ETag": etag})
+    if _if_none_match_includes_strong_etag(etag, request.headers.get("if-none-match")):
+        return Response(
+            status_code=304,
+            headers={"ETag": etag_hdr, "Cache-Control": cc},
+        )
 
     # -----------------------------
     # Mosaic URL
@@ -358,14 +403,14 @@ async def titiler_mosaic_tile(
 
     forward_path = f"/mosaicjson/tiles/{tile_matrix_set_id}/{z}/{x}/{y}.{ext}"
 
-    # IMPORTANT: use list of tuples (like first function)
-    param_pairs = [(k, v) for k, v in request.query_params.multi_items()]
+    # IMPORTANT: use list of tuples (like first function). Strip `v` — not a Titiler param.
+    param_pairs = [(k, val) for k, val in request.query_params.multi_items() if k != "v"]
     param_pairs.append(("url", mosaic_url))
 
     # -----------------------------
-    # CACHE (same pattern as STAC)
+    # CACHE (revision-scoped: mosaic JSON edits change etag → new Redis key)
     # -----------------------------
-    cache_key = cache_key_for_titiler_request(forward_path, param_pairs)
+    cache_key = cache_key_for_titiler_request(forward_path, param_pairs, key_extra=etag)
     cached = get_cached_tile(cache_key)
 
     if cached is not None:
@@ -374,8 +419,8 @@ async def titiler_mosaic_tile(
             content=body,
             media_type=ct,
             headers={
-                "Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable",
-                "ETag": etag,
+                "Cache-Control": cc,
+                "ETag": etag_hdr,
                 "X-Tile-Cache": "HIT",
                 "X-Titiler-Upstream-Ms": "0",
                 "X-Titiler-Upstream-Attempts": "0",
@@ -383,80 +428,73 @@ async def titiler_mosaic_tile(
         )
 
     # -----------------------------
-    # Fetch with retry + timing
+    # Fetch with retry + singleflight (concurrent identical key → one Titiler call)
     # -----------------------------
-    client = get_titiler_http_client()
-
-    r: httpx.Response | None = None
-    titiler_upstream_ms = 0.0
-    titiler_attempts = 0
-
-    for attempt in range(2):
-        t0 = time.perf_counter()
-        try:
-            r = await client.get(
-                f"{base}{forward_path}",
-                params=param_pairs,
-                headers={"Accept-Encoding": "identity"},
-            )
-        except httpx.RequestError as e:
+    async def _fetch_mosaic_tile() -> tuple[bytes, str, float, int]:
+        client = get_titiler_http_client()
+        r: httpx.Response | None = None
+        titiler_upstream_ms = 0.0
+        titiler_attempts = 0
+        for attempt in range(2):
+            t0 = time.perf_counter()
+            try:
+                r = await client.get(
+                    f"{base}{forward_path}",
+                    params=param_pairs,
+                    headers={"Accept-Encoding": "identity"},
+                )
+            except httpx.RequestError as e:
+                titiler_attempts += 1
+                titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
+                if attempt == 0:
+                    await asyncio.sleep(0.08)
+                    continue
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Titiler request failed: {e}",
+                    headers={
+                        "X-Titiler-Upstream-Ms": str(int(round(titiler_upstream_ms))),
+                        "X-Titiler-Upstream-Attempts": str(titiler_attempts),
+                    },
+                ) from e
             titiler_attempts += 1
             titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
-            if attempt == 0:
+            if r.status_code in (502, 503, 504) and attempt == 0:
                 await asyncio.sleep(0.08)
                 continue
+            break
+
+        assert r is not None
+        ms_header = str(int(round(titiler_upstream_ms)))
+        att_header = str(titiler_attempts)
+        if r.status_code >= 400:
+            detail = r.content[:2000]
             raise HTTPException(
-                status_code=502,
-                detail=f"Titiler request failed: {e}",
+                status_code=r.status_code,
+                detail=detail.decode("utf-8", errors="replace")
+                if detail else "Titiler error",
                 headers={
-                    "X-Titiler-Upstream-Ms": str(int(round(titiler_upstream_ms))),
-                    "X-Titiler-Upstream-Attempts": str(titiler_attempts),
+                    "X-Titiler-Upstream-Ms": ms_header,
+                    "X-Titiler-Upstream-Attempts": att_header,
                 },
-            ) from e
+            )
+        content_type = r.headers.get("content-type", "image/png")
+        set_cached_tile(cache_key, r.content, content_type)
+        return r.content, content_type, titiler_upstream_ms, titiler_attempts
 
-        titiler_attempts += 1
-        titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
-
-        if r.status_code in (502, 503, 504) and attempt == 0:
-            await asyncio.sleep(0.08)
-            continue
-        break
-
-    assert r is not None
-
+    body, content_type, titiler_upstream_ms, titiler_attempts = await await_tile_singleflight(
+        cache_key,
+        _fetch_mosaic_tile,
+    )
     ms_header = str(int(round(titiler_upstream_ms)))
     att_header = str(titiler_attempts)
 
-    # -----------------------------
-    # Error handling
-    # -----------------------------
-    if r.status_code >= 400:
-        detail = r.content[:2000]
-        raise HTTPException(
-            status_code=r.status_code,
-            detail=detail.decode("utf-8", errors="replace")
-            if detail else "Titiler error",
-            headers={
-                "X-Titiler-Upstream-Ms": ms_header,
-                "X-Titiler-Upstream-Attempts": att_header,
-            },
-        )
-
-    # -----------------------------
-    # Store in cache
-    # -----------------------------
-    content_type = r.headers.get("content-type", "image/png")
-    set_cached_tile(cache_key, r.content, content_type)
-
-    # -----------------------------
-    # Response
-    # -----------------------------
     return Response(
-        content=r.content,
+        content=body,
         media_type=content_type,
         headers={
-            "Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable",
-            "ETag": etag,
+            "Cache-Control": cc,
+            "ETag": etag_hdr,
             "X-Titiler-Upstream-Ms": ms_header,
             "X-Titiler-Upstream-Attempts": att_header,
         },

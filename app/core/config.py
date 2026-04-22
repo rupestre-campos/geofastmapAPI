@@ -89,8 +89,9 @@ class Settings(BaseSettings):
     # API → Titiler httpx timeouts (mosaic tiles with many COG sources can exceed 60s cold read).
     titiler_http_connect_timeout_seconds: float = 30.0
     titiler_http_read_timeout_seconds: float = 300.0
-    # Redis cache for proxied Titiler raster tiles (STAC item viewer). 0 = disabled.
-    # Cold tiles still cost GDAL+network; repeats (pan/zoom back) hit Redis ~1–5 ms.
+    # Redis cache for proxied Titiler raster tiles (STAC + mosaic). 0 = disabled.
+    # Cold tiles still cost GDAL+network; repeats hit Redis ~1–5 ms. Mosaic keys include file revision
+    # so edits are not masked by this TTL; this remains a performance / eviction knob only.
     titiler_tile_cache_ttl_seconds: int = 3600
     # Do not store responses larger than this (bytes); avoids huge entries from mistakes.
     titiler_tile_cache_max_body_bytes: int = 4 * 1024 * 1024
