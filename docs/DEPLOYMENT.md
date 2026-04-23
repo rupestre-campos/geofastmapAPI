@@ -57,7 +57,26 @@ The [`Dockerfile`](../Dockerfile) includes `static/` so the web UI works without
 
 **Safety:** do not expose Postgres or Redis to the public internet; use strong passwords on the LAN.
 
-### Optional admin observability stack
+### Optional admin observability (simple default)
+
+Recommended first step for new deployments: use in-app admin pages at:
+
+- `/admin/observability?f=html` (live request logs + filters)
+- `/admin/observability/performance?f=html` (mean/p50/p90 by endpoint)
+- `/admin/observability/servers?f=html` (local + configured server load snapshots)
+
+Tune defaults in the admin page itself (`/admin/observability?f=html` -> Settings).  
+Those values are persisted in database runtime settings, so they are not required in `.env`.
+
+For host metrics on the same machine, Netdata is integrated directly in:
+
+- [`deploy/compose/docker-compose.api.yml`](../deploy/compose/docker-compose.api.yml)
+
+When you start the API split stack, Netdata starts too:
+
+`docker compose -f deploy/compose/docker-compose.api.yml up -d --build`
+
+### Optional advanced observability stack (Grafana/Loki/Tempo)
 
 An optional compose profile is available for logs + metrics + tracing:
 

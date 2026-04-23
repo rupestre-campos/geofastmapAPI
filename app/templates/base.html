@@ -380,6 +380,7 @@
         <a href="{{ base }}/auth/change-password?f=html">Change password</a>
         {% if is_admin is defined and is_admin %}
         <a href="{{ base }}/auth/users?f=html">Users</a>
+        <a href="{{ base }}/admin/observability?f=html">Logs</a>
         {% endif %}
         <a href="{{ base }}/auth/logout">Logout</a>
       </div>
@@ -413,6 +414,9 @@
         <a href="{{ base }}/style-editor?f=html">Style editor</a>
         <a href="{{ base }}/basemaps?f=html">Basemaps</a>
         <a href="{{ base }}/project-docs?f=html">Documentation</a>
+        {% if is_admin is defined and is_admin %}
+        <a href="{{ base }}/admin/observability?f=html">Logs</a>
+        {% endif %}
         <a href="{{ base }}/privacy?f=html">Privacy</a>
         <a href="{{ base }}/docs">API docs</a>
       </nav>

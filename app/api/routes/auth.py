@@ -515,6 +515,7 @@ async def login_post(
     session = request.scope.get("session")
     if session is not None:
         session["username"] = user.username
+        session["user_id"] = user.id
         if user.must_change_password:
             return RedirectResponse(
                 url=f"{base}/auth/change-password?next={quote(next_url, safe='')}",
@@ -586,6 +587,7 @@ async def change_password_post(
     session = request.scope.get("session")
     if session is not None:
         session["username"] = current_user.username
+        session["user_id"] = current_user.id
     return RedirectResponse(url=next_url, status_code=status.HTTP_302_FOUND)
 
 

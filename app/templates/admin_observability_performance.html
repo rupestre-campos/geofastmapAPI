@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Observability Performance - GeoFastMap API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Observability: endpoint performance</h1>
+    <p class="meta">Mean, p50 (median), and p90 response time by endpoint.</p>
+  </header>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Filters</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/admin/observability?f=html" class="btn btn-sm">Live logs</a>
+        <a href="{{ base }}/admin/observability/servers?f=html" class="btn btn-sm">Servers</a>
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="form-row">
+        <label>Hours</label>
+        <select id="hoursSelect">
+          <option value="1">1</option>
+          <option value="6" selected>6</option>
+          <option value="12">12</option>
+          <option value="24">24</option>
+          <option value="72">72</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Endpoint</label>
+        <select id="endpointSelect">
+          <option value="">All endpoints</option>
+        </select>
+      </div>
+    </div>
+    <button type="button" class="btn btn-primary" id="refreshPerf">Refresh</button>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Latency chart (ms)</h2>
+    </div>
+    <canvas id="latencyCanvas" width="1000" height="320" style="width:100%;border:1px solid var(--border);border-radius:8px;"></canvas>
+    <p class="meta" id="perfMeta"></p>
+  </div>
+{% endblock %}
+
+{% block script %}
+<script>
+  const base = {{ base | tojson }};
+  const endpointSelect = document.getElementById('endpointSelect');
+  const hoursSelect = document.getElementById('hoursSelect');
+  const perfMeta = document.getElementById('perfMeta');
+  const canvas = document.getElementById('latencyCanvas');
+  const ctx = canvas.getContext('2d');
+
+  function drawSeries(points) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!points.length) {
+      ctx.fillStyle = '#888';
+      ctx.fillText('No data in selected window.', 20, 30);
+      return;
+    }
+    const pad = 40;
+    const w = canvas.width - pad * 2;
+    const h = canvas.height - pad * 2;
+    const maxY = Math.max(...points.map(p => Math.max(p.mean_ms, p.p50_ms, p.p90_ms)), 1);
+    const stepX = points.length > 1 ? (w / (points.length - 1)) : 0;
+
+    function plot(key, color) {
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      points.forEach((p, i) => {
+        const x = pad + i * stepX;
+        const y = pad + h - ((p[key] || 0) / maxY) * h;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = '#666';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(pad, pad, w, h);
+    plot('mean_ms', '#2f81f7');
+    plot('p50_ms', '#3fb950');
+    plot('p90_ms', '#f85149');
+    ctx.fillStyle = '#999';
+    ctx.fillText('mean', pad + 6, pad + 14);
+    ctx.fillText('p50', pad + 70, pad + 14);
+    ctx.fillText('p90', pad + 120, pad + 14);
+  }
+
+  async function refreshPerformance() {
+    const p = new URLSearchParams();
+    p.set('hours', hoursSelect.value);
+    if (endpointSelect.value) p.set('endpoint', endpointSelect.value);
+    const res = await fetch(`${base}/admin/observability/api/performance?${p.toString()}`, {
+      headers: { Accept: 'application/json' }
+    });
+    const data = await res.json();
+    const endpoints = Array.isArray(data.endpoints) ? data.endpoints : [];
+    const current = endpointSelect.value;
+    endpointSelect.innerHTML = '<option value="">All endpoints</option>' + endpoints.map((e) =>
+      `<option value="${e.route_template}">${e.route_template} (${e.count})</option>`
+    ).join('');
+    if (current) endpointSelect.value = current;
+    const points = Array.isArray(data.points) ? data.points : [];
+    drawSeries(points);
+    perfMeta.textContent = `Points: ${points.length} | Updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  document.getElementById('refreshPerf').addEventListener('click', refreshPerformance);
+  refreshPerformance();
+</script>
+{% endblock %}

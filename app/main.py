@@ -14,6 +14,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from app.core.html import wants_html
 
 from app.api.routes import (
+    admin_observability,
     auth,
     basemaps_api,
     basemaps_pages,
@@ -40,6 +41,11 @@ from app.core.config import get_settings
 from app.utils.geometry_limits import GeometryTooLargeError
 from app.middleware.private_html_cache import PrivateHtmlCacheMiddleware
 from app.services.observability import init_observability, instrument_fastapi_app
+from app.services.observability_admin import (
+    ObservabilityRequestLogMiddleware,
+    init_observability_logging,
+    shutdown_observability_logging,
+)
 from app.services.bulk_queue import start_memory_consumer
 from app.services.bulk_worker import process_bulk_job
 
@@ -65,9 +71,11 @@ async def lifespan(app: FastAPI):
                 is_admin=True,
                 must_change_password=True,
             )
+    init_observability_logging()
     yield
     from app.services.titiler_http import close_titiler_http_client
 
+    await shutdown_observability_logging()
     await close_titiler_http_client()
 
 
@@ -122,6 +130,7 @@ def create_app() -> FastAPI:
     # request.base_url uses https and public host (avoids mixed-content links in HTML).
     app.add_middleware(SessionMiddleware, secret_key=session_secret)
     app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+    app.add_middleware(ObservabilityRequestLogMiddleware)
     # HTML pages include session-dependent nav; must not be cached at CDN edge (e.g. Cloudflare).
     app.add_middleware(PrivateHtmlCacheMiddleware)
     # Start in-process bulk consumer when using memory queue (so no Redis/worker needed)
@@ -131,6 +140,7 @@ def create_app() -> FastAPI:
     # OGC root: landing page (/) and conformance (/conformance). Must be first so GET / is landing.
     app.include_router(root.router, tags=["ogc"])
     app.include_router(auth.router, prefix="/auth", tags=["auth"])
+    app.include_router(admin_observability.router, prefix="/admin", tags=["admin-observability"])
 
     # Collections and items (features) endpoints following OGC API - Features style.
     app.include_router(

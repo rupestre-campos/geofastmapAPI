@@ -31,7 +31,32 @@ services:
              echo 'Database not ready after retries';
              exit 1"
 
+  netdata:
+    image: netdata/netdata:stable
+    container_name: geofastmap_netdata
+    restart: unless-stopped
+    pid: host
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
+    ports:
+      - "127.0.0.1:19999:19999"
+    volumes:
+      - geofastmap_netdataconfig:/etc/netdata
+      - geofastmap_netdatalib:/var/lib/netdata
+      - geofastmap_netdatacache:/var/cache/netdata
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+
 volumes:
   geofastmap_bulk_uploads:
   geofastmap_tiles:
   geofastmap_rasters:
+  geofastmap_netdataconfig:
+  geofastmap_netdatalib:
+  geofastmap_netdatacache:

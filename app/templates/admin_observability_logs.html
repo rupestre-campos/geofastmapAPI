@@ -1,0 +1,260 @@
+{% extends "base.html" %}
+{% block title %}Observability Logs - GeoFastMap API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Observability: live request logs</h1>
+    <p class="meta">Admin only. Filter by status, path, method, and latency.</p>
+  </header>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Filters</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/admin/observability/performance?f=html" class="btn btn-sm">Performance</a>
+        <a href="{{ base }}/admin/observability/servers?f=html" class="btn btn-sm">Servers</a>
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="form-row">
+        <label>Status family (2-5)</label>
+        <select id="statusFamily">
+          <option value="">Any</option>
+          <option value="2">2xx</option>
+          <option value="3">3xx</option>
+          <option value="4">4xx</option>
+          <option value="5">5xx</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Method</label>
+        <select id="methodFilter">
+          <option value="">Any</option>
+          <option>GET</option>
+          <option>POST</option>
+          <option>PUT</option>
+          <option>PATCH</option>
+          <option>DELETE</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Path contains</label>
+        <input type="text" id="pathContains" placeholder="/raster-views/">
+      </div>
+      <div class="form-row">
+        <label>Min latency (ms)</label>
+        <input type="number" id="minLatency" min="0" placeholder="0">
+      </div>
+      <div class="form-row">
+        <label>Page size</label>
+        <select id="pageSize">
+          <option value="25">25</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label class="checkbox-inline" style="margin-top:1.8rem;">
+          <input type="checkbox" id="liveLogsToggle" checked>
+          Live logs (auto update)
+        </label>
+      </div>
+    </div>
+    <button type="button" class="btn btn-primary" id="applyFilters">Apply</button>
+    <button type="button" class="btn" id="refreshNow">Refresh now</button>
+    <span class="meta" id="refreshMeta"></span>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Settings</h2>
+    </div>
+    <p class="meta">These are runtime defaults stored in database, not required in env files.</p>
+    <form method="post" action="{{ base }}/admin/observability/settings">
+      <div class="grid-2">
+        <label class="checkbox-inline" style="margin-top:1.8rem;">
+          <input type="checkbox" name="logging_enabled" {% if runtime_settings.logging_enabled %}checked{% endif %}>
+          Logging enabled
+        </label>
+        <label class="checkbox-inline" style="margin-top:1.8rem;">
+          <input type="checkbox" name="log_debug_mode" {% if runtime_settings.log_debug_mode %}checked{% endif %}>
+          Debug request-body logging
+        </label>
+        <div class="form-row">
+          <label>Debug max body bytes</label>
+          <input type="number" name="log_debug_max_body_bytes" min="128" value="{{ runtime_settings.log_debug_max_body_bytes }}">
+        </div>
+        <div class="form-row">
+          <label>Raw logs retention (days)</label>
+          <input type="number" name="log_retention_days" min="1" value="{{ runtime_settings.log_retention_days }}">
+        </div>
+        <div class="form-row">
+          <label>Metrics retention (days)</label>
+          <input type="number" name="metrics_retention_days" min="1" value="{{ runtime_settings.metrics_retention_days }}">
+        </div>
+        <div class="form-row">
+          <label>Cleanup interval (seconds)</label>
+          <input type="number" name="cleanup_interval_seconds" min="60" value="{{ runtime_settings.cleanup_interval_seconds }}">
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Servers JSON (optional Netdata endpoints)</label>
+        <textarea name="servers_json" rows="3" style="max-width:100%;">{{ runtime_settings.servers_json }}</textarea>
+      </div>
+      <button type="submit" class="btn btn-primary">Save settings</button>
+    </form>
+    {% if settings_ok %}
+    <p class="meta" style="color: var(--success);">Settings saved.</p>
+    {% endif %}
+    {% if settings_error_json %}
+    <p class="meta" style="color: var(--danger);">Servers JSON is invalid. Use a JSON array.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Live requests</h2>
+    </div>
+    <div class="table-scroll-wrap" style="max-height:480px; overflow:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Status</th>
+            <th>Method</th>
+            <th>Path</th>
+            <th>Latency</th>
+            <th>IP</th>
+            <th>User</th>
+          </tr>
+        </thead>
+        <tbody id="logRows">
+          <tr><td colspan="7" class="meta">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card-actions" style="margin-top:0.8rem;">
+      <button type="button" class="btn" id="prevPage">Prev</button>
+      <button type="button" class="btn" id="nextPage">Next</button>
+      <span class="meta" id="pageMeta">Page 1</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Delete log history</h2>
+    </div>
+    <p class="meta">Type <code>DELETE</code> and submit to purge log history.</p>
+    <form method="post" action="{{ base }}/admin/observability/logs/purge">
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Delete only older than N days (optional)</label>
+          <input type="number" name="older_than_days" min="0" placeholder="Leave blank for full purge">
+        </div>
+        <div class="form-row">
+          <label>Type DELETE to confirm</label>
+          <input type="text" name="confirm" required>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-danger">Delete log history</button>
+    </form>
+    {% if purge_ok %}
+    <p class="meta" style="color: var(--success);">Log history purge completed.</p>
+    {% endif %}
+    {% if purge_error %}
+    <p class="meta" style="color: var(--danger);">Confirmation failed. Type DELETE exactly.</p>
+    {% endif %}
+  </div>
+{% endblock %}
+
+{% block script %}
+<script>
+  const base = {{ base | tojson }};
+  const rowsEl = document.getElementById('logRows');
+  const refreshMeta = document.getElementById('refreshMeta');
+  const pageMeta = document.getElementById('pageMeta');
+  const liveLogsToggle = document.getElementById('liveLogsToggle');
+  let currentPage = 1;
+  let totalPages = 1;
+
+  function esc(v) {
+    return String(v == null ? '' : v)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+  }
+
+  function buildParams() {
+    const p = new URLSearchParams();
+    const sf = document.getElementById('statusFamily').value;
+    const method = document.getElementById('methodFilter').value;
+    const pathContains = document.getElementById('pathContains').value.trim();
+    const minLatency = document.getElementById('minLatency').value.trim();
+    const pageSize = document.getElementById('pageSize').value;
+    if (sf) p.set('status_family', sf);
+    if (method) p.set('method', method);
+    if (pathContains) p.set('path_contains', pathContains);
+    if (minLatency) p.set('min_latency_ms', minLatency);
+    p.set('limit', pageSize || '50');
+    p.set('page', String(currentPage));
+    return p;
+  }
+
+  async function refreshLogs() {
+    const params = buildParams();
+    const url = `${base}/admin/observability/api/logs?${params.toString()}`;
+    try {
+      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      const data = await res.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      totalPages = Number(data.total_pages || 1);
+      currentPage = Number(data.page || currentPage || 1);
+      if (!items.length) {
+        rowsEl.innerHTML = '<tr><td colspan="7" class="meta">No results.</td></tr>';
+      } else {
+        rowsEl.innerHTML = items.map((it) => {
+          const dt = it.created_at ? new Date(it.created_at).toLocaleString() : '';
+          return `<tr>
+            <td>${esc(dt)}</td>
+            <td>${esc(it.status_code)}</td>
+            <td>${esc(it.method)}</td>
+            <td title="${esc(it.full_url)}"><code>${esc(it.path)}</code></td>
+            <td>${esc(it.latency_ms)} ms</td>
+            <td>${esc(it.client_ip)}</td>
+            <td>${esc(it.username || '-')}</td>
+          </tr>`;
+        }).join('');
+      }
+      pageMeta.textContent = `Page ${currentPage} of ${totalPages} (total ${Number(data.total || items.length)} rows)`;
+      refreshMeta.textContent = `Updated ${new Date().toLocaleTimeString()} (${items.length} rows on page)`;
+    } catch (e) {
+      rowsEl.innerHTML = '<tr><td colspan="7" class="meta">Failed to load logs.</td></tr>';
+      refreshMeta.textContent = 'Refresh failed';
+    }
+  }
+
+  document.getElementById('applyFilters').addEventListener('click', () => {
+    currentPage = 1;
+    refreshLogs();
+  });
+  document.getElementById('refreshNow').addEventListener('click', refreshLogs);
+  document.getElementById('prevPage').addEventListener('click', () => {
+    currentPage = Math.max(1, currentPage - 1);
+    refreshLogs();
+  });
+  document.getElementById('nextPage').addEventListener('click', () => {
+    currentPage = Math.min(totalPages, currentPage + 1);
+    refreshLogs();
+  });
+  document.getElementById('pageSize').addEventListener('change', () => {
+    currentPage = 1;
+    refreshLogs();
+  });
+  refreshLogs();
+  setInterval(() => {
+    if (liveLogsToggle.checked) {
+      refreshLogs();
+    }
+  }, 5000);
+</script>
+{% endblock %}

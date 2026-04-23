@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Observability Servers - GeoFastMap API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Observability: servers and load</h1>
+    <p class="meta">Local host metrics and optional remote server snapshots.</p>
+  </header>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Servers</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/admin/observability?f=html" class="btn btn-sm">Live logs</a>
+        <a href="{{ base }}/admin/observability/performance?f=html" class="btn btn-sm">Performance</a>
+      </div>
+    </div>
+    <button class="btn btn-primary" id="refreshServers">Refresh</button>
+    <div id="serversGrid" class="grid-2" style="margin-top: 1rem;">
+      <p class="meta">Loading...</p>
+    </div>
+  </div>
+{% endblock %}
+
+{% block script %}
+<script>
+  const base = {{ base | tojson }};
+  const grid = document.getElementById('serversGrid');
+
+  function esc(v) {
+    return String(v == null ? '' : v)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+  }
+
+  function fmtBytes(n) {
+    const x = Number(n || 0);
+    if (!x) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let v = x;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return `${v.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+  }
+
+  async function refreshServers() {
+    try {
+      const res = await fetch(`${base}/admin/observability/api/servers`, {
+        headers: { Accept: 'application/json' }
+      });
+      const data = await res.json();
+      const servers = Array.isArray(data.servers) ? data.servers : [];
+      if (!servers.length) {
+        grid.innerHTML = '<p class="meta">No server data available.</p>';
+        return;
+      }
+      grid.innerHTML = servers.map((s) => {
+        const healthy = !!s.healthy;
+        const status = healthy ? 'healthy' : 'unhealthy';
+        return `<div class="card" style="margin-bottom:0;">
+          <h3 style="margin-top:0;">${esc(s.name || 'server')}</h3>
+          <p class="meta">Source: ${esc(s.source || '-')} | Status: ${esc(status)}</p>
+          <p class="meta">CPU load 1m: ${esc(s.cpu_load_1m || s.cpu_percent || '-')}</p>
+          <p class="meta">CPU load 5m: ${esc(s.cpu_load_5m || '-')}</p>
+          <p class="meta">Memory: ${esc(s.mem_used_percent || s.mem_percent || '-')}%</p>
+          <p class="meta">Memory used/total: ${fmtBytes(s.mem_used_bytes)} / ${fmtBytes(s.mem_total_bytes)}</p>
+          ${s.error ? `<p class="meta" style="color: var(--danger);">${esc(s.error)}</p>` : ''}
+        </div>`;
+      }).join('');
+    } catch (e) {
+      grid.innerHTML = '<p class="meta">Failed to load server metrics.</p>';
+    }
+  }
+
+  document.getElementById('refreshServers').addEventListener('click', refreshServers);
+  refreshServers();
+  setInterval(refreshServers, 10000);
+</script>
+{% endblock %}

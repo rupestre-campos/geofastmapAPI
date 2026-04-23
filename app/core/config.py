@@ -95,6 +95,18 @@ class Settings(BaseSettings):
     observability_otlp_endpoint: str = "http://otel_collector:4317"
     # 0.0 = disabled, 1.0 = all requests sampled.
     observability_trace_sample_ratio: float = 0.1
+    # In-app observability logging (Postgres-backed request events for admin debug pages).
+    observability_logging_enabled: bool = True
+    # Capture request body when debugging (disabled by default; increases risk/storage).
+    observability_log_debug_mode: bool = False
+    observability_log_debug_max_body_bytes: int = 4096
+    # Raw events retention and aggregate retention.
+    observability_log_retention_days: int = 7
+    observability_metrics_retention_days: int = 30
+    observability_cleanup_interval_seconds: int = 3600
+    # Optional server list for load dashboard. JSON array with items:
+    # [{"name":"api","base_url":"http://netdata-api:19999"}]
+    observability_servers_json: str = '[{"name":"api-host","base_url":"http://netdata:19999"}]'
     # Redis cache for proxied Titiler raster tiles (STAC + mosaic). 0 = disabled.
     # Cold tiles still cost GDAL+network; repeats hit Redis ~1–5 ms. Mosaic keys include file revision
     # so edits are not masked by this TTL; this remains a performance / eviction knob only.
