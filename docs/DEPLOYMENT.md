@@ -57,6 +57,22 @@ The [`Dockerfile`](../Dockerfile) includes `static/` so the web UI works without
 
 **Safety:** do not expose Postgres or Redis to the public internet; use strong passwords on the LAN.
 
+### Optional admin observability stack
+
+An optional compose profile is available for logs + metrics + tracing:
+
+- file: [`deploy/compose/docker-compose.observability.yml`](../deploy/compose/docker-compose.observability.yml)
+- services: Grafana, Loki, Promtail, Prometheus, node_exporter, Tempo, OTEL Collector
+- start: `docker compose -f deploy/compose/docker-compose.observability.yml --profile observability up -d`
+
+Security default: Grafana binds to `127.0.0.1:3000` only. Keep it private (VPN/SSH tunnel) or front it with admin auth.
+
+To emit API traces, set in API env (see [`deploy/env/api.sample`](../deploy/env/api.sample)):
+
+- `OBSERVABILITY_TRACING_ENABLED=true`
+- `OBSERVABILITY_OTLP_ENDPOINT=http://otel_collector:4317`
+- optional `OBSERVABILITY_TRACE_SAMPLE_RATIO` (0.0..1.0)
+
 ---
 
 ## What must match when you split hosts
@@ -79,3 +95,15 @@ The [`Dockerfile`](../Dockerfile) includes `static/` so the web UI works without
 | **Advanced multi-machine (WIP)** | [`lab/geofast-distributed-experiment.md`](lab/geofast-distributed-experiment.md) |
 | **NFS on primary (share tiles/bulk/rasters with workers)** | [`lab/nfs-host-ubuntu.md`](lab/nfs-host-ubuntu.md) |
 | **Compose/env details** | [`deploy/README.md`](../deploy/README.md) |
+
+---
+
+## CDN revalidation note for large mosaics
+
+If Cloudflare shows repeated `CF-Cache-Status: REVALIDATED` for mosaic tiles, verify:
+
+1. Tile URLs include `?v=<tiles_revision>` (versioned cache path).
+2. CDN cache key includes query string for `/raster-views/*/titiler/tiles/*`.
+3. Edge TTL rules do not override origin immutable caching for versioned URLs.
+
+The API now emits `X-Mosaic-Versioned-Cache: hit|miss` on mosaic tile responses to confirm whether a request matched the versioned cache policy.

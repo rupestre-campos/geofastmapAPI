@@ -1,0 +1,97 @@
+# Optional observability stack (admin-only access recommended).
+# Example:
+#   docker compose -f deploy/compose/docker-compose.observability.yml --profile observability up -d
+name: geofastmap_api
+
+services:
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:11.2.0
+    container_name: geofastmap_grafana
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: ${GF_SERVER_ROOT_URL:-http://localhost:3000}
+    volumes:
+      - geofastmap_grafana_data:/var/lib/grafana
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - loki
+      - prometheus
+      - tempo
+
+  loki:
+    profiles: ["observability"]
+    image: grafana/loki:3.1.1
+    container_name: geofastmap_loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ../observability/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - geofastmap_loki_data:/loki
+
+  promtail:
+    profiles: ["observability"]
+    image: grafana/promtail:3.1.1
+    container_name: geofastmap_promtail
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    volumes:
+      - ../observability/promtail-docker.yml:/etc/promtail/promtail.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/log:/var/log:ro
+
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v2.54.1
+    container_name: geofastmap_prometheus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=72h"
+    volumes:
+      - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - geofastmap_prometheus_data:/prometheus
+
+  node_exporter:
+    profiles: ["observability"]
+    image: prom/node-exporter:v1.8.2
+    container_name: geofastmap_node_exporter
+    restart: unless-stopped
+    command:
+      - "--path.rootfs=/host"
+    volumes:
+      - /:/host:ro,rslave
+
+  tempo:
+    profiles: ["observability"]
+    image: grafana/tempo:2.6.1
+    container_name: geofastmap_tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ../observability/tempo.yml:/etc/tempo/tempo.yml:ro
+      - geofastmap_tempo_data:/var/tempo
+
+  otel_collector:
+    profiles: ["observability"]
+    image: otel/opentelemetry-collector-contrib:0.107.0
+    container_name: geofastmap_otel_collector
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/otel-collector.yml"]
+    volumes:
+      - ../observability/otel-collector.yml:/etc/otelcol-contrib/otel-collector.yml:ro
+    depends_on:
+      - tempo
+
+volumes:
+  geofastmap_grafana_data:
+  geofastmap_loki_data:
+  geofastmap_prometheus_data:
+  geofastmap_tempo_data:

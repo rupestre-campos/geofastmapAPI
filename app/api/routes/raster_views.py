@@ -49,6 +49,7 @@ router = APIRouter(prefix="/raster-views", tags=["raster-views"])
 _MOSAIC_TILE_CACHE_CONTROL = "public, max-age=0, must-revalidate, s-maxage=0"
 # When tile URL includes ?v=<tiles_revision> matching the mosaic file fingerprint, safe to cache hard.
 _MOSAIC_TILE_CACHE_VERSIONED = "public, max-age=31536000, s-maxage=31536000, immutable"
+_MOSAIC_TILE_CDN_REVALIDATE = "public, max-age=0, must-revalidate"
 
 
 def compute_mosaic_tiles_revision(settings: Any, view_id: str, json_relative_path: str) -> str | None:
@@ -63,6 +64,18 @@ def compute_mosaic_tiles_revision(settings: Any, view_id: str, json_relative_pat
 
 def _etag_header_value(etag_hex: str) -> str:
     return f'"{etag_hex}"'
+
+
+def _mosaic_cache_headers(*, etag_hdr: str, versioned: bool) -> dict[str, str]:
+    headers = {
+        "ETag": etag_hdr,
+        "Cache-Control": _MOSAIC_TILE_CACHE_VERSIONED if versioned else _MOSAIC_TILE_CACHE_CONTROL,
+        # Explicit edge cache directives reduce REVALIDATED churn on CDNs like Cloudflare.
+        "CDN-Cache-Control": _MOSAIC_TILE_CACHE_VERSIONED if versioned else _MOSAIC_TILE_CDN_REVALIDATE,
+        "Surrogate-Control": _MOSAIC_TILE_CACHE_VERSIONED if versioned else _MOSAIC_TILE_CDN_REVALIDATE,
+        "X-Mosaic-Versioned-Cache": "hit" if versioned else "miss",
+    }
+    return headers
 
 
 def _if_none_match_includes_strong_etag(etag_hex: str, if_none_match: str | None) -> bool:
@@ -378,13 +391,13 @@ async def titiler_mosaic_tile(
     etag_hdr = _etag_header_value(etag)
     v_q = request.query_params.get("v")
     use_versioned_cache = v_q is not None and v_q == etag
-    cc = _MOSAIC_TILE_CACHE_VERSIONED if use_versioned_cache else _MOSAIC_TILE_CACHE_CONTROL
 
     # Client cache hit → no upstream call at all
     if _if_none_match_includes_strong_etag(etag, request.headers.get("if-none-match")):
+        headers = _mosaic_cache_headers(etag_hdr=etag_hdr, versioned=use_versioned_cache)
         return Response(
             status_code=304,
-            headers={"ETag": etag_hdr, "Cache-Control": cc},
+            headers=headers,
         )
 
     # -----------------------------
@@ -415,16 +428,18 @@ async def titiler_mosaic_tile(
 
     if cached is not None:
         body, ct = cached
-        return Response(
-            content=body,
-            media_type=ct,
-            headers={
-                "Cache-Control": cc,
-                "ETag": etag_hdr,
+        headers = _mosaic_cache_headers(etag_hdr=etag_hdr, versioned=use_versioned_cache)
+        headers.update(
+            {
                 "X-Tile-Cache": "HIT",
                 "X-Titiler-Upstream-Ms": "0",
                 "X-Titiler-Upstream-Attempts": "0",
-            },
+            }
+        )
+        return Response(
+            content=body,
+            media_type=ct,
+            headers=headers,
         )
 
     # -----------------------------
@@ -489,15 +504,17 @@ async def titiler_mosaic_tile(
     ms_header = str(int(round(titiler_upstream_ms)))
     att_header = str(titiler_attempts)
 
+    headers = _mosaic_cache_headers(etag_hdr=etag_hdr, versioned=use_versioned_cache)
+    headers.update(
+        {
+            "X-Titiler-Upstream-Ms": ms_header,
+            "X-Titiler-Upstream-Attempts": att_header,
+        }
+    )
     return Response(
         content=body,
         media_type=content_type,
-        headers={
-            "Cache-Control": cc,
-            "ETag": etag_hdr,
-            "X-Titiler-Upstream-Ms": ms_header,
-            "X-Titiler-Upstream-Attempts": att_header,
-        },
+        headers=headers,
     )
 
 

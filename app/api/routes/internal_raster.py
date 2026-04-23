@@ -8,13 +8,26 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import require_admin
 from app.core.config import get_settings
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.crud import raster_views as raster_views_crud
 from app.db.session import get_db
+from app.models.user import User
 
 router = APIRouter()
+
+
+@router.get(
+    "/auth/grafana-check",
+    include_in_schema=False,
+    summary="Admin-only auth check for Grafana reverse-proxy auth_request",
+)
+async def internal_grafana_admin_check(
+    current_user: User = Depends(require_admin),
+):
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _cog_path_from_feature(feature) -> str | None:

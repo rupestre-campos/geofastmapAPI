@@ -39,6 +39,7 @@ from app.api.routes import (
 from app.core.config import get_settings
 from app.utils.geometry_limits import GeometryTooLargeError
 from app.middleware.private_html_cache import PrivateHtmlCacheMiddleware
+from app.services.observability import init_observability, instrument_fastapi_app
 from app.services.bulk_queue import start_memory_consumer
 from app.services.bulk_worker import process_bulk_job
 
@@ -98,6 +99,7 @@ def create_app() -> FastAPI:
         description="GeoFastMap API — OGC API - Features style service built with FastAPI and PostgreSQL.",
         lifespan=lifespan,
     )
+    init_observability(settings)
     app.add_exception_handler(HTTPException, http_exception_redirect_to_login)
 
     async def geometry_too_large_handler(request: Request, exc: GeometryTooLargeError):
@@ -165,6 +167,7 @@ def create_app() -> FastAPI:
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+    instrument_fastapi_app(app)
     return app
 
 

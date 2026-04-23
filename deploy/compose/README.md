@@ -17,6 +17,7 @@ If you need a different project name on one host, run with `-p <project_name>` (
 | `docker-compose.titiler.yml` | TiTiler only (host port **8001**; named volume `geofastmap_rasters`) |
 | `docker-compose.titiler.nfs.yml` | **Override:** bind-mount host **`/data/rasters`** (use with `docker-compose.titiler.yml` on workers / NFS clients) |
 | `docker-compose.nfs.yml` | Optional **Docker** NFS helper on primary (see limitations; prefer host NFS in [`docs/lab/nfs-host-ubuntu.md`](../../docs/lab/nfs-host-ubuntu.md)) |
+| `docker-compose.observability.yml` | Optional admin observability profile (Grafana, Loki, Promtail, Prometheus, node_exporter, Tempo, OTEL Collector) |
 
 **Env files:** copy [`deploy/env/api.sample`](../env/api.sample) → `deploy/env/.env.api` and [`workers.sample`](../env/workers.sample) → `deploy/env/.env.workers`, then edit.
 
@@ -26,7 +27,10 @@ Examples:
 docker compose -f deploy/compose/docker-compose.db.yml up -d
 docker compose -f deploy/compose/docker-compose.api.yml up -d --build
 docker compose -f deploy/compose/docker-compose.workers.yml up -d --build
+docker compose -f deploy/compose/docker-compose.observability.yml --profile observability up -d
 ```
+
+Observability security default: Grafana is published on `127.0.0.1:3000` only. Keep it behind VPN/SSH tunnel or front it with admin auth.
 
 Single-host full stack (dev): root [`docker-compose.yml`](../../docker-compose.yml) — `docker compose up`.
 

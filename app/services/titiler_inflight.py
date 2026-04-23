@@ -17,7 +17,7 @@ async def await_tile_singleflight(
     fetch_once: Callable[[], Awaitable[tuple[bytes, str, float, int]]],
 ) -> tuple[bytes, str, float, int]:
     """
-    Only one caller runs fetch_once(cache_key); concurrent callers await the same result.
+    Only one caller runs fetch_once(); concurrent callers await the same result.
 
     Exceptions from fetch_once propagate to all waiters. The registry entry is always cleared.
     """

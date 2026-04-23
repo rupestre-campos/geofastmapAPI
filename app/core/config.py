@@ -89,6 +89,12 @@ class Settings(BaseSettings):
     # API → Titiler httpx timeouts (mosaic tiles with many COG sources can exceed 60s cold read).
     titiler_http_connect_timeout_seconds: float = 30.0
     titiler_http_read_timeout_seconds: float = 300.0
+    # OpenTelemetry tracing (export spans to OTEL Collector/Tempo when enabled).
+    observability_tracing_enabled: bool = False
+    observability_service_name: str = "geofast_api"
+    observability_otlp_endpoint: str = "http://otel_collector:4317"
+    # 0.0 = disabled, 1.0 = all requests sampled.
+    observability_trace_sample_ratio: float = 0.1
     # Redis cache for proxied Titiler raster tiles (STAC + mosaic). 0 = disabled.
     # Cold tiles still cost GDAL+network; repeats hit Redis ~1–5 ms. Mosaic keys include file revision
     # so edits are not masked by this TTL; this remains a performance / eviction knob only.

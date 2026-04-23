@@ -7,13 +7,14 @@ __pycache__/
 .venv/
 venv/
 ENV/
-env/
+
 
 # Environment and secrets
 .env
 .env.local
 .env.*.local
 *.env
+*.env.*
 deploy/env/.env.api
 deploy/env/.env.workers
 
