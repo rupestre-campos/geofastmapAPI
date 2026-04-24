@@ -720,14 +720,24 @@
             return r.json();
           }).then(function(j) {
             if (!j || !j.status) throw new Error('Invalid mosaic plan job response');
-            if (j.status === 'completed') return j.result || {};
+            if (j.status === 'completed' || j.status === 'completed_with_errors') {
+              if (j.status === 'completed_with_errors' && msg) {
+                msg.textContent = 'Mosaic completed with partial shard errors; showing best available result.';
+                msg.className = 'mosaic-msg error';
+              }
+              return j.result || {};
+            }
             if (j.status === 'failed' || j.status === 'cancelled') {
               throw new Error(j.message || ('Job ' + j.status));
             }
             var serverRetryMs = Math.max(500, Number(j.retry_after_seconds || 1) * 1000);
             if (msg) {
               var phase = j.phase ? (' (' + j.phase + ')') : '';
-              msg.textContent = (j.is_stale ? 'Mosaic plan may be stalled' : 'Mosaic plan still running') + phase + '…';
+              var childInfo = '';
+              if (j.children_total != null) {
+                childInfo = ' [' + Number(j.children_done || 0) + '/' + Number(j.children_total || 0) + ' shards]';
+              }
+              msg.textContent = (j.is_stale ? 'Mosaic plan may be stalled' : 'Mosaic plan still running') + phase + childInfo + '…';
               msg.className = j.is_stale ? 'mosaic-msg error' : 'mosaic-msg';
             }
             if ((Date.now() - started) > timeoutMs) {

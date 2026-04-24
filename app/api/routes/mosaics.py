@@ -26,6 +26,7 @@ from app.services.mosaic_plan import (
     season_datetime_slices,
     swap_options_for_selected,
 )
+from app.services.mosaic_plan_distributed import plan_mosaic_with_void_fill_distributed
 from app.services.mosaic_preview_footprint import attach_footprint_displays_to_plan_result
 from app.services.mosaic_plan_jobs import enqueue_mosaic_plan_job, get_mosaic_plan_job
 from geoalchemy2.shape import to_shape
@@ -100,7 +101,12 @@ async def mosaic_plan(
     return await compute_mosaic_plan(body, current_user)
 
 
-async def compute_mosaic_plan(body: MosaicPlanBody, current_user: User) -> dict[str, Any]:
+async def compute_mosaic_plan(
+    body: MosaicPlanBody,
+    current_user: User,
+    *,
+    allow_distributed: bool = False,
+) -> dict[str, Any]:
     if body.sort_mode not in ("lowest_cloud", "newest_first"):
         raise HTTPException(status_code=400, detail="sort_mode must be lowest_cloud or newest_first")
 
@@ -198,19 +204,41 @@ async def compute_mosaic_plan(body: MosaicPlanBody, current_user: User) -> dict[
         )
         plan_features = features
     else:
-        result, stac_errors, plan_features = await plan_mosaic_with_void_fill(
-            [catalog],
-            stac_collection=body.stac_collection_id,
-            aoi=aoi,
-            search_bbox=search_bbox,
-            datetime_slices=slices,
-            cloud_cover_max=cloud_for_search,
-            sort_mode=body.sort_mode,
-            fetch_limit=cap,
-            same_pass_date_strips=body.use_same_pass_date_strips,
-            swap_options_limit=swap_lim,
-            swap_options_offset=swap_off,
+        use_distributed = (
+            allow_distributed
+            and bool(getattr(settings, "mosaic_subjob_queue_enabled", False))
+            and settings.mosaic_queue_type == "redis"
         )
+        if use_distributed:
+            result, stac_errors, plan_features = await plan_mosaic_with_void_fill_distributed(
+                job_id=str(getattr(current_user, "_mosaic_job_id", "") or ""),
+                owner_id=int(current_user.id),
+                catalogs=[catalog],
+                stac_collection=body.stac_collection_id,
+                aoi=aoi,
+                search_bbox=search_bbox,
+                datetime_slices=slices,
+                cloud_cover_max=cloud_for_search,
+                sort_mode=body.sort_mode,
+                fetch_limit=cap,
+                same_pass_date_strips=body.use_same_pass_date_strips,
+                swap_options_limit=swap_lim,
+                swap_options_offset=swap_off,
+            )
+        else:
+            result, stac_errors, plan_features = await plan_mosaic_with_void_fill(
+                [catalog],
+                stac_collection=body.stac_collection_id,
+                aoi=aoi,
+                search_bbox=search_bbox,
+                datetime_slices=slices,
+                cloud_cover_max=cloud_for_search,
+                sort_mode=body.sort_mode,
+                fetch_limit=cap,
+                same_pass_date_strips=body.use_same_pass_date_strips,
+                swap_options_limit=swap_lim,
+                swap_options_offset=swap_off,
+            )
     include_footprint_display = bool(body.include_footprint_display)
     if include_footprint_display:
         await attach_footprint_displays_to_plan_result(result, plan_features)
@@ -237,9 +265,10 @@ async def mosaic_plan_job_status(
         raise HTTPException(status_code=404, detail="Job not found")
     if int(job.get("owner_id") or 0) != int(current_user.id):
         raise HTTPException(status_code=404, detail="Job not found")
+    status = str(job.get("status") or "")
     out = {
         "job_id": job.get("job_id") or job_id,
-        "status": job.get("status"),
+        "status": status,
         "message": job.get("message"),
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
@@ -247,11 +276,11 @@ async def mosaic_plan_job_status(
         "retry_after_seconds": int(job.get("retry_after_seconds") or 1),
         "client_timeout_seconds": int(settings.mosaic_job_client_timeout_seconds or 1800),
     }
-    for k in ("phase", "round", "rounds_max", "features_seen"):
+    for k in ("phase", "round", "rounds_max", "features_seen", "children_total", "children_done", "children_failed"):
         if k in job:
             out[k] = job[k]
     st = str(job.get("status") or "unknown")
-    out["terminal"] = st in ("completed", "failed", "cancelled")
+    out["terminal"] = st in ("completed", "completed_with_errors", "failed", "cancelled")
     out["is_stale"] = False
     updated_at = job.get("updated_at")
     if isinstance(updated_at, str) and updated_at:
@@ -262,7 +291,7 @@ async def mosaic_plan_job_status(
             out["is_stale"] = (not out["terminal"]) and age > stale_after
         except ValueError:
             pass
-    if job.get("status") == "completed" and isinstance(job.get("result"), dict):
+    if status in ("completed", "completed_with_errors") and isinstance(job.get("result"), dict):
         out["result"] = job["result"]
     return out
 

@@ -11,10 +11,13 @@ from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
 from app.services.mosaic_plan_jobs import (
     MOSAIC_PLAN_QUEUE_KEY,
+    MOSAIC_PLAN_SUBTASK_QUEUE_KEY,
     set_mosaic_plan_job_error,
     set_mosaic_plan_job_progress,
     set_mosaic_plan_job_result,
     set_mosaic_plan_job_status,
+    set_mosaic_plan_subtask_result,
+    set_mosaic_plan_subtask_status,
 )
 
 
@@ -62,7 +65,8 @@ async def _run_job(payload: dict) -> None:
         set_mosaic_plan_job_error(job_id, "User not found")
         return
     try:
-        result = await compute_mosaic_plan(body, user)
+        setattr(user, "_mosaic_job_id", job_id)
+        result = await compute_mosaic_plan(body, user, allow_distributed=True)
         set_mosaic_plan_job_progress(
             job_id,
             phase="finalizing",
@@ -72,11 +76,44 @@ async def _run_job(payload: dict) -> None:
         )
         hb_stop.set()
         await hb_task
-        set_mosaic_plan_job_result(job_id, result)
+        errs = list(result.get("stac_errors") or [])
+        st = "completed_with_errors" if errs else "completed"
+        set_mosaic_plan_job_result(job_id, result, status=st)
     except Exception as e:
         hb_stop.set()
         await hb_task
         set_mosaic_plan_job_error(job_id, str(e) or type(e).__name__)
+
+
+async def _run_subtask(payload: dict) -> None:
+    from app.services.mosaic_plan_distributed import execute_subtask_payload
+
+    task_id = str(payload.get("task_id") or "")
+    job_id = str(payload.get("job_id") or "")
+    round_idx = int(payload.get("round_idx") or 0)
+    body = payload.get("payload") or {}
+    if not task_id or not job_id or not isinstance(body, dict):
+        return
+    set_mosaic_plan_subtask_status(task_id, "running")
+    try:
+        result = await execute_subtask_payload(body)
+        errs = list(result.get("errors") or [])
+        status = "completed_with_errors" if errs else "completed"
+        set_mosaic_plan_subtask_result(
+            task_id,
+            job_id=job_id,
+            round_idx=round_idx,
+            result=result,
+            status=status,
+        )
+    except Exception as e:
+        set_mosaic_plan_subtask_result(
+            task_id,
+            job_id=job_id,
+            round_idx=round_idx,
+            result={"features": [], "errors": [{"detail": str(e) or type(e).__name__}]},
+            status="failed",
+        )
 
 
 async def _worker_loop() -> None:
@@ -85,33 +122,49 @@ async def _worker_loop() -> None:
         print("Set MOSAIC_QUEUE_TYPE=redis for mosaic worker.", file=sys.stderr)
         sys.exit(1)
     max_concurrent = max(1, int(getattr(settings, "mosaic_worker_max_concurrent", 1) or 1))
+    subtask_workers = max(1, int(getattr(settings, "mosaic_subjob_worker_concurrency", max_concurrent) or 1))
     import redis
 
     r = redis.from_url(settings.redis_url, decode_responses=True)
-    print(f"Mosaic worker started. Waiting for jobs... (max_concurrent={max_concurrent})", flush=True)
-    active: set[asyncio.Task] = set()
+    print(
+        f"Mosaic worker started. Waiting for jobs... (max_concurrent={max_concurrent}, subtask_workers={subtask_workers})",
+        flush=True,
+    )
+    active_parent: set[asyncio.Task] = set()
+    active_subtask: set[asyncio.Task] = set()
     while True:
-        if len(active) >= max_concurrent:
-            done, pending = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
-            active = set(pending)
+        if len(active_parent) >= max_concurrent:
+            done, pending = await asyncio.wait(active_parent, return_when=asyncio.FIRST_COMPLETED)
+            active_parent = set(pending)
             for t in done:
                 try:
                     await t
                 except Exception:
-                    # _run_job handles and stores job errors; never fail worker loop on one task.
                     pass
-            continue
-        # Redis client is sync; run BRPOP in a thread but keep one async event loop for the worker.
-        item = await asyncio.to_thread(r.brpop, MOSAIC_PLAN_QUEUE_KEY, 5)
+        if len(active_subtask) >= subtask_workers:
+            done, pending = await asyncio.wait(active_subtask, return_when=asyncio.FIRST_COMPLETED)
+            active_subtask = set(pending)
+            for t in done:
+                try:
+                    await t
+                except Exception:
+                    pass
+
+        keys = [MOSAIC_PLAN_QUEUE_KEY]
+        if bool(getattr(settings, "mosaic_subjob_queue_enabled", False)) and len(active_subtask) < subtask_workers:
+            keys.append(MOSAIC_PLAN_SUBTASK_QUEUE_KEY)
+        item = await asyncio.to_thread(r.brpop, keys, 5)
         if not item:
             continue
-        _key, raw = item
+        key, raw = item
         try:
             payload = json.loads(raw)
         except Exception:
             continue
-        t = asyncio.create_task(_run_job(payload))
-        active.add(t)
+        if key == MOSAIC_PLAN_SUBTASK_QUEUE_KEY:
+            active_subtask.add(asyncio.create_task(_run_subtask(payload)))
+        else:
+            active_parent.add(asyncio.create_task(_run_job(payload)))
 
 
 def main() -> None:

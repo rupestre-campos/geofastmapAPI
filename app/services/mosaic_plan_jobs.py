@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from datetime import datetime
@@ -11,6 +12,9 @@ from app.core.config import get_settings
 
 MOSAIC_PLAN_QUEUE_KEY = "geofastmap:mosaic_plan_queue"
 MOSAIC_PLAN_JOB_KEY_PREFIX = "geofastmap:mosaic_plan_job:"
+MOSAIC_PLAN_SUBTASK_QUEUE_KEY = "geofastmap:mosaic_plan_subtask_queue"
+MOSAIC_PLAN_SUBTASK_KEY_PREFIX = "geofastmap:mosaic_plan_subtask:"
+MOSAIC_PLAN_SUBTASK_RESULT_KEY = "geofastmap:mosaic_plan_subtask_result:"
 
 
 def _redis():
@@ -23,9 +27,21 @@ def _job_key(job_id: str) -> str:
     return f"{MOSAIC_PLAN_JOB_KEY_PREFIX}{job_id}"
 
 
+def _subtask_key(task_id: str) -> str:
+    return f"{MOSAIC_PLAN_SUBTASK_KEY_PREFIX}{task_id}"
+
+
+def _subtask_result_key(job_id: str, round_idx: int) -> str:
+    return f"{MOSAIC_PLAN_SUBTASK_RESULT_KEY}{job_id}:{round_idx}"
+
+
+def _to_iso_now() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
 def enqueue_mosaic_plan_job(body: dict[str, Any], owner_id: int) -> str:
     job_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat() + "Z"
+    now = _to_iso_now()
     payload = {"job_id": job_id, "owner_id": owner_id, "body": body}
     r = _redis()
     r.hset(
@@ -49,19 +65,19 @@ def set_mosaic_plan_job_status(job_id: str, status: str, *, message: str | None 
     r = _redis()
     mapping: dict[str, str] = {
         "status": status,
-        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "updated_at": _to_iso_now(),
     }
     if message is not None:
         mapping["message"] = message
     if status in ("completed", "failed", "cancelled"):
-        mapping["finished_at"] = datetime.utcnow().isoformat() + "Z"
+        mapping["finished_at"] = _to_iso_now()
     r.hset(_job_key(job_id), mapping=mapping)
 
 
 def set_mosaic_plan_job_progress(job_id: str, **fields: Any) -> None:
     """Update heartbeat/progress fields without forcing terminal status."""
     mapping: dict[str, str] = {
-        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "updated_at": _to_iso_now(),
     }
     for k, v in fields.items():
         if v is None:
@@ -73,16 +89,22 @@ def set_mosaic_plan_job_progress(job_id: str, **fields: Any) -> None:
     _redis().hset(_job_key(job_id), mapping=mapping)
 
 
-def set_mosaic_plan_job_result(job_id: str, result: dict[str, Any]) -> None:
+def set_mosaic_plan_job_result(
+    job_id: str,
+    result: dict[str, Any],
+    *,
+    status: str = "completed",
+    message: str | None = None,
+) -> None:
     r = _redis()
     r.hset(
         _job_key(job_id),
         mapping={
-            "status": "completed",
-            "updated_at": datetime.utcnow().isoformat() + "Z",
-            "finished_at": datetime.utcnow().isoformat() + "Z",
+            "status": status,
+            "updated_at": _to_iso_now(),
+            "finished_at": _to_iso_now(),
             "result": json.dumps(result, separators=(",", ":")),
-            "message": "Completed",
+            "message": message or ("Completed with warnings" if status == "completed_with_errors" else "Completed"),
         },
     )
 
@@ -93,11 +115,112 @@ def set_mosaic_plan_job_error(job_id: str, message: str) -> None:
         _job_key(job_id),
         mapping={
             "status": "failed",
-            "updated_at": datetime.utcnow().isoformat() + "Z",
-            "finished_at": datetime.utcnow().isoformat() + "Z",
+            "updated_at": _to_iso_now(),
+            "finished_at": _to_iso_now(),
             "message": message[:2000],
         },
     )
+
+
+def _task_id(job_id: str, round_idx: int, shard_key: str) -> str:
+    raw = f"{job_id}:{round_idx}:{shard_key}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:32]
+
+
+def enqueue_mosaic_plan_subtask(
+    *,
+    job_id: str,
+    owner_id: int,
+    round_idx: int,
+    shard_key: str,
+    payload: dict[str, Any],
+    ttl_seconds: int = 3600,
+) -> str:
+    task_id = _task_id(job_id, round_idx, shard_key)
+    r = _redis()
+    tkey = _subtask_key(task_id)
+    if not r.exists(tkey):
+        body = {
+            "task_id": task_id,
+            "job_id": job_id,
+            "owner_id": owner_id,
+            "round_idx": int(round_idx),
+            "shard_key": shard_key,
+            "payload": payload,
+        }
+        now = _to_iso_now()
+        r.hset(
+            tkey,
+            mapping={
+                "task_id": task_id,
+                "job_id": job_id,
+                "owner_id": str(owner_id),
+                "round_idx": str(round_idx),
+                "shard_key": shard_key,
+                "status": "pending",
+                "created_at": now,
+                "updated_at": now,
+                "payload": json.dumps(body, separators=(",", ":")),
+            },
+        )
+        r.expire(tkey, ttl_seconds)
+        r.lpush(MOSAIC_PLAN_SUBTASK_QUEUE_KEY, json.dumps(body, separators=(",", ":")))
+    return task_id
+
+
+def set_mosaic_plan_subtask_status(task_id: str, status: str, *, message: str | None = None) -> None:
+    mapping = {"status": status, "updated_at": _to_iso_now()}
+    if message is not None:
+        mapping["message"] = message[:500]
+    _redis().hset(_subtask_key(task_id), mapping=mapping)
+
+
+def set_mosaic_plan_subtask_result(
+    task_id: str,
+    *,
+    job_id: str,
+    round_idx: int,
+    result: dict[str, Any],
+    status: str = "completed",
+) -> None:
+    r = _redis()
+    r.hset(
+        _subtask_key(task_id),
+        mapping={
+            "status": status,
+            "updated_at": _to_iso_now(),
+            "finished_at": _to_iso_now(),
+            "result": json.dumps(result, separators=(",", ":")),
+        },
+    )
+    r.rpush(
+        _subtask_result_key(job_id, round_idx),
+        json.dumps({"task_id": task_id, "status": status, "result": result}, separators=(",", ":")),
+    )
+
+
+def await_mosaic_plan_subtask_results(
+    *,
+    job_id: str,
+    round_idx: int,
+    expected_count: int,
+    timeout_seconds: int,
+) -> list[dict[str, Any]]:
+    r = _redis()
+    key = _subtask_result_key(job_id, round_idx)
+    out: list[dict[str, Any]] = []
+    remaining = max(0, int(expected_count))
+    while remaining > 0:
+        item = r.brpop(key, timeout=max(1, int(timeout_seconds)))
+        if not item:
+            break
+        _k, raw = item
+        try:
+            out.append(json.loads(raw))
+        except Exception:
+            out.append({"status": "failed", "result": {"errors": [{"detail": "invalid-subtask-result"}]}})
+        remaining -= 1
+    return out
 
 
 def get_mosaic_plan_job(job_id: str) -> dict[str, Any] | None:
@@ -123,11 +246,28 @@ def get_mosaic_plan_job(job_id: str) -> dict[str, Any] | None:
             out["payload"] = json.loads(raw["payload"])
         except Exception:
             pass
-    for k in ("phase", "round", "rounds_max", "features_seen", "retry_after_seconds"):
+    for k in (
+        "phase",
+        "round",
+        "rounds_max",
+        "features_seen",
+        "retry_after_seconds",
+        "children_total",
+        "children_done",
+        "children_failed",
+    ):
         v = raw.get(k)
         if v is None:
             continue
-        if k in ("round", "rounds_max", "features_seen", "retry_after_seconds"):
+        if k in (
+            "round",
+            "rounds_max",
+            "features_seen",
+            "retry_after_seconds",
+            "children_total",
+            "children_done",
+            "children_failed",
+        ):
             try:
                 out[k] = int(v)
             except (TypeError, ValueError):

@@ -166,6 +166,15 @@ class Settings(BaseSettings):
     mosaic_job_heartbeat_seconds: int = 10
     mosaic_job_stale_after_seconds: int = 180
     mosaic_job_client_timeout_seconds: int = 1800
+    # Distributed single-job mode: split one mosaic into subjobs processed by many workers.
+    mosaic_subjob_queue_enabled: bool = False
+    mosaic_subjob_worker_concurrency: int = 2
+    mosaic_subjob_bbox_datetime_parallelism: int = 8
+    mosaic_subjob_catalog_parallelism: int = 4
+    mosaic_subjob_round_timeout_seconds: int = 180
+    mosaic_subjob_max_retries: int = 1
+    mosaic_subjob_result_ttl_seconds: int = 3600
+    mosaic_parent_fail_on_partial: bool = False
     # HTML STAC search: max merged features fetched before slicing for pagination (per search).
     stac_search_html_max_features: int = 2000
     # Max page size for GET /stac?f=html
