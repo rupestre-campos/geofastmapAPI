@@ -51,7 +51,7 @@ class MosaicPlanBody(BaseModel):
     cloud_cover_max: float | None = Field(None, ge=0, le=100)
     sort_mode: str = Field("lowest_cloud", description="lowest_cloud | newest_first")
     use_same_pass_date_strips: bool = Field(
-        False,
+        True,
         description="If true, restrict to a sliding 7-day UTC date window (best mean cloud), then per-column same-day strips; STAC cloud filter is not applied. Void-fill rounds stay in that window. Gap fill may mix dates.",
     )
     geofast_collection_id: str | None = None

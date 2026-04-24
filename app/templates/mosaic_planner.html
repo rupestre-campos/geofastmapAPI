@@ -127,7 +127,7 @@
 
     <div class="form-row">
       <label class="checkbox-inline">
-        <input type="checkbox" id="mp-same-pass-date">
+        <input type="checkbox" id="mp-same-pass-date" checked>
         Use images around same date
       </label>
       <p class="meta" style="margin:0.35rem 0 0;">Planner picks a sliding <strong>7-day UTC window</strong> (e.g. anchor ±3 days so a Sunday scene can pair with Saturday and Monday—not fixed to Mon–Sun ISO weeks). Windows are scored by mean cloud; all strips use only scenes in that window. Each vertical column still prefers one calendar day; another column can use a different day inside the window. Cloud % is not sent to STAC; leftover gaps may still be filled from the pool.</p>
@@ -1416,7 +1416,7 @@
         }
         try {
           var spd = document.getElementById('mp-same-pass-date');
-          if (spd) spd.checked = def.use_same_pass_date_strips === true;
+          if (spd) spd.checked = def.use_same_pass_date_strips !== false;
         } catch (eSp) {}
         // seasons
         try {
