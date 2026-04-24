@@ -169,6 +169,8 @@ class Settings(BaseSettings):
     # Distributed single-job mode: split one mosaic into subjobs processed by many workers.
     mosaic_subjob_queue_enabled: bool = False
     mosaic_subjob_worker_concurrency: int = 2
+    # If false, a worker running parent jobs will not also consume subtask queue.
+    mosaic_subjob_consume_subtasks_while_parent_active: bool = True
     mosaic_subjob_bbox_datetime_parallelism: int = 8
     mosaic_subjob_catalog_parallelism: int = 4
     mosaic_subjob_round_timeout_seconds: int = 180

@@ -117,6 +117,7 @@ async def plan_mosaic_with_void_fill_distributed(
     min_uncovered = float(settings.mosaic_void_fill_min_uncovered or 0.001)
     max_parts = max(1, int(settings.mosaic_void_pinpoint_max_parts or 16))
     fail_on_partial = bool(settings.mosaic_parent_fail_on_partial)
+    shard_wave = max(1, int(settings.mosaic_subjob_bbox_datetime_parallelism or 1))
 
     merged: dict[str, dict[str, Any]] = {}
     all_errors: list[dict[str, str]] = []
@@ -153,7 +154,7 @@ async def plan_mosaic_with_void_fill_distributed(
         if not q_bboxes:
             break
 
-        subtask_ids: list[str] = []
+        shard_rows: list[tuple[str, dict[str, Any]]] = []
         for bbox in q_bboxes:
             for dt in datetime_slices:
                 shard_key = f"{round_idx}:{','.join(str(x) for x in bbox)}:{dt}"
@@ -166,17 +167,8 @@ async def plan_mosaic_with_void_fill_distributed(
                     sort_mode=sort_mode,
                     fetch_limit=fetch_limit,
                 )
-                subtask_ids.append(
-                    enqueue_mosaic_plan_subtask(
-                        job_id=job_id,
-                        owner_id=owner_id,
-                        round_idx=round_idx,
-                        shard_key=shard_key,
-                        payload=payload,
-                        ttl_seconds=max(600, int(settings.mosaic_subjob_result_ttl_seconds or 3600)),
-                    )
-                )
-        children_total = len(subtask_ids)
+                shard_rows.append((shard_key, payload))
+        children_total = len(shard_rows)
         set_mosaic_plan_job_progress(
             job_id,
             phase="collecting_subjobs",
@@ -185,12 +177,37 @@ async def plan_mosaic_with_void_fill_distributed(
             children_total=children_total,
             children_done=0,
         )
-        results = await await_mosaic_plan_subtask_results(
-            job_id=job_id,
-            round_idx=round_idx,
-            expected_count=children_total,
-            timeout_seconds=timeout_sec,
-        )
+        results: list[dict[str, Any]] = []
+        done_count = 0
+        for i in range(0, len(shard_rows), shard_wave):
+            wave = shard_rows[i : i + shard_wave]
+            expected = 0
+            for shard_key, payload in wave:
+                enqueue_mosaic_plan_subtask(
+                    job_id=job_id,
+                    owner_id=owner_id,
+                    round_idx=round_idx,
+                    shard_key=shard_key,
+                    payload=payload,
+                    ttl_seconds=max(600, int(settings.mosaic_subjob_result_ttl_seconds or 3600)),
+                )
+                expected += 1
+            wave_results = await await_mosaic_plan_subtask_results(
+                job_id=job_id,
+                round_idx=round_idx,
+                expected_count=expected,
+                timeout_seconds=timeout_sec,
+            )
+            results.extend(wave_results)
+            done_count += len(wave_results)
+            set_mosaic_plan_job_progress(
+                job_id,
+                phase="collecting_subjobs",
+                round=round_idx + 1,
+                rounds_max=max_rounds,
+                children_total=children_total,
+                children_done=done_count,
+            )
         if len(results) < children_total and fail_on_partial:
             raise RuntimeError("Subjob round timed out before all shard results completed")
 
@@ -216,7 +233,7 @@ async def plan_mosaic_with_void_fill_distributed(
                     )
         set_mosaic_plan_job_progress(
             job_id,
-            phase="merging_features",
+            phase="planning",
             round=round_idx + 1,
             rounds_max=max_rounds,
             children_total=children_total,

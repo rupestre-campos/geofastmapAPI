@@ -136,8 +136,11 @@ async def _worker_loop() -> None:
     if settings.mosaic_queue_type != "redis":
         print("Set MOSAIC_QUEUE_TYPE=redis for mosaic worker.", file=sys.stderr)
         sys.exit(1)
-    max_concurrent = max(1, int(getattr(settings, "mosaic_worker_max_concurrent", 1) or 1))
-    subtask_workers = max(1, int(getattr(settings, "mosaic_subjob_worker_concurrency", max_concurrent) or 1))
+    # 0 = never claim parent jobs from geofastmap:mosaic_plan_queue (shard-only worker).
+    _mc = int(getattr(settings, "mosaic_worker_max_concurrent", 1) or 0)
+    max_concurrent = 0 if _mc <= 0 else _mc
+    subtask_workers = max(0, int(getattr(settings, "mosaic_subjob_worker_concurrency", 2) or 0))
+    consume_while_parent = bool(getattr(settings, "mosaic_subjob_consume_subtasks_while_parent_active", True))
     import redis
 
     r = redis.from_url(settings.redis_url, decode_responses=True)
@@ -148,7 +151,7 @@ async def _worker_loop() -> None:
     active_parent: set[asyncio.Task] = set()
     active_subtask: set[asyncio.Task] = set()
     while True:
-        if len(active_parent) >= max_concurrent:
+        if max_concurrent > 0 and len(active_parent) >= max_concurrent:
             done, pending = await asyncio.wait(active_parent, return_when=asyncio.FIRST_COMPLETED)
             active_parent = set(pending)
             for t in done:
@@ -156,7 +159,7 @@ async def _worker_loop() -> None:
                     await t
                 except Exception:
                     pass
-        if len(active_subtask) >= subtask_workers:
+        if subtask_workers > 0 and len(active_subtask) >= subtask_workers:
             done, pending = await asyncio.wait(active_subtask, return_when=asyncio.FIRST_COMPLETED)
             active_subtask = set(pending)
             for t in done:
@@ -165,9 +168,20 @@ async def _worker_loop() -> None:
                 except Exception:
                     pass
 
-        keys = [MOSAIC_PLAN_QUEUE_KEY]
-        if bool(getattr(settings, "mosaic_subjob_queue_enabled", False)) and len(active_subtask) < subtask_workers:
+        keys: list[str] = []
+        if max_concurrent > 0:
+            keys.append(MOSAIC_PLAN_QUEUE_KEY)
+        can_take_subtasks = (
+            subtask_workers > 0
+            and bool(getattr(settings, "mosaic_subjob_queue_enabled", False))
+            and len(active_subtask) < subtask_workers
+            and (consume_while_parent or len(active_parent) == 0)
+        )
+        if can_take_subtasks:
             keys.append(MOSAIC_PLAN_SUBTASK_QUEUE_KEY)
+        if not keys:
+            await asyncio.sleep(1)
+            continue
         item = await asyncio.to_thread(r.brpop, keys, 5)
         if not item:
             continue
