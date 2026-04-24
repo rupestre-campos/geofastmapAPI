@@ -10,6 +10,7 @@ from app.services.mosaic_plan import (
     pinpoint_bboxes_from_remainder,
     plan_mosaic_from_features,
     season_datetime_slices,
+    split_initial_search_bboxes,
     swap_options_for_selected,
 )
 from app.core.permissions import can_access_raster_view_tiles_anonymous
@@ -155,6 +156,19 @@ def test_pinpoint_bboxes_one_small_search_per_gap():
     for bb in bbs:
         assert len(bb) == 4
         assert bb[2] > bb[0] and bb[3] > bb[1]
+
+
+def test_split_initial_search_bboxes_large_area():
+    bbs = split_initial_search_bboxes([-70.0, -30.0, -10.0, 20.0])
+    assert len(bbs) > 1
+    for bb in bbs:
+        assert len(bb) == 4
+        assert bb[2] > bb[0] and bb[3] > bb[1]
+
+
+def test_split_initial_search_bboxes_small_area_single():
+    bbs = split_initial_search_bboxes([10.0, 10.0, 12.0, 12.0])
+    assert len(bbs) == 1
 
 
 def test_footprint_prefers_geometry_over_bbox():

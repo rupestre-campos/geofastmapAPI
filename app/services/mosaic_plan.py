@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 from collections import defaultdict
@@ -72,6 +73,8 @@ _VOID_FILL_MAX_ROUNDS = 6
 _VOID_FILL_MIN_UNCOVERED = 0.001
 # Per void round: sample at most this many disconnected gaps (each gets a small STAC bbox like click-to-fill).
 _VOID_PINPOINT_MAX_PARTS = 16
+# Number of concurrent STAC bbox searches per round.
+_VOID_FILL_BBOX_PARALLELISM = 4
 # Same-pass date mode: split AOI into vertical (N–S) longitude strips; each strip picks one day.
 # True satellite swaths are oblique; we approximate with meridian-aligned columns (see docstrings).
 _SAME_PASS_NUM_STRIPS = 8
@@ -841,6 +844,36 @@ def _dedupe_bboxes(bboxes: list[list[float]]) -> list[list[float]]:
     return out
 
 
+def split_initial_search_bboxes(search_bbox: list[float]) -> list[list[float]]:
+    """
+    Split very large initial AOI bbox into a coarse grid to avoid one giant upstream STAC /search.
+    Smaller bboxes are queried in parallel later (bounded by _VOID_FILL_BBOX_PARALLELISM).
+    """
+    if not search_bbox or len(search_bbox) < 4:
+        return []
+    minx, miny, maxx, maxy = (float(search_bbox[i]) for i in range(4))
+    if minx >= maxx - 1e-9 or miny >= maxy - 1e-9:
+        return []
+    w = maxx - minx
+    h = maxy - miny
+    # Typical zoomed AOIs stay single-request; continent-scale splits reduce 502 risk.
+    if w <= 6.0 and h <= 6.0:
+        return [[minx, miny, maxx, maxy]]
+    grid = 3 if (w > 30.0 or h > 30.0) else 2
+    dx = w / grid
+    dy = h / grid
+    out: list[list[float]] = []
+    for iy in range(grid):
+        for ix in range(grid):
+            x0 = minx + ix * dx
+            x1 = maxx if ix == grid - 1 else (minx + (ix + 1) * dx)
+            y0 = miny + iy * dy
+            y1 = maxy if iy == grid - 1 else (miny + (iy + 1) * dy)
+            if x0 < x1 - 1e-9 and y0 < y1 - 1e-9:
+                out.append([x0, y0, x1, y1])
+    return _dedupe_bboxes(out)
+
+
 def pinpoint_bboxes_from_remainder(
     remaining: Any,
     clip_bbox: list[float],
@@ -1163,7 +1196,7 @@ async def plan_mosaic_with_void_fill(
 
     for round_idx in range(_VOID_FILL_MAX_ROUNDS):
         if round_idx == 0:
-            q_bboxes = [[float(x) for x in search_bbox]]
+            q_bboxes = split_initial_search_bboxes([float(x) for x in search_bbox])
         else:
             assert last_result is not None
             uf = float(last_result.get("uncovered_fraction") or 1.0)
@@ -1195,16 +1228,22 @@ async def plan_mosaic_with_void_fill(
             break
 
         n_before = len(merged)
-        for q_bbox in q_bboxes:
-            feats, errs = await collect_stac_features(
-                catalogs,
-                stac_collection=stac_collection,
-                bbox=q_bbox,
-                datetime_slices=datetime_slices,
-                cloud_cover_max=cloud_cover_max,
-                sort_mode=sort_mode,
-                fetch_limit=fetch_limit,
-            )
+        sem = asyncio.Semaphore(max(1, _VOID_FILL_BBOX_PARALLELISM))
+
+        async def _fetch_bbox(q_bbox: list[float]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+            async with sem:
+                return await collect_stac_features(
+                    catalogs,
+                    stac_collection=stac_collection,
+                    bbox=q_bbox,
+                    datetime_slices=datetime_slices,
+                    cloud_cover_max=cloud_cover_max,
+                    sort_mode=sort_mode,
+                    fetch_limit=fetch_limit,
+                )
+
+        batch = await asyncio.gather(*[_fetch_bbox(bb) for bb in q_bboxes])
+        for feats, errs in batch:
             all_errors.extend(errs)
             for f in feats:
                 if isinstance(f, dict):
