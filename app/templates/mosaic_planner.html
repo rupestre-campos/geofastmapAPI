@@ -159,18 +159,6 @@
       </span>
       <span id="mp-msg" class="mosaic-msg" role="status"></span>
     </div>
-    <div class="form-row mosaic-planner-add-images">
-      <span class="label-text" style="font-weight:600;">Add images from map (optional AOI)</span>
-      <p class="meta" style="margin:0.35rem 0 0.5rem;">Draw a <strong>polygon</strong> (double-click to finish), <strong>line</strong>, or <strong>point</strong> to limit STAC to that area. Lines and points become a bounding box for search. Use <strong>Select / edit</strong> to adjust. Leave empty to use the whole map viewport. Press <kbd>Esc</kbd> to stop drawing.</p>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-        <button type="button" class="btn btn-sm" id="mp-draw-polygon">Draw polygon</button>
-        <button type="button" class="btn btn-sm" id="mp-draw-line">Draw line</button>
-        <button type="button" class="btn btn-sm" id="mp-draw-point">Mark point</button>
-        <button type="button" class="btn btn-sm" id="mp-draw-select">Select / edit</button>
-        <button type="button" class="btn btn-sm" id="mp-draw-clear">Clear all drawing</button>
-      </div>
-    </div>
-
     <div class="form-row" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">
       <div style="min-width:220px;flex:1;">
         <label for="mp-basemap">Basemap</label>
@@ -184,7 +172,7 @@
       </label>
     </div>
 
-    <p class="meta" style="margin-top:0;">Shapes you draw constrain the search; with nothing drawn, the AOI is the current viewport.</p>
+    <p class="meta" style="margin-top:0;">Search uses the current map viewport bbox. Zoom/pan to the hole area, then run Search STAC.</p>
     <div id="mosaic-planner-map" class="map-container"></div>
     <p class="meta">After planning, you can swap/remove selected images, then save.</p>
   </div>
@@ -304,10 +292,7 @@
         });
         GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
         map.addControl(new maplibregl.NavigationControl());
-        // Keep all draw actions in our custom toolbar (no on-map built-in buttons).
-        var draw = new MapboxDraw({ displayControlsDefault: false, controls: {} });
-        map.addControl(draw);
-        return { map: map, draw: draw, initialId: initialId, initialCfg: initial };
+        return { map: map, initialId: initialId, initialCfg: initial };
       }
 
       function setupBasemapSelector(map) {
@@ -354,13 +339,11 @@
         var init = initMapWithBasemap(initialId);
         if (!init) return;
         window.__mp_map = init.map;
-        window.__mp_draw = init.draw;
         setupBasemapSelector(init.map);
       });
 
-      // Map/draw are created async above
+      // Map is created async above
       function getMap() { return window.__mp_map; }
-      function getDraw() { return window.__mp_draw; }
 
       function bboxFromMap() {
         var map = getMap();
@@ -490,34 +473,6 @@
             document.getElementById('mp-results-card').style.display = '';
           } catch (e1) {}
         }
-        setupDrawToolbarButtons();
-        });
-      }
-
-      function setupDrawToolbarButtons() {
-        function bind(id, fn) {
-          var el = document.getElementById(id);
-          if (el) el.onclick = function(e) { e.preventDefault(); fn(); };
-        }
-        bind('mp-draw-polygon', function() {
-          var d = getDraw();
-          if (d) try { d.changeMode('draw_polygon'); } catch (e0) {}
-        });
-        bind('mp-draw-line', function() {
-          var d = getDraw();
-          if (d) try { d.changeMode('draw_line_string'); } catch (e1) {}
-        });
-        bind('mp-draw-point', function() {
-          var d = getDraw();
-          if (d) try { d.changeMode('draw_point'); } catch (e2) {}
-        });
-        bind('mp-draw-select', function() {
-          var d = getDraw();
-          if (d) try { d.changeMode('simple_select'); } catch (e3) {}
-        });
-        bind('mp-draw-clear', function() {
-          var d = getDraw();
-          if (d) try { d.deleteAll(); } catch (e5) {}
         });
       }
       // Delay until map exists
@@ -837,40 +792,6 @@
       }
 
       function getAoiAndBbox() {
-        var draw = getDraw();
-        if (!draw) return null;
-        var fc = draw.getAll();
-        var features = fc && fc.features ? fc.features : [];
-        var minPadDeg = 0.002;
-
-        var poly = features.find(function(f) { return f.geometry && f.geometry.type === 'Polygon'; });
-        if (poly) {
-          var ring = poly.geometry.coordinates[0];
-          var minx = 180, miny = 90, maxx = -180, maxy = -90;
-          ring.forEach(function(c) {
-            if (c[0] < minx) minx = c[0]; if (c[0] > maxx) maxx = c[0];
-            if (c[1] < miny) miny = c[1]; if (c[1] > maxy) maxy = c[1];
-          });
-          return { aoi_geojson: poly.geometry, bbox: [minx, miny, maxx, maxy] };
-        }
-        var mp = features.find(function(f) { return f.geometry && f.geometry.type === 'MultiPolygon'; });
-        if (mp) {
-          var b = _boundsFromCoordArray(mp.geometry.coordinates);
-          var ex = _expandDegenerateBounds(b[0], b[1], b[2], b[3], minPadDeg);
-          return { aoi_geojson: _bboxToPolygon(ex[0], ex[1], ex[2], ex[3]), bbox: ex };
-        }
-        var line = features.find(function(f) { return f.geometry && f.geometry.type === 'LineString'; });
-        if (line) {
-          var b2 = _boundsFromCoordArray(line.geometry.coordinates);
-          var ex2 = _expandDegenerateBounds(b2[0], b2[1], b2[2], b2[3], minPadDeg);
-          return { aoi_geojson: _bboxToPolygon(ex2[0], ex2[1], ex2[2], ex2[3]), bbox: ex2 };
-        }
-        var pt = features.find(function(f) { return f.geometry && f.geometry.type === 'Point'; });
-        if (pt && pt.geometry.coordinates && pt.geometry.coordinates.length >= 2) {
-          var p = pt.geometry.coordinates;
-          var ex3 = _expandDegenerateBounds(p[0], p[1], p[0], p[1], minPadDeg);
-          return { aoi_geojson: _bboxToPolygon(ex3[0], ex3[1], ex3[2], ex3[3]), bbox: ex3 };
-        }
         var bb = bboxFromMap();
         var p = bb.split(',').map(function(x) { return parseFloat(x.trim()); });
         if (p.length === 4 && p.every(function(n) { return isFinite(n); })) {
@@ -1629,11 +1550,6 @@
 
         setPlanRequestLoading(true);
         submitMosaicPlan(body).then(function(data) {
-          // Search uses the current drawn AOI (polygon/line/point); clear it after search completes.
-          try {
-            var d = getDraw();
-            if (d) d.deleteAll();
-          } catch (eClear) {}
           applyPlanResponse(data, merge, msg);
         }).catch(function(e) {
           msg.textContent = String(e.message || e);
@@ -1704,12 +1620,6 @@
           else doGenerateMosaic();
         };
       }
-
-      window.addEventListener('keydown', function(e) {
-        if (e.key !== 'Escape') return;
-        var d = getDraw();
-        if (d) try { d.changeMode('simple_select'); } catch (e0) {}
-      });
 
       document.getElementById('mp-save').onclick = function() {
         var msg = document.getElementById('mp-save-msg');
