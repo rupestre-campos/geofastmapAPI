@@ -131,6 +131,12 @@ class Settings(BaseSettings):
     mosaic_queue_type: str = "redis"  # redis | inline
     # Mosaic worker: concurrent jobs per worker process (higher = more CPU/network pressure).
     mosaic_worker_max_concurrent: int = 1
+    # Large initial AOI: split full bbox into sub-bboxes when width/height exceeds this (degrees).
+    mosaic_stac_initial_split_threshold_degrees: float = 6.0
+    # Initial split grid for large AOI bbox. 0 = auto (2x2 or 3x3 by extent).
+    mosaic_stac_initial_split_grid: int = 0
+    # Parallel STAC sub-bbox searches per planning round.
+    mosaic_stac_bbox_parallelism: int = 4
     # HTML STAC search: max merged features fetched before slicing for pagination (per search).
     stac_search_html_max_features: int = 2000
     # Max page size for GET /stac?f=html

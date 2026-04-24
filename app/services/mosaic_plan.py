@@ -74,7 +74,6 @@ _VOID_FILL_MIN_UNCOVERED = 0.001
 # Per void round: sample at most this many disconnected gaps (each gets a small STAC bbox like click-to-fill).
 _VOID_PINPOINT_MAX_PARTS = 16
 # Number of concurrent STAC bbox searches per round.
-_VOID_FILL_BBOX_PARALLELISM = 4
 # Same-pass date mode: split AOI into vertical (N–S) longitude strips; each strip picks one day.
 # True satellite swaths are oblique; we approximate with meridian-aligned columns (see docstrings).
 _SAME_PASS_NUM_STRIPS = 8
@@ -849,17 +848,25 @@ def split_initial_search_bboxes(search_bbox: list[float]) -> list[list[float]]:
     Split very large initial AOI bbox into a coarse grid to avoid one giant upstream STAC /search.
     Smaller bboxes are queried in parallel later (bounded by _VOID_FILL_BBOX_PARALLELISM).
     """
+    from app.core.config import get_settings
+
     if not search_bbox or len(search_bbox) < 4:
         return []
+    settings = get_settings()
     minx, miny, maxx, maxy = (float(search_bbox[i]) for i in range(4))
     if minx >= maxx - 1e-9 or miny >= maxy - 1e-9:
         return []
     w = maxx - minx
     h = maxy - miny
+    thr = max(0.1, float(getattr(settings, "mosaic_stac_initial_split_threshold_degrees", 6.0) or 6.0))
     # Typical zoomed AOIs stay single-request; continent-scale splits reduce 502 risk.
-    if w <= 6.0 and h <= 6.0:
+    if w <= thr and h <= thr:
         return [[minx, miny, maxx, maxy]]
-    grid = 3 if (w > 30.0 or h > 30.0) else 2
+    grid_cfg = int(getattr(settings, "mosaic_stac_initial_split_grid", 0) or 0)
+    if grid_cfg > 1:
+        grid = min(6, grid_cfg)
+    else:
+        grid = 3 if (w > 30.0 or h > 30.0) else 2
     dx = w / grid
     dy = h / grid
     out: list[list[float]] = []
@@ -1193,6 +1200,8 @@ async def plan_mosaic_with_void_fill(
     all_errors: list[dict[str, str]] = []
     last_result: dict[str, Any] | None = None
     locked_date_window: tuple[date, date] | None = None
+    from app.core.config import get_settings
+    bbox_parallelism = max(1, int(get_settings().mosaic_stac_bbox_parallelism or 1))
 
     for round_idx in range(_VOID_FILL_MAX_ROUNDS):
         if round_idx == 0:
@@ -1228,7 +1237,7 @@ async def plan_mosaic_with_void_fill(
             break
 
         n_before = len(merged)
-        sem = asyncio.Semaphore(max(1, _VOID_FILL_BBOX_PARALLELISM))
+        sem = asyncio.Semaphore(bbox_parallelism)
 
         async def _fetch_bbox(q_bbox: list[float]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
             async with sem:

@@ -7,6 +7,10 @@ PROCESS_QUEUE_TYPE=redis
 MOSAIC_QUEUE_TYPE=redis
 # Only used by standalone mosaic worker process (jobs per process).
 MOSAIC_WORKER_MAX_CONCURRENT=2
+# Upstream STAC fan-out controls for one large mosaic job (used by mosaic worker):
+MOSAIC_STAC_INITIAL_SPLIT_THRESHOLD_DEGREES=6
+MOSAIC_STAC_INITIAL_SPLIT_GRID=0
+MOSAIC_STAC_BBOX_PARALLELISM=8
 TILES_STORAGE_PATH=/data/tiles
 RASTER_STORAGE_PATH=/data/rasters
 TITILER_INTERNAL_URL=http://YOUR_TITILER_OR_NGINX:8000
