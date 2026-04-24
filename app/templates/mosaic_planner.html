@@ -167,7 +167,6 @@
         <button type="button" class="btn btn-sm" id="mp-draw-line">Draw line</button>
         <button type="button" class="btn btn-sm" id="mp-draw-point">Mark point</button>
         <button type="button" class="btn btn-sm" id="mp-draw-select">Select / edit</button>
-        <button type="button" class="btn btn-sm" id="mp-draw-trash">Delete selected</button>
         <button type="button" class="btn btn-sm" id="mp-draw-clear">Clear all drawing</button>
       </div>
     </div>
@@ -305,7 +304,8 @@
         });
         GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
         map.addControl(new maplibregl.NavigationControl());
-        var draw = new MapboxDraw({ displayControlsDefault: false, controls: { polygon: true, trash: true } });
+        // Keep all draw actions in our custom toolbar (no on-map built-in buttons).
+        var draw = new MapboxDraw({ displayControlsDefault: false, controls: {} });
         map.addControl(draw);
         return { map: map, draw: draw, initialId: initialId, initialCfg: initial };
       }
@@ -514,14 +514,6 @@
         bind('mp-draw-select', function() {
           var d = getDraw();
           if (d) try { d.changeMode('simple_select'); } catch (e3) {}
-        });
-        bind('mp-draw-trash', function() {
-          var d = getDraw();
-          if (!d) return;
-          try {
-            var ids = d.getSelectedIds();
-            if (ids && ids.length) d.delete(ids);
-          } catch (e4) {}
         });
         bind('mp-draw-clear', function() {
           var d = getDraw();
@@ -1637,6 +1629,11 @@
 
         setPlanRequestLoading(true);
         submitMosaicPlan(body).then(function(data) {
+          // Search uses the current drawn AOI (polygon/line/point); clear it after search completes.
+          try {
+            var d = getDraw();
+            if (d) d.deleteAll();
+          } catch (eClear) {}
           applyPlanResponse(data, merge, msg);
         }).catch(function(e) {
           msg.textContent = String(e.message || e);

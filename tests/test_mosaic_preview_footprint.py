@@ -7,6 +7,7 @@ from PIL import Image
 from shapely.geometry import shape
 
 from app.services.mosaic_preview_footprint import (
+    _simplified_extrema_quad_mapping,
     footprint_display_geojson_from_bytes,
     footprint_display_geojson_from_rgba,
 )
@@ -105,3 +106,31 @@ def test_footprint_is_simplified_to_extrema_quad():
     # 4 points + closing point
     assert len(coords) <= 5
     assert len(poly.interiors) == 0
+
+
+def test_extrema_quad_finds_upper_left_when_not_min_x():
+    """
+    Top-left may not be on absolute min-x edge for slanted footprints.
+    We still want the upper-left-most corner from polygon vertices.
+    """
+    poly = shape(
+        {
+            "type": "Polygon",
+            "coordinates": [[
+                [0.0, 0.0],   # lower-left
+                [-1.0, 2.0],  # far-left mid (not top-left)
+                [0.2, 4.0],   # actual upper-left-ish
+                [4.0, 4.2],   # upper-right
+                [4.5, 0.3],   # lower-right
+                [0.0, 0.0],
+            ]],
+        }
+    )
+    geo = _simplified_extrema_quad_mapping(poly)
+    assert geo is not None
+    out = shape(geo)
+    coords = list(out.exterior.coords)[:-1]
+    assert len(coords) == 4
+    # UL must be close to the highest-left candidate, not the far-left mid point.
+    ul = coords[1]
+    assert ul[1] >= 3.5

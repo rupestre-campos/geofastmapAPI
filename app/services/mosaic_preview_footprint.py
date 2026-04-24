@@ -146,10 +146,12 @@ def _simplified_extrema_quad_mapping(poly: Polygon) -> dict[str, Any] | None:
     pts = coords[:-1] if coords[0] == coords[-1] else coords
     if len(pts) < 3:
         return mapping(poly)
-    ll = min(pts, key=lambda p: (p[0], p[1]))  # left-most, then lower
-    ul = min(pts, key=lambda p: (p[0], -p[1]))  # left-most, then upper
-    ur = max(pts, key=lambda p: (p[0], p[1]))  # right-most, then upper
-    lr = max(pts, key=lambda p: (p[0], -p[1]))  # right-most, then lower
+    # Pick corners by directional extrema on the polygon boundary (not bbox corners).
+    # This is more robust when one corner is not at absolute min/max X.
+    ll = min(pts, key=lambda p: (p[0] + p[1], p[0], p[1]))   # lower-left-ish
+    ul = max(pts, key=lambda p: (p[1] - p[0], -p[0], p[1]))  # upper-left-ish
+    ur = max(pts, key=lambda p: (p[0] + p[1], p[0], p[1]))   # upper-right-ish
+    lr = max(pts, key=lambda p: (p[0] - p[1], p[0], -p[1]))  # lower-right-ish
     quad_pts = [ll, ul, ur, lr]
     # Deduplicate in order; fallback to original outer if degenerate.
     uniq: list[tuple[float, float]] = []
