@@ -106,6 +106,72 @@ To emit API traces, set in API env (see [`deploy/env/api.sample`](../deploy/env/
 
 ---
 
+## Distributed mosaic planning (Redis subjobs)
+
+Large mosaic plans can split **STAC collection** work into **subtasks** (one `(bbox × datetime slice)` per task) so many worker processes—on one host or several—share the upstream `/search` load. The **parent** job runs on a worker that dequeues `geofastmap:mosaic_plan_queue`; it enqueues shard work on `geofastmap:mosaic_plan_subtask_queue`, waits for results in **waves**, merges features, then runs the greedy planner. Optional **thumbnail `footprint_display`** work can run on `geofastmap:mosaic_footprint_subtask_queue` after planning (see below).
+
+**Requirements**
+
+- Same **`REDIS_URL`** everywhere (API + all mosaic workers).
+- **`MOSAIC_QUEUE_TYPE=redis`** on API and workers.
+- **`MOSAIC_SUBJOB_QUEUE_ENABLED=true`** on the **API** (so `compute_mosaic_plan` uses the distributed planner when the worker runs the job with `allow_distributed=True`) and on **every mosaic worker** that should enqueue or consume subtasks.
+- Workers run [`app/mosaic_worker_main.py`](../app/mosaic_worker_main.py); code paths live under [`app/services/mosaic_plan_distributed.py`](../app/services/mosaic_plan_distributed.py), [`app/services/mosaic_footprint_distributed.py`](../app/services/mosaic_footprint_distributed.py), and [`app/services/mosaic_plan_jobs.py`](../app/services/mosaic_plan_jobs.py).
+
+**Coordinator vs shard workers (recommended split)**
+
+You can run **coordinator-only** hosts (parent queue only) and **shard-only** hosts (subtask queue only) using env:
+
+| Role | Typical env |
+|------|-------------|
+| **Coordinator** | `MOSAIC_WORKER_MAX_CONCURRENT=1` (or `2` if you want several unrelated parent jobs at once), `MOSAIC_SUBJOB_WORKER_CONCURRENCY=0`, `MOSAIC_SUBJOB_CONSUME_SUBTASKS_WHILE_PARENT_ACTIVE=false`, `MOSAIC_SUBJOB_QUEUE_ENABLED=true` |
+| **Shard** | `MOSAIC_WORKER_MAX_CONCURRENT=0` (**does not** dequeue the parent queue), `MOSAIC_SUBJOB_WORKER_CONCURRENCY` set to your desired async concurrency (e.g. `4`–`8`), `MOSAIC_SUBJOB_CONSUME_SUBTASKS_WHILE_PARENT_ACTIVE=true`, `MOSAIC_SUBJOB_QUEUE_ENABLED=true`. For distributed footprints, same hosts (or others) must dequeue the footprint queue—see **Footprint subtasks**. |
+
+`MOSAIC_WORKER_MAX_CONCURRENT=0` is **shard-only**: the process never calls `BRPOP` on `geofastmap:mosaic_plan_queue`. Values `<= 0` are treated as zero; values `>= 1` cap concurrent **parent** jobs per process.
+
+**Wave size and fleet capacity**
+
+`MOSAIC_SUBJOB_BBOX_DATETIME_PARALLELISM` is read by the **parent** process while planning. It is the **wave size**: how many subtasks are dispatched before the coordinator waits for that wave to finish. Set it to roughly the **total subtask throughput** you want in flight—e.g. sum over all shard machines of `(MOSAIC_SUBJOB_WORKER_CONCURRENCY × number of mosaic worker processes on that host)`. If it is too small, shard CPUs and network sit idle between barriers. If subtasks are slow or waves are huge, raise **`MOSAIC_SUBJOB_ROUND_TIMEOUT_SECONDS`** (e.g. `300`–`600`).
+
+**STAC tuning (mostly on shards)**
+
+Subtasks call federated STAC search with settings from the **shard** host:
+
+- **`MOSAIC_STAC_CATALOG_PARALLELISM`** / **`MOSAIC_STAC_TOTAL_INFLIGHT_MAX`** — catalog fan-out and global in-flight budget per merged `/search`. Raise together; watch upstream **429** and latency.
+- **`MOSAIC_SUBJOB_CATALOG_PARALLELISM`** — applied **inside subtasks only** (overrides the catalog parallelism used for that merge path so shard boxes can differ from the API’s defaults). Implementation: context in [`app/services/stac_federation.py`](../app/services/stac_federation.py).
+- **`MOSAIC_STAC_DATETIME_PARALLELISM`** — parallel datetime slices inside `collect_stac_features` (relevant when a subtask payload has multiple slices).
+
+**Distributed footprint_display (optional)**
+
+After **`plan_mosaic_from_features`** returns, the planner can attach UI **`footprint_display`** polygons by fetching preview images (HTTP + CPU). With **`MOSAIC_FOOTPRINT_DISTRIBUTED_ENABLED=true`** on the **API** and **`MOSAIC_QUEUE_TYPE=redis`**, async mosaic jobs (`include_footprint_display` true) enqueue one Redis task per selected/swap thumbnail on **`geofastmap:mosaic_footprint_subtask_queue`**, wait in waves (`MOSAIC_FOOTPRINT_DISTRIBUTED_WAVE`), and merge GeoJSON back into the job result. If a wave returns fewer results than expected (no consumers or timeout), the parent **falls back** to in-process [`attach_footprint_displays_to_plan_result`](../app/services/mosaic_preview_footprint.py).
+
+- **`MOSAIC_FOOTPRINT_SUBJOB_WORKER_CONCURRENCY`**: concurrent footprint subtasks **per mosaic worker process**; **`0`** means use **`MOSAIC_SUBJOB_WORKER_CONCURRENCY`**. Shard hosts that only run STAC subtasks should still set subjob concurrency (or a positive footprint concurrency) so the footprint queue is drained.
+- **`MOSAIC_FOOTPRINT_DISTRIBUTED_TIMEOUT_SECONDS`**: per-wave `BRPOP` budget (like subtask rounds).
+
+**Coordinator CPU (one parent job)**
+
+The greedy **`plan_mosaic_from_features`** step (Shapely, selection) is effectively **single-threaded per process**. Distributed mode does **not** parallelize that across cores for a single job. To use more cores on the coordinator **host**:
+
+- For **local-only** footprint attach, raise **`MOSAIC_FOOTPRINT_CPU_MAX_CONCURRENT`** (and **`MOSAIC_FOOTPRINT_FETCH_MAX_CONCURRENT`**) so thumbnail decode/geometry runs more work in `asyncio.to_thread`. With **distributed footprints**, that load moves to workers that dequeue the footprint queue.
+- Run **multiple mosaic worker processes** on the coordinator (each with e.g. `MOSAIC_WORKER_MAX_CONCURRENT=1`) so **different** parent jobs use different processes—or set **`MOSAIC_WORKER_MAX_CONCURRENT` > `1`** in one process to overlap **multiple** queued parent jobs (still GIL-bound for pure Python, but can help when work mixes I/O and CPU).
+
+**Other useful flags**
+
+| Variable | Purpose |
+|----------|---------|
+| `MOSAIC_PARENT_FAIL_ON_PARTIAL` | If `true`, parent fails when a wave times out before all subtask results arrive (`false` = best-effort merge). |
+| `MOSAIC_SUBJOB_RESULT_TTL_SECONDS` | Redis TTL for subtask result keys; keep above worst-case wave duration. |
+| `MOSAIC_SUBJOB_MAX_RETRIES` | Retry policy for failed subtasks (see job/subtask code). |
+| `MOSAIC_JOB_CLIENT_TIMEOUT_SECONDS` | How long clients should wait on async job polling; unrelated to subtask round timeout but should exceed typical plan duration. |
+| `MOSAIC_FOOTPRINT_DISTRIBUTED_ENABLED` | Offload thumbnail `footprint_display` to Redis workers (async jobs only). |
+| `MOSAIC_FOOTPRINT_DISTRIBUTED_WAVE` / `MOSAIC_FOOTPRINT_DISTRIBUTED_TIMEOUT_SECONDS` | Footprint subtask batch size and per-wave timeout. |
+| `MOSAIC_FOOTPRINT_SUBJOB_WORKER_CONCURRENCY` | Per-process footprint consumer slots; `0` = reuse `MOSAIC_SUBJOB_WORKER_CONCURRENCY`. |
+
+**Sample env**
+
+Annotated defaults and coordinator/shard examples: [`deploy/env/workers.sample`](../deploy/env/workers.sample). Mirror **`MOSAIC_SUBJOB_*`** (and queue/redis mode) on [`deploy/env/api.sample`](../deploy/env/api.sample) when the API enqueues mosaic jobs.
+
+---
+
 ## Summary
 
 | You want | Do this |
@@ -114,6 +180,7 @@ To emit API traces, set in API env (see [`deploy/env/api.sample`](../deploy/env/
 | **Advanced multi-machine (WIP)** | [`lab/geofast-distributed-experiment.md`](lab/geofast-distributed-experiment.md) |
 | **NFS on primary (share tiles/bulk/rasters with workers)** | [`lab/nfs-host-ubuntu.md`](lab/nfs-host-ubuntu.md) |
 | **Compose/env details** | [`deploy/README.md`](../deploy/README.md) |
+| **Distributed mosaic workers (Redis subjobs)** | [§ above](#distributed-mosaic-planning-redis-subjobs) and [`deploy/env/workers.sample`](../deploy/env/workers.sample) |
 
 ---
 

@@ -27,6 +27,7 @@ from app.services.mosaic_plan import (
     swap_options_for_selected,
 )
 from app.services.mosaic_plan_distributed import plan_mosaic_with_void_fill_distributed
+from app.services.mosaic_footprint_distributed import try_attach_footprints_distributed
 from app.services.mosaic_preview_footprint import attach_footprint_displays_to_plan_result
 from app.services.mosaic_plan_jobs import enqueue_mosaic_plan_job, get_mosaic_plan_job
 from geoalchemy2.shape import to_shape
@@ -241,7 +242,21 @@ async def compute_mosaic_plan(
             )
     include_footprint_display = bool(body.include_footprint_display)
     if include_footprint_display:
-        await attach_footprint_displays_to_plan_result(result, plan_features)
+        job_id = str(getattr(current_user, "_mosaic_job_id", "") or "")
+        use_distributed_fp = (
+            bool(getattr(settings, "mosaic_footprint_distributed_enabled", False))
+            and settings.mosaic_queue_type == "redis"
+            and bool(job_id)
+        )
+        if use_distributed_fp:
+            await try_attach_footprints_distributed(
+                job_id,
+                int(current_user.id),
+                result,
+                plan_features,
+            )
+        else:
+            await attach_footprint_displays_to_plan_result(result, plan_features)
     else:
         result["footprint_display_skipped"] = True
     result["stac_errors"] = stac_errors

@@ -237,6 +237,132 @@ def _resolve_feature_for_item(
     return None
 
 
+def build_footprint_display_work_specs(
+    result: dict[str, Any],
+    features: list[dict[str, Any]],
+    *,
+    max_items: int,
+) -> list[dict[str, Any]]:
+    """
+    Build independent thumbnail jobs for distributed footprint_display attachment.
+
+    Each spec is ``{"path": [...], "url": str, "bbox4": [w,s,e,n]}`` where path is either
+    ``["selected", index]`` or ``["swap", selected_key, alt_index]`` (matches ``result`` layout).
+    """
+    if not features or max_items < 1:
+        return []
+    by_key, by_id = _feat_by_lookups(features)
+    specs: list[dict[str, Any]] = []
+    sel = result.get("selected") or []
+    if isinstance(sel, list):
+        for i, it in enumerate(sel):
+            if not isinstance(it, dict):
+                continue
+            feat = _resolve_feature_for_item(it, by_key, by_id)
+            if feat is None:
+                continue
+            b = feat.get("bbox")
+            if not isinstance(b, list) or len(b) < 4:
+                continue
+            try:
+                bbox4 = [float(b[0]), float(b[1]), float(b[2]), float(b[3])]
+            except (TypeError, ValueError):
+                continue
+            url = thumbnail_href(feat)
+            if not url or not (str(url).startswith("http://") or str(url).startswith("https://")):
+                continue
+            specs.append({"path": ["selected", int(i)], "url": str(url), "bbox4": bbox4})
+    swaps = result.get("swap_options") or {}
+    if isinstance(swaps, dict):
+        for sel_key, alts in swaps.items():
+            if not isinstance(alts, list):
+                continue
+            for j, alt in enumerate(alts):
+                if not isinstance(alt, dict):
+                    continue
+                feat = _resolve_feature_for_item(alt, by_key, by_id)
+                if feat is None:
+                    continue
+                b = feat.get("bbox")
+                if not isinstance(b, list) or len(b) < 4:
+                    continue
+                try:
+                    bbox4 = [float(b[0]), float(b[1]), float(b[2]), float(b[3])]
+                except (TypeError, ValueError):
+                    continue
+                url = thumbnail_href(feat)
+                if not url or not (str(url).startswith("http://") or str(url).startswith("https://")):
+                    continue
+                specs.append({"path": ["swap", str(sel_key), int(j)], "url": str(url), "bbox4": bbox4})
+    return specs[:max_items]
+
+
+def apply_footprint_display_patches(
+    result: dict[str, Any],
+    patches: list[dict[str, Any]],
+) -> None:
+    """Write ``footprint_display`` onto ``result`` using patch dicts from workers or local gather."""
+    for p in patches:
+        if not isinstance(p, dict):
+            continue
+        path = p.get("path")
+        geo = p.get("footprint_display")
+        if not isinstance(path, list) or len(path) < 2:
+            continue
+        if not isinstance(geo, dict):
+            continue
+        kind = path[0]
+        if kind == "selected":
+            try:
+                idx = int(path[1])
+            except (TypeError, ValueError):
+                continue
+            sel = result.get("selected")
+            if not isinstance(sel, list) or idx < 0 or idx >= len(sel):
+                continue
+            it = sel[idx]
+            if isinstance(it, dict):
+                it["footprint_display"] = geo
+        elif kind == "swap" and len(path) == 3:
+            sel_key = str(path[1])
+            try:
+                j = int(path[2])
+            except (TypeError, ValueError):
+                continue
+            swaps = result.get("swap_options")
+            if not isinstance(swaps, dict):
+                continue
+            alts = swaps.get(sel_key)
+            if not isinstance(alts, list) or j < 0 or j >= len(alts):
+                continue
+            alt = alts[j]
+            if isinstance(alt, dict):
+                alt["footprint_display"] = geo
+
+
+async def fetch_footprint_display_geojson(
+    url: str,
+    bbox4: list[float],
+    *,
+    timeout: httpx.Timeout | None = None,
+) -> dict[str, Any] | None:
+    """HTTP GET preview + CPU decode to GeoJSON (shared by local attach and footprint subtasks)."""
+    if timeout is None:
+        s = get_settings()
+        timeout = httpx.Timeout(
+            float(s.mosaic_footprint_fetch_read_timeout_seconds or 20.0),
+            connect=float(s.mosaic_footprint_fetch_connect_timeout_seconds or 5.0),
+        )
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        try:
+            r = await client.get(url, headers={"Accept": "image/*,*/*;q=0.8"})
+        except httpx.HTTPError:
+            return None
+        if r.status_code >= 400:
+            return None
+    return await asyncio.to_thread(footprint_display_geojson_from_bytes, bbox4, r.content)
+
+
 async def attach_footprint_displays_to_plan_result(
     result: dict[str, Any],
     features: list[dict[str, Any]],
@@ -254,33 +380,16 @@ async def attach_footprint_displays_to_plan_result(
         float(s.mosaic_footprint_fetch_read_timeout_seconds or 20.0),
         connect=float(s.mosaic_footprint_fetch_connect_timeout_seconds or 5.0),
     )
-    by_key, by_id = _feat_by_lookups(features)
-
-    work: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for it in result.get("selected") or []:
-        if isinstance(it, dict):
-            feat = _resolve_feature_for_item(it, by_key, by_id)
-            if feat is not None:
-                work.append((it, feat))
-    for _k, alts in (result.get("swap_options") or {}).items():
-        if not isinstance(alts, list):
-            continue
-        for alt in alts:
-            if not isinstance(alt, dict):
-                continue
-            feat = _resolve_feature_for_item(alt, by_key, by_id)
-            if feat is not None:
-                work.append((alt, feat))
-    if not work:
+    specs = build_footprint_display_work_specs(result, features, max_items=max_items)
+    if not specs:
         return
-    work = work[:max_items]
 
     cache: dict[tuple[str, float, float, float, float], dict[str, Any] | None] = {}
     fetch_sem = asyncio.Semaphore(fetch_concurrent)
     cpu_sem = asyncio.Semaphore(cpu_concurrent)
     in_flight: dict[tuple[str, float, float, float, float], asyncio.Task[dict[str, Any] | None]] = {}
 
-    async with httpx.AsyncClient(timeout=timeout or _FETCH_TIMEOUT, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
 
         async def fetch_geo(url: str, bbox4: list[float]) -> dict[str, Any] | None:
             key = (url, bbox4[0], bbox4[1], bbox4[2], bbox4[3])
@@ -311,19 +420,17 @@ async def attach_footprint_displays_to_plan_result(
             finally:
                 in_flight.pop(key, None)
 
-        async def run_pair(it: dict[str, Any], feat: dict[str, Any]) -> None:
-            b = feat.get("bbox")
-            if not isinstance(b, list) or len(b) < 4:
-                return
-            try:
-                bbox4 = [float(b[0]), float(b[1]), float(b[2]), float(b[3])]
-            except (TypeError, ValueError):
-                return
-            url = thumbnail_href(feat)
-            if not url or not (url.startswith("http://") or url.startswith("https://")):
-                return
-            geo = await fetch_geo(url, bbox4)
-            if geo is not None:
-                it["footprint_display"] = geo
+        async def run_spec(spec: dict[str, Any]) -> dict[str, Any] | None:
+            url = str(spec.get("url") or "")
+            bbox4 = spec.get("bbox4")
+            path = spec.get("path")
+            if not url or not isinstance(bbox4, list) or len(bbox4) < 4 or not isinstance(path, list):
+                return None
+            geo = await fetch_geo(url, [float(bbox4[i]) for i in range(4)])
+            if geo is None:
+                return None
+            return {"path": path, "footprint_display": geo}
 
-        await asyncio.gather(*(run_pair(it, feat) for it, feat in work))
+        rows = await asyncio.gather(*[run_spec(sp) for sp in specs])
+    patches = [p for p in rows if isinstance(p, dict) and p.get("footprint_display")]
+    apply_footprint_display_patches(result, patches)

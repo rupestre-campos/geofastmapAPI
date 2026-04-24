@@ -158,6 +158,13 @@ class Settings(BaseSettings):
     mosaic_footprint_fetch_read_timeout_seconds: float = 20.0
     # Safety cap: max selected/swap items to process per plan response.
     mosaic_footprint_max_items: int = 200
+    # Offload thumbnail footprint_display to Redis workers (async mosaic jobs only).
+    mosaic_footprint_distributed_enabled: bool = False
+    # Footprint subtasks dispatched per barrier wave (coordinator reads this).
+    mosaic_footprint_distributed_wave: int = 16
+    mosaic_footprint_distributed_timeout_seconds: int = 300
+    # Concurrent footprint subtasks per process; 0 = use mosaic_subjob_worker_concurrency.
+    mosaic_footprint_subjob_worker_concurrency: int = 0
     # STAC federation: per-request parallel catalog calls.
     mosaic_stac_catalog_parallelism: int = 4
     # STAC federation: global in-flight catalog request budget per search call.
