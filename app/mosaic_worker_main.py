@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import sys
 import asyncio
+import traceback
 
 from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
@@ -30,6 +31,7 @@ async def _run_job(payload: dict) -> None:
     body_raw = payload.get("body") or {}
     if not job_id or not owner_id or not isinstance(body_raw, dict):
         return
+    print(f"[mosaic-parent] start job_id={job_id} owner_id={owner_id}", flush=True)
     set_mosaic_plan_job_status(job_id, "running", message="Computing mosaic plan")
     settings = get_settings()
     heartbeat_secs = max(2, int(settings.mosaic_job_heartbeat_seconds or 10))
@@ -79,9 +81,15 @@ async def _run_job(payload: dict) -> None:
         errs = list(result.get("stac_errors") or [])
         st = "completed_with_errors" if errs else "completed"
         set_mosaic_plan_job_result(job_id, result, status=st)
+        print(
+            f"[mosaic-parent] done job_id={job_id} status={st} rounds={result.get('void_fill_rounds')} pool={result.get('stac_feature_pool_size')}",
+            flush=True,
+        )
     except Exception as e:
         hb_stop.set()
         await hb_task
+        print(f"[mosaic-parent] error job_id={job_id} err={type(e).__name__}: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
         set_mosaic_plan_job_error(job_id, str(e) or type(e).__name__)
 
 
@@ -94,6 +102,7 @@ async def _run_subtask(payload: dict) -> None:
     body = payload.get("payload") or {}
     if not task_id or not job_id or not isinstance(body, dict):
         return
+    print(f"[mosaic-subtask] start task_id={task_id} job_id={job_id} round={round_idx}", flush=True)
     set_mosaic_plan_subtask_status(task_id, "running")
     try:
         result = await execute_subtask_payload(body)
@@ -106,7 +115,13 @@ async def _run_subtask(payload: dict) -> None:
             result=result,
             status=status,
         )
+        print(
+            f"[mosaic-subtask] done task_id={task_id} job_id={job_id} round={round_idx} status={status} features={len(list(result.get('features') or []))}",
+            flush=True,
+        )
     except Exception as e:
+        print(f"[mosaic-subtask] error task_id={task_id} job_id={job_id} round={round_idx} err={type(e).__name__}: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
         set_mosaic_plan_subtask_result(
             task_id,
             job_id=job_id,
@@ -162,8 +177,10 @@ async def _worker_loop() -> None:
         except Exception:
             continue
         if key == MOSAIC_PLAN_SUBTASK_QUEUE_KEY:
+            print("[mosaic-worker] dequeued subtask", flush=True)
             active_subtask.add(asyncio.create_task(_run_subtask(payload)))
         else:
+            print("[mosaic-worker] dequeued parent job", flush=True)
             active_parent.add(asyncio.create_task(_run_job(payload)))
 
 
