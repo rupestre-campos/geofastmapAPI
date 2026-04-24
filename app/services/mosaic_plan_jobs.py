@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -199,7 +200,7 @@ def set_mosaic_plan_subtask_result(
     )
 
 
-def await_mosaic_plan_subtask_results(
+async def await_mosaic_plan_subtask_results(
     *,
     job_id: str,
     round_idx: int,
@@ -211,7 +212,7 @@ def await_mosaic_plan_subtask_results(
     out: list[dict[str, Any]] = []
     remaining = max(0, int(expected_count))
     while remaining > 0:
-        item = r.brpop(key, timeout=max(1, int(timeout_seconds)))
+        item = await asyncio.to_thread(r.brpop, key, max(1, int(timeout_seconds)))
         if not item:
             break
         _k, raw = item
