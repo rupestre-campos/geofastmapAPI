@@ -39,6 +39,16 @@ services:
       - ../env/.env.workers
     command: python -m app.process_worker_main
 
+  mosaic_worker:
+    restart: unless-stopped
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: geofastmap_mosaic_worker
+    env_file:
+      - ../env/.env.workers
+    command: python -m app.mosaic_worker_main
+
 volumes:
   geofastmap_bulk_uploads:
   geofastmap_tiles:
