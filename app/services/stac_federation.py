@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 import httpx
@@ -12,6 +14,20 @@ from app.core.config import get_settings
 from app.models.stac_catalog import StacCatalog
 
 logger = logging.getLogger(__name__)
+
+# Mosaic subtasks call federated_search with a higher catalog fan-out without changing API/search defaults.
+_mosaic_subtask_catalog_parallelism: ContextVar[int | None] = ContextVar(
+    "_mosaic_subtask_catalog_parallelism", default=None
+)
+
+
+@contextmanager
+def mosaic_subtask_federation_catalog_parallelism(catalog_parallelism: int):
+    token = _mosaic_subtask_catalog_parallelism.set(max(1, int(catalog_parallelism)))
+    try:
+        yield
+    finally:
+        _mosaic_subtask_catalog_parallelism.reset(token)
 
 # Transient upstream failures — retry before giving up (reduces noise from occasional 502/503).
 _RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504, 429})
@@ -216,7 +232,11 @@ async def federated_search(
 
     stac_body = {k: v for k, v in body.items() if k not in ("catalog_ids", "geofast_catalog_ids")}
     timeout = settings.stac_search_http_timeout_seconds
-    cat_parallelism = max(1, int(settings.mosaic_stac_catalog_parallelism or 1))
+    cat_override = _mosaic_subtask_catalog_parallelism.get()
+    cat_parallelism = max(
+        1,
+        int(cat_override if cat_override is not None else settings.mosaic_stac_catalog_parallelism or 1),
+    )
     inflight_budget = max(1, int(settings.mosaic_stac_total_inflight_max or cat_parallelism))
     sem_cat = asyncio.Semaphore(cat_parallelism)
     sem_total = asyncio.Semaphore(inflight_budget)

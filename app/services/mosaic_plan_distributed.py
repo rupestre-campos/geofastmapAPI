@@ -18,6 +18,7 @@ from app.services.mosaic_plan import (
     split_initial_search_bboxes,
     void_search_bbox,
 )
+from app.services.stac_federation import mosaic_subtask_federation_catalog_parallelism
 from app.services.mosaic_plan_jobs import (
     await_mosaic_plan_subtask_results,
     enqueue_mosaic_plan_subtask,
@@ -83,15 +84,21 @@ def build_subtask_payload(
 
 async def execute_subtask_payload(payload: dict[str, Any]) -> dict[str, Any]:
     catalogs = _catalogs_from_payload(list(payload.get("catalogs") or []))
-    features, errors = await collect_stac_features(
-        catalogs,  # type: ignore[arg-type]
-        stac_collection=str(payload.get("stac_collection") or ""),
-        bbox=[float(x) for x in list(payload.get("bbox") or [])[:4]],
-        datetime_slices=[str(x) for x in list(payload.get("datetime_slices") or [])],
-        cloud_cover_max=payload.get("cloud_cover_max"),
-        sort_mode=str(payload.get("sort_mode") or "lowest_cloud"),
-        fetch_limit=int(payload.get("fetch_limit") or 200),
+    s = get_settings()
+    sub_cat = max(
+        1,
+        int(s.mosaic_subjob_catalog_parallelism or s.mosaic_stac_catalog_parallelism or 1),
     )
+    with mosaic_subtask_federation_catalog_parallelism(sub_cat):
+        features, errors = await collect_stac_features(
+            catalogs,  # type: ignore[arg-type]
+            stac_collection=str(payload.get("stac_collection") or ""),
+            bbox=[float(x) for x in list(payload.get("bbox") or [])[:4]],
+            datetime_slices=[str(x) for x in list(payload.get("datetime_slices") or [])],
+            cloud_cover_max=payload.get("cloud_cover_max"),
+            sort_mode=str(payload.get("sort_mode") or "lowest_cloud"),
+            fetch_limit=int(payload.get("fetch_limit") or 200),
+        )
     return {"features": features, "errors": errors}
 
 
