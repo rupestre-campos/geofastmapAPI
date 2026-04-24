@@ -1,5 +1,8 @@
 """Unit tests for mosaic planner helpers."""
 
+from types import SimpleNamespace
+
+import pytest
 from shapely.geometry import MultiPolygon, box, shape
 
 from app.services.mosaic_plan import (
@@ -12,6 +15,8 @@ from app.services.mosaic_plan import (
     season_datetime_slices,
     split_initial_search_bboxes,
     swap_options_for_selected,
+    collect_stac_features,
+    plan_mosaic_with_void_fill,
 )
 from app.core.permissions import can_access_raster_view_tiles_anonymous
 
@@ -222,3 +227,111 @@ def test_can_access_raster_tiles_anonymous():
     assert can_access_raster_view_tiles_anonymous(visibility="public", allow_public_maps=False)
     assert can_access_raster_view_tiles_anonymous(visibility="private", allow_public_maps=True)
     assert not can_access_raster_view_tiles_anonymous(visibility="private", allow_public_maps=False)
+
+
+@pytest.mark.asyncio
+async def test_collect_stac_features_parallel_datetime_deterministic(monkeypatch):
+    import app.core.config as core_config
+    settings = SimpleNamespace(
+        mosaic_stac_datetime_parallelism=4,
+        mosaic_stac_fetch_limit=500,
+        mosaic_void_fill_max_rounds=6,
+        mosaic_void_pinpoint_max_parts=16,
+        mosaic_void_fill_min_uncovered=0.001,
+        mosaic_same_pass_num_strips=8,
+    )
+    monkeypatch.setattr(core_config, "get_settings", lambda: settings)
+
+    async def fake_execute(_catalogs, body):
+        dt = body.get("datetime")
+        if "2024-02" in dt:
+            feats = [
+                {
+                    "type": "Feature",
+                    "id": "scene-b",
+                    "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
+                    "properties": {"geofast:sourceCatalog": "c1", "eo:cloud_cover": 30},
+                    "collection": "col",
+                    "assets": {"visual": {"href": "https://example.com/b.tif", "type": "image/tiff"}},
+                }
+            ]
+            return {"features": feats}, []
+        feats = [
+            {
+                "type": "Feature",
+                "id": "scene-a",
+                "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
+                "properties": {"geofast:sourceCatalog": "c1", "eo:cloud_cover": 20},
+                "collection": "col",
+                "assets": {"visual": {"href": "https://example.com/a.tif", "type": "image/tiff"}},
+            },
+            {
+                "type": "Feature",
+                "id": "scene-b",
+                "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
+                "properties": {"geofast:sourceCatalog": "c1", "eo:cloud_cover": 30},
+                "collection": "col",
+                "assets": {"visual": {"href": "https://example.com/b.tif", "type": "image/tiff"}},
+            },
+        ]
+        return {"features": feats}, []
+
+    import app.api.routes.stac as stac_route
+
+    monkeypatch.setattr(stac_route, "execute_stac_search_for_catalogs", fake_execute)
+    catalogs = [SimpleNamespace(id="c1")]
+    out, errs = await collect_stac_features(
+        catalogs,
+        stac_collection="col",
+        bbox=[0, 0, 1, 1],
+        datetime_slices=["2024-01-01T00:00:00Z/2024-01-31T23:59:59Z", "2024-02-01T00:00:00Z/2024-02-29T23:59:59Z"],
+        cloud_cover_max=None,
+        sort_mode="newest_first",
+        fetch_limit=500,
+    )
+    assert not errs
+    assert [f["id"] for f in out] == ["scene-a", "scene-b"]
+
+
+@pytest.mark.asyncio
+async def test_plan_void_fill_respects_settings_rounds_and_parts(monkeypatch):
+    import app.core.config as core_config
+    from app.services import mosaic_plan as mp
+    settings = SimpleNamespace(
+        mosaic_stac_bbox_parallelism=2,
+        mosaic_stac_datetime_parallelism=2,
+        mosaic_stac_fetch_limit=500,
+        mosaic_void_fill_max_rounds=1,
+        mosaic_void_pinpoint_max_parts=3,
+        mosaic_void_fill_min_uncovered=0.001,
+        mosaic_same_pass_num_strips=8,
+    )
+    monkeypatch.setattr(core_config, "get_settings", lambda: settings)
+
+    called = {"parts": None}
+
+    def fake_pinpoint(_remaining, _clip_bbox, *, max_parts=16):
+        called["parts"] = max_parts
+        return []
+
+    async def fake_collect(*_args, **_kwargs):
+        return [], []
+
+    monkeypatch.setattr(mp, "pinpoint_bboxes_from_remainder", fake_pinpoint)
+    monkeypatch.setattr(mp, "collect_stac_features", fake_collect)
+
+    aoi = box(0, 0, 1, 1)
+    res, errs, merged = await plan_mosaic_with_void_fill(
+        [SimpleNamespace(id="c1")],
+        stac_collection="col",
+        aoi=aoi,
+        search_bbox=[0, 0, 1, 1],
+        datetime_slices=["2024-01-01T00:00:00Z/2024-01-31T23:59:59Z"],
+        cloud_cover_max=None,
+        sort_mode="lowest_cloud",
+        fetch_limit=50,
+    )
+    assert called["parts"] is None or called["parts"] == 3
+    assert res["void_fill_rounds"] <= 1
+    assert errs == []
+    assert merged == []

@@ -137,6 +137,18 @@ class Settings(BaseSettings):
     mosaic_stac_initial_split_grid: int = 0
     # Parallel STAC sub-bbox searches per planning round.
     mosaic_stac_bbox_parallelism: int = 4
+    # Parallel datetime-slice STAC searches per bbox.
+    mosaic_stac_datetime_parallelism: int = 2
+    # Per STAC /search request item limit in mosaic planner.
+    mosaic_stac_fetch_limit: int = 500
+    # Planner void-fill rounds for uncovered AOI.
+    mosaic_void_fill_max_rounds: int = 6
+    # Max disconnected gap parts sampled for pinpoint void fill.
+    mosaic_void_pinpoint_max_parts: int = 16
+    # Stop void-fill when uncovered AOI fraction <= this threshold.
+    mosaic_void_fill_min_uncovered: float = 0.001
+    # Number of AOI longitude strips for same-pass date mode.
+    mosaic_same_pass_num_strips: int = 8
     # HTML STAC search: max merged features fetched before slicing for pagination (per search).
     stac_search_html_max_features: int = 2000
     # Max page size for GET /stac?f=html

@@ -13,6 +13,7 @@ from typing import Any
 import mercantile
 from shapely.geometry import Polygon, box, mapping, shape
 from shapely.ops import unary_union
+from shapely.strtree import STRtree
 from shapely.validation import make_valid
 
 from app.models.stac_catalog import StacCatalog
@@ -77,6 +78,28 @@ _VOID_PINPOINT_MAX_PARTS = 16
 # Same-pass date mode: split AOI into vertical (N–S) longitude strips; each strip picks one day.
 # True satellite swaths are oblique; we approximate with meridian-aligned columns (see docstrings).
 _SAME_PASS_NUM_STRIPS = 8
+
+
+def _bounds_intersect(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    return not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3])
+
+
+def _planner_knobs() -> dict[str, Any]:
+    from app.core.config import get_settings
+
+    s = get_settings()
+    return {
+        "stac_datetime_parallelism": max(1, int(getattr(s, "mosaic_stac_datetime_parallelism", 2) or 1)),
+        "stac_fetch_limit": max(1, int(getattr(s, "mosaic_stac_fetch_limit", 500) or 1)),
+        "void_fill_max_rounds": max(1, int(getattr(s, "mosaic_void_fill_max_rounds", _VOID_FILL_MAX_ROUNDS) or 1)),
+        "void_pinpoint_max_parts": max(
+            1, int(getattr(s, "mosaic_void_pinpoint_max_parts", _VOID_PINPOINT_MAX_PARTS) or 1)
+        ),
+        "void_fill_min_uncovered": max(
+            0.0, float(getattr(s, "mosaic_void_fill_min_uncovered", _VOID_FILL_MIN_UNCOVERED) or 0.0)
+        ),
+        "same_pass_num_strips": max(1, int(getattr(s, "mosaic_same_pass_num_strips", _SAME_PASS_NUM_STRIPS) or 1)),
+    }
 
 
 def mgrs_tile_from_stac_item_id(item_id: str | None) -> str | None:
@@ -420,6 +443,15 @@ def greedy_cover_aoi(
     selected: list[Candidate] = []
     used_keys: set[str] = set()
     tie = _sort_key_lowest_cloud if sort_mode == "lowest_cloud" else _sort_key_newest
+    geom_to_candidates: dict[bytes, list[Candidate]] = defaultdict(list)
+    geoms = []
+    for c in candidates:
+        geoms.append(c.geom)
+        try:
+            geom_to_candidates[c.geom.wkb].append(c)
+        except Exception:
+            pass
+    tree = STRtree(geoms) if geoms else None
 
     for _ in range(max_iterations):
         uncovered_frac = remaining.area / aoi_area if aoi_area > 0 else 0
@@ -428,12 +460,26 @@ def greedy_cover_aoi(
         best: Candidate | None = None
         best_gain = 0.0
         best_tie: tuple[Any, ...] | None = None
-        for c in candidates:
-            if c.key in used_keys:
+        rem_bounds = remaining.bounds
+        pool: list[Candidate] = []
+        if tree is not None:
+            try:
+                for g in tree.query(remaining):
+                    for c in geom_to_candidates.get(g.wkb, []):
+                        pool.append(c)
+            except Exception:
+                pool = candidates
+        if not pool:
+            pool = candidates
+        seen_pool: set[str] = set()
+        for c in pool:
+            if c.key in used_keys or c.key in seen_pool:
+                continue
+            seen_pool.add(c.key)
+            if not _bounds_intersect(rem_bounds, c.geom.bounds):
                 continue
             try:
-                inter = remaining.intersection(c.geom)
-                gain = inter.area if not inter.is_empty else 0.0
+                gain = remaining.intersection(c.geom).area
             except Exception:
                 gain = 0.0
             if gain <= 0:
@@ -651,7 +697,6 @@ def same_pass_date_strips_select(
     used: set[str] = set()
     aoi_area = float(aoi.area) if aoi.area > 0 else 1.0
     min_need = max(aoi_area * 1e-10, 1e-16)
-
     for band in bands:
         cu = _union_candidate_geoms(selected)
         try:
@@ -666,8 +711,11 @@ def same_pass_date_strips_select(
             continue
 
         pool = []
+        need_bounds = need.bounds
         for c in intersecting:
             if c.key in used:
+                continue
+            if not _bounds_intersect(need_bounds, c.geom.bounds):
                 continue
             try:
                 if c.geom.intersects(need):
@@ -950,7 +998,10 @@ async def collect_stac_features(
     # Track errors across slices, but only report catalogs that never succeeded for any slice.
     errors_all: list[dict[str, str]] = []
     succeeded: set[str] = set()
-    for dt in datetime_slices:
+    knobs = _planner_knobs()
+    sem = asyncio.Semaphore(int(knobs["stac_datetime_parallelism"]))
+
+    async def _fetch_datetime(idx: int, dt: str) -> tuple[int, list[dict[str, Any]], list[dict[str, str]]]:
         body: dict[str, Any] = {
             "limit": fetch_limit,
             "bbox": bbox,
@@ -960,7 +1011,13 @@ async def collect_stac_features(
         }
         if cloud_cover_max is not None:
             body["query"] = {"eo:cloud_cover": {"lte": float(cloud_cover_max)}}
-        part, errs = await execute_stac_search_for_catalogs(catalogs, body)
+        async with sem:
+            part, errs = await execute_stac_search_for_catalogs(catalogs, body)
+        feats = part.get("features") if isinstance(part, dict) else None
+        return idx, feats if isinstance(feats, list) else [], errs or []
+
+    batches = await asyncio.gather(*[_fetch_datetime(i, dt) for i, dt in enumerate(datetime_slices)])
+    for _i, feats, errs in sorted(batches, key=lambda x: x[0]):
         errs = errs or []
         if errs:
             errors_all.extend(errs)
@@ -968,9 +1025,6 @@ async def collect_stac_features(
         for cid in catalog_ids:
             if cid and cid not in failed_cats:
                 succeeded.add(cid)
-        feats = part.get("features") if isinstance(part, dict) else None
-        if not isinstance(feats, list):
-            continue
         for f in feats:
             if not isinstance(f, dict):
                 continue
@@ -1053,6 +1107,7 @@ def plan_mosaic_from_features(
         except Exception:
             continue
     same_seven_day_window_out: dict[str, Any] | None = None
+    knobs = _planner_knobs()
     if same_pass_date_strips:
         if locked_date_window is not None:
             ds, de = locked_date_window
@@ -1083,7 +1138,10 @@ def plan_mosaic_from_features(
 
     if same_pass_date_strips:
         selected, remaining_uncovered, uncovered_frac = same_pass_date_strips_select(
-            aoi, intersecting, sort_mode
+            aoi,
+            intersecting,
+            sort_mode,
+            num_strips=int(knobs["same_pass_num_strips"]),
         )
     else:
         selected, remaining_uncovered, uncovered_frac = greedy_cover_aoi(aoi, intersecting, sort_mode)
@@ -1098,6 +1156,8 @@ def plan_mosaic_from_features(
             if other.key == sel.key:
                 continue
             if other.key in selected_keys:
+                continue
+            if not _bounds_intersect(sel.geom.bounds, other.geom.bounds):
                 continue
             try:
                 if sel.geom.intersection(other.geom).area <= 0:
@@ -1202,14 +1262,15 @@ async def plan_mosaic_with_void_fill(
     locked_date_window: tuple[date, date] | None = None
     from app.core.config import get_settings
     bbox_parallelism = max(1, int(get_settings().mosaic_stac_bbox_parallelism or 1))
+    knobs = _planner_knobs()
 
-    for round_idx in range(_VOID_FILL_MAX_ROUNDS):
+    for round_idx in range(int(knobs["void_fill_max_rounds"])):
         if round_idx == 0:
             q_bboxes = split_initial_search_bboxes([float(x) for x in search_bbox])
         else:
             assert last_result is not None
             uf = float(last_result.get("uncovered_fraction") or 1.0)
-            if uf <= _VOID_FILL_MIN_UNCOVERED:
+            if uf <= float(knobs["void_fill_min_uncovered"]):
                 last_result["void_fill_stopped"] = "coverage_met"
                 break
             rem = last_result.get("remaining_uncovered")
@@ -1223,7 +1284,11 @@ async def plan_mosaic_with_void_fill(
                 break
             # Pinpoint each gap (like UI click-to-fill); avoids STAC limit crowding out
             # granules that only appear under small intersection bboxes.
-            pin = pinpoint_bboxes_from_remainder(rem_g, search_bbox)
+            pin = pinpoint_bboxes_from_remainder(
+                rem_g,
+                search_bbox,
+                max_parts=int(knobs["void_pinpoint_max_parts"]),
+            )
             if pin:
                 q_bboxes = pin
             else:
@@ -1286,7 +1351,7 @@ async def plan_mosaic_with_void_fill(
         last_result["stac_feature_pool_size"] = len(merged)
 
         uf = float(last_result.get("uncovered_fraction") or 0.0)
-        if uf <= _VOID_FILL_MIN_UNCOVERED:
+        if uf <= float(knobs["void_fill_min_uncovered"]):
             last_result["void_fill_stopped"] = "coverage_met"
             break
 
@@ -1306,7 +1371,7 @@ async def plan_mosaic_with_void_fill(
     if "void_fill_stopped" not in last_result:
         uf = float(last_result.get("uncovered_fraction") or 0.0)
         last_result["void_fill_stopped"] = (
-            "max_rounds" if uf > _VOID_FILL_MIN_UNCOVERED else "coverage_met"
+            "max_rounds" if uf > float(knobs["void_fill_min_uncovered"]) else "coverage_met"
         )
 
     err_map: dict[str, str] = {}
@@ -1437,6 +1502,8 @@ def swap_options_for_selected(
         alts: list[dict[str, Any]] = []
         for other in intersecting:
             if other.key in selected_keys:
+                continue
+            if not _bounds_intersect(sel_geom.bounds, other.geom.bounds):
                 continue
             try:
                 if sel_geom.intersection(other.geom).area <= 0:

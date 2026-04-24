@@ -67,6 +67,10 @@ class MosaicPlanBody(BaseModel):
         None,
         description="Per dedupe key: skip this many alternatives before returning the next page.",
     )
+    include_footprint_display: bool = Field(
+        True,
+        description="If false, skip thumbnail-based footprint display post-processing for faster planning.",
+    )
 
     @field_validator("date_start", "date_end", mode="before")
     @classmethod
@@ -167,7 +171,7 @@ async def compute_mosaic_plan(body: MosaicPlanBody, current_user: User) -> dict[
         raise HTTPException(status_code=400, detail="Set date_start and/or date_end")
 
     settings = get_settings()
-    cap = min(500, settings.stac_search_max_catalogs * 200)
+    cap = min(int(settings.mosaic_stac_fetch_limit or 500), settings.stac_search_max_catalogs * 200)
 
     cloud_for_search = None if body.use_same_pass_date_strips else body.cloud_cover_max
     swap_off = body.swap_options_offset or {}
@@ -206,7 +210,11 @@ async def compute_mosaic_plan(body: MosaicPlanBody, current_user: User) -> dict[
             swap_options_limit=swap_lim,
             swap_options_offset=swap_off,
         )
-    await attach_footprint_displays_to_plan_result(result, plan_features)
+    include_footprint_display = bool(body.include_footprint_display)
+    if include_footprint_display:
+        await attach_footprint_displays_to_plan_result(result, plan_features)
+    else:
+        result["footprint_display_skipped"] = True
     result["stac_errors"] = stac_errors
     result["search_bbox"] = search_bbox
     result["datetime_slices"] = slices
