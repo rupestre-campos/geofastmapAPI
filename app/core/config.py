@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     stac_search_max_catalogs: int = 32
     # Mosaic planner compute queue. redis = offload heavy planning to standalone worker(s).
     mosaic_queue_type: str = "redis"  # redis | inline
+    # Mosaic worker: concurrent jobs per worker process (higher = more CPU/network pressure).
+    mosaic_worker_max_concurrent: int = 1
     # HTML STAC search: max merged features fetched before slicing for pagination (per search).
     stac_search_html_max_features: int = 2000
     # Max page size for GET /stac?f=html

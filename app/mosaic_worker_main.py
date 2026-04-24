@@ -49,11 +49,23 @@ async def _worker_loop() -> None:
     if settings.mosaic_queue_type != "redis":
         print("Set MOSAIC_QUEUE_TYPE=redis for mosaic worker.", file=sys.stderr)
         sys.exit(1)
+    max_concurrent = max(1, int(getattr(settings, "mosaic_worker_max_concurrent", 1) or 1))
     import redis
 
     r = redis.from_url(settings.redis_url, decode_responses=True)
-    print("Mosaic worker started. Waiting for jobs...", flush=True)
+    print(f"Mosaic worker started. Waiting for jobs... (max_concurrent={max_concurrent})", flush=True)
+    active: set[asyncio.Task] = set()
     while True:
+        if len(active) >= max_concurrent:
+            done, pending = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
+            active = set(pending)
+            for t in done:
+                try:
+                    await t
+                except Exception:
+                    # _run_job handles and stores job errors; never fail worker loop on one task.
+                    pass
+            continue
         # Redis client is sync; run BRPOP in a thread but keep one async event loop for the worker.
         item = await asyncio.to_thread(r.brpop, MOSAIC_PLAN_QUEUE_KEY, 5)
         if not item:
@@ -63,7 +75,8 @@ async def _worker_loop() -> None:
             payload = json.loads(raw)
         except Exception:
             continue
-        await _run_job(payload)
+        t = asyncio.create_task(_run_job(payload))
+        active.add(t)
 
 
 def main() -> None:

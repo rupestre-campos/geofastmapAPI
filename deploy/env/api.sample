@@ -5,6 +5,8 @@ BULK_QUEUE_TYPE=redis
 BULK_STORAGE_PATH=/data/bulk-uploads
 PROCESS_QUEUE_TYPE=redis
 MOSAIC_QUEUE_TYPE=redis
+# Only used by standalone mosaic worker process (jobs per process).
+MOSAIC_WORKER_MAX_CONCURRENT=2
 TILES_STORAGE_PATH=/data/tiles
 RASTER_STORAGE_PATH=/data/rasters
 TITILER_INTERNAL_URL=http://YOUR_TITILER_OR_NGINX:8000
