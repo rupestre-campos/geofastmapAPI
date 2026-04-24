@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import json
 import sys
+import asyncio
 
 from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
-from app.models.user import User
 from app.services.mosaic_plan_jobs import (
     MOSAIC_PLAN_QUEUE_KEY,
     set_mosaic_plan_job_error,
@@ -44,18 +44,18 @@ async def _run_job(payload: dict) -> None:
         set_mosaic_plan_job_error(job_id, str(e) or type(e).__name__)
 
 
-def main() -> None:
+async def _worker_loop() -> None:
     settings = get_settings()
     if settings.mosaic_queue_type != "redis":
         print("Set MOSAIC_QUEUE_TYPE=redis for mosaic worker.", file=sys.stderr)
         sys.exit(1)
-    import asyncio
     import redis
 
     r = redis.from_url(settings.redis_url, decode_responses=True)
     print("Mosaic worker started. Waiting for jobs...", flush=True)
     while True:
-        item = r.brpop(MOSAIC_PLAN_QUEUE_KEY, timeout=5)
+        # Redis client is sync; run BRPOP in a thread but keep one async event loop for the worker.
+        item = await asyncio.to_thread(r.brpop, MOSAIC_PLAN_QUEUE_KEY, 5)
         if not item:
             continue
         _key, raw = item
@@ -63,7 +63,11 @@ def main() -> None:
             payload = json.loads(raw)
         except Exception:
             continue
-        asyncio.run(_run_job(payload))
+        await _run_job(payload)
+
+
+def main() -> None:
+    asyncio.run(_worker_loop())
 
 
 if __name__ == "__main__":
