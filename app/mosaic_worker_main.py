@@ -12,6 +12,7 @@ from app.db.session import AsyncSessionLocal
 from app.services.mosaic_plan_jobs import (
     MOSAIC_PLAN_QUEUE_KEY,
     set_mosaic_plan_job_error,
+    set_mosaic_plan_job_progress,
     set_mosaic_plan_job_result,
     set_mosaic_plan_job_status,
 )
@@ -27,20 +28,54 @@ async def _run_job(payload: dict) -> None:
     if not job_id or not owner_id or not isinstance(body_raw, dict):
         return
     set_mosaic_plan_job_status(job_id, "running", message="Computing mosaic plan")
+    settings = get_settings()
+    heartbeat_secs = max(2, int(settings.mosaic_job_heartbeat_seconds or 10))
+    rounds_max = max(1, int(settings.mosaic_void_fill_max_rounds or 1))
+    hb_stop = asyncio.Event()
+
+    async def _heartbeat() -> None:
+        while not hb_stop.is_set():
+            set_mosaic_plan_job_progress(
+                job_id,
+                phase="planning",
+                rounds_max=rounds_max,
+                retry_after_seconds=1,
+            )
+            try:
+                await asyncio.wait_for(hb_stop.wait(), timeout=heartbeat_secs)
+            except asyncio.TimeoutError:
+                continue
+
+    hb_task = asyncio.create_task(_heartbeat())
     try:
         body = MosaicPlanBody(**body_raw)
     except Exception as e:
+        hb_stop.set()
+        await hb_task
         set_mosaic_plan_job_error(job_id, f"Invalid payload: {e}")
         return
     async with AsyncSessionLocal() as db:
         user = await user_crud.get_user_by_id(db, owner_id)
     if user is None:
+        hb_stop.set()
+        await hb_task
         set_mosaic_plan_job_error(job_id, "User not found")
         return
     try:
         result = await compute_mosaic_plan(body, user)
+        set_mosaic_plan_job_progress(
+            job_id,
+            phase="finalizing",
+            round=result.get("void_fill_rounds"),
+            features_seen=result.get("stac_feature_pool_size"),
+            retry_after_seconds=2,
+        )
+        hb_stop.set()
+        await hb_task
         set_mosaic_plan_job_result(job_id, result)
     except Exception as e:
+        hb_stop.set()
+        await hb_task
         set_mosaic_plan_job_error(job_id, str(e) or type(e).__name__)
 
 

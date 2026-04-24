@@ -149,6 +149,23 @@ class Settings(BaseSettings):
     mosaic_void_fill_min_uncovered: float = 0.001
     # Number of AOI longitude strips for same-pass date mode.
     mosaic_same_pass_num_strips: int = 8
+    # Thumbnail fetch concurrency for footprint display attachment.
+    mosaic_footprint_fetch_max_concurrent: int = 8
+    # CPU concurrency for thumbnail decode + mask/geometry extraction.
+    mosaic_footprint_cpu_max_concurrent: int = 4
+    # HTTP timeouts for fetching thumbnail previews used in footprint display.
+    mosaic_footprint_fetch_connect_timeout_seconds: float = 5.0
+    mosaic_footprint_fetch_read_timeout_seconds: float = 20.0
+    # Safety cap: max selected/swap items to process per plan response.
+    mosaic_footprint_max_items: int = 200
+    # STAC federation: per-request parallel catalog calls.
+    mosaic_stac_catalog_parallelism: int = 4
+    # STAC federation: global in-flight catalog request budget per search call.
+    mosaic_stac_total_inflight_max: int = 12
+    # Async mosaic plan jobs: heartbeat/progress + stale detection + client polling budget.
+    mosaic_job_heartbeat_seconds: int = 10
+    mosaic_job_stale_after_seconds: int = 180
+    mosaic_job_client_timeout_seconds: int = 1800
     # HTML STAC search: max merged features fetched before slicing for pagination (per search).
     stac_search_html_max_features: int = 2000
     # Max page size for GET /stac?f=html

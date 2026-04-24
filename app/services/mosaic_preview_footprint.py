@@ -16,11 +16,12 @@ from PIL import Image
 from shapely.geometry import Polygon, box, mapping
 from shapely.ops import unary_union
 
+from app.core.config import get_settings
 from app.services.mosaic_plan import thumbnail_href
 from app.utils.preview_image import apply_border_transparency_rgba, decode_image_rgba
 
 _ALPHA_MIN = 10
-_FETCH_TIMEOUT = httpx.Timeout(15.0, connect=8.0)
+_FETCH_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 
 
 def _binary_fill_holes(fg: np.ndarray) -> np.ndarray:
@@ -240,11 +241,19 @@ async def attach_footprint_displays_to_plan_result(
     result: dict[str, Any],
     features: list[dict[str, Any]],
     *,
-    max_concurrent: int = 6,
+    max_concurrent: int | None = None,
 ) -> None:
     """Mutates result selected + swap_options entries with optional footprint_display."""
     if not features:
         return
+    s = get_settings()
+    fetch_concurrent = max(1, int(max_concurrent or s.mosaic_footprint_fetch_max_concurrent or 1))
+    cpu_concurrent = max(1, int(s.mosaic_footprint_cpu_max_concurrent or 1))
+    max_items = max(1, int(s.mosaic_footprint_max_items or 1))
+    timeout = httpx.Timeout(
+        float(s.mosaic_footprint_fetch_read_timeout_seconds or 20.0),
+        connect=float(s.mosaic_footprint_fetch_connect_timeout_seconds or 5.0),
+    )
     by_key, by_id = _feat_by_lookups(features)
 
     work: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -262,30 +271,45 @@ async def attach_footprint_displays_to_plan_result(
             feat = _resolve_feature_for_item(alt, by_key, by_id)
             if feat is not None:
                 work.append((alt, feat))
+    if not work:
+        return
+    work = work[:max_items]
 
     cache: dict[tuple[str, float, float, float, float], dict[str, Any] | None] = {}
-    sem = asyncio.Semaphore(max_concurrent)
+    fetch_sem = asyncio.Semaphore(fetch_concurrent)
+    cpu_sem = asyncio.Semaphore(cpu_concurrent)
+    in_flight: dict[tuple[str, float, float, float, float], asyncio.Task[dict[str, Any] | None]] = {}
 
-    async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=timeout or _FETCH_TIMEOUT, follow_redirects=True) as client:
 
         async def fetch_geo(url: str, bbox4: list[float]) -> dict[str, Any] | None:
             key = (url, bbox4[0], bbox4[1], bbox4[2], bbox4[3])
             if key in cache:
                 return cache[key]
-            async with sem:
-                if key in cache:
-                    return cache[key]
-                try:
-                    r = await client.get(url, headers={"Accept": "image/*,*/*;q=0.8"})
-                except httpx.HTTPError:
-                    cache[key] = None
-                    return None
-                if r.status_code >= 400:
-                    cache[key] = None
-                    return None
-                geo = footprint_display_geojson_from_bytes(bbox4, r.content)
+            if key in in_flight:
+                return await in_flight[key]
+
+            async def _do_fetch() -> dict[str, Any] | None:
+                async with fetch_sem:
+                    try:
+                        r = await client.get(url, headers={"Accept": "image/*,*/*;q=0.8"})
+                    except httpx.HTTPError:
+                        cache[key] = None
+                        return None
+                    if r.status_code >= 400:
+                        cache[key] = None
+                        return None
+                async with cpu_sem:
+                    geo = await asyncio.to_thread(footprint_display_geojson_from_bytes, bbox4, r.content)
                 cache[key] = geo
                 return geo
+
+            t = asyncio.create_task(_do_fetch())
+            in_flight[key] = t
+            try:
+                return await t
+            finally:
+                in_flight.pop(key, None)
 
         async def run_pair(it: dict[str, Any], feat: dict[str, Any]) -> None:
             b = feat.get("bbox")

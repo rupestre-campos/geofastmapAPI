@@ -58,6 +58,21 @@ def set_mosaic_plan_job_status(job_id: str, status: str, *, message: str | None 
     r.hset(_job_key(job_id), mapping=mapping)
 
 
+def set_mosaic_plan_job_progress(job_id: str, **fields: Any) -> None:
+    """Update heartbeat/progress fields without forcing terminal status."""
+    mapping: dict[str, str] = {
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+    for k, v in fields.items():
+        if v is None:
+            continue
+        if isinstance(v, (dict, list)):
+            mapping[str(k)] = json.dumps(v, separators=(",", ":"))
+        else:
+            mapping[str(k)] = str(v)
+    _redis().hset(_job_key(job_id), mapping=mapping)
+
+
 def set_mosaic_plan_job_result(job_id: str, result: dict[str, Any]) -> None:
     r = _redis()
     r.hset(
@@ -108,5 +123,16 @@ def get_mosaic_plan_job(job_id: str) -> dict[str, Any] | None:
             out["payload"] = json.loads(raw["payload"])
         except Exception:
             pass
+    for k in ("phase", "round", "rounds_max", "features_seen", "retry_after_seconds"):
+        v = raw.get(k)
+        if v is None:
+            continue
+        if k in ("round", "rounds_max", "features_seen", "retry_after_seconds"):
+            try:
+                out[k] = int(v)
+            except (TypeError, ValueError):
+                out[k] = v
+        else:
+            out[k] = v
     return out
 

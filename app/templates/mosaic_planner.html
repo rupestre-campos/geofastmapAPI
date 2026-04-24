@@ -707,7 +707,10 @@
 
       function waitMosaicPlanJob(jobId) {
         var started = Date.now();
-        var timeoutMs = 180000;
+        var msg = document.getElementById('mp-msg');
+        var timeoutMs = 1800000;
+        var backoffMs = 1000;
+        var maxBackoffMs = 10000;
         function poll() {
           return fetch(base + '/mosaics/plan-jobs/' + encodeURIComponent(jobId), {
             credentials: 'same-origin',
@@ -721,8 +724,18 @@
             if (j.status === 'failed' || j.status === 'cancelled') {
               throw new Error(j.message || ('Job ' + j.status));
             }
-            if ((Date.now() - started) > timeoutMs) throw new Error('Mosaic plan job timed out');
-            return new Promise(function(resolve) { setTimeout(resolve, 800); }).then(poll);
+            var serverRetryMs = Math.max(500, Number(j.retry_after_seconds || 1) * 1000);
+            if (msg) {
+              var phase = j.phase ? (' (' + j.phase + ')') : '';
+              msg.textContent = (j.is_stale ? 'Mosaic plan may be stalled' : 'Mosaic plan still running') + phase + '…';
+              msg.className = j.is_stale ? 'mosaic-msg error' : 'mosaic-msg';
+            }
+            if ((Date.now() - started) > timeoutMs) {
+              timeoutMs = Math.max(timeoutMs, Number(j.client_timeout_seconds || 1800) * 1000);
+            }
+            var waitMs = Math.min(maxBackoffMs, Math.max(serverRetryMs, backoffMs));
+            backoffMs = Math.min(maxBackoffMs, Math.floor(backoffMs * 1.5));
+            return new Promise(function(resolve) { setTimeout(resolve, waitMs); }).then(poll);
           });
         }
         return poll();

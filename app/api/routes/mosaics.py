@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -230,6 +231,7 @@ async def mosaic_plan_job_status(
     job_id: str,
     current_user: User = Depends(get_current_user_required),
 ):
+    settings = get_settings()
     job = get_mosaic_plan_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -242,7 +244,24 @@ async def mosaic_plan_job_status(
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
         "finished_at": job.get("finished_at"),
+        "retry_after_seconds": int(job.get("retry_after_seconds") or 1),
+        "client_timeout_seconds": int(settings.mosaic_job_client_timeout_seconds or 1800),
     }
+    for k in ("phase", "round", "rounds_max", "features_seen"):
+        if k in job:
+            out[k] = job[k]
+    st = str(job.get("status") or "unknown")
+    out["terminal"] = st in ("completed", "failed", "cancelled")
+    out["is_stale"] = False
+    updated_at = job.get("updated_at")
+    if isinstance(updated_at, str) and updated_at:
+        try:
+            ts = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            stale_after = max(5, int(settings.mosaic_job_stale_after_seconds or 180))
+            age = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds()
+            out["is_stale"] = (not out["terminal"]) and age > stale_after
+        except ValueError:
+            pass
     if job.get("status") == "completed" and isinstance(job.get("result"), dict):
         out["result"] = job["result"]
     return out

@@ -216,9 +216,18 @@ async def federated_search(
 
     stac_body = {k: v for k, v in body.items() if k not in ("catalog_ids", "geofast_catalog_ids")}
     timeout = settings.stac_search_http_timeout_seconds
+    cat_parallelism = max(1, int(settings.mosaic_stac_catalog_parallelism or 1))
+    inflight_budget = max(1, int(settings.mosaic_stac_total_inflight_max or cat_parallelism))
+    sem_cat = asyncio.Semaphore(cat_parallelism)
+    sem_total = asyncio.Semaphore(inflight_budget)
 
     async with httpx.AsyncClient(timeout=timeout, headers=_stac_client_headers()) as client:
-        tasks = [_post_search_with_retries(client, c, stac_body) for c in catalogs]
+        async def _run_catalog(c: StacCatalog) -> tuple[dict[str, Any] | None, str | None]:
+            async with sem_total:
+                async with sem_cat:
+                    return await _post_search_with_retries(client, c, stac_body)
+
+        tasks = [_run_catalog(c) for c in catalogs]
         results = await asyncio.gather(*tasks)
 
     labels = [c.id for c in catalogs]
