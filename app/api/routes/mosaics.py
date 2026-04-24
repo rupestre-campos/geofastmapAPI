@@ -17,7 +17,7 @@ from app.crud import features as features_crud
 from app.crud import stac_catalogs as stac_catalogs_crud
 from app.crud import collections as collections_crud
 from app.api.routes.raster_views import compute_mosaic_tiles_revision
-from app.db.session import get_db
+from app.db.session import AsyncSessionLocal, get_db
 from app.models.user import User
 from app.services.mosaic_plan import (
     collect_stac_features,
@@ -25,6 +25,8 @@ from app.services.mosaic_plan import (
     season_datetime_slices,
     swap_options_for_selected,
 )
+from app.services.mosaic_preview_footprint import attach_footprint_displays_to_plan_result
+from app.services.mosaic_plan_jobs import enqueue_mosaic_plan_job, get_mosaic_plan_job
 from geoalchemy2.shape import to_shape
 
 
@@ -55,6 +57,16 @@ class MosaicPlanBody(BaseModel):
         None,
         description="Optional pre-selected items (key + footprint). If provided, the planner returns swap_options for these items.",
     )
+    swap_options_limit: int = Field(
+        5,
+        ge=1,
+        le=50,
+        description="Max same-tile alternatives returned per selected row per request (use swap_options_offset to page).",
+    )
+    swap_options_offset: dict[str, int] | None = Field(
+        None,
+        description="Per dedupe key: skip this many alternatives before returning the next page.",
+    )
 
     @field_validator("date_start", "date_end", mode="before")
     @classmethod
@@ -73,71 +85,82 @@ class MosaicPlanBody(BaseModel):
 )
 async def mosaic_plan(
     body: MosaicPlanBody,
-    db: AsyncSession = Depends(get_db),
+    async_mode: bool = Query(False, description="If true, enqueue compute and return job id."),
     current_user: User = Depends(get_current_user_required),
 ):
+    settings = get_settings()
+    if async_mode and settings.mosaic_queue_type == "redis":
+        job_id = enqueue_mosaic_plan_job(body.model_dump(), int(current_user.id))
+        return {"job_id": job_id, "status": "pending"}
+    return await compute_mosaic_plan(body, current_user)
+
+
+async def compute_mosaic_plan(body: MosaicPlanBody, current_user: User) -> dict[str, Any]:
     if body.sort_mode not in ("lowest_cloud", "newest_first"):
         raise HTTPException(status_code=400, detail="sort_mode must be lowest_cloud or newest_first")
 
-    catalog = await stac_catalogs_crud.get_catalog(db, body.catalog_id)
-    if not catalog or not catalog.enabled:
-        raise HTTPException(status_code=404, detail="Unknown or disabled STAC catalog")
+    async with AsyncSessionLocal() as db:
+        catalog = await stac_catalogs_crud.get_catalog(db, body.catalog_id)
+        if not catalog or not catalog.enabled:
+            raise HTTPException(status_code=404, detail="Unknown or disabled STAC catalog")
 
-    aoi = None
-    search_bbox: list[float]
+        aoi = None
+        search_bbox: list[float]
 
-    if body.geofast_collection_id and body.geofast_feature_id:
-        coll = await collections_crud.get_collection(db, body.geofast_collection_id)
-        if not coll or not await can_see_collection(db, coll, current_user):
-            raise HTTPException(status_code=404, detail="Collection not found")
-        feat = await features_crud.get_feature(db, body.geofast_collection_id, body.geofast_feature_id)
-        if feat is None or feat.geometry is None:
-            raise HTTPException(status_code=404, detail="Feature not found")
-        sh = to_shape(feat.geometry)
-        if sh.is_empty:
-            raise HTTPException(status_code=400, detail="Feature has no geometry")
-        if sh.geom_type == "Polygon":
-            aoi = sh
-        elif sh.geom_type == "MultiPolygon":
-            aoi = max(sh.geoms, key=lambda p: p.area)
+        if body.geofast_collection_id and body.geofast_feature_id:
+            coll = await collections_crud.get_collection(db, body.geofast_collection_id)
+            if not coll or not await can_see_collection(db, coll, current_user):
+                raise HTTPException(status_code=404, detail="Collection not found")
+            feat = await features_crud.get_feature(db, body.geofast_collection_id, body.geofast_feature_id)
+            if feat is None or feat.geometry is None:
+                raise HTTPException(status_code=404, detail="Feature not found")
+            sh = to_shape(feat.geometry)
+            if sh.is_empty:
+                raise HTTPException(status_code=400, detail="Feature has no geometry")
+            if sh.geom_type == "Polygon":
+                aoi = sh
+            elif sh.geom_type == "MultiPolygon":
+                aoi = max(sh.geoms, key=lambda p: p.area)
+            else:
+                raise HTTPException(status_code=400, detail="Feature geometry must be polygonal")
+            b = aoi.bounds
+            pad = max((b[2] - b[0]) * 0.01, (b[3] - b[1]) * 0.01, 0.005)
+            search_bbox = [
+                max(-180.0, b[0] - pad),
+                max(-85.0, b[1] - pad),
+                min(180.0, b[2] + pad),
+                min(85.0, b[3] + pad),
+            ]
+        elif body.aoi_geojson:
+            try:
+                g = shape(body.aoi_geojson)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid aoi_geojson")
+            if g.geom_type == "Polygon":
+                aoi = g
+            elif g.geom_type == "MultiPolygon":
+                aoi = max(g.geoms, key=lambda p: p.area)
+            else:
+                raise HTTPException(status_code=400, detail="AOI must be a Polygon or MultiPolygon")
+            b = aoi.bounds
+            pad = max((b[2] - b[0]) * 0.01, (b[3] - b[1]) * 0.01, 0.005)
+            search_bbox = [
+                max(-180.0, b[0] - pad),
+                max(-85.0, b[1] - pad),
+                min(180.0, b[2] + pad),
+                min(85.0, b[3] + pad),
+            ]
+        elif body.bbox and len(body.bbox) == 4:
+            search_bbox = [float(x) for x in body.bbox]
+            b = search_bbox
+            aoi = box(b[0], b[1], b[2], b[3])
         else:
-            raise HTTPException(status_code=400, detail="Feature geometry must be polygonal")
-        b = aoi.bounds
-        pad = max((b[2] - b[0]) * 0.01, (b[3] - b[1]) * 0.01, 0.005)
-        search_bbox = [
-            max(-180.0, b[0] - pad),
-            max(-85.0, b[1] - pad),
-            min(180.0, b[2] + pad),
-            min(85.0, b[3] + pad),
-        ]
-    elif body.aoi_geojson:
-        try:
-            g = shape(body.aoi_geojson)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid aoi_geojson")
-        if g.geom_type == "Polygon":
-            aoi = g
-        elif g.geom_type == "MultiPolygon":
-            aoi = max(g.geoms, key=lambda p: p.area)
-        else:
-            raise HTTPException(status_code=400, detail="AOI must be a Polygon or MultiPolygon")
-        b = aoi.bounds
-        pad = max((b[2] - b[0]) * 0.01, (b[3] - b[1]) * 0.01, 0.005)
-        search_bbox = [
-            max(-180.0, b[0] - pad),
-            max(-85.0, b[1] - pad),
-            min(180.0, b[2] + pad),
-            min(85.0, b[3] + pad),
-        ]
-    elif body.bbox and len(body.bbox) == 4:
-        search_bbox = [float(x) for x in body.bbox]
-        b = search_bbox
-        aoi = box(b[0], b[1], b[2], b[3])
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail="Provide bbox (4 floats), aoi_geojson (Polygon), or geofast_collection_id + geofast_feature_id",
-        )
+            raise HTTPException(
+                status_code=400,
+                detail="Provide bbox (4 floats), aoi_geojson (Polygon), or geofast_collection_id + geofast_feature_id",
+            )
+
+        db.expunge(catalog)
 
     slices = season_datetime_slices(body.date_start, body.date_end, body.seasons or None)
     if not slices:
@@ -147,11 +170,12 @@ async def mosaic_plan(
     cap = min(500, settings.stac_search_max_catalogs * 200)
 
     cloud_for_search = None if body.use_same_pass_date_strips else body.cloud_cover_max
+    swap_off = body.swap_options_offset or {}
+    swap_lim = body.swap_options_limit
 
     if body.selected:
         features, stac_errors = await collect_stac_features(
-            db,
-            catalog_ids=[body.catalog_id],
+            [catalog],
             stac_collection=body.stac_collection_id,
             bbox=search_bbox,
             datetime_slices=slices,
@@ -159,11 +183,18 @@ async def mosaic_plan(
             sort_mode=body.sort_mode,
             fetch_limit=cap,
         )
-        result = swap_options_for_selected(aoi, features, body.sort_mode, body.selected)
+        result = swap_options_for_selected(
+            aoi,
+            features,
+            body.sort_mode,
+            body.selected,
+            swap_options_limit=swap_lim,
+            swap_options_offset=swap_off,
+        )
+        plan_features = features
     else:
-        result, stac_errors = await plan_mosaic_with_void_fill(
-            db,
-            catalog_ids=[body.catalog_id],
+        result, stac_errors, plan_features = await plan_mosaic_with_void_fill(
+            [catalog],
             stac_collection=body.stac_collection_id,
             aoi=aoi,
             search_bbox=search_bbox,
@@ -172,7 +203,10 @@ async def mosaic_plan(
             sort_mode=body.sort_mode,
             fetch_limit=cap,
             same_pass_date_strips=body.use_same_pass_date_strips,
+            swap_options_limit=swap_lim,
+            swap_options_offset=swap_off,
         )
+    await attach_footprint_displays_to_plan_result(result, plan_features)
     result["stac_errors"] = stac_errors
     result["search_bbox"] = search_bbox
     result["datetime_slices"] = slices
@@ -181,6 +215,29 @@ async def mosaic_plan(
     if body.selected:
         result["use_same_pass_date_strips"] = body.use_same_pass_date_strips
     return result
+
+
+@router.get("/plan-jobs/{job_id}", summary="Get async mosaic plan job status/result")
+async def mosaic_plan_job_status(
+    job_id: str,
+    current_user: User = Depends(get_current_user_required),
+):
+    job = get_mosaic_plan_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if int(job.get("owner_id") or 0) != int(current_user.id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    out = {
+        "job_id": job.get("job_id") or job_id,
+        "status": job.get("status"),
+        "message": job.get("message"),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+        "finished_at": job.get("finished_at"),
+    }
+    if job.get("status") == "completed" and isinstance(job.get("result"), dict):
+        out["result"] = job["result"]
+    return out
 
 
 @router.get("/planner", summary="Mosaic planner UI")

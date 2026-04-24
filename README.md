@@ -155,7 +155,7 @@ Optional:
 
 - **TILES_DYNAMIC_USE_QUEUE** — Use Redis search cache + tile job queue for dynamic tiles (workers read from cache).
 - **TILES_DYNAMIC_WORKER_URL** — Offload dynamic tiles to another service (e.g. tippecanoe worker).
-- **process_max_concurrent**, **process_batch_max_bytes**, etc. — Tune process worker memory and parallelism.
+- **process_batch_max_bytes**, **process_batch_workers**, etc. — Tune process worker memory and parallelism.
 
 ---
 

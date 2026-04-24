@@ -14,7 +14,7 @@ from shapely.geometry import Polygon, box, mapping, shape
 from shapely.ops import unary_union
 from shapely.validation import make_valid
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.models.stac_catalog import StacCatalog
 
 
 def _parse_date(s: str | None) -> date | None:
@@ -46,8 +46,25 @@ _RE_TILE_T = re.compile(r"_T(\d{2}[A-Z]{3})_", re.IGNORECASE)
 # Short ids: S2A_23KNS_20250810_...
 _RE_TILE_S2AB = re.compile(r"(?:^|_)S2[AB]_(\d{2}[A-Z]{3})_", re.IGNORECASE)
 
-# Max swap alternatives per selected image (same MGRS tile + footprint overlap).
-_SWAP_OPTIONS_MAX = 200
+# Max swap alternatives per selected image (same MGRS tile + footprint overlap), one API page.
+_SWAP_OPTIONS_MAX = 50
+# Default page size for swap grids (client may request up to _SWAP_OPTIONS_MAX per request).
+_SWAP_OPTIONS_PAGE_DEFAULT = 5
+
+
+def _slice_swap_alts(
+    alts: list[dict[str, Any]],
+    sel_key: str,
+    *,
+    swap_options_limit: int,
+    swap_options_offset: dict[str, int] | None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return (page slice, total count)."""
+    off = int((swap_options_offset or {}).get(sel_key, 0) or 0)
+    if off < 0:
+        off = 0
+    lim = max(1, min(int(swap_options_limit), _SWAP_OPTIONS_MAX))
+    return alts[off : off + lim], len(alts)
 
 # After the initial STAC search, optionally query tighter bboxes over coverage gaps.
 _VOID_FILL_MAX_ROUNDS = 6
@@ -875,9 +892,8 @@ def pinpoint_bboxes_from_remainder(
 
 
 async def collect_stac_features(
-    db: AsyncSession,
+    catalogs: list[StacCatalog],
     *,
-    catalog_ids: list[str],
     stac_collection: str,
     bbox: list[float],
     datetime_slices: list[str],
@@ -886,8 +902,9 @@ async def collect_stac_features(
     fetch_limit: int = 500,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Run federated STAC search (one or more datetime slices) and merge/dedupe features."""
-    from app.api.routes.stac import _execute_stac_search
+    from app.api.routes.stac import execute_stac_search_for_catalogs
 
+    catalog_ids = [c.id for c in catalogs]
     merged_feats: list[dict[str, Any]] = []
     seen: set[str] = set()
     # Track errors across slices, but only report catalogs that never succeeded for any slice.
@@ -903,7 +920,7 @@ async def collect_stac_features(
         }
         if cloud_cover_max is not None:
             body["query"] = {"eo:cloud_cover": {"lte": float(cloud_cover_max)}}
-        part, errs = await _execute_stac_search(db, body)
+        part, errs = await execute_stac_search_for_catalogs(catalogs, body)
         errs = errs or []
         if errs:
             errors_all.extend(errs)
@@ -965,6 +982,8 @@ def plan_mosaic_from_features(
     *,
     same_pass_date_strips: bool = False,
     locked_date_window: tuple[date, date] | None = None,
+    swap_options_limit: int = _SWAP_OPTIONS_PAGE_DEFAULT,
+    swap_options_offset: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Greedy select + swap options + GeoJSON footprints for the API response."""
     candidates: list[Candidate] = []
@@ -1031,6 +1050,7 @@ def plan_mosaic_from_features(
 
     selected_keys = {c.key for c in selected}
     swap_options: dict[str, list[dict[str, Any]]] = {}
+    swap_options_total: dict[str, int] = {}
     for sel in selected:
         sel_tile = mgrs_tile_from_feature(sel.feature)
         alts: list[dict[str, Any]] = []
@@ -1049,7 +1069,14 @@ def plan_mosaic_from_features(
                 if ot != sel_tile:
                     continue
             alts.append(_swap_alt_dict(other))
-        swap_options[sel.key] = alts[:_SWAP_OPTIONS_MAX]
+        page, total = _slice_swap_alts(
+            alts,
+            sel.key,
+            swap_options_limit=swap_options_limit,
+            swap_options_offset=swap_options_offset,
+        )
+        swap_options[sel.key] = page
+        swap_options_total[sel.key] = total
 
     footprints = []
     for c in selected:
@@ -1097,6 +1124,7 @@ def plan_mosaic_from_features(
         "selected": selected_payload,
         "footprints": {"type": "FeatureCollection", "features": footprints},
         "swap_options": swap_options,
+        "swap_options_total": swap_options_total,
         "uncovered_fraction": uncovered_frac,
         "candidates_matched": len(intersecting),
         "remaining_uncovered": rem_geo,
@@ -1107,9 +1135,8 @@ def plan_mosaic_from_features(
 
 
 async def plan_mosaic_with_void_fill(
-    db: AsyncSession,
+    catalogs: list[StacCatalog],
     *,
-    catalog_ids: list[str],
     stac_collection: str,
     aoi: Polygon,
     search_bbox: list[float],
@@ -1118,7 +1145,9 @@ async def plan_mosaic_with_void_fill(
     sort_mode: str,
     fetch_limit: int,
     same_pass_date_strips: bool = False,
-) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    swap_options_limit: int = _SWAP_OPTIONS_PAGE_DEFAULT,
+    swap_options_offset: dict[str, int] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, str]], list[dict[str, Any]]]:
     """
     Run an initial STAC search over the full AOI bbox, plan coverage, then repeat STAC search
     over uncovered gaps until the AOI is nearly covered, no new items appear, or max rounds is reached.
@@ -1168,8 +1197,7 @@ async def plan_mosaic_with_void_fill(
         n_before = len(merged)
         for q_bbox in q_bboxes:
             feats, errs = await collect_stac_features(
-                db,
-                catalog_ids=catalog_ids,
+                catalogs,
                 stac_collection=stac_collection,
                 bbox=q_bbox,
                 datetime_slices=datetime_slices,
@@ -1193,6 +1221,8 @@ async def plan_mosaic_with_void_fill(
             sort_mode,
             same_pass_date_strips=same_pass_date_strips,
             locked_date_window=locked_date_window,
+            swap_options_limit=swap_options_limit,
+            swap_options_offset=swap_options_offset,
         )
         if same_pass_date_strips and locked_date_window is None:
             sw = last_result.get("same_seven_day_window")
@@ -1219,6 +1249,8 @@ async def plan_mosaic_with_void_fill(
             sort_mode,
             same_pass_date_strips=same_pass_date_strips,
             locked_date_window=locked_date_window,
+            swap_options_limit=swap_options_limit,
+            swap_options_offset=swap_options_offset,
         )
         last_result["void_fill_rounds"] = 0
         last_result["stac_feature_pool_size"] = 0
@@ -1238,7 +1270,8 @@ async def plan_mosaic_with_void_fill(
             err_map[cid] = str(e.get("detail") or "")
     errors_out = [{"catalog_id": k, "detail": v} for k, v in err_map.items()]
 
-    return last_result, errors_out
+    merged_list = list(merged.values()) if merged else []
+    return last_result, errors_out, merged_list
 
 
 def swap_options_for_selected(
@@ -1246,6 +1279,9 @@ def swap_options_for_selected(
     features: list[dict[str, Any]],
     sort_mode: str,
     selected_items: list[dict[str, Any]],
+    *,
+    swap_options_limit: int = _SWAP_OPTIONS_PAGE_DEFAULT,
+    swap_options_offset: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """
     Compute swap options for a pre-selected set of items (key + footprint), using the same
@@ -1270,6 +1306,12 @@ def swap_options_for_selected(
             )
         )
 
+    id_to_dedupe_key: dict[str, str] = {}
+    for c in candidates:
+        fid = c.feature.get("id")
+        if fid is not None:
+            id_to_dedupe_key[str(fid)] = c.key
+
     intersecting: list[Candidate] = []
     for c in candidates:
         try:
@@ -1283,7 +1325,7 @@ def swap_options_for_selected(
     else:
         intersecting.sort(key=_sort_key_newest)
 
-    selected_geoms: list[tuple[str, Polygon]] = []
+    selected_geoms: list[tuple[str, Polygon, dict[str, Any]]] = []
     selected_keys: set[str] = set()
     selected_payload: list[dict[str, Any]] = []
     footprints: list[dict[str, Any]] = []
@@ -1309,7 +1351,10 @@ def swap_options_for_selected(
             continue
 
         selected_keys.add(key)
-        selected_geoms.append((key, poly))
+        fid_s = str(it.get("stac_item_id") or it.get("id") or "")
+        if fid_s and fid_s in id_to_dedupe_key:
+            selected_keys.add(id_to_dedupe_key[fid_s])
+        selected_geoms.append((key, poly, it))
         selected_payload.append(
             {
                 "key": key,
@@ -1338,8 +1383,8 @@ def swap_options_for_selected(
         )
 
     swap_options: dict[str, list[dict[str, Any]]] = {}
-    for idx, (sel_key, sel_geom) in enumerate(selected_geoms):
-        it0 = (selected_items or [])[idx] if idx < len(selected_items or []) else {}
+    swap_options_total: dict[str, int] = {}
+    for sel_key, sel_geom, it0 in selected_geoms:
         sel_tile = _mgrs_tile_from_saved_item(it0) if isinstance(it0, dict) else None
         alts: list[dict[str, Any]] = []
         for other in intersecting:
@@ -1355,12 +1400,20 @@ def swap_options_for_selected(
                 if ot != sel_tile:
                     continue
             alts.append(_swap_alt_dict(other))
-        swap_options[sel_key] = alts[:_SWAP_OPTIONS_MAX]
+        page, total = _slice_swap_alts(
+            alts,
+            sel_key,
+            swap_options_limit=swap_options_limit,
+            swap_options_offset=swap_options_offset,
+        )
+        swap_options[sel_key] = page
+        swap_options_total[sel_key] = total
 
     return {
         "selected": selected_payload,
         "footprints": {"type": "FeatureCollection", "features": footprints},
         "swap_options": swap_options,
+        "swap_options_total": swap_options_total,
         "uncovered_fraction": None,
         "remaining_uncovered": None,
         "candidates_matched": len(intersecting),

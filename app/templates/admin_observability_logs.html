@@ -122,21 +122,24 @@
             <th>Time</th>
             <th>Status</th>
             <th>Method</th>
-            <th>Path</th>
+            <th>Path &amp; query</th>
+            <th>Headers</th>
             <th>Latency</th>
             <th>IP</th>
             <th>User</th>
           </tr>
         </thead>
         <tbody id="logRows">
-          <tr><td colspan="7" class="meta">Loading...</td></tr>
+          <tr><td colspan="8" class="meta">Loading...</td></tr>
         </tbody>
       </table>
     </div>
-    <div class="card-actions" style="margin-top:0.8rem;">
-      <button type="button" class="btn" id="prevPage">Prev</button>
-      <button type="button" class="btn" id="nextPage">Next</button>
-      <span class="meta" id="pageMeta">Page 1</span>
+    <div class="card-actions" style="margin-top:0.8rem; flex-wrap:wrap; gap:0.35rem;">
+      <button type="button" class="btn btn-sm" id="firstPage" title="First page">First</button>
+      <button type="button" class="btn btn-sm" id="prevPage" title="Previous page">Prev</button>
+      <button type="button" class="btn btn-sm" id="nextPage" title="Next page">Next</button>
+      <button type="button" class="btn btn-sm" id="lastPage" title="Last page">Last</button>
+      <span class="meta" id="pageMeta" style="margin-left:0.25rem;">Page 1</span>
     </div>
   </div>
 
@@ -174,14 +177,51 @@
   const refreshMeta = document.getElementById('refreshMeta');
   const pageMeta = document.getElementById('pageMeta');
   const liveLogsToggle = document.getElementById('liveLogsToggle');
+  const firstPageBtn = document.getElementById('firstPage');
+  const prevPageBtn = document.getElementById('prevPage');
+  const nextPageBtn = document.getElementById('nextPage');
+  const lastPageBtn = document.getElementById('lastPage');
   let currentPage = 1;
   let totalPages = 1;
+
+  function updatePagerButtons() {
+    const atFirst = currentPage <= 1;
+    const atLast = currentPage >= totalPages;
+    firstPageBtn.disabled = atFirst;
+    prevPageBtn.disabled = atFirst;
+    nextPageBtn.disabled = atLast;
+    lastPageBtn.disabled = atLast;
+  }
 
   function esc(v) {
     return String(v == null ? '' : v)
       .replaceAll('&', '&amp;')
       .replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;');
+  }
+
+  function escAttr(v) {
+    return esc(v).replaceAll('"', '&quot;');
+  }
+
+  function pathWithQuery(path, qs) {
+    const p = path || '';
+    const q = (qs || '').trim();
+    return q ? p + '?' + q : p;
+  }
+
+  function headersCell(h) {
+    if (!h) return '—';
+    let pretty = h;
+    let n = '?';
+    try {
+      const o = JSON.parse(h);
+      n = String(Object.keys(o).length);
+      pretty = JSON.stringify(o, null, 2);
+    } catch (e) {
+      /* keep raw */
+    }
+    return `<details><summary>${esc(n)}</summary><pre style="max-width:min(520px,92vw);white-space:pre-wrap;font-size:0.8rem;margin:0.35rem 0 0;">${esc(pretty)}</pre></details>`;
   }
 
   function buildParams() {
@@ -210,15 +250,18 @@
       totalPages = Number(data.total_pages || 1);
       currentPage = Number(data.page || currentPage || 1);
       if (!items.length) {
-        rowsEl.innerHTML = '<tr><td colspan="7" class="meta">No results.</td></tr>';
+        rowsEl.innerHTML = '<tr><td colspan="8" class="meta">No results.</td></tr>';
       } else {
         rowsEl.innerHTML = items.map((it) => {
           const dt = it.created_at ? new Date(it.created_at).toLocaleString() : '';
+          const pq = pathWithQuery(it.path, it.query_string);
+          const pqTitle = escAttr(it.full_url || pq);
           return `<tr>
             <td>${esc(dt)}</td>
             <td>${esc(it.status_code)}</td>
             <td>${esc(it.method)}</td>
-            <td title="${esc(it.full_url)}"><code>${esc(it.path)}</code></td>
+            <td title="${pqTitle}"><code style="word-break:break-all;">${esc(pq)}</code></td>
+            <td style="vertical-align:top;">${headersCell(it.request_headers)}</td>
             <td>${esc(it.latency_ms)} ms</td>
             <td>${esc(it.client_ip)}</td>
             <td>${esc(it.username || '-')}</td>
@@ -227,9 +270,14 @@
       }
       pageMeta.textContent = `Page ${currentPage} of ${totalPages} (total ${Number(data.total || items.length)} rows)`;
       refreshMeta.textContent = `Updated ${new Date().toLocaleTimeString()} (${items.length} rows on page)`;
+      updatePagerButtons();
     } catch (e) {
-      rowsEl.innerHTML = '<tr><td colspan="7" class="meta">Failed to load logs.</td></tr>';
+      rowsEl.innerHTML = '<tr><td colspan="8" class="meta">Failed to load logs.</td></tr>';
       refreshMeta.textContent = 'Refresh failed';
+      firstPageBtn.disabled = true;
+      prevPageBtn.disabled = true;
+      nextPageBtn.disabled = true;
+      lastPageBtn.disabled = true;
     }
   }
 
@@ -238,12 +286,22 @@
     refreshLogs();
   });
   document.getElementById('refreshNow').addEventListener('click', refreshLogs);
-  document.getElementById('prevPage').addEventListener('click', () => {
+  firstPageBtn.addEventListener('click', () => {
+    if (currentPage <= 1) return;
+    currentPage = 1;
+    refreshLogs();
+  });
+  prevPageBtn.addEventListener('click', () => {
     currentPage = Math.max(1, currentPage - 1);
     refreshLogs();
   });
-  document.getElementById('nextPage').addEventListener('click', () => {
+  nextPageBtn.addEventListener('click', () => {
     currentPage = Math.min(totalPages, currentPage + 1);
+    refreshLogs();
+  });
+  lastPageBtn.addEventListener('click', () => {
+    if (currentPage >= totalPages) return;
+    currentPage = totalPages;
     refreshLogs();
   });
   document.getElementById('pageSize').addEventListener('change', () => {

@@ -78,9 +78,15 @@ def get_cached_tile(cache_key: str) -> tuple[bytes, str] | None:
         return None
 
 
-def set_cached_tile(cache_key: str, body: bytes, content_type: str) -> None:
+def set_cached_tile(
+    cache_key: str,
+    body: bytes,
+    content_type: str,
+    *,
+    ttl_seconds: int | None = None,
+) -> None:
     settings = get_settings()
-    ttl = settings.titiler_tile_cache_ttl_seconds
+    ttl = settings.titiler_tile_cache_ttl_seconds if ttl_seconds is None else ttl_seconds
     max_b = settings.titiler_tile_cache_max_body_bytes
     if ttl <= 0 or not body:
         return

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 from urllib.parse import urljoin
@@ -11,6 +12,7 @@ import httpx
 
 from app.core.config import get_settings
 from app.models.stac_catalog import StacCatalog
+from app.services.stac_search_cache import cache_get_str, cache_set_str, collections_cache_key
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,19 @@ async def fetch_collections_for_catalog(client: httpx.AsyncClient, catalog: Stac
     """
     Return [{ "id": str, "title": str }] for one STAC catalog (follows rel=next).
     """
+    settings0 = get_settings()
+    ttl = settings0.stac_collections_cache_ttl_seconds
+    ck = collections_cache_key(catalog.id) if ttl > 0 else ""
+    if ttl > 0:
+        raw = cache_get_str(ck)
+        if raw:
+            try:
+                data = json.loads(raw)
+                if isinstance(data, list):
+                    return data
+            except Exception:
+                pass
+
     root = _normalize_root(catalog.stac_api_root_url)
     url: str | None = f"{root}/collections"
     out: list[dict[str, str]] = []
@@ -74,6 +89,9 @@ async def fetch_collections_for_catalog(client: httpx.AsyncClient, catalog: Stac
                     break
         url = next_url
 
+    if ttl > 0 and out:
+        cache_set_str(ck, json.dumps(out, separators=(",", ":")), ttl)
+
     return out
 
 
@@ -84,8 +102,13 @@ async def fetch_collections_grouped(catalogs: list[StacCatalog]) -> list[dict[st
     if not catalogs:
         return []
 
-    timeout = get_settings().stac_search_http_timeout_seconds
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    settings = get_settings()
+    timeout = settings.stac_search_http_timeout_seconds
+    ua = (settings.stac_http_user_agent or "").strip() or "GeoFastMap-STAC/1.0"
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        headers={"User-Agent": ua, "Accept": "application/geo+json, application/json"},
+    ) as client:
         tasks = [fetch_collections_for_catalog(client, c) for c in catalogs]
         parts = await asyncio.gather(*tasks)
 

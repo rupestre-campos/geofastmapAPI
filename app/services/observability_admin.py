@@ -58,6 +58,52 @@ def _safe_text(v: Any, max_len: int = 4000) -> str:
     return s
 
 
+_REQUEST_LOG_HDR_ALLOW = frozenset(
+    {
+        "accept",
+        "accept-encoding",
+        "accept-language",
+        "cache-control",
+        "content-length",
+        "content-type",
+        "if-modified-since",
+        "if-none-match",
+        "origin",
+        "priority",
+        "referer",
+        "user-agent",
+        "via",
+    }
+)
+_REQUEST_LOG_HDR_DENY = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "sec-websocket-key",
+        "set-cookie",
+    }
+)
+
+
+def _request_headers_for_log(request: Request, *, max_chars: int = 12000) -> str | None:
+    """Subset of request headers as JSON for admin logs (secrets redacted)."""
+    out: dict[str, str] = {}
+    for k, v in request.headers.items():
+        lk = k.lower()
+        if lk in _REQUEST_LOG_HDR_DENY:
+            out[k] = "[redacted]"
+            continue
+        if lk in _REQUEST_LOG_HDR_ALLOW or lk.startswith("x-"):
+            out[k] = v if len(v) <= 2048 else v[:2048] + "…"
+    if not out:
+        return None
+    raw = json.dumps(out, ensure_ascii=False, sort_keys=True)
+    if len(raw) > max_chars:
+        return raw[:max_chars] + "…"
+    return raw
+
+
 def _route_template_from_scope(request: Request) -> str:
     route = request.scope.get("route")
     path = getattr(route, "path", None)
@@ -242,6 +288,7 @@ class ObservabilityRequestLogMiddleware(BaseHTTPMiddleware):
                 "username": username if isinstance(username, str) else None,
                 "is_error": status_code >= 500,
                 "request_body": body_text,
+                "request_headers": _request_headers_for_log(request),
             }
             if _queue is not None:
                 try:
@@ -257,10 +304,10 @@ async def _insert_batch(batch: list[dict[str, Any]]) -> None:
         """
         INSERT INTO request_events (
             created_at, method, path, route_template, full_url, query_string, client_ip,
-            status_code, latency_ms, user_id, username, is_error, request_body
+            status_code, latency_ms, user_id, username, is_error, request_body, request_headers
         ) VALUES (
             :created_at, :method, :path, :route_template, :full_url, :query_string, :client_ip,
-            :status_code, :latency_ms, :user_id, :username, :is_error, :request_body
+            :status_code, :latency_ms, :user_id, :username, :is_error, :request_body, :request_headers
         )
         """
     )

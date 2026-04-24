@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime
 
@@ -21,6 +22,7 @@ from app.core.permissions import (
 )
 from app.crud import collections as collections_crud
 from app.crud import maps as maps_crud
+from app.crud import raster_views as raster_views_crud
 from app.crud import resource_share as resource_share_crud
 from app.crud import user as user_crud
 from app.db.session import get_db
@@ -35,6 +37,24 @@ router = APIRouter()
 ALLOWED_IMAGE_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB
 
+# Saved map layers sometimes omit mosaic_view_id; titiler URL still contains the view UUID.
+_MOSAIC_VIEW_ID_IN_TILES_URL = re.compile(
+    r"/raster-views/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/titiler/",
+    re.IGNORECASE,
+)
+
+
+def _mosaic_view_id_from_map_layer(lyr: dict) -> str | None:
+    mid = lyr.get("mosaic_view_id") or lyr.get("mosaicViewId")
+    if mid:
+        return str(mid)
+    tu = lyr.get("tiles_url")
+    if isinstance(tu, str):
+        m = _MOSAIC_VIEW_ID_IN_TILES_URL.search(tu)
+        if m:
+            return m.group(1)
+    return None
+
 
 def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
@@ -42,6 +62,49 @@ def _base_url(request: Request) -> str:
 
 def _thumbnail_url(base: str, map_id: uuid.UUID) -> str:
     return f"{base}/maps/{map_id}/thumbnail"
+
+
+async def _definition_with_mosaic_tile_revision_urls(
+    db: AsyncSession,
+    definition: dict | None,
+    base: str,
+) -> dict:
+    """Copy definition layers and set mosaic raster tiles_url to include ?v=tiles_revision.
+
+    Ensures map viewer/editor always start from versioned URLs (CDN/browser cache), without
+    relying on client fetch of GET /raster-views/{id}.
+    """
+    from app.api.routes.raster_views import compute_mosaic_tiles_revision
+
+    settings = get_settings()
+    d = dict(definition) if definition else {}
+    layers_in = d.get("layers") or []
+    if not isinstance(layers_in, list):
+        return d
+    new_layers: list = []
+    for layer in layers_in:
+        if not isinstance(layer, dict):
+            new_layers.append(layer)
+            continue
+        lyr = dict(layer)
+        mid = _mosaic_view_id_from_map_layer(lyr)
+        if not mid:
+            new_layers.append(lyr)
+            continue
+        if lyr.get("mosaic_view_id") is None and lyr.get("mosaicViewId") is None:
+            lyr["mosaic_view_id"] = mid
+        row = await raster_views_crud.get_view(db, str(mid))
+        if row is None:
+            new_layers.append(lyr)
+            continue
+        rev = compute_mosaic_tiles_revision(settings, str(mid), row.json_relative_path)
+        tm = "WebMercatorQuad"
+        ext = "png"
+        path_part = f"{base}/raster-views/{mid}/titiler/tiles/{tm}/{{z}}/{{x}}/{{y}}.{ext}"
+        lyr["tiles_url"] = f"{path_part}?v={rev}" if rev else path_part
+        new_layers.append(lyr)
+    d["layers"] = new_layers
+    return d
 
 
 def _map_layer_collection_ids(definition: dict | None) -> list[str]:
@@ -329,6 +392,9 @@ async def get_map(
         collection_titles = await collections_crud.get_collection_titles_by_ids(
             db, _map_layer_collection_ids(row.definition)
         )
+        map_def_html = await _definition_with_mosaic_tile_revision_urls(
+            db, row.definition or {"layers": []}, base
+        )
         return html_response(
             "map_view.html",
             base=base,
@@ -338,7 +404,7 @@ async def get_map(
             map_name=row.name,
             map_description=row.description or "",
             map_thumbnail=thumb_url,
-            map_definition=row.definition or {"layers": []},
+            map_definition=map_def_html,
             collection_titles=collection_titles,
             owner_username=owner_username,
             google_maps_api_key=settings.google_maps_api_key or "",
@@ -376,6 +442,9 @@ async def edit_map_form(
     collection_titles = await collections_crud.get_collection_titles_by_ids(
         db, _map_layer_collection_ids(row.definition)
     )
+    map_def_html = await _definition_with_mosaic_tile_revision_urls(
+        db, row.definition or {"layers": []}, base
+    )
     return html_response(
         "map_edit.html",
         base=base,
@@ -385,7 +454,7 @@ async def edit_map_form(
         map_name=row.name,
         map_description=row.description or "",
         map_thumbnail=thumb_url,
-        map_definition=row.definition or {"layers": []},
+        map_definition=map_def_html,
         collection_titles=collection_titles,
         google_maps_api_key=settings.google_maps_api_key or "",
         visibility=getattr(row, "visibility", "private"),

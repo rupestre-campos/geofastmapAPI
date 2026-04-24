@@ -5,7 +5,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "GeoFastMap API"
-    environment: str = "development"
 
     # Example: postgresql+asyncpg://user:password@localhost:5432/geofastmap
     database_url: str = (
@@ -37,13 +36,10 @@ class Settings(BaseSettings):
 
     # OGC API - Processes: geometric operations (intersection, erase) between collections.
     process_queue_type: str = "redis"  # redis | memory (memory = no separate worker)
-    process_max_concurrent: int = 1  # max process jobs running at once per worker
     # Stream A in batches by memory size. Keep low to limit worker RAM (each batch + B in bbox held in memory).
     process_batch_max_bytes: int = 256 * 1024  # max bytes of geometry (A) per batch (default 256 KiB)
     process_batch_max_rows: int = 0  # optional cap: max rows per batch (0 = only byte limit)
     process_insert_batch_size: int = 200  # rows per INSERT commit when writing results (smaller = less memory)
-    # Max batch results held before inserting (1 = write as soon as one batch completes; minimizes memory).
-    process_max_pending_batches: int = 1
     # Parallel batch workers per job (0 = use CPU count). Lower = less memory (fewer concurrent batches).
     process_batch_workers: int = 0  # 0 = os.cpu_count(), else cap threads per job
     process_progress_update_seconds: float = 2.0  # how often to update job progress (items_in/items_created)
@@ -87,8 +83,10 @@ class Settings(BaseSettings):
     # Base URL reachable from the Titiler container for internal COG fetch (e.g. http://api:8000).
     raster_internal_fetch_base_url: str = ""
     # API → Titiler httpx timeouts (mosaic tiles with many COG sources can exceed 60s cold read).
-    titiler_http_connect_timeout_seconds: float = 30.0
-    titiler_http_read_timeout_seconds: float = 300.0
+    titiler_http_connect_timeout_seconds: float = 3.0
+    titiler_http_read_timeout_seconds: float = 30.0
+    # Max concurrent upstream Titiler HTTP calls per API worker (in-process LIFO wait queue when saturated). 0 = unlimited.
+    titiler_upstream_max_concurrent: int = 8
     # OpenTelemetry tracing (export spans to OTEL Collector/Tempo when enabled).
     observability_tracing_enabled: bool = False
     observability_service_name: str = "geofast_api"
@@ -107,19 +105,30 @@ class Settings(BaseSettings):
     # Optional server list for load dashboard. JSON array with items:
     # [{"name":"api","base_url":"http://netdata-api:19999"}]
     observability_servers_json: str = '[{"name":"api-host","base_url":"http://netdata:19999"}]'
-    # Redis cache for proxied Titiler raster tiles (STAC + mosaic). 0 = disabled.
-    # Cold tiles still cost GDAL+network; repeats hit Redis ~1–5 ms. Mosaic keys include file revision
-    # so edits are not masked by this TTL; this remains a performance / eviction knob only.
+    # Redis cache for proxied Titiler raster tiles (STAC + COG). 0 = disabled.
+    # Cold tiles still cost GDAL+network; repeats hit Redis ~1–5 ms.
     titiler_tile_cache_ttl_seconds: int = 3600
+    # Mosaic tiles only: Redis TTL (seconds). Cache keys include mosaic JSON revision (etag), so a long
+    # TTL does not serve stale tiles after edits. 0 = use titiler_tile_cache_ttl_seconds instead.
+    titiler_mosaic_tile_cache_ttl_seconds: int = 86400
     # Do not store responses larger than this (bytes); avoids huge entries from mistakes.
     titiler_tile_cache_max_body_bytes: int = 4 * 1024 * 1024
     # Federated STAC Item Search: Redis cache TTL (seconds). 0 = no cache.
-    stac_search_cache_ttl_seconds: int = 300
+    # Raise in production (e.g. 604800 = 7d) to cut repeated POST /search traffic to upstream STAC APIs.
+    stac_search_cache_ttl_seconds: int = 3600
+    # GET /collections listing per registered catalog (small Redis footprint; reduces hammering catalog roots).
+    stac_collections_cache_ttl_seconds: int = 604800
+    # GET /collections/{c}/items/{id} JSON in Redis (shared across workers). 0 = in-process cache only (~90s).
+    stac_item_redis_cache_ttl_seconds: int = 604800
+    # Sent on all outbound STAC httpx requests; some CDNs/WAFs block missing or generic bot User-Agents.
+    stac_http_user_agent: str = "GeoFastMap/1.0 (STAC client; +https://github.com/)"
     stac_search_http_timeout_seconds: float = 60.0
     # Federated STAC: retry POST /search on transient upstream errors (502/503/504/429).
     stac_search_http_max_retries: int = 2  # attempts after the first (2 => up to 3 tries per catalog)
     stac_search_http_retry_backoff_seconds: float = 0.75  # base delay; exponential backoff
     stac_search_max_catalogs: int = 32
+    # Mosaic planner compute queue. redis = offload heavy planning to standalone worker(s).
+    mosaic_queue_type: str = "redis"  # redis | inline
     # HTML STAC search: max merged features fetched before slicing for pagination (per search).
     stac_search_html_max_features: int = 2000
     # Max page size for GET /stac?f=html

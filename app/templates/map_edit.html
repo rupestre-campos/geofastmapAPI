@@ -285,23 +285,40 @@
         }
         return base + path + '?' + parts.join('&');
       }
+      function layerRasterTrue(l) {
+        return !!(l && (l.raster_tiles === true || l.rasterTiles === true));
+      }
       function mosaicRasterTilesUrlTemplateWithV(baseUrl, viewId, revision) {
         var u = baseUrl + '/raster-views/' + encodeURIComponent(String(viewId)) + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png';
         if (revision) u += '?v=' + encodeURIComponent(revision);
         return u;
       }
+      function mosaicRevisionFromRow(row) {
+        if (!row || typeof row !== 'object') return '';
+        var r = row.tiles_revision != null ? row.tiles_revision : row.tilesRevision;
+        if (r == null) return '';
+        var s = String(r).trim();
+        return s || '';
+      }
       function refreshMosaicTilesRevisionInStateLayers() {
         var tasks = [];
         state.layers.forEach(function(l) {
-          if (!l.raster_tiles || !(l.mosaic_view_id || l.mosaicViewId) || !l.tiles_url) return;
           var mid = l.mosaic_view_id || l.mosaicViewId;
+          if (!mid) return;
+          var existing = l.tiles_url != null ? String(l.tiles_url) : '';
+          if (existing.indexOf('?v=') !== -1 || existing.indexOf('&v=') !== -1) return;
           tasks.push(
-            fetch(base + '/raster-views/' + encodeURIComponent(String(mid)), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+            fetch(base + '/raster-views/' + encodeURIComponent(String(mid)), {
+              credentials: 'same-origin',
+              cache: 'no-store',
+              headers: { 'Accept': 'application/json' }
+            })
               .then(function(r) { return r.ok ? r.json() : null; })
               .then(function(row) {
-                if (row && row.tiles_revision) {
-                  l.tiles_url = mosaicRasterTilesUrlTemplateWithV(base, mid, row.tiles_revision);
-                }
+                if (!row) return;
+                var rev = mosaicRevisionFromRow(row);
+                if (!rev) return;
+                l.tiles_url = mosaicRasterTilesUrlTemplateWithV(base, mid, rev);
               })
               .catch(function() {})
           );
@@ -524,7 +541,7 @@
         var cid = layer.collection_id || layer.collectionId;
         var sid = sourceId(layerKey(layer));
         var s = styleSpec || DEFAULT_SPEC;
-        if (layer.raster_tiles && layer.tiles_url) {
+        if (layerRasterTrue(layer) && (layer.tiles_url || layer.mosaic_view_id || layer.mosaicViewId)) {
           return new Promise(function(resolve) {
             if (map.getSource(sid)) {
               applyLayerStyleToMap(index);
@@ -532,7 +549,11 @@
             }
             var ro = (s.rasterOpacity != null) ? Number(s.rasterOpacity) : 1;
             if (!isFinite(ro) || ro < 0) ro = 1;
-            var rs = { type: 'raster', tiles: [layer.tiles_url], tileSize: 256, maxzoom: 18 };
+            var rasterTU = layer.tiles_url;
+            if (!rasterTU && (layer.mosaic_view_id || layer.mosaicViewId)) {
+              rasterTU = mosaicRasterTilesUrlTemplateWithV(base, layer.mosaic_view_id || layer.mosaicViewId, '');
+            }
+            var rs = { type: 'raster', tiles: [rasterTU], tileSize: 256, maxzoom: 18 };
             if (layer.stac_viewer_path || layer.stacViewerPath) rs.attribution = 'STAC / Titiler';
             map.addSource(sid, rs);
             safeAddLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
@@ -612,7 +633,7 @@
         if (!layer || !map.getSource) return;
         var sid = sourceId(layerKey(layer));
         var s = layer.style_spec || DEFAULT_SPEC;
-        if (layer.raster_tiles && layer.tiles_url && map.getLayer(sid + '-raster')) {
+        if (layerRasterTrue(layer) && layer.tiles_url && map.getLayer(sid + '-raster')) {
           var ro = (s.rasterOpacity != null) ? Number(s.rasterOpacity) : 1;
           if (!isFinite(ro) || ro < 0) ro = 1;
           map.setPaintProperty(sid + '-raster', 'raster-opacity', ro);
@@ -693,7 +714,7 @@
         if (mapEditLayerVisibleState[lk] !== undefined) return !!mapEditLayerVisibleState[lk];
         var sid = sourceId(lk);
         try {
-          if (layer.raster_tiles && layer.tiles_url && map.getLayer(sid + '-raster')) {
+          if (layerRasterTrue(layer) && layer.tiles_url && map.getLayer(sid + '-raster')) {
             return map.getLayoutProperty(sid + '-raster', 'visibility') !== 'none';
           }
           var any = false;
@@ -1601,10 +1622,16 @@
           });
           renderLayers();
         }
-        fetch(base + '/raster-views/' + encodeURIComponent(id), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+        fetch(base + '/raster-views/' + encodeURIComponent(id), {
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { 'Accept': 'application/json' }
+        })
           .then(function(r) { return r.ok ? r.json() : null; })
           .then(function(row) {
-            var rev = row && row.tiles_revision ? row.tiles_revision : '';
+            var rev = row && row.tiles_revision != null && String(row.tiles_revision).trim() !== ''
+              ? String(row.tiles_revision)
+              : '';
             pushAndRender(mosaicRasterTilesUrlTemplateWithV(base, id, rev));
           })
           .catch(function() {

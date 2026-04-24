@@ -27,7 +27,7 @@
     .mosaic-swap-details[open] .mosaic-swap-summary::after { content: '▾'; }
     .mosaic-swap-grid {
       display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; padding: 0 10px 12px;
-      max-height: min(50vh, 420px); overflow: auto;
+      overflow: visible;
     }
     .mosaic-swap-card {
       border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; background: var(--card);
@@ -80,7 +80,7 @@
   <header class="page-header">
     <h1>Mosaic planner</h1>
     <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › <a href="{{ base }}/mosaics?f=html">Mosaics</a> › Planner</p>
-    <p class="meta">Select a STAC endpoint + raster collection, set filters, then generate a minimal mosaic over the current map viewport (or a drawn polygon AOI).</p>
+    <p class="meta">Select a STAC endpoint + raster collection, set filters, then <strong>Search STAC &amp; add images</strong> over the map viewport or a drawn shape. Later searches <strong>append</strong> new scenes without discarding your list; use <strong>Clear &amp; rebuild</strong> to start over.</p>
     <p class="meta" id="mp-editing-banner" style="display:none;"><strong>Editing saved mosaic.</strong> You can change selection and save changes.</p>
   </header>
 
@@ -151,16 +151,25 @@
     </div>
 
     <div class="form-row" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;">
-      <button type="button" class="btn btn-primary" id="mp-generate">Generate mosaic</button>
+      <button type="button" class="btn btn-primary" id="mp-generate">Search STAC &amp; add images</button>
+      <button type="button" class="btn btn-sm" id="mp-clear-rebuild" title="Discard current selection and run a fresh coverage search">Clear &amp; rebuild</button>
       <span id="mp-plan-loading" class="mp-plan-loading" hidden role="status" aria-live="polite">
         <span class="mp-spinner" aria-hidden="true"></span>
         <span id="mp-plan-loading-label">Preparing mosaic…</span>
       </span>
       <span id="mp-msg" class="mosaic-msg" role="status"></span>
     </div>
-    <div class="form-row" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
-      <button type="button" class="btn btn-sm" id="mp-add-image-mode">Add image to fill hole</button>
-      <span class="meta" id="mp-add-image-hint" style="display:none;">Click the map where the mosaic has a hole to add a covering image. Press Esc to cancel.</span>
+    <div class="form-row mosaic-planner-add-images">
+      <span class="label-text" style="font-weight:600;">Add images from map (optional AOI)</span>
+      <p class="meta" style="margin:0.35rem 0 0.5rem;">Draw a <strong>polygon</strong> (double-click to finish), <strong>line</strong>, or <strong>point</strong> to limit STAC to that area. Lines and points become a bounding box for search. Use <strong>Select / edit</strong> to adjust. Leave empty to use the whole map viewport. Press <kbd>Esc</kbd> to stop drawing.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+        <button type="button" class="btn btn-sm" id="mp-draw-polygon">Draw polygon</button>
+        <button type="button" class="btn btn-sm" id="mp-draw-line">Draw line</button>
+        <button type="button" class="btn btn-sm" id="mp-draw-point">Mark point</button>
+        <button type="button" class="btn btn-sm" id="mp-draw-select">Select / edit</button>
+        <button type="button" class="btn btn-sm" id="mp-draw-trash">Delete selected</button>
+        <button type="button" class="btn btn-sm" id="mp-draw-clear">Clear all drawing</button>
+      </div>
     </div>
 
     <div class="form-row" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">
@@ -176,7 +185,7 @@
       </label>
     </div>
 
-    <p class="meta" style="margin-top:0;">Draw a polygon on the map (double-click to finish) to constrain AOI; otherwise AOI = viewport bbox.</p>
+    <p class="meta" style="margin-top:0;">Shapes you draw constrain the search; with nothing drawn, the AOI is the current viewport.</p>
     <div id="mosaic-planner-map" class="map-container"></div>
     <p class="meta">After planning, you can swap/remove selected images, then save.</p>
   </div>
@@ -200,7 +209,7 @@
     <div class="mosaic-planner-results-grid">
       <div>
         <h3 style="margin-top:0;">Selected images</h3>
-        <p class="meta" style="margin:0 0 8px;">Open <strong>Same-tile alternatives</strong> to swap a footprint using other Sentinel-2 scenes for the same MGRS tile (e.g. 23KNS).</p>
+        <p class="meta" style="margin:0 0 8px;">Expand <strong>Same-tile alternatives</strong> on a row to load other Sentinel-2 scenes for the same MGRS tile (e.g. 23KNS); alternatives are fetched on demand so large mosaics stay fast.</p>
         <div id="mp-selected-list" class="mosaic-selected-list"></div>
       </div>
     </div>
@@ -209,13 +218,13 @@
   <div id="mp-confirm-regenerate-modal" class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="mp-confirm-regenerate-title" aria-hidden="true">
     <div class="confirm-modal-backdrop" id="mp-confirm-regenerate-backdrop"></div>
     <div class="confirm-modal-content">
-      <div class="confirm-modal-header" id="mp-confirm-regenerate-title">Start a new mosaic?</div>
+      <div class="confirm-modal-header" id="mp-confirm-regenerate-title">Clear selection and rebuild?</div>
       <div class="confirm-modal-body">
-        You already have a mosaic plan in progress. Generating again will discard your current selection (including swaps, added images, and ordering changes).
+        This removes the current image list, order, and loaded same-tile alternatives, then runs a fresh coverage search for the current AOI. Use this only when you want to start over; otherwise use <strong>Search STAC &amp; add images</strong> to append.
       </div>
       <div class="confirm-modal-actions">
         <button type="button" class="btn" id="mp-confirm-regenerate-cancel">Cancel</button>
-        <button type="button" class="btn btn-danger" id="mp-confirm-regenerate-confirm">Discard &amp; generate</button>
+        <button type="button" class="btn btn-danger" id="mp-confirm-regenerate-confirm">Clear &amp; rebuild</button>
       </div>
     </div>
   </div>
@@ -236,6 +245,12 @@
       var mapLoaded = false;
       var pendingInitSelected = null;
       var pendingInitBbox = null;
+      /** Set when loading a mosaic for edit: { bbox, definition } for POST /mosaics/plan (swap_options). */
+      var editingPlanContext = null;
+      /** While fetching alternatives for one row (lazy expand); string key or null. */
+      var swapLoadingKey = null;
+      /** While appending paged alternatives (Load more). */
+      var swapLoadingMoreKey = null;
       var BASEMAPS = {};
       var basemapList = [];
       // For per-footprint image overlays (un-georeferenced thumbnails mapped to footprint bbox)
@@ -453,8 +468,6 @@
         // Click footprint to select image
         map.on('click', function(e) {
           try {
-            // If we are in "add image" mode, handle elsewhere
-            if (window.__mp_add_mode) return;
             var feats = map.queryRenderedFeatures(e.point, { layers: ['fp-fill', 'fp-line'] }) || [];
             if (!feats.length) return;
             var k = feats[0] && feats[0].properties ? feats[0].properties.key : null;
@@ -477,6 +490,42 @@
             document.getElementById('mp-results-card').style.display = '';
           } catch (e1) {}
         }
+        setupDrawToolbarButtons();
+        });
+      }
+
+      function setupDrawToolbarButtons() {
+        function bind(id, fn) {
+          var el = document.getElementById(id);
+          if (el) el.onclick = function(e) { e.preventDefault(); fn(); };
+        }
+        bind('mp-draw-polygon', function() {
+          var d = getDraw();
+          if (d) try { d.changeMode('draw_polygon'); } catch (e0) {}
+        });
+        bind('mp-draw-line', function() {
+          var d = getDraw();
+          if (d) try { d.changeMode('draw_line_string'); } catch (e1) {}
+        });
+        bind('mp-draw-point', function() {
+          var d = getDraw();
+          if (d) try { d.changeMode('draw_point'); } catch (e2) {}
+        });
+        bind('mp-draw-select', function() {
+          var d = getDraw();
+          if (d) try { d.changeMode('simple_select'); } catch (e3) {}
+        });
+        bind('mp-draw-trash', function() {
+          var d = getDraw();
+          if (!d) return;
+          try {
+            var ids = d.getSelectedIds();
+            if (ids && ids.length) d.delete(ids);
+          } catch (e4) {}
+        });
+        bind('mp-draw-clear', function() {
+          var d = getDraw();
+          if (d) try { d.deleteAll(); } catch (e5) {}
         });
       }
       // Delay until map exists
@@ -503,16 +552,233 @@
         // Stable URL (no cache-buster) so list reorders don't re-request thumbnails.
         if (!thumb) return '';
         var s = String(thumb);
-        if (s.indexOf('http') === 0) return base + '/stac/thumbnail?fmt=png&pv=3&u=' + encodeURIComponent(s);
+        if (s.indexOf('http') === 0) return base + '/stac/thumbnail?fmt=png&pv=3&crop=1&u=' + encodeURIComponent(s);
         return s;
       }
 
       function plannerThumbUrlFresh(thumb) {
-        // Fresh URL (cache-buster) for swap grids where the upstream thumb/proxy may have changed.
+        // Keep stable URL to avoid re-fetch/flicker on every UI rebuild.
         if (!thumb) return '';
         var s = String(thumb);
-        if (s.indexOf('http') === 0) return base + '/stac/thumbnail?fmt=png&pv=3&u=' + encodeURIComponent(s) + '&t=' + Date.now();
+        if (s.indexOf('http') === 0) return base + '/stac/thumbnail?fmt=png&pv=3&crop=1&u=' + encodeURIComponent(s);
         return s;
+      }
+
+      function mpDisplayFootprint(it) {
+        if (!it) return null;
+        return it.footprint_display || it.footprint || null;
+      }
+
+      function mergeFootprintDisplayFromPlanResponse(data) {
+        if (!lastPlan || !data) return;
+        var byKeySel = {};
+        (data.selected || []).forEach(function(s) {
+          if (s && s.key != null) byKeySel[String(s.key)] = s;
+        });
+        (lastPlan.selected || []).forEach(function(it) {
+          var ext = byKeySel[String(it.key)];
+          if (ext && ext.footprint_display) it.footprint_display = ext.footprint_display;
+        });
+      }
+
+      var MP_SWAP_PAGE = 4;
+      var _swapFetchInFlight = {};
+
+      function ensureSwapOptionState() {
+        if (!lastPlan) return;
+        lastPlan.swap_options = lastPlan.swap_options || {};
+        lastPlan.swap_options_total = lastPlan.swap_options_total || {};
+        lastPlan._swapFetchedKeys = lastPlan._swapFetchedKeys || {};
+        lastPlan._swapLoadFailedKeys = lastPlan._swapLoadFailedKeys || {};
+      }
+
+      function swapOptionsWereFetched(key) {
+        return !!(lastPlan && lastPlan._swapFetchedKeys && lastPlan._swapFetchedKeys[String(key)]);
+      }
+
+      function markSwapOptionsFetched(key) {
+        if (!lastPlan) return;
+        lastPlan._swapFetchedKeys = lastPlan._swapFetchedKeys || {};
+        lastPlan._swapFetchedKeys[String(key)] = true;
+      }
+
+      function invalidateSwapOptionsForKey(key) {
+        if (!lastPlan) return;
+        var k = String(key);
+        if (lastPlan._swapFetchedKeys) delete lastPlan._swapFetchedKeys[k];
+        if (lastPlan._swapLoadFailedKeys) delete lastPlan._swapLoadFailedKeys[k];
+        if (lastPlan.swap_options) delete lastPlan.swap_options[k];
+        if (lastPlan.swap_options_total) delete lastPlan.swap_options_total[k];
+      }
+
+      function swapOptionsLoadFailed(key) {
+        return !!(lastPlan && lastPlan._swapLoadFailedKeys && lastPlan._swapLoadFailedKeys[String(key)]);
+      }
+
+      function setSwapOptionsLoadFailed(key, on) {
+        if (!lastPlan) return;
+        ensureSwapOptionState();
+        var k = String(key);
+        if (on) lastPlan._swapLoadFailedKeys[k] = true;
+        else delete lastPlan._swapLoadFailedKeys[k];
+      }
+
+      function buildEditModeSwapPlanBody(sel, ctx) {
+        if (!ctx || !sel || !sel.length) return null;
+        var def2 = ctx.definition || {};
+        var catalog = String(def2.catalog_id || document.getElementById('mp-catalog').value || '');
+        var collectionSel = document.getElementById('mp-collection-select');
+        var collection = String(def2.stac_collection_id || (collectionSel && collectionSel.value) || '');
+        if (!catalog || !collection) return null;
+        var rowBbox = ctx.bbox;
+        var bbox = (rowBbox && rowBbox.length === 4) ? rowBbox : (function() { var ab = getAoiAndBbox(); return ab ? ab.bbox : null; })();
+        var aoi_geojson = (rowBbox && rowBbox.length === 4)
+          ? { type: 'Polygon', coordinates: [[[rowBbox[0], rowBbox[1]], [rowBbox[2], rowBbox[1]], [rowBbox[2], rowBbox[3]], [rowBbox[0], rowBbox[3]], [rowBbox[0], rowBbox[1]]]] }
+          : (function() { var ab = getAoiAndBbox(); return ab ? ab.aoi_geojson : null; })();
+        var body = {
+          catalog_id: catalog,
+          stac_collection_id: collection,
+          bbox: bbox,
+          aoi_geojson: aoi_geojson,
+          date_start: def2.date_start || null,
+          date_end: def2.date_end || null,
+          seasons: Array.isArray(def2.seasons) ? def2.seasons : [],
+          sort_mode: def2.sort_mode || document.getElementById('mp-sort').value,
+          use_same_pass_date_strips: !!(document.getElementById('mp-same-pass-date') && document.getElementById('mp-same-pass-date').checked),
+          selected: sel
+        };
+        var cloud = (def2.cloud_cover_max != null) ? def2.cloud_cover_max : (function() { var v = (document.getElementById('mp-cloud').value || '').trim(); return v ? parseFloat(v) : null; })();
+        if (cloud != null) body.cloud_cover_max = cloud;
+        body.swap_options_limit = MP_SWAP_PAGE;
+        return body;
+      }
+
+      /** Build POST body for /mosaics/plan with a subset of rows (lazy same-tile alternatives). */
+      function buildSwapFetchBodyForItems(items) {
+        if (!items || !items.length) return null;
+        if (editingPlanContext && editingPlanContext.definition) {
+          return buildEditModeSwapPlanBody(items, editingPlanContext);
+        }
+        var baseBody = getPlanBodyWithSelected();
+        if (!baseBody) return null;
+        baseBody.selected = items;
+        return baseBody;
+      }
+
+      /**
+       * Fetch swap_options for specific rows only; merges into lastPlan.swap_options by key.
+       * options.showGlobalLoading: default true; use false when expanding one row (uses row loading state).
+       * options.appendForKey: dedupe key string — request next page and concat for that row.
+       */
+      function fetchSwapOptionsForItems(items, options) {
+        var opts = options || {};
+        var showGlobal = opts.showGlobalLoading !== false;
+        var appendForKey = opts.appendForKey ? String(opts.appendForKey) : null;
+        var body = buildSwapFetchBodyForItems(items);
+        if (!body || !body.stac_collection_id) return Promise.resolve(null);
+        body.swap_options_limit = MP_SWAP_PAGE;
+        if (opts.swapOptionsOffset) {
+          body.swap_options_offset = opts.swapOptionsOffset;
+        } else if (appendForKey && lastPlan && lastPlan.swap_options) {
+          var cur = lastPlan.swap_options[appendForKey] || [];
+          var o = {};
+          o[appendForKey] = cur.length;
+          body.swap_options_offset = o;
+        }
+        var reqKeys = (items || []).map(function(it) { return String(it && it.key != null ? it.key : ''); }).sort().join(',');
+        var reqKey = reqKeys + '|' + (appendForKey || '') + '|' + JSON.stringify(body.swap_options_offset || {});
+        if (_swapFetchInFlight[reqKey]) return _swapFetchInFlight[reqKey];
+        var msg = document.getElementById('mp-msg');
+        if (showGlobal) setPlanRequestLoading(true, 'Loading alternatives…');
+        var reqPromise = submitMosaicPlan(body).then(function(data) {
+          if (!data) throw new Error('No plan response');
+          return data;
+        }).then(function(data) {
+          if (!lastPlan) return data;
+          ensureSwapOptionState();
+          var so = data.swap_options || {};
+          if (appendForKey) {
+            var k0 = appendForKey;
+            var prev = lastPlan.swap_options[k0] || [];
+            var add = Object.prototype.hasOwnProperty.call(so, k0) ? (so[k0] || []) : [];
+            lastPlan.swap_options[k0] = prev.concat(add);
+            markSwapOptionsFetched(k0);
+            setSwapOptionsLoadFailed(k0, false);
+          } else {
+            items.forEach(function(it) {
+              var k = String(it.key);
+              if (Object.prototype.hasOwnProperty.call(so, k)) {
+                lastPlan.swap_options[k] = so[k];
+              } else {
+                lastPlan.swap_options[k] = [];
+              }
+              markSwapOptionsFetched(k);
+              setSwapOptionsLoadFailed(k, false);
+            });
+          }
+          if (data.swap_options_total && typeof data.swap_options_total === 'object') {
+            Object.keys(data.swap_options_total).forEach(function(ok) {
+              lastPlan.swap_options_total[ok] = data.swap_options_total[ok];
+            });
+          }
+          mergeFootprintDisplayFromPlanResponse(data);
+          return data;
+        }).catch(function(err) {
+          if (msg) {
+            msg.textContent = 'Could not load same-tile alternatives: ' + String(err.message || err);
+            msg.className = 'mosaic-msg error';
+          }
+          if (lastPlan) {
+            items.forEach(function(it) {
+              setSwapOptionsLoadFailed(it.key, true);
+            });
+          }
+        }).finally(function() {
+          if (showGlobal) setPlanRequestLoading(false);
+          delete _swapFetchInFlight[reqKey];
+        });
+        _swapFetchInFlight[reqKey] = reqPromise;
+        return reqPromise;
+      }
+
+      function submitMosaicPlan(body) {
+        return fetch(base + '/mosaics/plan?async_mode=1', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(body)
+        }).then(function(r) {
+          if (!r.ok) return r.json().then(function(d) { throw new Error((d && d.detail) ? (typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail)) : r.status); });
+          return r.json();
+        }).then(function(data) {
+          if (data && data.job_id) {
+            return waitMosaicPlanJob(data.job_id);
+          }
+          return data;
+        });
+      }
+
+      function waitMosaicPlanJob(jobId) {
+        var started = Date.now();
+        var timeoutMs = 180000;
+        function poll() {
+          return fetch(base + '/mosaics/plan-jobs/' + encodeURIComponent(jobId), {
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' }
+          }).then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error((d && d.detail) ? d.detail : r.status); });
+            return r.json();
+          }).then(function(j) {
+            if (!j || !j.status) throw new Error('Invalid mosaic plan job response');
+            if (j.status === 'completed') return j.result || {};
+            if (j.status === 'failed' || j.status === 'cancelled') {
+              throw new Error(j.message || ('Job ' + j.status));
+            }
+            if ((Date.now() - started) > timeoutMs) throw new Error('Mosaic plan job timed out');
+            return new Promise(function(resolve) { setTimeout(resolve, 800); }).then(poll);
+          });
+        }
+        return poll();
       }
 
       function getPlanBodyWithSelected() {
@@ -532,29 +798,50 @@
           seasons: getSeasons(),
           sort_mode: document.getElementById('mp-sort').value,
           use_same_pass_date_strips: !!(document.getElementById('mp-same-pass-date') && document.getElementById('mp-same-pass-date').checked),
-          selected: lastPlan && Array.isArray(lastPlan.selected) ? lastPlan.selected : []
+          selected: lastPlan && Array.isArray(lastPlan.selected) ? lastPlan.selected : [],
+          swap_options_limit: MP_SWAP_PAGE
         };
         var cloud = (document.getElementById('mp-cloud').value || '').trim();
         if (cloud !== '') body.cloud_cover_max = parseFloat(cloud);
         return body;
       }
 
-      function refreshPlanSwapOptions() {
-        var body = getPlanBodyWithSelected();
-        if (!body || !body.selected || !body.selected.length || !body.stac_collection_id) {
-          return Promise.resolve();
+      function _boundsFromCoordArray(coords) {
+        var minx = 180, miny = 90, maxx = -180, maxy = -90;
+        function walk(c) {
+          if (!c) return;
+          if (typeof c[0] === 'number') {
+            var lng = c[0], lat = c[1];
+            if (lng < minx) minx = lng; if (lng > maxx) maxx = lng;
+            if (lat < miny) miny = lat; if (lat > maxy) maxy = lat;
+            return;
+          }
+          for (var i = 0; i < c.length; i++) walk(c[i]);
         }
-        return fetch(base + '/mosaics/plan', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: JSON.stringify(body)
-        }).then(function(r) {
-          if (!r.ok) return r.json().then(function(d) { throw new Error((d && d.detail) ? (typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail)) : r.status); });
-          return r.json();
-        }).then(function(data) {
-          if (lastPlan) lastPlan.swap_options = data.swap_options || {};
-        });
+        walk(coords);
+        return [minx, miny, maxx, maxy];
+      }
+
+      function _bboxToPolygon(minx, miny, maxx, maxy) {
+        return { type: 'Polygon', coordinates: [[[minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]]] };
+      }
+
+      /** Expand near-zero width/height so STAC bbox is valid (degrees). */
+      function _expandDegenerateBounds(minx, miny, maxx, maxy, minDeg) {
+        minDeg = minDeg == null ? 0.002 : minDeg;
+        var dx = maxx - minx;
+        var dy = maxy - miny;
+        if (dx < minDeg) {
+          var cx = (minx + maxx) / 2;
+          minx = cx - minDeg / 2;
+          maxx = cx + minDeg / 2;
+        }
+        if (dy < minDeg) {
+          var cy = (miny + maxy) / 2;
+          miny = cy - minDeg / 2;
+          maxy = cy + minDeg / 2;
+        }
+        return [minx, miny, maxx, maxy];
       }
 
       function getAoiAndBbox() {
@@ -562,6 +849,8 @@
         if (!draw) return null;
         var fc = draw.getAll();
         var features = fc && fc.features ? fc.features : [];
+        var minPadDeg = 0.002;
+
         var poly = features.find(function(f) { return f.geometry && f.geometry.type === 'Polygon'; });
         if (poly) {
           var ring = poly.geometry.coordinates[0];
@@ -571,6 +860,24 @@
             if (c[1] < miny) miny = c[1]; if (c[1] > maxy) maxy = c[1];
           });
           return { aoi_geojson: poly.geometry, bbox: [minx, miny, maxx, maxy] };
+        }
+        var mp = features.find(function(f) { return f.geometry && f.geometry.type === 'MultiPolygon'; });
+        if (mp) {
+          var b = _boundsFromCoordArray(mp.geometry.coordinates);
+          var ex = _expandDegenerateBounds(b[0], b[1], b[2], b[3], minPadDeg);
+          return { aoi_geojson: _bboxToPolygon(ex[0], ex[1], ex[2], ex[3]), bbox: ex };
+        }
+        var line = features.find(function(f) { return f.geometry && f.geometry.type === 'LineString'; });
+        if (line) {
+          var b2 = _boundsFromCoordArray(line.geometry.coordinates);
+          var ex2 = _expandDegenerateBounds(b2[0], b2[1], b2[2], b2[3], minPadDeg);
+          return { aoi_geojson: _bboxToPolygon(ex2[0], ex2[1], ex2[2], ex2[3]), bbox: ex2 };
+        }
+        var pt = features.find(function(f) { return f.geometry && f.geometry.type === 'Point'; });
+        if (pt && pt.geometry.coordinates && pt.geometry.coordinates.length >= 2) {
+          var p = pt.geometry.coordinates;
+          var ex3 = _expandDegenerateBounds(p[0], p[1], p[0], p[1], minPadDeg);
+          return { aoi_geojson: _bboxToPolygon(ex3[0], ex3[1], ex3[2], ex3[3]), bbox: ex3 };
         }
         var bb = bboxFromMap();
         var p = bb.split(',').map(function(x) { return parseFloat(x.trim()); });
@@ -624,7 +931,7 @@
         var feats = lastPlan.selected.map(function(it, idx) {
           return {
             type: 'Feature',
-            geometry: it.footprint,
+            geometry: mpDisplayFootprint(it),
             properties: {
               slot: String(idx),
               key: it.key,
@@ -679,7 +986,7 @@
         var suf = _overlaySuffix(slot);
         var sid = 'thumbimg-src-' + suf;
         var lid = 'thumbimg-' + suf;
-        var url = base + '/stac/thumbnail?fmt=png&pv=3&u=' + encodeURIComponent(String(thumbUrl));
+        var url = base + '/stac/thumbnail?fmt=png&pv=3&crop=1&u=' + encodeURIComponent(String(thumbUrl));
         var prev = _thumbOverlayMeta[String(slot)];
         var bbKey = [minx, miny, maxx, maxy].join(',');
         if (prev && prev.url === url && prev.bbKey === bbKey && map.getLayer(lid) && map.getSource(sid)) {
@@ -741,12 +1048,15 @@
       function rebuildSelectedUi() {
         var list = document.getElementById('mp-selected-list');
         if (!list) return;
+        var pageScrollY = 0;
+        try { pageScrollY = window.scrollY || window.pageYOffset || 0; } catch (eScroll0) {}
         list.innerHTML = '';
         var sel = (lastPlan && lastPlan.selected) ? lastPlan.selected.slice() : [];
         if (!sel.length) {
           list.innerHTML = '<div class="mosaic-selected-item"><span class="meta">No images selected.</span></div>';
           expandedSwapKey = null;
           setActiveKey(null);
+          try { window.scrollTo(0, pageScrollY); } catch (eScroll1) {}
           return;
         }
         sel.forEach(function(it, idx) {
@@ -833,10 +1143,17 @@
           right.appendChild(btnRm);
           row.appendChild(left);
           row.appendChild(right);
-          row.onclick = function() { setActiveKey(it.key); zoomToFootprint(it.footprint); };
+          row.onclick = function() { setActiveKey(it.key); zoomToFootprint(mpDisplayFootprint(it)); };
           block.appendChild(row);
 
+          ensureSwapOptionState();
+          var fetched = swapOptionsWereFetched(it.key);
+          var loadingRow = swapLoadingKey === String(it.key);
           var alts = (lastPlan && lastPlan.swap_options) ? (lastPlan.swap_options[it.key] || []) : [];
+          var nAlts = alts.length;
+          var swapTot = (lastPlan && lastPlan.swap_options_total && lastPlan.swap_options_total[it.key] != null)
+            ? lastPlan.swap_options_total[it.key]
+            : null;
           var det = document.createElement('details');
           det.className = 'mosaic-swap-details';
           det.open = expandedSwapKey === it.key;
@@ -844,21 +1161,54 @@
             if (det.open) {
               expandedSwapKey = it.key;
               setActiveKey(it.key);
+              if (!swapOptionsWereFetched(it.key) && swapLoadingKey !== String(it.key)) {
+                setSwapOptionsLoadFailed(it.key, false);
+                swapLoadingKey = String(it.key);
+                fetchSwapOptionsForItems([it], { showGlobalLoading: false }).catch(function() {}).finally(function() {
+                  swapLoadingKey = null;
+                  rebuildSelectedUi();
+                  refreshFootprintsLayer();
+                });
+              }
             } else if (expandedSwapKey === it.key) {
               expandedSwapKey = null;
             }
           });
           var sum = document.createElement('summary');
           sum.className = 'mosaic-swap-summary';
-          var nAlts = alts.length;
           var tileLabel = it.mgrs_tile ? ('MGRS ' + it.mgrs_tile + ' · ') : '';
           var sumLab = document.createElement('span');
-          sumLab.textContent = tileLabel + 'Same-tile alternatives' + (nAlts ? ' (' + nAlts + ')' : '');
+          sumLab.textContent = tileLabel + 'Same-tile alternatives' + (fetched
+            ? (nAlts || swapTot
+              ? ' (' + nAlts + (swapTot != null && swapTot > nAlts ? ' of ' + swapTot : '') + ')'
+              : '')
+            : '');
           sum.appendChild(sumLab);
           det.appendChild(sum);
           var grid = document.createElement('div');
           grid.className = 'mosaic-swap-grid';
-          if (!nAlts) {
+          if (loadingRow && !fetched) {
+            var loadP = document.createElement('p');
+            loadP.className = 'meta';
+            loadP.style.margin = '0';
+            loadP.style.gridColumn = '1 / -1';
+            loadP.textContent = 'Loading alternatives…';
+            grid.appendChild(loadP);
+          } else if (!fetched && swapOptionsLoadFailed(it.key)) {
+            var failP = document.createElement('p');
+            failP.className = 'meta';
+            failP.style.margin = '0';
+            failP.style.gridColumn = '1 / -1';
+            failP.textContent = 'Could not load alternatives. Collapse and expand this row to try again.';
+            grid.appendChild(failP);
+          } else if (!fetched) {
+            var hintP = document.createElement('p');
+            hintP.className = 'meta';
+            hintP.style.margin = '0';
+            hintP.style.gridColumn = '1 / -1';
+            hintP.textContent = 'Expand this section to load alternatives from STAC (one request per row).';
+            grid.appendChild(hintP);
+          } else if (!nAlts) {
             var empty = document.createElement('p');
             empty.className = 'meta';
             empty.style.margin = '0';
@@ -876,7 +1226,7 @@
               if (a.thumbnail) {
                 var ti = document.createElement('img');
                 ti.alt = '';
-                ti.loading = 'lazy';
+                ti.loading = 'eager';
                 ti.src = plannerThumbUrlFresh(a.thumbnail);
                 thumbWrap.appendChild(ti);
               }
@@ -900,10 +1250,40 @@
               card.appendChild(bu);
               card.onclick = function(ev) {
                 if (ev.target === bu) return;
-                try { zoomToFootprint(a.footprint); } catch (e2) {}
+                try { zoomToFootprint(mpDisplayFootprint(a)); } catch (e2) {}
               };
               grid.appendChild(card);
             });
+            if (swapTot != null && swapTot > nAlts) {
+              if (swapLoadingMoreKey === String(it.key)) {
+                var lp = document.createElement('p');
+                lp.className = 'meta';
+                lp.style.margin = '0';
+                lp.style.gridColumn = '1 / -1';
+                lp.textContent = 'Loading more…';
+                grid.appendChild(lp);
+              } else {
+                var lm = document.createElement('button');
+                lm.type = 'button';
+                lm.className = 'btn btn-sm';
+                lm.style.gridColumn = '1 / -1';
+                lm.style.justifySelf = 'start';
+                lm.textContent = 'Load more (' + (swapTot - nAlts) + ' more)';
+                lm.onclick = function(e) {
+                  e.stopPropagation();
+                  swapLoadingMoreKey = String(it.key);
+                  rebuildSelectedUi();
+                  fetchSwapOptionsForItems([it], { appendForKey: String(it.key), showGlobalLoading: false })
+                    .catch(function() {})
+                    .finally(function() {
+                      swapLoadingMoreKey = null;
+                      rebuildSelectedUi();
+                      refreshFootprintsLayer();
+                    });
+                };
+                grid.appendChild(lm);
+              }
+            }
           }
           det.appendChild(grid);
           block.appendChild(det);
@@ -915,6 +1295,11 @@
           keepKey = sel[0].key;
         }
         setActiveKey(keepKey);
+        try {
+          window.requestAnimationFrame(function() {
+            try { window.scrollTo(0, pageScrollY); } catch (eScroll2) {}
+          });
+        } catch (eScroll3) {}
       }
 
       function moveSelected(key, delta) {
@@ -990,14 +1375,16 @@
             thumbnail: alt.thumbnail,
             cloud_cover: alt.cloud_cover,
             footprint: alt.footprint,
+            footprint_display: alt.footprint_display || undefined,
             mgrs_tile: alt.mgrs_tile != null && alt.mgrs_tile !== '' ? alt.mgrs_tile : prev.mgrs_tile
           };
           setActiveKey(newKey);
           expandedSwapKey = newKey;
-          refreshPlanSwapOptions().then(function() {
-            refreshFootprintsLayer();
-            rebuildSelectedUi();
-          }).catch(function() {
+          invalidateSwapOptionsForKey(newKey);
+          swapLoadingKey = newKey;
+          rebuildSelectedUi();
+          fetchSwapOptionsForItems([lastPlan.selected[idx]], { showGlobalLoading: false }).catch(function() {}).finally(function() {
+            swapLoadingKey = null;
             refreshFootprintsLayer();
             rebuildSelectedUi();
           });
@@ -1123,8 +1510,10 @@
           .then(function(row) {
             function fitToBbox(b) {
               if (!b || b.length !== 4) return;
+              var map0 = getMap();
+              if (!map0) return;
               try {
-                map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40, maxZoom: 12, duration: 0 });
+                map0.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40, maxZoom: 12, duration: 0 });
                 syncBboxInputFromMap();
               } catch (e0) {}
             }
@@ -1140,7 +1529,8 @@
               it.key = String(k);
               return it;
             });
-            lastPlan = { selected: sel, swap_options: {} };
+            lastPlan = { selected: sel, swap_options: {}, swap_options_total: {}, _swapFetchedKeys: {}, _swapLoadFailedKeys: {} };
+            editingPlanContext = { bbox: (row.bbox && row.bbox.length === 4) ? row.bbox : null, definition: row.definition || {} };
             if (row.bbox && row.bbox.length === 4) {
               if (mapLoaded) fitToBbox(row.bbox);
               else pendingInitBbox = row.bbox;
@@ -1149,31 +1539,6 @@
               refreshFootprintsLayer();
               rebuildSelectedUi();
               document.getElementById('mp-results-card').style.display = '';
-              // Populate swap options for existing selection (so Swap works in edit mode)
-              var def2 = row.definition || {};
-              var body = {
-                catalog_id: String(def2.catalog_id || document.getElementById('mp-catalog').value || ''),
-                stac_collection_id: String(def2.stac_collection_id || document.getElementById('mp-collection-select').value || ''),
-                bbox: (row.bbox && row.bbox.length === 4) ? row.bbox : (function() { var ab = getAoiAndBbox(); return ab ? ab.bbox : null; })(),
-                aoi_geojson: (row.bbox && row.bbox.length === 4) ? { type: 'Polygon', coordinates: [[[row.bbox[0], row.bbox[1]], [row.bbox[2], row.bbox[1]], [row.bbox[2], row.bbox[3]], [row.bbox[0], row.bbox[3]], [row.bbox[0], row.bbox[1]]]] } : null,
-                date_start: def2.date_start || null,
-                date_end: def2.date_end || null,
-                seasons: Array.isArray(def2.seasons) ? def2.seasons : [],
-                cloud_cover_max: (def2.cloud_cover_max != null) ? def2.cloud_cover_max : (function() { var v = (document.getElementById('mp-cloud').value || '').trim(); return v ? parseFloat(v) : null; })(),
-                sort_mode: def2.sort_mode || document.getElementById('mp-sort').value,
-                selected: sel
-              };
-              fetch(base + '/mosaics/plan', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify(body)
-              }).then(function(r) {
-                if (!r.ok) return r.json().then(function(d) { throw new Error((d && d.detail) ? (typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail)) : r.status); });
-                return r.json();
-              }).then(function(data) {
-                lastPlan.swap_options = data.swap_options || {};
-              }).catch(function() {});
             } else {
               pendingInitSelected = sel;
             }
@@ -1191,6 +1556,56 @@
         if (ev) loadExistingMosaicForEdit(ev);
       } catch (e2) {}
 
+      function applyPlanResponse(data, merge, msg) {
+        document.getElementById('mp-results-card').style.display = '';
+        var unc = (data.uncovered_fraction != null) ? (Math.round(data.uncovered_fraction * 1000) / 10) : '?';
+        var rounds = (data.void_fill_rounds != null) ? data.void_fill_rounds : 1;
+        var sp = data.use_same_pass_date_strips ? ' Same-pass date strips.' : '';
+        if (data.same_seven_day_window && data.same_seven_day_window.start && data.same_seven_day_window.end) {
+          sp += ' 7-day window ' + data.same_seven_day_window.start + ' … ' + data.same_seven_day_window.end + '.';
+        }
+        if (merge && lastPlan && Array.isArray(lastPlan.selected) && lastPlan.selected.length) {
+          var existing = {};
+          lastPlan.selected.forEach(function(x) {
+            if (x && x.key != null) existing[String(x.key)] = true;
+          });
+          var added = 0;
+          (data.selected || []).forEach(function(cand) {
+            if (!cand || cand.key == null) return;
+            var k = String(cand.key);
+            if (!existing[k]) {
+              lastPlan.selected.push(cand);
+              existing[k] = true;
+              added++;
+            }
+          });
+          ensureSwapOptionState();
+          if (data.swap_options_total && typeof data.swap_options_total === 'object') {
+            Object.keys(data.swap_options_total).forEach(function(k) {
+              lastPlan.swap_options_total[k] = data.swap_options_total[k];
+            });
+          }
+          document.getElementById('mp-summary').textContent =
+            'Added ' + added + ' new image(s). Total ' + lastPlan.selected.length + '. Last search: uncovered ~' + unc + '% of AOI. STAC round(s): ' + rounds + '.' + sp;
+        } else {
+          lastPlan = data;
+          lastPlan.swap_options = {};
+          lastPlan.swap_options_total = {};
+          lastPlan._swapFetchedKeys = {};
+          lastPlan._swapLoadFailedKeys = {};
+          document.getElementById('mp-summary').textContent =
+            'Selected ' + (data.selected && data.selected.length) + ' image(s). Uncovered fraction: ~' + unc + '%. STAC search round(s): ' + rounds + '.' + sp;
+        }
+        refreshFootprintsLayer();
+        rebuildSelectedUi();
+        if (data && data.stac_errors && data.stac_errors.length) {
+          msg.textContent = 'Warning: some STAC endpoints did not respond. Results may be incomplete.';
+          msg.className = 'mosaic-msg error';
+        } else {
+          msg.textContent = merge ? 'Appended new images.' : 'Done.';
+        }
+      }
+
       function doGenerateMosaic() {
         var msg = document.getElementById('mp-msg');
         msg.textContent = '';
@@ -1203,7 +1618,8 @@
         var de = document.getElementById('mp-date-end').value;
         if (!ds && !de) { msg.textContent = 'Set at least one date.'; msg.className = 'mosaic-msg error'; return; }
         var ab = getAoiAndBbox();
-        if (!ab || !ab.bbox) { msg.textContent = 'Move the map or draw a polygon.'; msg.className = 'mosaic-msg error'; return; }
+        if (!ab || !ab.bbox) { msg.textContent = 'Map is not ready or could not read the viewport extent.'; msg.className = 'mosaic-msg error'; return; }
+        var merge = !!(lastPlan && Array.isArray(lastPlan.selected) && lastPlan.selected.length);
         var cloud = document.getElementById('mp-cloud').value.trim();
         var body = {
           catalog_id: catalog,
@@ -1214,37 +1630,14 @@
           date_end: de || null,
           seasons: getSeasons(),
           sort_mode: document.getElementById('mp-sort').value,
-          use_same_pass_date_strips: !!(document.getElementById('mp-same-pass-date') && document.getElementById('mp-same-pass-date').checked)
+          use_same_pass_date_strips: !!(document.getElementById('mp-same-pass-date') && document.getElementById('mp-same-pass-date').checked),
+          swap_options_limit: MP_SWAP_PAGE
         };
         if (cloud !== '') body.cloud_cover_max = parseFloat(cloud);
 
         setPlanRequestLoading(true);
-        fetch(base + '/mosaics/plan', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: JSON.stringify(body)
-        }).then(function(r) {
-          if (!r.ok) return r.json().then(function(d) { throw new Error((d && d.detail) ? (typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail)) : r.status); });
-          return r.json();
-        }).then(function(data) {
-          lastPlan = data;
-          document.getElementById('mp-results-card').style.display = '';
-          var unc = (data.uncovered_fraction != null) ? (Math.round(data.uncovered_fraction * 1000) / 10) : '?';
-          var rounds = (data.void_fill_rounds != null) ? data.void_fill_rounds : 1;
-          var sp = data.use_same_pass_date_strips ? ' Same-pass date strips.' : '';
-          if (data.same_seven_day_window && data.same_seven_day_window.start && data.same_seven_day_window.end) {
-            sp += ' 7-day window ' + data.same_seven_day_window.start + ' … ' + data.same_seven_day_window.end + '.';
-          }
-          document.getElementById('mp-summary').textContent = 'Selected ' + (data.selected && data.selected.length) + ' image(s). Uncovered fraction: ~' + unc + '%. STAC search round(s): ' + rounds + '.' + sp;
-          refreshFootprintsLayer();
-          rebuildSelectedUi();
-          if (data && data.stac_errors && data.stac_errors.length) {
-            msg.textContent = 'Warning: some STAC endpoints did not respond. Results may be incomplete.';
-            msg.className = 'mosaic-msg error';
-          } else {
-            msg.textContent = 'Done.';
-          }
+        submitMosaicPlan(body).then(function(data) {
+          applyPlanResponse(data, merge, msg);
         }).catch(function(e) {
           msg.textContent = String(e.message || e);
           msg.className = 'mosaic-msg error';
@@ -1254,7 +1647,15 @@
       }
 
       function resetPlannerStateForNewPlan() {
-        try { lastPlan = null; activeKey = null; expandedSwapKey = null; } catch (e0) {}
+        try {
+          lastPlan = null;
+          activeKey = null;
+          expandedSwapKey = null;
+          swapLoadingKey = null;
+          swapLoadingMoreKey = null;
+          // Keep editingPlanContext when editing a saved mosaic so lazy swap fetches still work.
+          if (!editingViewId) editingPlanContext = null;
+        } catch (e0) {}
         try { setPlanRequestLoading(false); } catch (eL) {}
         try {
           var rc = document.getElementById('mp-results-card');
@@ -1295,103 +1696,30 @@
       })();
 
       document.getElementById('mp-generate').onclick = function() {
-        var hasPlan = !!(lastPlan && Array.isArray(lastPlan.selected) && lastPlan.selected.length);
-        if (hasPlan) { openRegenerateConfirm(); return; }
         doGenerateMosaic();
       };
 
-      // Add-image mode: click a "hole" point to append a covering image
-      (function setupAddImageMode() {
-        var btn = document.getElementById('mp-add-image-mode');
-        var hint = document.getElementById('mp-add-image-hint');
-        function setMode(on) {
-          window.__mp_add_mode = !!on;
-          if (hint) hint.style.display = on ? '' : 'none';
-          if (btn) btn.classList.toggle('btn-primary', on);
-        }
-        if (btn) {
-          btn.onclick = function() { setMode(!window.__mp_add_mode); };
-        }
-        window.addEventListener('keydown', function(e) {
-          if (e.key === 'Escape') setMode(false);
-        });
-        // Map click handler is installed in hookMapEvents; here we implement the add flow.
-        var _mpAddTimer = setInterval(function() {
-          var map = getMap();
-          if (!map) return;
-          clearInterval(_mpAddTimer);
-          map.on('click', function(e) {
-            if (!window.__mp_add_mode) return;
-            try {
-              var msg = document.getElementById('mp-msg');
-              if (msg) { msg.textContent = ''; msg.className = 'mosaic-msg'; }
-              var def = {
-                catalog_id: document.getElementById('mp-catalog').value,
-                stac_collection_id: document.getElementById('mp-collection-select').value,
-                date_start: document.getElementById('mp-date-start').value || null,
-                date_end: document.getElementById('mp-date-end').value || null,
-                seasons: getSeasons(),
-                sort_mode: document.getElementById('mp-sort').value
-              };
-              var cloud = (document.getElementById('mp-cloud').value || '').trim();
-              var p = e.lngLat;
-              var d = 0.002; // ~200m-ish at equator; just to build a tiny AOI around click
-              var aoi = { type: 'Polygon', coordinates: [[[p.lng - d, p.lat - d], [p.lng + d, p.lat - d], [p.lng + d, p.lat + d], [p.lng - d, p.lat + d], [p.lng - d, p.lat - d]]] };
-              var body = {
-                catalog_id: def.catalog_id,
-                stac_collection_id: def.stac_collection_id,
-                aoi_geojson: aoi,
-                bbox: null,
-                date_start: def.date_start,
-                date_end: def.date_end,
-                seasons: def.seasons,
-                sort_mode: def.sort_mode
-              };
-              if (cloud !== '') body.cloud_cover_max = parseFloat(cloud);
-              setPlanRequestLoading(true, 'Searching for coverage…');
-              fetch(base + '/mosaics/plan', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify(body)
-              }).then(function(r) {
-                if (!r.ok) return r.json().then(function(d0) { throw new Error((d0 && d0.detail) ? (typeof d0.detail === 'string' ? d0.detail : JSON.stringify(d0.detail)) : r.status); });
-                return r.json();
-              }).then(function(data) {
-                var cand = (data && data.selected && data.selected.length) ? data.selected[0] : null;
-                if (!cand) throw new Error('No image found for that point.');
-                lastPlan = lastPlan || { selected: [], swap_options: {} };
-                lastPlan.selected = Array.isArray(lastPlan.selected) ? lastPlan.selected : [];
-                // Avoid duplicates
-                var exists = lastPlan.selected.some(function(it) { return String(it.key) === String(cand.key); });
-                if (!exists) lastPlan.selected.push(cand);
-                refreshFootprintsLayer();
-                rebuildSelectedUi();
-                if (msg) { msg.textContent = exists ? 'Image already selected.' : 'Added one image.'; msg.className = 'mosaic-msg'; }
-              }).catch(function(err) {
-                if (msg) { msg.textContent = String(err.message || err); msg.className = 'mosaic-msg error'; }
-              }).finally(function() {
-                setPlanRequestLoading(false);
-                setMode(false);
-              });
-            } catch (e2) {
-              try {
-                setPlanRequestLoading(false);
-                var msg2 = document.getElementById('mp-msg');
-                if (msg2) { msg2.textContent = String(e2.message || e2); msg2.className = 'mosaic-msg error'; }
-              } catch (e3) {}
-              setMode(false);
-            }
-          });
-        }, 50);
-      })();
+      var mpClearRebuild = document.getElementById('mp-clear-rebuild');
+      if (mpClearRebuild) {
+        mpClearRebuild.onclick = function() {
+          var hasPlan = !!(lastPlan && Array.isArray(lastPlan.selected) && lastPlan.selected.length);
+          if (hasPlan) openRegenerateConfirm();
+          else doGenerateMosaic();
+        };
+      }
+
+      window.addEventListener('keydown', function(e) {
+        if (e.key !== 'Escape') return;
+        var d = getDraw();
+        if (d) try { d.changeMode('simple_select'); } catch (e0) {}
+      });
 
       document.getElementById('mp-save').onclick = function() {
         var msg = document.getElementById('mp-save-msg');
         msg.textContent = '';
         msg.className = 'mosaic-msg';
         if (!lastPlan || !lastPlan.selected || !lastPlan.selected.length) {
-          msg.textContent = 'Generate a mosaic first.';
+          msg.textContent = 'Add at least one image with Search STAC & add images first.';
           msg.className = 'mosaic-msg error';
           return;
         }

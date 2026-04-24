@@ -11,17 +11,25 @@
   <header class="page-header">
     <h1>{{ title | e }}</h1>
     <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › <a href="{{ base }}/mosaics?f=html">Mosaics</a> › {{ title | e }}</p>
+    {% if username or can_edit %}
     <div class="card-actions" style="margin-top:0.75rem;">
+      {% if username %}
       <button type="button" class="btn btn-primary" id="btn-add-to-map">Add to map</button>
+      {% endif %}
       {% if can_edit %}
       <a class="btn" href="{{ base }}/mosaics/planner?f=html&edit_view={{ view_id | e }}">Edit mosaic</a>
       {% endif %}
     </div>
+    {% endif %}
   </header>
 
   <div class="card">
     <h2 class="card-title">Preview</h2>
+    {% if username %}
     <p class="meta">ZXY template (same origin as your session for private mosaics; public tiles work without login when the mosaic is public or <strong>Public map</strong> is enabled).</p>
+    {% else %}
+    <p class="meta">Interactive preview. Whether tiles load without login depends on mosaic visibility and <strong>Public map</strong> settings.</p>
+    {% endif %}
     <div id="mosaic-detail-map" class="map-container">
       <div class="map-controls">
         {% include '_basemap_selector.html' %}
@@ -33,12 +41,14 @@
     </div>
   </div>
 
+  {% if username %}
   <div class="card">
     <h2 class="card-title">Tile URL</h2>
     <p class="meta">Use in QGIS, MapLibre, or other clients. Replace <code>{z}</code>, <code>{x}</code>, <code>{y}</code> with tile coordinates.</p>
     <pre class="mosaic-detail-tiles-url" id="mosaic-tiles-url">{{ tiles_url | e }}</pre>
     <button type="button" class="btn btn-sm" id="btn-copy-tiles-url">Copy URL</button>
   </div>
+  {% endif %}
 
   {% if can_edit %}
   <div class="card">
@@ -63,12 +73,7 @@
   </div>
   {% endif %}
 
-  <div class="card">
-    <h2 class="card-title">Add to a map</h2>
-    <p class="meta">Tip: you can also open the map editor directly with:</p>
-    <p><code>{{ base }}/maps/&lt;your-map-id&gt;/edit?f=html&amp;mosaic_view={{ view_id }}</code></p>
-  </div>
-
+  {% if username %}
   <div id="add-to-map-modal" class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="add-to-map-title" aria-hidden="true">
     <div class="confirm-modal-backdrop" id="add-to-map-backdrop"></div>
     <div class="confirm-modal-content" style="max-width: 560px;">
@@ -96,6 +101,7 @@
       </div>
     </div>
   </div>
+  {% endif %}
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
@@ -147,7 +153,10 @@
             paint: { 'raster-opacity': 1 }
           });
           if (bbox && bbox.length === 4) {
-            map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 40, maxZoom: 12 });
+            // duration: 0 jumps to extent in one step (fewer intermediate tile requests than a long animation).
+            try {
+              map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 40, maxZoom: 12, duration: 0 });
+            } catch (e0) {}
           }
           function applyBasemap() {
             var id = sel.value;
@@ -187,15 +196,19 @@
       }).finally(function() {
         initMosaicPreviewMap();
       });
-      document.getElementById('btn-copy-tiles-url').onclick = function() {
-        var el = document.getElementById('mosaic-tiles-url');
-        navigator.clipboard.writeText(el.textContent || '').then(function() {
-          var b = document.getElementById('btn-copy-tiles-url');
-          var t = b.textContent;
-          b.textContent = 'Copied';
-          setTimeout(function() { b.textContent = t; }, 1500);
-        });
-      };
+      var copyTilesBtn = document.getElementById('btn-copy-tiles-url');
+      if (copyTilesBtn) {
+        copyTilesBtn.onclick = function() {
+          var el = document.getElementById('mosaic-tiles-url');
+          if (!el) return;
+          navigator.clipboard.writeText(el.textContent || '').then(function() {
+            var b = document.getElementById('btn-copy-tiles-url');
+            var t = b.textContent;
+            b.textContent = 'Copied';
+            setTimeout(function() { b.textContent = t; }, 1500);
+          });
+        };
+      }
       var saveBtn = document.getElementById('btn-save-mosaic-settings');
       if (saveBtn) {
         saveBtn.onclick = function() {
@@ -222,6 +235,7 @@
         };
       }
 
+      {% if username %}
       function openAddToMapModal() {
         var modal = document.getElementById('add-to-map-modal');
         if (!modal) return;
@@ -275,6 +289,7 @@
         if (!id) return;
         window.location.href = base + '/maps/' + encodeURIComponent(id) + '/edit?f=html&mosaic_view=' + encodeURIComponent(viewId);
       };
+      {% endif %}
     })();
   </script>
 {% endblock %}

@@ -8,10 +8,10 @@ from urllib.parse import quote, urlencode
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse, StreamingResponse
 import httpx
-from PIL import Image
 import io
-from PIL import ImageFile
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.utils.preview_image import apply_border_transparency_rgba, crop_image_to_nontransparent, decode_image_rgba
 
 from app.api.deps import get_current_user_optional, get_current_user_required, require_admin
 from app.core.config import get_settings
@@ -31,19 +31,15 @@ def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
-async def _execute_stac_search(
-    db: AsyncSession, body: dict[str, Any]
+async def execute_stac_search_for_catalogs(
+    catalogs: list[Any],
+    body: dict[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    """Shared POST /stac/search logic (merge, cache). Returns (item_collection, per-catalog errors)."""
+    """
+    Federated STAC search for already-loaded catalog rows (no DB session required).
+    Used by mosaic planning so DB pool connections are not held during slow upstream HTTP.
+    """
     settings = get_settings()
-    catalog_ids_filter = body.get("catalog_ids") or body.get("geofast_catalog_ids")
-    all_catalogs = await stac_catalogs_crud.list_catalogs(db, enabled_only=True)
-    if isinstance(catalog_ids_filter, list) and catalog_ids_filter:
-        want = set(str(x) for x in catalog_ids_filter)
-        catalogs = [c for c in all_catalogs if c.id in want]
-    else:
-        catalogs = all_catalogs
-
     max_c = settings.stac_search_max_catalogs
     if len(catalogs) > max_c:
         raise HTTPException(
@@ -62,6 +58,21 @@ async def _execute_stac_search(
     if not catalog_errors:
         set_cached(cache_k, merged)
     return merged, catalog_errors
+
+
+async def _execute_stac_search(
+    db: AsyncSession, body: dict[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Shared POST /stac/search logic (merge, cache). Returns (item_collection, per-catalog errors)."""
+    catalog_ids_filter = body.get("catalog_ids") or body.get("geofast_catalog_ids")
+    all_catalogs = await stac_catalogs_crud.list_catalogs(db, enabled_only=True)
+    if isinstance(catalog_ids_filter, list) and catalog_ids_filter:
+        want = set(str(x) for x in catalog_ids_filter)
+        catalogs = [c for c in all_catalogs if c.id in want]
+    else:
+        catalogs = all_catalogs
+
+    return await execute_stac_search_for_catalogs(catalogs, body)
 
 
 def _normalize_collections_param(collections: list[str]) -> list[str]:
@@ -206,6 +217,12 @@ async def stac_available_collections(
 async def stac_thumbnail_proxy(
     u: str = Query(..., description="Upstream thumbnail URL (http/https)"),
     fmt: str = Query("png", description="Output format (png recommended for transparency)"),
+    crop: int = Query(
+        0,
+        ge=0,
+        le=1,
+        description="If 1, crop to non-transparent bounds after border masking (planner thumbnails).",
+    ),
     current_user: User | None = Depends(get_current_user_optional),
 ):
     if current_user is None:
@@ -218,11 +235,19 @@ async def stac_thumbnail_proxy(
     if not (url.startswith("http://") or url.startswith("https://")):
         raise HTTPException(status_code=400, detail="Invalid thumbnail url")
 
+    settings = get_settings()
     timeout = httpx.Timeout(20.0, connect=10.0)
     limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+    ua = (settings.stac_http_user_agent or "").strip() or "GeoFastMap-STAC/1.0"
     async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=True) as client:
         try:
-            r = await client.get(url, headers={"Accept": "image/*,*/*;q=0.8"})
+            r = await client.get(
+                url,
+                headers={
+                    "Accept": "image/*,*/*;q=0.8",
+                    "User-Agent": ua,
+                },
+            )
         except httpx.RequestError as e:
             raise HTTPException(status_code=502, detail=f"Thumbnail fetch failed: {e}") from e
         if r.status_code >= 400:
@@ -235,24 +260,10 @@ async def stac_thumbnail_proxy(
     if fmt_norm not in ("png",):
         raise HTTPException(status_code=400, detail="fmt must be png")
     try:
-        ImageFile.LOAD_TRUNCATED_IMAGES = True
-        im = Image.open(io.BytesIO(raw))
-        im = im.convert("RGBA")
-        # Near-black: padding / no-data. Near-white: common JPEG border (often off-white / uneven channels).
-        thr_dark = 18
-        # Any channel this high or above counts toward "light" — use min() so uneven JPEG whites still match.
-        # 237: min(r,g,b) — strict; leaves uneven JPEG borders. 200: removes borders but keys bright clouds.
-        thr_white_min = 235
-        data = list(im.getdata())
-        out_data = []
-        for (r0, g0, b0, a0) in data:
-            if a0 and r0 <= thr_dark and g0 <= thr_dark and b0 <= thr_dark:
-                out_data.append((r0, g0, b0, 0))
-            elif a0 and min(r0, g0, b0) >= thr_white_min:
-                out_data.append((r0, g0, b0, 0))
-            else:
-                out_data.append((r0, g0, b0, a0))
-        im.putdata(out_data)
+        im = decode_image_rgba(raw)
+        apply_border_transparency_rgba(im)
+        if crop:
+            im = crop_image_to_nontransparent(im, pad=2)
         out = io.BytesIO()
         im.save(out, format="PNG", optimize=True)
         data = out.getvalue()

@@ -24,6 +24,7 @@ class RequestEvent(Base):
     username: str | None = Column(String(255), nullable=True, index=True)
     is_error: bool = Column(Boolean, nullable=False, default=False, server_default="false")
     request_body: str | None = Column(Text, nullable=True)
+    request_headers: str | None = Column(Text, nullable=True)
 
 
 class RequestMetricMinute(Base):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ import httpx
 import hashlib
 import time
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
@@ -23,6 +24,11 @@ from app.core.permissions import (
     can_access_raster_view_tiles_anonymous,
     can_edit_raster_view,
     can_see_raster_view,
+)
+from app.services.titiler_cancel import (
+    ClientDisconnected,
+    raise_if_disconnected,
+    titiler_get_cancel_on_disconnect,
 )
 from app.services.titiler_inflight import await_tile_singleflight
 from app.services.titiler_tile_cache import (
@@ -39,9 +45,12 @@ from app.models.resource_share import RESOURCE_TYPE_RASTER_VIEW
 from app.models.user import User
 from app.schemas.resource_share import ShareAdd, ShareRead
 from app.services.mosaic_plan import build_mosaicjson_from_footprints
+from app.services.titiler_gate import titiler_upstream_gate_run
 from app.services.titiler_http import get_titiler_http_client
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/raster-views", tags=["raster-views"])
 
@@ -331,11 +340,28 @@ async def get_raster_view(
     row = await raster_views_crud.get_view(db, view_id)
     if row is None:
         raise HTTPException(status_code=404, detail="View not found")
-    if not await can_see_raster_view(db, row.owner_id, row.visibility, view_id, current_user):
-        raise HTTPException(status_code=404, detail="View not found")
+    allow_pm = getattr(row, "allow_public_maps", False)
+    # Same rules as titiler_mosaic_tile: anonymous may read metadata when tiles are allowed
+    # (e.g. private mosaic + allow_public_maps on a public map) so clients can append ?v=tiles_revision.
+    if current_user is None:
+        if not can_access_raster_view_tiles_anonymous(
+            visibility=row.visibility,
+            allow_public_maps=allow_pm,
+        ):
+            raise HTTPException(status_code=404, detail="View not found")
+    else:
+        if not await can_see_raster_view(
+            db, row.owner_id, row.visibility, view_id, current_user
+        ):
+            raise HTTPException(status_code=404, detail="View not found")
     settings = get_settings()
     rev = compute_mosaic_tiles_revision(settings, row.id, row.json_relative_path)
-    return RasterViewRead.from_row(row, tiles_revision=rev)
+    payload = RasterViewRead.from_row(row, tiles_revision=rev)
+    # Embed clients poll this for tiles_revision (?v=); stale CDN/HTML cache breaks versioned mosaic URLs.
+    return JSONResponse(
+        content=payload.model_dump(mode="json"),
+        headers={"Cache-Control": "private, no-store, must-revalidate"},
+    )
 
 
 @router.get(
@@ -442,6 +468,9 @@ async def titiler_mosaic_tile(
             headers=headers,
         )
 
+    if await request.is_disconnected():
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     # -----------------------------
     # Fetch with retry + singleflight (concurrent identical key → one Titiler call)
     # -----------------------------
@@ -451,31 +480,59 @@ async def titiler_mosaic_tile(
         titiler_upstream_ms = 0.0
         titiler_attempts = 0
         for attempt in range(2):
+            await raise_if_disconnected(request)
             t0 = time.perf_counter()
             try:
-                r = await client.get(
-                    f"{base}{forward_path}",
-                    params=param_pairs,
-                    headers={"Accept-Encoding": "identity"},
-                )
+                async def _gated_titiler_get() -> httpx.Response:
+                    return await titiler_get_cancel_on_disconnect(
+                        request,
+                        client,
+                        f"{base}{forward_path}",
+                        params=param_pairs,
+                        headers={"Accept-Encoding": "identity"},
+                    )
+
+                r = await titiler_upstream_gate_run(request, _gated_titiler_get)
             except httpx.RequestError as e:
                 titiler_attempts += 1
                 titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
                 if attempt == 0:
+                    logger.warning(
+                        "titiler mosaic tile httpx error (retrying): view_id=%s z=%s x=%s y=%s err=%r",
+                        view_id,
+                        z,
+                        x,
+                        y,
+                        e,
+                    )
                     await asyncio.sleep(0.08)
+                    await raise_if_disconnected(request)
                     continue
+                err_short = str(e)[:512]
+                logger.warning(
+                    "titiler mosaic tile httpx error (giving up): view_id=%s z=%s x=%s y=%s "
+                    "titiler_base=%s err=%r",
+                    view_id,
+                    z,
+                    x,
+                    y,
+                    base,
+                    e,
+                )
                 raise HTTPException(
                     status_code=502,
                     detail=f"Titiler request failed: {e}",
                     headers={
                         "X-Titiler-Upstream-Ms": str(int(round(titiler_upstream_ms))),
                         "X-Titiler-Upstream-Attempts": str(titiler_attempts),
+                        "X-Titiler-Connect-Error": err_short,
                     },
                 ) from e
             titiler_attempts += 1
             titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
             if r.status_code in (502, 503, 504) and attempt == 0:
                 await asyncio.sleep(0.08)
+                await raise_if_disconnected(request)
                 continue
             break
 
@@ -484,23 +541,49 @@ async def titiler_mosaic_tile(
         att_header = str(titiler_attempts)
         if r.status_code >= 400:
             detail = r.content[:2000]
+            detail_txt = (
+                detail.decode("utf-8", errors="replace") if detail else "Titiler error"
+            )
+            logger.warning(
+                "titiler mosaic tile upstream http error: view_id=%s z=%s x=%s y=%s status=%s body_prefix=%s",
+                view_id,
+                z,
+                x,
+                y,
+                r.status_code,
+                detail_txt[:500].replace("\n", " "),
+            )
             raise HTTPException(
                 status_code=r.status_code,
-                detail=detail.decode("utf-8", errors="replace")
-                if detail else "Titiler error",
+                detail=detail_txt,
                 headers={
                     "X-Titiler-Upstream-Ms": ms_header,
                     "X-Titiler-Upstream-Attempts": att_header,
                 },
             )
         content_type = r.headers.get("content-type", "image/png")
-        set_cached_tile(cache_key, r.content, content_type)
+        mosaic_ttl = settings.titiler_mosaic_tile_cache_ttl_seconds
+        if mosaic_ttl <= 0:
+            mosaic_ttl = settings.titiler_tile_cache_ttl_seconds
+        set_cached_tile(
+            cache_key,
+            r.content,
+            content_type,
+            ttl_seconds=mosaic_ttl,
+        )
         return r.content, content_type, titiler_upstream_ms, titiler_attempts
 
-    body, content_type, titiler_upstream_ms, titiler_attempts = await await_tile_singleflight(
-        cache_key,
-        _fetch_mosaic_tile,
-    )
+    try:
+        body, content_type, titiler_upstream_ms, titiler_attempts = await await_tile_singleflight(
+            cache_key,
+            _fetch_mosaic_tile,
+        )
+    except ClientDisconnected:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    if await request.is_disconnected():
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     ms_header = str(int(round(titiler_upstream_ms)))
     att_header = str(titiler_attempts)
 

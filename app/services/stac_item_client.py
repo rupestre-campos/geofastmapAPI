@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any, NamedTuple, Union
 from urllib.parse import quote, urlparse
@@ -11,6 +12,7 @@ import httpx
 
 from app.core.config import get_settings
 from app.models.stac_catalog import StacCatalog
+from app.services import stac_search_cache
 
 _CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_LOCK = asyncio.Lock()
@@ -36,9 +38,14 @@ def stac_item_href(catalog: Union[StacCatalog, StacCatalogRef], collection_id: s
 async def fetch_stac_item_json(catalog: Union[StacCatalog, StacCatalogRef], collection_id: str, item_id: str) -> dict[str, Any]:
     """GET Item JSON from upstream STAC API."""
     url = stac_item_href(catalog, collection_id, item_id)
-    timeout = get_settings().stac_search_http_timeout_seconds
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.get(url, headers={"Accept": "application/geo+json, application/json, */*"})
+    settings = get_settings()
+    timeout = settings.stac_search_http_timeout_seconds
+    ua = (settings.stac_http_user_agent or "").strip() or "GeoFastMap-STAC/1.0"
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        headers={"User-Agent": ua, "Accept": "application/geo+json, application/json, */*"},
+    ) as client:
+        r = await client.get(url)
         r.raise_for_status()
         data = r.json()
     if not isinstance(data, dict):
@@ -48,6 +55,20 @@ async def fetch_stac_item_json(catalog: Union[StacCatalog, StacCatalogRef], coll
 
 async def get_stac_item_cached(catalog: Union[StacCatalog, StacCatalogRef], collection_id: str, item_id: str) -> dict[str, Any]:
     key = f"{catalog.id}:{collection_id}:{item_id}"
+    rttl = get_settings().stac_item_redis_cache_ttl_seconds
+    redis_key = stac_search_cache.stac_item_redis_cache_key(catalog.id, collection_id, item_id)
+    if rttl > 0:
+        raw = await asyncio.to_thread(stac_search_cache.cache_get_str, redis_key)
+        if raw:
+            try:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    async with _CACHE_LOCK:
+                        _CACHE[key] = (time.monotonic(), data)
+                    return data
+            except Exception:
+                pass
+
     now = time.monotonic()
     async with _CACHE_LOCK:
         hit = _CACHE.get(key)
@@ -65,6 +86,16 @@ async def get_stac_item_cached(catalog: Union[StacCatalog, StacCatalogRef], coll
                 async with _CACHE_LOCK:
                     _CACHE[key] = (time.monotonic(), data)
                     _INFLIGHT.pop(key, None)
+                if rttl > 0:
+                    try:
+                        await asyncio.to_thread(
+                            stac_search_cache.cache_set_str,
+                            redis_key,
+                            json.dumps(data, separators=(",", ":")),
+                            rttl,
+                        )
+                    except Exception:
+                        pass
                 return data
 
             _INFLIGHT[key] = asyncio.create_task(_fetch_and_store())

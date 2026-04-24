@@ -133,7 +133,8 @@ async def observability_logs_api(
             f"""
             SELECT created_at, method, path, route_template, full_url, query_string, client_ip,
                    status_code, latency_ms, username, is_error,
-                   CASE WHEN request_body IS NULL THEN NULL ELSE left(request_body, 2000) END AS request_body
+                   CASE WHEN request_body IS NULL THEN NULL ELSE left(request_body, 2000) END AS request_body,
+                   CASE WHEN request_headers IS NULL THEN NULL ELSE left(request_headers, 8000) END AS request_headers
             FROM request_events
             WHERE {' AND '.join(where)}
             ORDER BY created_at DESC
@@ -159,6 +160,7 @@ async def observability_logs_api(
                 "username": row["username"],
                 "is_error": bool(row["is_error"]),
                 "request_body": row["request_body"],
+                "request_headers": row["request_headers"],
             }
         )
     return {

@@ -17,6 +17,17 @@ logger = logging.getLogger(__name__)
 _RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504, 429})
 
 
+def _stac_client_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+    ua = (get_settings().stac_http_user_agent or "").strip() or "GeoFastMap-STAC/1.0"
+    h = {
+        "User-Agent": ua,
+        "Accept": "application/geo+json, application/json",
+    }
+    if extra:
+        h.update(extra)
+    return h
+
+
 def _normalize_root(url: str) -> str:
     return url.rstrip("/")
 
@@ -84,7 +95,7 @@ async def _post_search_with_retries(
             r = await client.post(
                 url,
                 json=req_body,
-                headers={"Accept": "application/geo+json, application/json"},
+                headers=_stac_client_headers(),
             )
             if 200 <= r.status_code < 300:
                 try:
@@ -107,7 +118,7 @@ async def _post_search_with_retries(
                         r2 = await client.post(
                             url,
                             json=req_body2,
-                            headers={"Accept": "application/geo+json, application/json"},
+                            headers=_stac_client_headers(),
                         )
                         if 200 <= r2.status_code < 300:
                             try:
@@ -206,7 +217,7 @@ async def federated_search(
     stac_body = {k: v for k, v in body.items() if k not in ("catalog_ids", "geofast_catalog_ids")}
     timeout = settings.stac_search_http_timeout_seconds
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, headers=_stac_client_headers()) as client:
         tasks = [_post_search_with_retries(client, c, stac_body) for c in catalogs]
         results = await asyncio.gather(*tasks)
 

@@ -126,3 +126,11 @@ If Cloudflare shows repeated `CF-Cache-Status: REVALIDATED` for mosaic tiles, ve
 3. Edge TTL rules do not override origin immutable caching for versioned URLs.
 
 The API now emits `X-Mosaic-Versioned-Cache: hit|miss` on mosaic tile responses to confirm whether a request matched the versioned cache policy.
+
+### Browser-canceled tile requests (e.g. NS_BINDING_ABORTED)
+
+MapLibre cancels in-flight tile HTTP requests when the user zooms or when `fitBounds` runs with animation, so the browser may show **canceled** rows in DevTools even though the request already reached your reverse proxy or API.
+
+- **Zero network on reload** needs a normal reload (not “hard reload”), DevTools **cache enabled**, and tile URLs with **`?v=<tiles_revision>`** plus immutable cache headers so the browser can serve from disk without contacting the origin.
+- The API can return **204** when the ASGI client has disconnected (before or after a tile is ready), and it **cancels upstream TiTiler reads** when disconnect is detected mid-fetch so less work is wasted. A request may still open at the edge before disconnect is visible to the app.
+- The mosaic **detail preview** uses **`fitBounds` with `duration: 0`** for the initial bbox so the map jumps to extent in one step (fewer intermediate tile requests). Map editor/viewer keep short animated fits for smoother UX; server-side disconnect handling still limits wasted TiTiler work on aborted tiles.

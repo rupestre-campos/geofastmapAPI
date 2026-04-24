@@ -77,7 +77,6 @@ services:
       TITILER_INTERNAL_SECRET: dev-titiler-internal-secret-change-in-production
       # Large mosaics (many COGs) can exceed default 300s Titiler tile reads — raise if needed.
       TITILER_HTTP_READ_TIMEOUT_SECONDS: "600"
-      ENVIRONMENT: docker
     ports:
       - "8000:8000"
     volumes:
@@ -107,7 +106,6 @@ services:
       REDIS_URL: redis://redis:6379/0
       BULK_QUEUE_TYPE: redis
       BULK_STORAGE_PATH: /data/bulk-uploads
-      ENVIRONMENT: docker
     volumes:
       - .:/app
       - geofastmap_bulk_uploads:/data/bulk-uploads
@@ -126,7 +124,6 @@ services:
       REDIS_URL: redis://redis:6379/0
       BULK_QUEUE_TYPE: redis
       TILES_STORAGE_PATH: /data/tiles
-      ENVIRONMENT: docker
     volumes:
       - .:/app
       - geofastmap_tiles:/data/tiles
@@ -156,11 +153,25 @@ services:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofastmap
       REDIS_URL: redis://redis:6379/0
       PROCESS_QUEUE_TYPE: redis
-      PROCESS_MAX_CONCURRENT: 2
-      ENVIRONMENT: docker
     volumes:
       - .:/app
     command: python -m app.process_worker_main
+
+  mosaic_worker:
+    build: .
+    container_name: geofastmap_mosaic_worker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofastmap
+      REDIS_URL: redis://redis:6379/0
+      MOSAIC_QUEUE_TYPE: redis
+    volumes:
+      - .:/app
+    command: python -m app.mosaic_worker_main
 
   titiler:
     image: ghcr.io/developmentseed/titiler:latest

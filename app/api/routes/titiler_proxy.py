@@ -17,6 +17,8 @@ from app.core.permissions import can_see_collection
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.db.session import get_db
+from app.services.titiler_cancel import ClientDisconnected, raise_if_disconnected, titiler_get_cancel_on_disconnect
+from app.services.titiler_gate import titiler_upstream_gate_run
 from app.services.titiler_http import get_titiler_http_client
 from app.services.titiler_inflight import await_tile_singleflight
 from app.services.titiler_tile_cache import (
@@ -105,24 +107,34 @@ async def titiler_proxy_tile(
             },
         )
 
+    if await request.is_disconnected():
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     async def _fetch_cog_tile() -> tuple[bytes, str, float, int]:
         client = get_titiler_http_client()
         r: httpx.Response | None = None
         titiler_upstream_ms = 0.0
         titiler_attempts = 0
         for attempt in range(2):
+            await raise_if_disconnected(request)
             t0 = time.perf_counter()
             try:
-                r = await client.get(
-                    f"{base}{forward_path}",
-                    params=param_pairs,
-                    headers={"Accept-Encoding": "identity"},
-                )
+                async def _gated_titiler_get() -> httpx.Response:
+                    return await titiler_get_cancel_on_disconnect(
+                        request,
+                        client,
+                        f"{base}{forward_path}",
+                        params=param_pairs,
+                        headers={"Accept-Encoding": "identity"},
+                    )
+
+                r = await titiler_upstream_gate_run(request, _gated_titiler_get)
             except httpx.RequestError as e:
                 titiler_attempts += 1
                 titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
                 if attempt == 0:
                     await asyncio.sleep(0.08)
+                    await raise_if_disconnected(request)
                     continue
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
@@ -136,6 +148,7 @@ async def titiler_proxy_tile(
             titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
             if r.status_code in (502, 503, 504) and attempt == 0:
                 await asyncio.sleep(0.08)
+                await raise_if_disconnected(request)
                 continue
             break
         assert r is not None
@@ -154,10 +167,17 @@ async def titiler_proxy_tile(
         set_cached_tile(cache_key, r.content, ct)
         return r.content, ct, titiler_upstream_ms, titiler_attempts
 
-    body, ct, titiler_upstream_ms, titiler_attempts = await await_tile_singleflight(
-        cache_key,
-        _fetch_cog_tile,
-    )
+    try:
+        body, ct, titiler_upstream_ms, titiler_attempts = await await_tile_singleflight(
+            cache_key,
+            _fetch_cog_tile,
+        )
+    except ClientDisconnected:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    if await request.is_disconnected():
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     ms_header = str(max(0, int(round(titiler_upstream_ms))))
     att_header = str(titiler_attempts)
     return Response(
