@@ -421,6 +421,26 @@ def _sort_key_newest(c: Candidate) -> tuple[float, str]:
     return (-c.dt.timestamp(), c.key)
 
 
+def _greedy_pick_better(
+    g1: float,
+    r1: float,
+    t1: tuple[Any, ...],
+    g2: float,
+    r2: float,
+    t2: tuple[Any, ...],
+) -> bool:
+    """True if candidate 1 is strictly better than 2 (gain, then gain/footprint area, then sort_mode tie)."""
+    if g1 > g2 + 1e-12:
+        return True
+    if g2 > g1 + 1e-12:
+        return False
+    if r1 > r2 + 1e-15:
+        return True
+    if r2 > r1 + 1e-15:
+        return False
+    return t1 < t2
+
+
 def greedy_cover_aoi(
     aoi: Polygon,
     candidates: list[Candidate],
@@ -428,9 +448,13 @@ def greedy_cover_aoi(
     *,
     min_coverage: float = 0.995,
     max_iterations: int = 500,
+    min_marginal_coverage_fraction: float | None = None,
 ) -> tuple[list[Candidate], Polygon | None, float]:
     """
     Pick a small set of candidates whose footprints cover the AOI (greedy by uncovered area).
+    Ties: prefer higher gain, then higher (gain/footprint area) (less wasted overlap), then sort_mode.
+    After the first pick, stops when the best marginal gain is below min_marginal_coverage_fraction
+    of the current hole (unless disabled via 0), to avoid stacking many nearly redundant granules.
     Returns (selected, remaining_uncovered_polygon, uncovered_fraction).
     """
     if not candidates:
@@ -438,6 +462,16 @@ def greedy_cover_aoi(
     aoi_area = aoi.area
     if aoi_area <= 0:
         return [], aoi, 1.0
+
+    if min_marginal_coverage_fraction is None:
+        from app.core.config import get_settings
+
+        min_marginal_coverage_fraction = max(
+            0.0,
+            min(1.0, float(getattr(get_settings(), "mosaic_greedy_min_marginal_coverage_fraction", 0.005) or 0.0)),
+        )
+    else:
+        min_marginal_coverage_fraction = max(0.0, min(1.0, float(min_marginal_coverage_fraction)))
 
     remaining: Polygon | Any = aoi
     selected: list[Candidate] = []
@@ -457,9 +491,13 @@ def greedy_cover_aoi(
         uncovered_frac = remaining.area / aoi_area if aoi_area > 0 else 0
         if uncovered_frac <= (1.0 - min_coverage) or remaining.is_empty:
             break
+        rem_area = float(remaining.area) if remaining.area > 0 else 0.0
+        if rem_area <= 0.0:
+            break
         best: Candidate | None = None
         best_gain = 0.0
-        best_tie: tuple[Any, ...] | None = None
+        best_ratio = 0.0
+        best_tie: tuple[Any, ...] = (1e12, "")
         rem_bounds = remaining.bounds
         pool: list[Candidate] = []
         if tree is not None:
@@ -485,13 +523,23 @@ def greedy_cover_aoi(
             if gain <= 0:
                 continue
             t = tie(c)
-            if gain > best_gain + 1e-12 or (
-                math.isclose(gain, best_gain, rel_tol=1e-9) and (best_tie is None or t < best_tie)
-            ):
-                best_gain = gain
-                best = c
+            try:
+                ga = float(c.geom.area)
+            except Exception:
+                ga = 0.0
+            ratio = gain / ga if ga > 1e-20 else 0.0
+            if best is None or _greedy_pick_better(gain, ratio, t, best_gain, best_ratio, best_tie):
+                best_gain = float(gain)
+                best_ratio = float(ratio)
                 best_tie = t
+                best = c
         if best is None:
+            break
+        if (
+            len(selected) > 0
+            and min_marginal_coverage_fraction > 0
+            and best_gain < rem_area * min_marginal_coverage_fraction
+        ):
             break
         selected.append(best)
         used_keys.add(best.key)

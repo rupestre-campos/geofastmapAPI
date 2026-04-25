@@ -149,6 +149,9 @@ class Settings(BaseSettings):
     mosaic_void_fill_min_uncovered: float = 0.001
     # Number of AOI longitude strips for same-pass date mode.
     mosaic_same_pass_num_strips: int = 8
+    # Greedy cover: stop adding scenes when best marginal gain is below this fraction of the
+    # current uncovered area (avoids piling many nearly redundant granules). Not applied to the first pick.
+    mosaic_greedy_min_marginal_coverage_fraction: float = 0.005
     # Thumbnail fetch concurrency for footprint display attachment.
     mosaic_footprint_fetch_max_concurrent: int = 8
     # CPU concurrency for thumbnail decode + mask/geometry extraction.

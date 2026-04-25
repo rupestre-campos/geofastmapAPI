@@ -8,6 +8,7 @@ from shapely.geometry import MultiPolygon, box, shape
 from app.services.mosaic_plan import (
     _aoi_longitude_strips,
     build_mosaicjson_from_footprints,
+    Candidate,
     greedy_cover_aoi,
     mgrs_tile_from_stac_item_id,
     pinpoint_bboxes_from_remainder,
@@ -197,6 +198,49 @@ def test_footprint_prefers_geometry_over_bbox():
     g = shape(fp)
     assert g.bounds[0] >= 0.4 and g.bounds[2] <= 1.6
     assert "remaining_uncovered" in out
+
+
+def _candidate(
+    key: str,
+    geom,
+    cloud: float = 0.0,
+) -> Candidate:
+    from datetime import datetime
+
+    return Candidate(
+        feature={"id": key, "geofast:sourceCatalog": "c", "collection": "x"},
+        geom=geom,
+        href="https://ex/x.tif",
+        key=f"c:x:{key}",
+        cloud=cloud,
+        dt=datetime(2020, 1, 1),
+    )
+
+
+def test_greedy_cover_prefers_tighter_footprint_at_equal_marginal_gain() -> None:
+    """When area gained ties, prefer higher gain/footprint (less wasted scene area)."""
+    aoi = box(0, 0, 0.1, 0.1)  # area 0.01; both add same new coverage, one footprint much larger
+    c_tight = _candidate("t", box(0, 0, 0.1, 0.1), cloud=0.0)  # r = 1
+    c_huge = _candidate("h", box(0, 0, 1, 1), cloud=0.0)  # g = 0.01, a = 1, r = 0.01
+    sel, rem, _frac = greedy_cover_aoi(
+        aoi, [c_tight, c_huge], "lowest_cloud", min_marginal_coverage_fraction=0.0
+    )
+    assert len(sel) == 1
+    assert "t" in sel[0].key
+    assert rem is None or _frac == 0.0
+
+
+def test_greedy_cover_min_marginal_skips_sliver_additions() -> None:
+    """After first cover, do not add scenes whose marginal share of the remaining hole is tiny."""
+    aoi = box(0, 0, 1, 1)
+    c1 = _candidate("1", box(0, 0, 0.5, 1), cloud=0.0)
+    c2 = _candidate("2", box(0.5, 0, 0.55, 0.05), cloud=0.0)
+    full, _r0, _ = greedy_cover_aoi(aoi, [c1, c2], "lowest_cloud", min_marginal_coverage_fraction=0.0)
+    assert len(full) == 2
+    trimmed, _r1, _ = greedy_cover_aoi(
+        aoi, [c1, c2], "lowest_cloud", min_marginal_coverage_fraction=0.1
+    )
+    assert len(trimmed) == 1
 
 
 def test_greedy_cover_simple():
