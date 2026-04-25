@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -249,7 +250,8 @@ async def plan_mosaic_with_void_fill_distributed(
             features_seen=len(merged),
         )
 
-        last_result = plan_mosaic_from_features(
+        last_result = await asyncio.to_thread(
+            plan_mosaic_from_features,
             aoi,
             list(merged.values()),
             sort_mode,
@@ -276,7 +278,8 @@ async def plan_mosaic_with_void_fill_distributed(
             break
 
     if last_result is None:
-        last_result = plan_mosaic_from_features(
+        last_result = await asyncio.to_thread(
+            plan_mosaic_from_features,
             aoi,
             [],
             sort_mode,

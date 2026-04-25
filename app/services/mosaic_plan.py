@@ -1376,7 +1376,8 @@ async def plan_mosaic_with_void_fill(
                 last_result["void_fill_stopped"] = "no_new_features"
             break
 
-        last_result = plan_mosaic_from_features(
+        last_result = await asyncio.to_thread(
+            plan_mosaic_from_features,
             aoi,
             list(merged.values()),
             sort_mode,
@@ -1404,7 +1405,8 @@ async def plan_mosaic_with_void_fill(
             break
 
     if last_result is None:
-        last_result = plan_mosaic_from_features(
+        last_result = await asyncio.to_thread(
+            plan_mosaic_from_features,
             aoi,
             [],
             sort_mode,

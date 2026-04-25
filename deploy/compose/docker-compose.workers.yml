@@ -44,7 +44,6 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
-    container_name: geofastmap_mosaic_worker
     env_file:
       - ../env/.env.workers
     command: python -m app.mosaic_worker_main

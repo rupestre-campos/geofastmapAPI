@@ -153,10 +153,14 @@ After **`plan_mosaic_from_features`** returns, the planner can attach UI **`foot
 
 **Coordinator CPU (one parent job)**
 
-The greedy **`plan_mosaic_from_features`** step (Shapely, selection) is effectively **single-threaded per process**. Distributed mode does **not** parallelize that across cores for a single job. To use more cores on the coordinator **host**:
+The greedy **`plan_mosaic_from_features`** step (Shapely, selection) is **CPU-heavy**; a **single** parent job still runs that phase as **one** greedy computation at a time (it is offloaded to a worker thread so the asyncio loop can keep handling subtasks/footprints on **mixed** workers). It does **not** split one greedy pass across many cores.
 
-- For **local-only** footprint attach, raise **`MOSAIC_FOOTPRINT_CPU_MAX_CONCURRENT`** (and **`MOSAIC_FOOTPRINT_FETCH_MAX_CONCURRENT`**) so thumbnail decode/geometry runs more work in `asyncio.to_thread`. With **distributed footprints**, that load moves to workers that dequeue the footprint queue.
-- Run **multiple mosaic worker processes** on the coordinator (each with e.g. `MOSAIC_WORKER_MAX_CONCURRENT=1`) so **different** parent jobs use different processes—or set **`MOSAIC_WORKER_MAX_CONCURRENT` > `1`** in one process to overlap **multiple** queued parent jobs (still GIL-bound for pure Python, but can help when work mixes I/O and CPU).
+**Using many cores on one machine**
+
+- Run **several mosaic worker processes** (separate OS processes / containers) on the same host so **different** queued parent jobs (or shard-only consumers) use **different** CPUs. In Docker Compose, **do not** set a fixed `container_name` on `mosaic_worker` if you want `docker compose up --scale mosaic_worker=N` (the repo’s `mosaic_worker` service is set up for scaling this way).
+- Raise **`MOSAIC_SUBJOB_WORKER_CONCURRENCY`** on shard boxes (and **`MOSAIC_SUBJOB_BBOX_DATETIME_PARALLELISM`** on the coordinator to match total fleet throughput) so STAC subtasks keep many cores busy during collection waves—watch upstream **429** and latency.
+- For **local-only** footprint attach, raise **`MOSAIC_FOOTPRINT_CPU_MAX_CONCURRENT`** (and **`MOSAIC_FOOTPRINT_FETCH_MAX_CONCURRENT`**) so thumbnail decode/geometry uses more `asyncio.to_thread` capacity. With **distributed footprints**, that load moves to workers that dequeue the footprint queue.
+- Optionally set **`MOSAIC_WORKER_MAX_CONCURRENT` > `1`** in one process to overlap **multiple** parent jobs (each greedy phase still ~one thread at a time per job).
 
 **Other useful flags**
 

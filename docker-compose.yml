@@ -159,7 +159,6 @@ services:
 
   mosaic_worker:
     build: .
-    container_name: geofastmap_mosaic_worker
     depends_on:
       db:
         condition: service_healthy
