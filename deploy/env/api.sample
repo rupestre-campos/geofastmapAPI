@@ -64,6 +64,10 @@ OBSERVABILITY_TRACE_SAMPLE_RATIO=0.1
 # STAC upstream (Earth Search, etc.): Redis-backed caches reduce repeat traffic and 403/rate-limit risk.
 # POST /search merge cache TTL (seconds). Use 604800 (7d) in production if results staleness is acceptable.
 STAC_SEARCH_CACHE_TTL_SECONDS=604800
+# Federated STAC retries on transient errors (502/503/504/429): exponential backoff capped to 5 minutes.
+STAC_SEARCH_HTTP_MAX_RETRIES=8
+STAC_SEARCH_HTTP_RETRY_BACKOFF_SECONDS=2
+STAC_SEARCH_HTTP_RETRY_BACKOFF_MAX_SECONDS=300
 # GET /collections listing per catalog (seconds). 604800 = 7d.
 STAC_COLLECTIONS_CACHE_TTL_SECONDS=604800
 # GET Item JSON (seconds); shared across API workers. 604800 = 7d.

@@ -7,7 +7,7 @@ import pytest
 
 import app.core.config as core_config
 from app.services import stac_federation as sf
-from app.services.stac_federation import _merge_item_collections
+from app.services.stac_federation import _merge_item_collections, _retry_wait_seconds
 
 
 def test_merge_item_collections_two_features():
@@ -87,3 +87,24 @@ async def test_federated_search_respects_catalog_parallelism(monkeypatch):
     assert not errs
     assert len(out["features"]) == 3
     assert active["max"] <= 2
+
+
+def test_retry_wait_seconds_uses_exponential_backoff_with_cap():
+    assert _retry_wait_seconds(base_backoff=2.0, attempt=0, max_backoff=300.0) == 2.0
+    assert _retry_wait_seconds(base_backoff=2.0, attempt=4, max_backoff=300.0) == 32.0
+    assert _retry_wait_seconds(base_backoff=2.0, attempt=8, max_backoff=300.0) == 300.0
+
+
+def test_retry_wait_seconds_respects_retry_after_but_caps():
+    assert _retry_wait_seconds(
+        base_backoff=2.0,
+        attempt=3,
+        max_backoff=300.0,
+        retry_after_seconds=40.0,
+    ) == 40.0
+    assert _retry_wait_seconds(
+        base_backoff=2.0,
+        attempt=3,
+        max_backoff=300.0,
+        retry_after_seconds=999.0,
+    ) == 300.0

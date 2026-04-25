@@ -52,6 +52,27 @@ def _search_url(catalog: StacCatalog) -> str:
     return f"{_normalize_root(catalog.stac_api_root_url)}/search"
 
 
+def _retry_wait_seconds(
+    *,
+    base_backoff: float,
+    attempt: int,
+    max_backoff: float,
+    retry_after_seconds: float | None = None,
+) -> float:
+    """
+    Exponential backoff with optional Retry-After hint, capped by max_backoff.
+    """
+    base = max(0.0, float(base_backoff))
+    cap = max(0.0, float(max_backoff))
+    wait = base * (2**max(0, int(attempt)))
+    if retry_after_seconds is not None:
+        try:
+            wait = max(wait, float(retry_after_seconds))
+        except (TypeError, ValueError):
+            pass
+    return min(cap, wait)
+
+
 def _merge_item_collections(parts: list[dict[str, Any]], *, catalog_labels: list[str]) -> dict[str, Any]:
     features: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -105,6 +126,7 @@ async def _post_search_with_retries(
     max_retries = max(0, settings.stac_search_http_max_retries)
     max_attempts = 1 + max_retries
     backoff = settings.stac_search_http_retry_backoff_seconds
+    max_backoff = max(1.0, float(getattr(settings, "stac_search_http_retry_backoff_max_seconds", 300.0) or 300.0))
 
     for attempt in range(max_attempts):
         try:
@@ -146,14 +168,20 @@ async def _post_search_with_retries(
                     except httpx.RequestError:
                         pass
             if code in _RETRYABLE_HTTP_STATUS and attempt < max_attempts - 1:
-                wait = backoff * (2**attempt)
+                retry_after_sec: float | None = None
                 if code == 429:
                     ra = r.headers.get("Retry-After")
                     if ra:
                         try:
-                            wait = max(wait, float(ra))
+                            retry_after_sec = float(ra)
                         except ValueError:
                             pass
+                wait = _retry_wait_seconds(
+                    base_backoff=backoff,
+                    attempt=attempt,
+                    max_backoff=max_backoff,
+                    retry_after_seconds=retry_after_sec,
+                )
                 logger.info(
                     "STAC upstream HTTP %s for catalog %s; retry %s/%s in %.1fs (%s)",
                     code,
@@ -195,7 +223,12 @@ async def _post_search_with_retries(
 
         except httpx.RequestError as e:
             if attempt < max_attempts - 1:
-                wait = backoff * (2**attempt)
+                wait = _retry_wait_seconds(
+                    base_backoff=backoff,
+                    attempt=attempt,
+                    max_backoff=max_backoff,
+                    retry_after_seconds=None,
+                )
                 logger.info(
                     "STAC search request error for catalog %s (%s): %s; retry %s/%s in %.1fs",
                     catalog.id,

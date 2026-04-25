@@ -124,8 +124,9 @@ class Settings(BaseSettings):
     stac_http_user_agent: str = "GeoFastMap/1.0 (STAC client; +https://github.com/)"
     stac_search_http_timeout_seconds: float = 60.0
     # Federated STAC: retry POST /search on transient upstream errors (502/503/504/429).
-    stac_search_http_max_retries: int = 2  # attempts after the first (2 => up to 3 tries per catalog)
-    stac_search_http_retry_backoff_seconds: float = 0.75  # base delay; exponential backoff
+    stac_search_http_max_retries: int = 8  # attempts after the first (8 => up to 9 tries per catalog)
+    stac_search_http_retry_backoff_seconds: float = 2.0  # base delay; exponential backoff
+    stac_search_http_retry_backoff_max_seconds: float = 300.0  # cap single retry wait at 5 minutes
     stac_search_max_catalogs: int = 32
     # Mosaic planner compute queue. redis = offload heavy planning to standalone worker(s).
     mosaic_queue_type: str = "redis"  # redis | inline
