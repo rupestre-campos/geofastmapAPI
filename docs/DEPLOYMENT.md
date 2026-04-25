@@ -117,9 +117,19 @@ Large mosaic plans can split **STAC collection** work into **subtasks** (one `(b
 - **`MOSAIC_SUBJOB_QUEUE_ENABLED=true`** on the **API** (so `compute_mosaic_plan` uses the distributed planner when the worker runs the job with `allow_distributed=True`) and on **every mosaic worker** that should enqueue or consume subtasks.
 - Workers run [`app/mosaic_worker_main.py`](../app/mosaic_worker_main.py); code paths live under [`app/services/mosaic_plan_distributed.py`](../app/services/mosaic_plan_distributed.py), [`app/services/mosaic_footprint_distributed.py`](../app/services/mosaic_footprint_distributed.py), and [`app/services/mosaic_plan_jobs.py`](../app/services/mosaic_plan_jobs.py).
 
-**Coordinator vs shard workers (recommended split)**
+**Homogeneous mosaic workers (simple default)**
 
-You can run **coordinator-only** hosts (parent queue only) and **shard-only** hosts (subtask queue only) using env:
+You do **not** need different env on “coordinator” vs “shard” machines. **Recommended:** use the **same** mosaic-related variables on the **API** and on **every** `mosaic_worker` process. Each process can dequeue a **parent** job (run the coordinator loop, enqueue subtasks to Redis), **and** dequeue **subtasks** (and **footprint** tasks if enabled) from the same queues—`MOSAIC_SUBJOB_CONSUME_SUBTASKS_WHILE_PARENT_ACTIVE` defaults to **true** so a machine that is busy with a parent job can still help execute its own shards.
+
+- Set **`MOSAIC_QUEUE_TYPE=redis`**, **`MOSAIC_SUBJOB_QUEUE_ENABLED=true`** on API and all mosaic workers.
+- Set **`MOSAIC_SUBJOB_WORKER_CONCURRENCY` > 0** on every process that should run STAC subtasks (omit coordinator-only tuning until you need it).
+- **Wave size:** set **`MOSAIC_SUBJOB_BBOX_DATETIME_PARALLELISM`** to roughly **`MOSAIC_SUBJOB_WORKER_CONCURRENCY ×` (number of mosaic worker processes)** across the fleet. On a **single** process, start around **4–8**—much larger waves (e.g. 32) on one consumer mostly add wait time at barriers.
+
+Dev **`docker-compose.yml`** in this repo enables subjobs and uses a stable **`container_name`** for one mosaic worker; production can use the same pattern or multiple processes with identical env.
+
+**Optional dedicated roles (advanced)**
+
+For large fleets you *may* split **coordinator-only** hosts (parent queue only) and **shard-only** hosts (subtask queue only) using env:
 
 | Role | Typical env |
 |------|-------------|
@@ -157,7 +167,7 @@ The greedy **`plan_mosaic_from_features`** step (Shapely, selection) is **CPU-he
 
 **Using many cores on one machine**
 
-- Run **several mosaic worker processes** (separate OS processes / containers) on the same host so **different** queued parent jobs (or shard-only consumers) use **different** CPUs. In Docker Compose, **do not** set a fixed `container_name` on `mosaic_worker` if you want `docker compose up --scale mosaic_worker=N` (the repo’s `mosaic_worker` service is set up for scaling this way).
+- Run **several mosaic worker processes** (separate OS processes / containers) on the same host so **different** queued parent jobs use **different** CPUs. Root **`docker-compose.yml`** uses one named `mosaic_worker` container; to scale replicas with Compose, remove `container_name` from that service or run additional worker processes another way (systemd, multiple stacks).
 - Raise **`MOSAIC_SUBJOB_WORKER_CONCURRENCY`** on shard boxes (and **`MOSAIC_SUBJOB_BBOX_DATETIME_PARALLELISM`** on the coordinator to match total fleet throughput) so STAC subtasks keep many cores busy during collection waves—watch upstream **429** and latency.
 - For **local-only** footprint attach, raise **`MOSAIC_FOOTPRINT_CPU_MAX_CONCURRENT`** (and **`MOSAIC_FOOTPRINT_FETCH_MAX_CONCURRENT`**) so thumbnail decode/geometry uses more `asyncio.to_thread` capacity. With **distributed footprints**, that load moves to workers that dequeue the footprint queue.
 - Optionally set **`MOSAIC_WORKER_MAX_CONCURRENT` > `1`** in one process to overlap **multiple** parent jobs (each greedy phase still ~one thread at a time per job).
@@ -177,6 +187,19 @@ The greedy **`plan_mosaic_from_features`** step (Shapely, selection) is **CPU-he
 **Sample env**
 
 Annotated defaults and coordinator/shard examples: [`deploy/env/workers.sample`](../deploy/env/workers.sample). Mirror **`MOSAIC_SUBJOB_*`** (and queue/redis mode) on [`deploy/env/api.sample`](../deploy/env/api.sample) when the API enqueues mosaic jobs.
+
+**Coverage gaps (holes) and “only N scenes”**
+
+When the mosaic finishes with visible holes or fewer images than expected, check the plan result: **`void_fill_stopped`**, **`uncovered_fraction`**, **`stac_feature_pool_size`**, **`void_fill_rounds`**, and **`same_seven_day_window`**.
+
+Tuning (no code):
+
+- **`MOSAIC_STAC_FETCH_LIMIT`** — each STAC `/search` is capped; raise if the pool drops granules that would fill gaps (watch catalog limits and latency).
+- **`MOSAIC_VOID_FILL_MAX_ROUNDS`**, **`MOSAIC_VOID_PINPOINT_MAX_PARTS`** — more rounds / more gap pinpoints improve hole targeting.
+- **`MOSAIC_GREEDY_MIN_MARGINAL_COVERAGE_FRACTION`** — lower (e.g. `0.001`) or **`0`** so greedy keeps adding scenes for thin slivers ( **`0`** disables the marginal-gain early stop).
+- **Same-pass date strips** — narrows the candidate pool to a sliding 7-day window; for difficult AOIs try turning it off or widening **`date_start` / `date_end`**.
+
+Implementation note: void-fill rounds after the first replan with **same-pass** mode **no longer apply the initial locked week filter** to the candidate set, so granules merged from wider STAC slices can participate in gap fill (response may include **`void_fill_relaxed_date_lock`: true** on later rounds). The first round still picks and records the initial window.
 
 ---
 

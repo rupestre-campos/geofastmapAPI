@@ -4,8 +4,12 @@ BULK_QUEUE_TYPE=redis
 PROCESS_QUEUE_TYPE=redis
 MOSAIC_QUEUE_TYPE=redis
 
+# --- Homogeneous mosaic workers (recommended default) ---
+# Use the same env on every host: each process can dequeue parent jobs AND Redis STAC subtasks (and footprints if enabled).
+# No separate "coordinator" vs "shard" config required. Optional dedicated-role overrides are at the bottom.
+
 # --- Throughput (single process) ---
-# Parent jobs: how many mosaic plans run at once on this worker (0 = shard-only; see distributed block).
+# Parent jobs: how many mosaic plans run at once on this worker (0 = shard-only; see optional overrides below).
 MOSAIC_WORKER_MAX_CONCURRENT=2
 # Subtasks: concurrent STAC shard tasks per process (I/O bound; try 4–8 per CPU on shard boxes).
 MOSAIC_SUBJOB_WORKER_CONCURRENCY=4
@@ -43,13 +47,13 @@ MOSAIC_JOB_HEARTBEAT_SECONDS=10
 MOSAIC_JOB_STALE_AFTER_SECONDS=180
 MOSAIC_JOB_CLIENT_TIMEOUT_SECONDS=1800
 
-# Distributed: one mosaic split across Redis subtasks (enable on all mosaic worker processes).
-MOSAIC_SUBJOB_QUEUE_ENABLED=false
-# Per-subtask catalog fan-out (used inside shard STAC merge; tune on shard hosts).
+# Distributed: one mosaic split across Redis subtasks (enable on API and all mosaic worker processes).
+MOSAIC_SUBJOB_QUEUE_ENABLED=true
+# Per-subtask catalog fan-out (used inside shard STAC merge; tune per host).
 MOSAIC_SUBJOB_CATALOG_PARALLELISM=8
-# Coordinator: subtasks dispatched per barrier wave ≈ total shard concurrency across the fleet
-# (sum of MOSAIC_SUBJOB_WORKER_CONCURRENCY × processes on all shard machines). Low = idle shards.
-MOSAIC_SUBJOB_BBOX_DATETIME_PARALLELISM=32
+# Wave size ≈ total subtask slots (MOSAIC_SUBJOB_WORKER_CONCURRENCY × mosaic worker processes on the fleet).
+# Single process on one machine: use ~4–8, not 32, or waves wait on one consumer.
+MOSAIC_SUBJOB_BBOX_DATETIME_PARALLELISM=8
 MOSAIC_SUBJOB_CONSUME_SUBTASKS_WHILE_PARENT_ACTIVE=true
 MOSAIC_SUBJOB_ROUND_TIMEOUT_SECONDS=300
 MOSAIC_SUBJOB_MAX_RETRIES=1
@@ -59,7 +63,7 @@ MOSAIC_PARENT_FAIL_ON_PARTIAL=false
 BULK_STORAGE_PATH=/data/bulk-uploads
 TILES_STORAGE_PATH=/data/tiles
 
-# --- Optional: coordinator vs shard overrides (typical production split) ---
+# --- Optional: dedicated roles (advanced production split) ---
 # Coordinator only (parent queue, no local subtasks):
 #   MOSAIC_WORKER_MAX_CONCURRENT=1
 #   MOSAIC_SUBJOB_WORKER_CONCURRENCY=0

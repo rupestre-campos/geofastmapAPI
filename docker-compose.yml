@@ -68,6 +68,8 @@ services:
       BULK_QUEUE_TYPE: redis
       BULK_STORAGE_PATH: /data/bulk-uploads
       PROCESS_QUEUE_TYPE: redis
+      MOSAIC_QUEUE_TYPE: redis
+      MOSAIC_SUBJOB_QUEUE_ENABLED: "true"
       TILES_STORAGE_PATH: /data/tiles
       RASTER_STORAGE_PATH: /data/rasters
       TITILER_INTERNAL_URL: http://titiler:8000
@@ -159,6 +161,7 @@ services:
 
   mosaic_worker:
     build: .
+    container_name: geofastmap_mosaic_worker
     depends_on:
       db:
         condition: service_healthy
@@ -168,6 +171,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofastmap
       REDIS_URL: redis://redis:6379/0
       MOSAIC_QUEUE_TYPE: redis
+      MOSAIC_SUBJOB_QUEUE_ENABLED: "true"
+      MOSAIC_SUBJOB_WORKER_CONCURRENCY: "4"
+      MOSAIC_SUBJOB_BBOX_DATETIME_PARALLELISM: "8"
     volumes:
       - .:/app
     command: python -m app.mosaic_worker_main

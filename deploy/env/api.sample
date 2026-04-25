@@ -5,6 +5,8 @@ BULK_QUEUE_TYPE=redis
 BULK_STORAGE_PATH=/data/bulk-uploads
 PROCESS_QUEUE_TYPE=redis
 MOSAIC_QUEUE_TYPE=redis
+# Homogeneous setup: use the same MOSAIC_SUBJOB_* / MOSAIC_QUEUE_TYPE values on API and every mosaic worker (no coordinator vs shard split required).
+MOSAIC_SUBJOB_QUEUE_ENABLED=true
 # Only used by standalone mosaic worker process (jobs per process).
 MOSAIC_WORKER_MAX_CONCURRENT=2
 # Upstream STAC fan-out controls for one large mosaic job (used by mosaic worker):
@@ -29,9 +31,9 @@ MOSAIC_FOOTPRINT_MAX_ITEMS=200
 MOSAIC_JOB_HEARTBEAT_SECONDS=10
 MOSAIC_JOB_STALE_AFTER_SECONDS=180
 MOSAIC_JOB_CLIENT_TIMEOUT_SECONDS=1800
-MOSAIC_SUBJOB_QUEUE_ENABLED=false
 MOSAIC_SUBJOB_WORKER_CONCURRENCY=2
 MOSAIC_SUBJOB_CONSUME_SUBTASKS_WHILE_PARENT_ACTIVE=true
+# Wave size ≈ total subtask slots (MOSAIC_SUBJOB_WORKER_CONCURRENCY × mosaic worker processes); single process: start near concurrency (e.g. 4–8), not 32.
 MOSAIC_SUBJOB_BBOX_DATETIME_PARALLELISM=8
 MOSAIC_SUBJOB_CATALOG_PARALLELISM=4
 MOSAIC_SUBJOB_ROUND_TIMEOUT_SECONDS=180

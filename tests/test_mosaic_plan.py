@@ -379,3 +379,70 @@ async def test_plan_void_fill_respects_settings_rounds_and_parts(monkeypatch):
     assert res["void_fill_rounds"] <= 1
     assert errs == []
     assert merged == []
+
+
+def _voidfill_feat(oid: str, ring: list) -> dict:
+    return {
+        "type": "Feature",
+        "id": oid,
+        "geometry": {"type": "Polygon", "coordinates": [ring]},
+        "properties": {"datetime": "2024-06-15T12:00:00Z", "eo:cloud_cover": 10},
+        "assets": {"visual": {"href": f"https://example.com/{oid}.tif", "type": "image/tiff"}},
+    }
+
+
+@pytest.mark.asyncio
+async def test_void_fill_same_pass_second_round_passes_unlocked_date_window(monkeypatch):
+    """Later void-fill replans must not filter candidates to round-0's locked week only."""
+    import app.core.config as core_config
+    from app.services import mosaic_plan as mp
+
+    settings = SimpleNamespace(
+        mosaic_stac_bbox_parallelism=2,
+        mosaic_stac_datetime_parallelism=2,
+        mosaic_stac_fetch_limit=500,
+        mosaic_void_fill_max_rounds=3,
+        mosaic_void_pinpoint_max_parts=4,
+        mosaic_void_fill_min_uncovered=0.0001,
+        mosaic_same_pass_num_strips=4,
+    )
+    monkeypatch.setattr(core_config, "get_settings", lambda: settings)
+
+    locks_passed: list = []
+    orig_plan = mp.plan_mosaic_from_features
+
+    def recording_plan(aoi, features, sort_mode, **kwargs):
+        locks_passed.append(kwargs.get("locked_date_window"))
+        return orig_plan(aoi, features, sort_mode, **kwargs)
+
+    monkeypatch.setattr(mp, "plan_mosaic_from_features", recording_plan)
+
+    n = [0]
+
+    async def fake_collect(*_a, **_k):
+        n[0] += 1
+        if n[0] == 1:
+            return [_voidfill_feat("a", [[0, 0], [0.35, 0], [0.35, 0.35], [0, 0.35], [0, 0]])], []
+        return [
+            _voidfill_feat("b", [[0.3, 0.3], [1, 0.3], [1, 1], [0.3, 1], [0.3, 0.3]]),
+        ], []
+
+    monkeypatch.setattr(mp, "collect_stac_features", fake_collect)
+
+    aoi = box(0, 0, 1, 1)
+    res, errs, _merged = await plan_mosaic_with_void_fill(
+        [SimpleNamespace(id="c1")],
+        stac_collection="col",
+        aoi=aoi,
+        search_bbox=[0, 0, 1, 1],
+        datetime_slices=["2024-06-01T00:00:00Z/2024-06-30T23:59:59Z"],
+        cloud_cover_max=None,
+        sort_mode="lowest_cloud",
+        fetch_limit=50,
+        same_pass_date_strips=True,
+    )
+    assert not errs
+    assert len(locks_passed) >= 2
+    assert locks_passed[0] is None
+    assert locks_passed[1] is None
+    assert res.get("void_fill_relaxed_date_lock") is True

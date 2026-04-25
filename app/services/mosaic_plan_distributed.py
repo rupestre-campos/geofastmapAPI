@@ -250,16 +250,19 @@ async def plan_mosaic_with_void_fill_distributed(
             features_seen=len(merged),
         )
 
+        lock_for_plan = locked_date_window if round_idx == 0 else None
         last_result = await asyncio.to_thread(
             plan_mosaic_from_features,
             aoi,
             list(merged.values()),
             sort_mode,
             same_pass_date_strips=same_pass_date_strips,
-            locked_date_window=locked_date_window,
+            locked_date_window=lock_for_plan,
             swap_options_limit=swap_options_limit,
             swap_options_offset=swap_options_offset,
         )
+        if round_idx > 0 and same_pass_date_strips:
+            last_result["void_fill_relaxed_date_lock"] = True
         if same_pass_date_strips and locked_date_window is None:
             sw = last_result.get("same_seven_day_window")
             if isinstance(sw, dict) and sw.get("start") and sw.get("end"):
