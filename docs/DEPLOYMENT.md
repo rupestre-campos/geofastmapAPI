@@ -128,6 +128,10 @@ You can run **coordinator-only** hosts (parent queue only) and **shard-only** ho
 
 `MOSAIC_WORKER_MAX_CONCURRENT=0` is **shard-only**: the process never calls `BRPOP` on `geofastmap:mosaic_plan_queue`. Values `<= 0` are treated as zero; values `>= 1` cap concurrent **parent** jobs per process.
 
+**Queue priority on mixed workers**
+
+Processes that dequeue **both** parent and auxiliary queues use **footprint queue first**, then **subtask queue**, then **parent queue** in each `BRPOP` call so a deep parent backlog does not starve `footprint_display` or STAC shard work. When parent concurrency is already at its cap, the worker first tries `BRPOP` on footprint/subtask keys only (short timeout) before blocking on a parent task to finish—so a **central** host with `MOSAIC_SUBJOB_CONSUME_SUBTASKS_WHILE_PARENT_ACTIVE=true` can still drain footprint subtasks while one or more parent jobs run. Set `MOSAIC_SUBJOB_WORKER_CONCURRENCY=0` on a coordinator if that process must not take STAC subtasks; use `MOSAIC_FOOTPRINT_SUBJOB_WORKER_CONCURRENCY` to cap footprint-only slots.
+
 **Wave size and fleet capacity**
 
 `MOSAIC_SUBJOB_BBOX_DATETIME_PARALLELISM` is read by the **parent** process while planning. It is the **wave size**: how many subtasks are dispatched before the coordinator waits for that wave to finish. Set it to roughly the **total subtask throughput** you want in flight—e.g. sum over all shard machines of `(MOSAIC_SUBJOB_WORKER_CONCURRENCY × number of mosaic worker processes on that host)`. If it is too small, shard CPUs and network sit idle between barriers. If subtasks are slow or waves are huge, raise **`MOSAIC_SUBJOB_ROUND_TIMEOUT_SECONDS`** (e.g. `300`–`600`).

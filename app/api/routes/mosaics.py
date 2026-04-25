@@ -191,7 +191,7 @@ async def compute_mosaic_plan(
             stac_collection=body.stac_collection_id,
             bbox=search_bbox,
             datetime_slices=slices,
-            cloud_cover_max=body.cloud_cover_max,
+            cloud_cover_max=cloud_for_search,
             sort_mode=body.sort_mode,
             fetch_limit=cap,
         )

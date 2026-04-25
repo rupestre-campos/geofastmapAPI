@@ -213,15 +213,23 @@ async def _worker_loop() -> None:
     active_parent: set[asyncio.Task] = set()
     active_subtask: set[asyncio.Task] = set()
     active_footprint: set[asyncio.Task] = set()
+
+    def _dispatch_brpop_item(key: str, raw: str) -> None:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return
+        if key == MOSAIC_PLAN_SUBTASK_QUEUE_KEY:
+            print("[mosaic-worker] dequeued subtask", flush=True)
+            active_subtask.add(asyncio.create_task(_run_subtask(payload)))
+        elif key == MOSAIC_PLAN_FOOTPRINT_SUBTASK_QUEUE_KEY:
+            print("[mosaic-worker] dequeued footprint subtask", flush=True)
+            active_footprint.add(asyncio.create_task(_run_footprint_subtask(payload)))
+        else:
+            print("[mosaic-worker] dequeued parent job", flush=True)
+            active_parent.add(asyncio.create_task(_run_job(payload)))
+
     while True:
-        if max_concurrent > 0 and len(active_parent) >= max_concurrent:
-            done, pending = await asyncio.wait(active_parent, return_when=asyncio.FIRST_COMPLETED)
-            active_parent = set(pending)
-            for t in done:
-                try:
-                    await t
-                except Exception:
-                    pass
         while True:
             st_full = (
                 subtask_workers > 0
@@ -251,45 +259,55 @@ async def _worker_loop() -> None:
                 active_subtask.discard(t)
                 active_footprint.discard(t)
 
-        keys: list[str] = []
-        if max_concurrent > 0:
-            keys.append(MOSAIC_PLAN_QUEUE_KEY)
         can_take_subtasks = (
             subtask_workers > 0
             and bool(getattr(settings, "mosaic_subjob_queue_enabled", False))
             and len(active_subtask) < subtask_workers
             and (consume_while_parent or len(active_parent) == 0)
         )
-        if can_take_subtasks:
-            keys.append(MOSAIC_PLAN_SUBTASK_QUEUE_KEY)
         can_take_footprints = (
             footprint_budget > 0
             and bool(getattr(settings, "mosaic_footprint_distributed_enabled", False))
             and len(active_footprint) < footprint_budget
             and (consume_while_parent or len(active_parent) == 0)
         )
+
+        # While parent slots are full, still drain footprint/subtask queues first (BRPOP aux-only).
+        if max_concurrent > 0 and len(active_parent) >= max_concurrent:
+            aux_keys_only: list[str] = []
+            if can_take_footprints:
+                aux_keys_only.append(MOSAIC_PLAN_FOOTPRINT_SUBTASK_QUEUE_KEY)
+            if can_take_subtasks:
+                aux_keys_only.append(MOSAIC_PLAN_SUBTASK_QUEUE_KEY)
+            if aux_keys_only:
+                item_cap = await asyncio.to_thread(r.brpop, aux_keys_only, 5)
+                if item_cap:
+                    _dispatch_brpop_item(item_cap[0], item_cap[1])
+                    continue
+            done, pending = await asyncio.wait(active_parent, return_when=asyncio.FIRST_COMPLETED)
+            active_parent = set(pending)
+            for t in done:
+                try:
+                    await t
+                except Exception:
+                    pass
+            continue
+
+        # Prefer auxiliary queues in BRPOP key order so backlog on parent queue does not starve them.
+        keys: list[str] = []
         if can_take_footprints:
             keys.append(MOSAIC_PLAN_FOOTPRINT_SUBTASK_QUEUE_KEY)
+        if can_take_subtasks:
+            keys.append(MOSAIC_PLAN_SUBTASK_QUEUE_KEY)
+        if max_concurrent > 0:
+            keys.append(MOSAIC_PLAN_QUEUE_KEY)
         if not keys:
             await asyncio.sleep(1)
             continue
         item = await asyncio.to_thread(r.brpop, keys, 5)
         if not item:
             continue
-        key, raw = item
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            continue
-        if key == MOSAIC_PLAN_SUBTASK_QUEUE_KEY:
-            print("[mosaic-worker] dequeued subtask", flush=True)
-            active_subtask.add(asyncio.create_task(_run_subtask(payload)))
-        elif key == MOSAIC_PLAN_FOOTPRINT_SUBTASK_QUEUE_KEY:
-            print("[mosaic-worker] dequeued footprint subtask", flush=True)
-            active_footprint.add(asyncio.create_task(_run_footprint_subtask(payload)))
-        else:
-            print("[mosaic-worker] dequeued parent job", flush=True)
-            active_parent.add(asyncio.create_task(_run_job(payload)))
+        _dispatch_brpop_item(item[0], item[1])
 
 
 def main() -> None:

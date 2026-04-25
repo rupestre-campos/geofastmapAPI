@@ -526,9 +526,22 @@
           var ext = byKeySel[String(it.key)];
           if (ext && ext.footprint_display) it.footprint_display = ext.footprint_display;
         });
+        var so = data.swap_options || {};
+        if (lastPlan.swap_options && typeof so === 'object') {
+          Object.keys(so).forEach(function(sk) {
+            var incoming = so[sk];
+            var local = lastPlan.swap_options[sk];
+            if (!Array.isArray(incoming) || !Array.isArray(local)) return;
+            incoming.forEach(function(alt, j) {
+              if (alt && alt.footprint_display && local[j]) local[j].footprint_display = alt.footprint_display;
+            });
+          });
+        }
       }
 
       var MP_SWAP_PAGE = 4;
+      /** Request footprint_display GeoJSON for swap alternatives (adds latency per fetch). */
+      var MP_SWAP_INCLUDE_FOOTPRINT_DISPLAY = true;
       var _swapFetchInFlight = {};
 
       function ensureSwapOptionState() {
@@ -537,6 +550,7 @@
         lastPlan.swap_options_total = lastPlan.swap_options_total || {};
         lastPlan._swapFetchedKeys = lastPlan._swapFetchedKeys || {};
         lastPlan._swapLoadFailedKeys = lastPlan._swapLoadFailedKeys || {};
+        lastPlan._swapCandidatesHint = lastPlan._swapCandidatesHint || {};
       }
 
       function swapOptionsWereFetched(key) {
@@ -556,6 +570,7 @@
         if (lastPlan._swapLoadFailedKeys) delete lastPlan._swapLoadFailedKeys[k];
         if (lastPlan.swap_options) delete lastPlan.swap_options[k];
         if (lastPlan.swap_options_total) delete lastPlan.swap_options_total[k];
+        if (lastPlan._swapCandidatesHint) delete lastPlan._swapCandidatesHint[k];
       }
 
       function swapOptionsLoadFailed(key) {
@@ -582,19 +597,22 @@
         var aoi_geojson = (rowBbox && rowBbox.length === 4)
           ? { type: 'Polygon', coordinates: [[[rowBbox[0], rowBbox[1]], [rowBbox[2], rowBbox[1]], [rowBbox[2], rowBbox[3]], [rowBbox[0], rowBbox[3]], [rowBbox[0], rowBbox[1]]]] }
           : (function() { var ab = getAoiAndBbox(); return ab ? ab.aoi_geojson : null; })();
+        var dsForm = (document.getElementById('mp-date-start') && document.getElementById('mp-date-start').value || '').trim();
+        var deForm = (document.getElementById('mp-date-end') && document.getElementById('mp-date-end').value || '').trim();
         var body = {
           catalog_id: catalog,
           stac_collection_id: collection,
           bbox: bbox,
           aoi_geojson: aoi_geojson,
-          date_start: def2.date_start || null,
-          date_end: def2.date_end || null,
+          date_start: dsForm || def2.date_start || null,
+          date_end: deForm || def2.date_end || null,
           seasons: Array.isArray(def2.seasons) ? def2.seasons : [],
-          sort_mode: def2.sort_mode || document.getElementById('mp-sort').value,
+          sort_mode: (document.getElementById('mp-sort') && document.getElementById('mp-sort').value) || def2.sort_mode || 'newest',
           use_same_pass_date_strips: !!(document.getElementById('mp-same-pass-date') && document.getElementById('mp-same-pass-date').checked),
           selected: sel
         };
-        var cloud = (def2.cloud_cover_max != null) ? def2.cloud_cover_max : (function() { var v = (document.getElementById('mp-cloud').value || '').trim(); return v ? parseFloat(v) : null; })();
+        var cloudTrim = (document.getElementById('mp-cloud') && document.getElementById('mp-cloud').value || '').trim();
+        var cloud = cloudTrim !== '' ? parseFloat(cloudTrim) : (def2.cloud_cover_max != null ? def2.cloud_cover_max : null);
         if (cloud != null) body.cloud_cover_max = cloud;
         body.swap_options_limit = MP_SWAP_PAGE;
         return body;
@@ -624,6 +642,7 @@
         var body = buildSwapFetchBodyForItems(items);
         if (!body || !body.stac_collection_id) return Promise.resolve(null);
         body.swap_options_limit = MP_SWAP_PAGE;
+        if (MP_SWAP_INCLUDE_FOOTPRINT_DISPLAY) body.include_footprint_display = true;
         if (opts.swapOptionsOffset) {
           body.swap_options_offset = opts.swapOptionsOffset;
         } else if (appendForKey && lastPlan && lastPlan.swap_options) {
@@ -666,6 +685,12 @@
           if (data.swap_options_total && typeof data.swap_options_total === 'object') {
             Object.keys(data.swap_options_total).forEach(function(ok) {
               lastPlan.swap_options_total[ok] = data.swap_options_total[ok];
+            });
+          }
+          if (data.candidates_matched != null && items && items.length) {
+            ensureSwapOptionState();
+            items.forEach(function(it0) {
+              if (it0 && it0.key != null) lastPlan._swapCandidatesHint[String(it0.key)] = data.candidates_matched;
             });
           }
           mergeFootprintDisplayFromPlanResponse(data);
@@ -1123,6 +1148,30 @@
           det.appendChild(sum);
           var grid = document.createElement('div');
           grid.className = 'mosaic-swap-grid';
+          if (fetched && det.open) {
+            var refRow = document.createElement('div');
+            refRow.className = 'meta';
+            refRow.style.margin = '0 0 0.5rem 0';
+            refRow.style.gridColumn = '1 / -1';
+            var refBtn = document.createElement('button');
+            refBtn.type = 'button';
+            refBtn.className = 'btn btn-sm';
+            refBtn.textContent = 'Refresh alternatives';
+            refBtn.title = 'Re-run STAC search with current filters (dates, cloud, same-pass strip)';
+            refBtn.onclick = function(e) {
+              e.stopPropagation();
+              invalidateSwapOptionsForKey(it.key);
+              swapLoadingKey = String(it.key);
+              rebuildSelectedUi();
+              fetchSwapOptionsForItems([it], { showGlobalLoading: false }).catch(function() {}).finally(function() {
+                swapLoadingKey = null;
+                rebuildSelectedUi();
+                refreshFootprintsLayer();
+              });
+            };
+            refRow.appendChild(refBtn);
+            grid.appendChild(refRow);
+          }
           if (loadingRow && !fetched) {
             var loadP = document.createElement('p');
             loadP.className = 'meta';
@@ -1145,14 +1194,52 @@
             hintP.textContent = 'Expand this section to load alternatives from STAC (one request per row).';
             grid.appendChild(hintP);
           } else if (!nAlts) {
-            var empty = document.createElement('p');
-            empty.className = 'meta';
-            empty.style.margin = '0';
-            empty.style.gridColumn = '1 / -1';
-            empty.textContent = it.mgrs_tile
-              ? 'No other scenes in the search results for tile ' + it.mgrs_tile + ' with overlapping footprint. Try widening the date range or regenerating the mosaic.'
+            var hintN = (lastPlan && lastPlan._swapCandidatesHint && lastPlan._swapCandidatesHint[String(it.key)] != null)
+              ? lastPlan._swapCandidatesHint[String(it.key)]
+              : null;
+            var baseMsg = it.mgrs_tile
+              ? 'No other scenes in the search results for tile ' + it.mgrs_tile + ' with overlapping footprint. Try widening the date range, adjusting max cloud, or use Refresh alternatives above.'
               : 'Could not detect a Sentinel-2 MGRS tile id for this item; widen search or check item naming.';
-            grid.appendChild(empty);
+            var extraHint = hintN != null
+              ? (' STAC returned ' + hintN + ' candidate(s) in the AOI for this request; filters require the same MGRS tile and overlapping footprint.')
+              : '';
+            if (it.thumbnail) {
+              var wrap0 = document.createElement('div');
+              wrap0.style.gridColumn = '1 / -1';
+              wrap0.style.display = 'flex';
+              wrap0.style.gap = '10px';
+              wrap0.style.alignItems = 'flex-start';
+              wrap0.style.flexWrap = 'wrap';
+              var tw0 = document.createElement('div');
+              tw0.className = 'mosaic-swap-thumb-wrap';
+              var im0 = document.createElement('img');
+              im0.alt = '';
+              im0.loading = 'lazy';
+              im0.src = plannerThumbUrlFresh(it.thumbnail);
+              tw0.appendChild(im0);
+              var col0 = document.createElement('div');
+              var lab0 = document.createElement('p');
+              lab0.className = 'meta';
+              lab0.style.margin = '0 0 4px 0';
+              lab0.style.fontWeight = '600';
+              lab0.textContent = 'Current scene';
+              col0.appendChild(lab0);
+              var p0 = document.createElement('p');
+              p0.className = 'meta';
+              p0.style.margin = '0';
+              p0.textContent = baseMsg + extraHint;
+              col0.appendChild(p0);
+              wrap0.appendChild(tw0);
+              wrap0.appendChild(col0);
+              grid.appendChild(wrap0);
+            } else {
+              var empty = document.createElement('p');
+              empty.className = 'meta';
+              empty.style.margin = '0';
+              empty.style.gridColumn = '1 / -1';
+              empty.textContent = baseMsg + extraHint;
+              grid.appendChild(empty);
+            }
           } else {
             alts.forEach(function(a) {
               var card = document.createElement('div');
