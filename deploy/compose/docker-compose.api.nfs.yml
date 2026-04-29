@@ -8,6 +8,6 @@ name: geofastmap_api
 services:
   api:
     volumes:
-      - /data/bulk-uploads:/srv/geofast/bulk-uploads
-      - /data/tiles:/srv/geofast/tiles
-      - /data/rasters:/srv/geofast/rasters
+      - /srv/geofast/bulk-uploads:/data/bulk-uploads
+      - /srv/geofast/tiles:/data/tiles
+      - /srv/geofast/rasters:/data/rasters
