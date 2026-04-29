@@ -959,19 +959,24 @@ def split_initial_search_bboxes(search_bbox: list[float]) -> list[list[float]]:
     if w <= thr and h <= thr:
         return [[minx, miny, maxx, maxy]]
     grid_cfg = int(getattr(settings, "mosaic_stac_initial_split_grid", 0) or 0)
+    # Auto mode: keep each tile roughly at or below threshold on each axis.
+    # This avoids one giant /search on continent-scale AOIs and smooths upstream load.
     if grid_cfg > 1:
-        grid = min(6, grid_cfg)
+        gx = gy = min(10, grid_cfg)
     else:
-        grid = 3 if (w > 30.0 or h > 30.0) else 2
-    dx = w / grid
-    dy = h / grid
+        gx = max(2, int(math.ceil(w / thr)))
+        gy = max(2, int(math.ceil(h / thr)))
+        gx = min(10, gx)
+        gy = min(10, gy)
+    dx = w / gx
+    dy = h / gy
     out: list[list[float]] = []
-    for iy in range(grid):
-        for ix in range(grid):
+    for iy in range(gy):
+        for ix in range(gx):
             x0 = minx + ix * dx
-            x1 = maxx if ix == grid - 1 else (minx + (ix + 1) * dx)
+            x1 = maxx if ix == gx - 1 else (minx + (ix + 1) * dx)
             y0 = miny + iy * dy
-            y1 = maxy if iy == grid - 1 else (miny + (iy + 1) * dy)
+            y1 = maxy if iy == gy - 1 else (miny + (iy + 1) * dy)
             if x0 < x1 - 1e-9 and y0 < y1 - 1e-9:
                 out.append([x0, y0, x1, y1])
     return _dedupe_bboxes(out)

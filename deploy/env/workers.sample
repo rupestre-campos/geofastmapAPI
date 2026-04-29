@@ -3,6 +3,18 @@ REDIS_URL=redis://YOUR_REDIS_HOST:6379/0
 BULK_QUEUE_TYPE=redis
 PROCESS_QUEUE_TYPE=redis
 MOSAIC_QUEUE_TYPE=redis
+REDIS_RETRY_BASE_SECONDS=1
+REDIS_RETRY_MAX_SECONDS=30
+REDIS_RETRY_ENQUEUE_MAX_ATTEMPTS=5
+## Bulk ingest resilience/perf profile (large files)
+BULK_IMPORT_BATCH_SIZE=2000
+BULK_INSERT_PARTS_BATCH_SIZE=160
+BULK_PROGRESS_HEARTBEAT_SECONDS=5
+## immediate|deferred|best_effort (workers usually run best_effort/deferred for huge layers)
+BULK_EXTENT_UPDATE_MODE=best_effort
+BULK_DB_RETRY_MAX_ATTEMPTS=4
+BULK_DB_RETRY_BASE_SECONDS=1
+BULK_DB_RETRY_MAX_SECONDS=30
 
 # --- Homogeneous mosaic workers (recommended default) ---
 # Use the same env on every host: each process can dequeue parent jobs AND Redis STAC subtasks (and footprints if enabled).
@@ -63,6 +75,8 @@ MOSAIC_PARENT_FAIL_ON_PARTIAL=false
 STAC_SEARCH_HTTP_MAX_RETRIES=8
 STAC_SEARCH_HTTP_RETRY_BACKOFF_SECONDS=2
 STAC_SEARCH_HTTP_RETRY_BACKOFF_MAX_SECONDS=300
+STAC_SEARCH_HTTP_MAX_PAGES=2
+STAC_SEARCH_HTTP_PAGE_DELAY_SECONDS=0.25
 
 BULK_STORAGE_PATH=/data/bulk-uploads
 TILES_STORAGE_PATH=/data/tiles

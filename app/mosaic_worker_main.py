@@ -23,6 +23,7 @@ from app.services.mosaic_plan_jobs import (
     set_mosaic_footprint_subtask_result,
     set_mosaic_footprint_subtask_status,
 )
+from app.services.redis_resilience import retry_wait_seconds
 
 
 async def _run_job(payload: dict) -> None:
@@ -205,6 +206,7 @@ async def _worker_loop() -> None:
     import redis
 
     r = redis.from_url(settings.redis_url, decode_responses=True)
+    redis_failures = 0
     print(
         "Mosaic worker started. Waiting for jobs... "
         f"(max_concurrent={max_concurrent}, subtask_workers={subtask_workers}, footprint_budget={footprint_budget})",
@@ -280,7 +282,27 @@ async def _worker_loop() -> None:
             if can_take_subtasks:
                 aux_keys_only.append(MOSAIC_PLAN_SUBTASK_QUEUE_KEY)
             if aux_keys_only:
-                item_cap = await asyncio.to_thread(r.brpop, aux_keys_only, 5)
+                try:
+                    item_cap = await asyncio.to_thread(r.brpop, aux_keys_only, 5)
+                    redis_failures = 0
+                except Exception as e:
+                    redis_failures += 1
+                    wait = retry_wait_seconds(
+                        redis_failures,
+                        base=max(0.1, float(settings.redis_retry_base_seconds or 1.0)),
+                        max_seconds=max(1.0, float(settings.redis_retry_max_seconds or 30.0)),
+                    )
+                    print(
+                        f"[mosaic-worker] Redis unavailable (attempt {redis_failures}), retrying in {wait:.2f}s: {e}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    try:
+                        r = redis.from_url(settings.redis_url, decode_responses=True)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(wait)
+                    continue
                 if item_cap:
                     _dispatch_brpop_item(item_cap[0], item_cap[1])
                     continue
@@ -304,7 +326,27 @@ async def _worker_loop() -> None:
         if not keys:
             await asyncio.sleep(1)
             continue
-        item = await asyncio.to_thread(r.brpop, keys, 5)
+        try:
+            item = await asyncio.to_thread(r.brpop, keys, 5)
+            redis_failures = 0
+        except Exception as e:
+            redis_failures += 1
+            wait = retry_wait_seconds(
+                redis_failures,
+                base=max(0.1, float(settings.redis_retry_base_seconds or 1.0)),
+                max_seconds=max(1.0, float(settings.redis_retry_max_seconds or 30.0)),
+            )
+            print(
+                f"[mosaic-worker] Redis unavailable (attempt {redis_failures}), retrying in {wait:.2f}s: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                r = redis.from_url(settings.redis_url, decode_responses=True)
+            except Exception:
+                pass
+            await asyncio.sleep(wait)
+            continue
         if not item:
             continue
         _dispatch_brpop_item(item[0], item[1])

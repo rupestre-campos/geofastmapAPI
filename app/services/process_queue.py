@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 
 from app.core.config import get_settings
+from app.services.redis_resilience import run_redis_retry
 
 PROCESS_QUEUE_KEY = "geofastmap:process_queue"
 PROCESS_JOB_IDS_KEY = "geofastmap:process_job_ids"
@@ -205,8 +206,13 @@ def enqueue_process_job(payload: ProcessJobPayload) -> bool:
     """Push job to process queue. Returns True if enqueued."""
     if get_settings().process_queue_type != "redis":
         return False
-    r = _redis()
-    r.lpush(PROCESS_QUEUE_KEY, payload.to_json())
+    try:
+        run_redis_retry(
+            "process_enqueue",
+            lambda: _redis().lpush(PROCESS_QUEUE_KEY, payload.to_json()),
+        )
+    except Exception:
+        return False
     if payload.is_feature_vs_layers:
         src = "reference " + payload.feature_ref.get("collection_id", "") + "/" + payload.feature_ref.get("feature_id", "") if payload.feature_ref else "GeoJSON"
         fid = payload.feature_ref.get("feature_id") if payload.feature_ref else None

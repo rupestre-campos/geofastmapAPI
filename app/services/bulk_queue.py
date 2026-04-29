@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from app.core.config import get_settings
+from app.services.redis_resilience import run_redis_retry
 
 QUEUE_KEY = "geofastmap:bulk_import_queue"
 BULK_IMPORT_REG_PREFIX = "geofastmap:bulk_import_meta:"
@@ -71,8 +72,12 @@ def register_bulk_import_job(job_id: str, storage_key: str) -> None:
     if settings.bulk_queue_type == "redis":
         import redis
 
-        r = redis.from_url(settings.redis_url, decode_responses=True)
-        r.set(f"{BULK_IMPORT_REG_PREFIX}{job_id}", storage_key, ex=86400 * 8)
+        run_redis_retry(
+            "register_bulk_import_job",
+            lambda: redis.from_url(settings.redis_url, decode_responses=True).set(
+                f"{BULK_IMPORT_REG_PREFIX}{job_id}", storage_key, ex=86400 * 8
+            ),
+        )
         return
     with _bulk_reg_lock:
         _mem_bulk_storage[job_id] = storage_key
@@ -134,8 +139,15 @@ def enqueue(payload: BulkJobPayload) -> None:
     settings = get_settings()
     if settings.bulk_queue_type == "redis":
         import redis
-        r = redis.from_url(settings.redis_url, decode_responses=True)
-        r.lpush(QUEUE_KEY, payload.to_json())
+        try:
+            run_redis_retry(
+                "bulk_enqueue",
+                lambda: redis.from_url(settings.redis_url, decode_responses=True).lpush(
+                    QUEUE_KEY, payload.to_json()
+                ),
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to enqueue bulk job after retries: {e}") from e
         return
     _memory_queue_put(payload)
 

@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from app.core.config import get_settings
+from app.services.redis_resilience import run_redis_retry
 
 
 @dataclass
@@ -126,12 +127,15 @@ def _create_job_redis(collection_id: str, owner_id: int | None = None) -> JobInf
         mapping["finished_at"] = job.finished_at.isoformat() + "Z"
     if owner_id is not None:
         mapping["owner_id"] = str(owner_id)
-    r.hset(key, mapping=mapping)
-    r.expire(key, 86400 * 7)  # 7 days
-    coll_key = _jobs_by_collection_key(collection_id)
-    r.lpush(coll_key, job_id)
-    r.ltrim(coll_key, 0, 49)
-    r.expire(coll_key, 86400 * 7)
+    def _write() -> None:
+        r.hset(key, mapping=mapping)
+        r.expire(key, 86400 * 7)  # 7 days
+        coll_key = _jobs_by_collection_key(collection_id)
+        r.lpush(coll_key, job_id)
+        r.ltrim(coll_key, 0, 49)
+        r.expire(coll_key, 86400 * 7)
+
+    run_redis_retry("create_job", _write)
     return job
 
 
@@ -181,7 +185,7 @@ def _update_job_redis(
     settings = get_settings()
     r = redis.from_url(settings.redis_url, decode_responses=True)
     key = _redis_key(job_id)
-    if not r.exists(key):
+    if not run_redis_retry("update_job_exists", lambda: r.exists(key)):
         return None
     updates = {}
     now = datetime.utcnow().isoformat() + "Z"
@@ -201,7 +205,7 @@ def _update_job_redis(
         updates["finished_at"] = finished_at.isoformat() + "Z"
     if updates:
         updates["updated_at"] = now
-        r.hset(key, mapping=updates)
+        run_redis_retry("update_job", lambda: r.hset(key, mapping=updates))
     return _get_job_redis(job_id)
 
 

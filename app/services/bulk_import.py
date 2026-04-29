@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import random
 import time
 import zipfile
 from datetime import datetime
@@ -10,6 +11,7 @@ from typing import Callable
 
 from sqlalchemy import create_engine, delete, text, update
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 from shapely.geometry import shape, GeometryCollection, MultiPoint, MultiLineString, MultiPolygon, Point, LineString, Polygon
 from shapely.validation import make_valid
@@ -33,6 +35,54 @@ class BulkImportCancelled(Exception):
     """Raised when the bulk job is marked cancelled in job_store (cooperative stop)."""
 
 
+def _is_retryable_db_error(err: Exception) -> bool:
+    if isinstance(err, (OperationalError, DBAPIError)):
+        return True
+    msg = str(err).lower()
+    return any(
+        frag in msg
+        for frag in (
+            "server closed the connection unexpectedly",
+            "connection reset",
+            "connection refused",
+            "could not connect",
+            "network is unreachable",
+            "terminating connection",
+            "connection is closed",
+            "ssl syscall error",
+        )
+    )
+
+
+def _retry_wait_seconds(attempt_idx: int, *, base: float, max_seconds: float) -> float:
+    raw = base * (2 ** max(0, attempt_idx - 1))
+    wait = min(max_seconds, raw)
+    return wait * (1.0 + random.uniform(0.0, 0.15))
+
+
+def _run_db_retry(
+    label: str,
+    fn: Callable[[], None],
+    *,
+    on_retry: Callable[[int, float, str], None] | None = None,
+) -> None:
+    settings = get_settings()
+    max_attempts = max(1, int(getattr(settings, "bulk_db_retry_max_attempts", 4) or 4))
+    base = max(0.1, float(getattr(settings, "bulk_db_retry_base_seconds", 1.0) or 1.0))
+    max_backoff = max(base, float(getattr(settings, "bulk_db_retry_max_seconds", 30.0) or 30.0))
+    for attempt in range(1, max_attempts + 1):
+        try:
+            fn()
+            return
+        except Exception as e:
+            if attempt >= max_attempts or not _is_retryable_db_error(e):
+                raise
+            wait = _retry_wait_seconds(attempt, base=base, max_seconds=max_backoff)
+            if on_retry:
+                on_retry(attempt, wait, f"{label}: {type(e).__name__}: {e}")
+            time.sleep(wait)
+
+
 def _raise_if_bulk_cancelled(bulk_import_job_id: str | None) -> None:
     if not bulk_import_job_id:
         return
@@ -43,31 +93,37 @@ def _raise_if_bulk_cancelled(bulk_import_job_id: str | None) -> None:
 
 def _update_feature_count_sync(engine: Engine, collection_id: str) -> None:
     """Recompute collections.feature_count from features (COUNT DISTINCT id)."""
-    with engine.connect() as conn:
-        row = conn.execute(
-            text(
-                "SELECT COUNT(DISTINCT id) AS n FROM features WHERE collection_id = :cid"
-            ),
-            {"cid": collection_id},
-        ).first()
-        n = int(row.n) if row and row.n is not None else 0
-        conn.execute(
-            text("UPDATE collections SET feature_count = :n WHERE id = :cid"),
-            {"cid": collection_id, "n": n},
-        )
-        conn.commit()
+    def _run() -> None:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT COUNT(DISTINCT id) AS n FROM features WHERE collection_id = :cid"
+                ),
+                {"cid": collection_id},
+            ).first()
+            n = int(row.n) if row and row.n is not None else 0
+            conn.execute(
+                text("UPDATE collections SET feature_count = :n WHERE id = :cid"),
+                {"cid": collection_id, "n": n},
+            )
+            conn.commit()
+
+    _run_db_retry("feature_count_update", _run)
 
 
 def _sync_delete_bulk_import_rows_and_refresh(engine: Engine, collection_id: str, job_id: str) -> None:
     """Remove rows tagged with this bulk job and refresh cached count + extent."""
-    with engine.connect() as conn:
-        conn.execute(
-            text(
-                "DELETE FROM features WHERE collection_id = :cid AND bulk_import_job_id = :jid"
-            ),
-            {"cid": collection_id, "jid": job_id},
-        )
-        conn.commit()
+    def _delete_rows() -> None:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "DELETE FROM features WHERE collection_id = :cid AND bulk_import_job_id = :jid"
+                ),
+                {"cid": collection_id, "jid": job_id},
+            )
+            conn.commit()
+
+    _run_db_retry("cancel_cleanup_delete", _delete_rows)
     _update_feature_count_sync(engine, collection_id)
     try:
         collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id)
@@ -175,6 +231,8 @@ def _import_one_source(
     on_progress: Callable[[str, int, int | None], None] | None,
     created_so_far: int,
     now: datetime,
+    heartbeat_seconds: float,
+    commit_with_retry: Callable[[Session], Session],
     bulk_import_job_id: str | None = None,
 ) -> tuple[int, int]:
     """Read one fiona source and insert features with ST_Subdivide (≤256 vertices/row). Returns (created, failed)."""
@@ -182,7 +240,10 @@ def _import_one_source(
 
     created = 0
     failed = 0
-    max_vertices = get_settings().features_subdivide_max_vertices
+    s = get_settings()
+    max_vertices = s.features_subdivide_max_vertices
+    insert_parts_batch_size = max(1, int(getattr(s, "bulk_insert_parts_batch_size", 160) or 160))
+    last_heartbeat = time.monotonic()
 
     # On multi-host NFS, a freshly uploaded ZIP can be briefly visible in directory listing
     # but not yet fully readable by GDAL on another worker. Retry a few times before failing.
@@ -203,6 +264,11 @@ def _import_one_source(
     with src:
         for rec in src:
             _raise_if_bulk_cancelled(bulk_import_job_id)
+            if on_progress and heartbeat_seconds > 0:
+                elapsed = time.monotonic() - last_heartbeat
+                if elapsed >= heartbeat_seconds:
+                    on_progress("running", created_so_far + created, None)
+                    last_heartbeat = time.monotonic()
             geom_dict = rec.get("geometry")
             props = dict(rec.get("properties") or {})
             if geom_dict:
@@ -247,6 +313,7 @@ def _import_one_source(
                                 props if props else None,
                                 now,
                                 bulk_import_job_id=bulk_import_job_id,
+                                batch_size=insert_parts_batch_size,
                             ):
                                 session.execute(text(sql), params)
                         else:
@@ -273,22 +340,17 @@ def _import_one_source(
                     continue
 
             if created > 0 and created % batch_size == 0:
-                try:
-                    session.commit()
-                except Exception:
-                    session.rollback()
-                    raise
+                session = commit_with_retry(session)
                 _raise_if_bulk_cancelled(bulk_import_job_id)
                 if on_progress:
                     on_progress("running", created_so_far + created, None)
+                    last_heartbeat = time.monotonic()
 
         if created > 0 and created % batch_size != 0:
-            try:
-                session.commit()
-            except Exception:
-                session.rollback()
-                raise
+            session = commit_with_retry(session)
             _raise_if_bulk_cancelled(bulk_import_job_id)
+            if on_progress:
+                last_heartbeat = time.monotonic()
     return created, failed
 
 
@@ -325,6 +387,7 @@ def run_bulk_import_sync(
     sync_url = settings.database_sync_url
     engine = create_engine(sync_url, pool_pre_ping=True, future=True)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    heartbeat_seconds = max(0.0, float(getattr(settings, "bulk_progress_heartbeat_seconds", 5.0) or 0.0))
 
     is_zip = file_path.lower().endswith(".zip")
     sources: list[tuple[str, str]] = []  # (open_path, driver)
@@ -359,16 +422,57 @@ def run_bulk_import_sync(
             if not coll:
                 return 0, 0, "Collection not found"
 
+            def _retry_notice(attempt: int, wait: float, reason: str) -> None:
+                if on_progress:
+                    on_progress("running", 0, None)
+                print(
+                    f"[bulk-import] retry attempt={attempt} wait={wait:.2f}s reason={reason}",
+                    flush=True,
+                )
+
+            def _commit_with_retry(sess: Session) -> Session:
+                def _do_commit() -> None:
+                    sess.commit()
+
+                try:
+                    _run_db_retry("bulk_commit", _do_commit, on_retry=_retry_notice)
+                    return sess
+                except Exception:
+                    try:
+                        sess.rollback()
+                    except Exception:
+                        pass
+                    raise
+
+            def _execute_with_retry(fn: Callable[[], None], label: str) -> None:
+                def _wrapped() -> None:
+                    try:
+                        fn()
+                    except Exception:
+                        try:
+                            session.rollback()
+                        except Exception:
+                            pass
+                        raise
+
+                _run_db_retry(label, _wrapped, on_retry=_retry_notice)
+
             _raise_if_bulk_cancelled(bulk_import_job_id)
 
             if mode == "replace":
                 if on_progress:
                     on_progress("replacing", 0, None)
-                session.execute(delete(Feature).where(Feature.collection_id == collection_id))
-                session.execute(
-                    update(Collection).where(Collection.id == collection_id).values(feature_count=0)
+                _execute_with_retry(
+                    lambda: session.execute(delete(Feature).where(Feature.collection_id == collection_id)),
+                    "replace_delete_features",
                 )
-                session.commit()
+                _execute_with_retry(
+                    lambda: session.execute(
+                        update(Collection).where(Collection.id == collection_id).values(feature_count=0)
+                    ),
+                    "replace_reset_feature_count",
+                )
+                session = _commit_with_retry(session)
 
             if on_progress:
                 on_progress("running", 0, None)
@@ -388,28 +492,44 @@ def run_bulk_import_sync(
                     on_progress,
                     total_created,
                     now,
+                    heartbeat_seconds,
+                    _commit_with_retry,
                     bulk_import_job_id=bulk_import_job_id,
                 )
                 total_created += created
                 total_failed += failed
 
             if mode == "replace":
-                session.execute(
-                    update(Collection).where(Collection.id == collection_id).values(feature_count=total_created)
+                _execute_with_retry(
+                    lambda: session.execute(
+                        update(Collection).where(Collection.id == collection_id).values(feature_count=total_created)
+                    ),
+                    "replace_finalize_feature_count",
                 )
             else:
-                session.execute(
-                    update(Collection)
-                    .where(Collection.id == collection_id)
-                    .values(feature_count=Collection.feature_count + total_created)
+                _execute_with_retry(
+                    lambda: session.execute(
+                        update(Collection)
+                        .where(Collection.id == collection_id)
+                        .values(feature_count=Collection.feature_count + total_created)
+                    ),
+                    "append_finalize_feature_count",
                 )
-            session.commit()
+            session = _commit_with_retry(session)
 
-            # Precompute collection extent (bbox) from imported geometries before closing the engine.
-            try:
-                collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id)
-            except Exception:
-                pass
+            extent_mode = str(getattr(settings, "bulk_extent_update_mode", "immediate") or "immediate").lower()
+            if extent_mode not in ("immediate", "deferred", "best_effort"):
+                extent_mode = "immediate"
+            if extent_mode != "deferred":
+                try:
+                    _run_db_retry(
+                        "extent_recompute",
+                        lambda: collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id),
+                        on_retry=_retry_notice,
+                    )
+                except Exception:
+                    if extent_mode == "immediate":
+                        raise
 
             if on_progress:
                 on_progress("completed", total_created, total_created)

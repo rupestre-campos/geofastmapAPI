@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from app.core.config import get_settings
+from app.services.redis_resilience import run_redis_retry
 
 MOSAIC_PLAN_QUEUE_KEY = "geofastmap:mosaic_plan_queue"
 MOSAIC_PLAN_JOB_KEY_PREFIX = "geofastmap:mosaic_plan_job:"
@@ -55,21 +56,24 @@ def enqueue_mosaic_plan_job(body: dict[str, Any], owner_id: int) -> str:
     job_id = str(uuid.uuid4())
     now = _to_iso_now()
     payload = {"job_id": job_id, "owner_id": owner_id, "body": body}
-    r = _redis()
-    r.hset(
-        _job_key(job_id),
-        mapping={
-            "job_id": job_id,
-            "owner_id": str(owner_id),
-            "status": "pending",
-            "message": "Queued",
-            "created_at": now,
-            "updated_at": now,
-            "payload": json.dumps(payload, separators=(",", ":")),
-        },
-    )
-    r.expire(_job_key(job_id), 86400)
-    r.lpush(MOSAIC_PLAN_QUEUE_KEY, json.dumps(payload, separators=(",", ":")))
+    def _enqueue() -> None:
+        r = _redis()
+        r.hset(
+            _job_key(job_id),
+            mapping={
+                "job_id": job_id,
+                "owner_id": str(owner_id),
+                "status": "pending",
+                "message": "Queued",
+                "created_at": now,
+                "updated_at": now,
+                "payload": json.dumps(payload, separators=(",", ":")),
+            },
+        )
+        r.expire(_job_key(job_id), 86400)
+        r.lpush(MOSAIC_PLAN_QUEUE_KEY, json.dumps(payload, separators=(",", ":")))
+
+    run_redis_retry("mosaic_enqueue", _enqueue)
     return job_id
 
 

@@ -3,7 +3,19 @@ DATABASE_URL=postgresql+asyncpg://postgres:postgres@YOUR_DB_HOST:5432/geofastmap
 REDIS_URL=redis://YOUR_REDIS_HOST:6379/0
 BULK_QUEUE_TYPE=redis
 BULK_STORAGE_PATH=/data/bulk-uploads
+## Bulk ingest resilience/perf profile (large files)
+BULK_IMPORT_BATCH_SIZE=2000
+BULK_INSERT_PARTS_BATCH_SIZE=160
+BULK_PROGRESS_HEARTBEAT_SECONDS=5
+## immediate|deferred|best_effort (deferred reduces tail latency for very large imports)
+BULK_EXTENT_UPDATE_MODE=best_effort
+BULK_DB_RETRY_MAX_ATTEMPTS=4
+BULK_DB_RETRY_BASE_SECONDS=1
+BULK_DB_RETRY_MAX_SECONDS=30
 PROCESS_QUEUE_TYPE=redis
+REDIS_RETRY_BASE_SECONDS=1
+REDIS_RETRY_MAX_SECONDS=30
+REDIS_RETRY_ENQUEUE_MAX_ATTEMPTS=5
 MOSAIC_QUEUE_TYPE=redis
 # Homogeneous setup: use the same MOSAIC_SUBJOB_* / MOSAIC_QUEUE_TYPE values on API and every mosaic worker (no coordinator vs shard split required).
 MOSAIC_SUBJOB_QUEUE_ENABLED=true
@@ -68,6 +80,9 @@ STAC_SEARCH_CACHE_TTL_SECONDS=604800
 STAC_SEARCH_HTTP_MAX_RETRIES=8
 STAC_SEARCH_HTTP_RETRY_BACKOFF_SECONDS=2
 STAC_SEARCH_HTTP_RETRY_BACKOFF_MAX_SECONDS=300
+# Follow STAC rel=next pages (small cap + tiny delay to avoid upstream burst).
+STAC_SEARCH_HTTP_MAX_PAGES=2
+STAC_SEARCH_HTTP_PAGE_DELAY_SECONDS=0.25
 # GET /collections listing per catalog (seconds). 604800 = 7d.
 STAC_COLLECTIONS_CACHE_TTL_SECONDS=604800
 # GET Item JSON (seconds); shared across API workers. 604800 = 7d.

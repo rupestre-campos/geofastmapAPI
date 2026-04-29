@@ -57,6 +57,19 @@ The [`Dockerfile`](../Dockerfile) includes `static/` so the web UI works without
 
 **Safety:** do not expose Postgres or Redis to the public internet; use strong passwords on the LAN.
 
+### Large bulk import profile (resilience + throughput)
+
+For multi-GB uploads, tune API + worker envs together (same Redis settings on every host):
+
+- `BULK_IMPORT_BATCH_SIZE` (start `2000`, adjust by DB CPU/IO)
+- `BULK_INSERT_PARTS_BATCH_SIZE` (start `160`, controls batched SQL VALUES when one feature splits)
+- `BULK_PROGRESS_HEARTBEAT_SECONDS` (e.g. `5`, emits progress while a large batch is still running)
+- `BULK_EXTENT_UPDATE_MODE` = `best_effort` or `deferred` for very large layers (reduces end-of-job tail latency)
+- `BULK_DB_RETRY_MAX_ATTEMPTS`, `BULK_DB_RETRY_BASE_SECONDS`, `BULK_DB_RETRY_MAX_SECONDS`
+- `REDIS_RETRY_BASE_SECONDS`, `REDIS_RETRY_MAX_SECONDS`, `REDIS_RETRY_ENQUEUE_MAX_ATTEMPTS`
+
+Use `immediate` extent updates only when you need bbox refreshed synchronously after each import.
+
 ### Optional admin observability (simple default)
 
 Recommended first step for new deployments: use in-app admin pages at:

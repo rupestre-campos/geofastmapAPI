@@ -394,17 +394,27 @@ async def bulk_import_items(
             pass
 
     qt = queue_compute_tiles is None or str(queue_compute_tiles).lower() not in ("false", "0", "no", "")
-    register_bulk_import_job(job.job_id, storage_key)
-    enqueue(BulkJobPayload(
-        job_id=job.job_id,
-        collection_id=collection_id,
-        owner_id=current_user.id if current_user else None,
-        storage_key=storage_key,
-        mode=mode,
-        batch_size=batch,
-        queue_compute_tiles=qt,
-        zip_inner_shp_paths=zip_inner_shp_paths,
-    ))
+    try:
+        register_bulk_import_job(job.job_id, storage_key)
+        enqueue(BulkJobPayload(
+            job_id=job.job_id,
+            collection_id=collection_id,
+            owner_id=current_user.id if current_user else None,
+            storage_key=storage_key,
+            mode=mode,
+            batch_size=batch,
+            queue_compute_tiles=qt,
+            zip_inner_shp_paths=zip_inner_shp_paths,
+        ))
+    except Exception as e:
+        try:
+            storage.delete(storage_key)
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Bulk queue unavailable after retries: {e}",
+        ) from e
 
     base = _base_url(request)
     return Response(

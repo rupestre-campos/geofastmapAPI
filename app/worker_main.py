@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 
 from app.core.config import get_settings
 from app.services.bulk_queue import QUEUE_KEY, BulkJobPayload
 from app.services.bulk_worker import cleanup_orphan_bulk_uploads, process_bulk_job
+from app.services.redis_resilience import retry_wait_seconds
 
 
 def main() -> None:
@@ -24,11 +26,32 @@ def main() -> None:
 
     import redis
     r = redis.from_url(settings.redis_url, decode_responses=True)
+    redis_failures = 0
 
     print("Bulk import worker started. Waiting for jobs...", flush=True)
     while True:
         # BRPOP blocks until a job is available; one job at a time per worker
-        result = r.brpop(QUEUE_KEY, timeout=5)
+        try:
+            result = r.brpop(QUEUE_KEY, timeout=5)
+            redis_failures = 0
+        except Exception as e:
+            redis_failures += 1
+            wait = retry_wait_seconds(
+                redis_failures,
+                base=max(0.1, float(settings.redis_retry_base_seconds or 1.0)),
+                max_seconds=max(1.0, float(settings.redis_retry_max_seconds or 30.0)),
+            )
+            print(
+                f"[bulk-worker] Redis unavailable (attempt {redis_failures}), retrying in {wait:.2f}s: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                r = redis.from_url(settings.redis_url, decode_responses=True)
+            except Exception:
+                pass
+            time.sleep(wait)
+            continue
         if not result:
             continue
         _key, payload_json = result

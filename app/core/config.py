@@ -25,6 +25,16 @@ class Settings(BaseSettings):
 
     # Bulk import: batch size for DB inserts (background job)
     bulk_import_batch_size: int = 1000
+    # SQL VALUES tuples per INSERT when one source feature splits into many geometry parts.
+    bulk_insert_parts_batch_size: int = 160
+    # Emit progress updates while a large batch is still in-flight (seconds). 0 = commit-bound updates only.
+    bulk_progress_heartbeat_seconds: float = 5.0
+    # Post-import extent update mode: immediate (blocking), deferred (skip during job), or best_effort.
+    bulk_extent_update_mode: str = "immediate"  # immediate | deferred | best_effort
+    # Retry transient DB failures during bulk import/finalization.
+    bulk_db_retry_max_attempts: int = 4
+    bulk_db_retry_base_seconds: float = 1.0
+    bulk_db_retry_max_seconds: float = 30.0
 
     # Bulk storage: where uploaded files go (shared path for API and worker). Future: s3.
     bulk_storage_type: str = "filesystem"  # filesystem | s3 (s3 reserved)
@@ -33,6 +43,10 @@ class Settings(BaseSettings):
     # Bulk queue: memory = in-process consumer; redis = separate worker(s), scalable.
     bulk_queue_type: str = "redis"  # memory | redis
     redis_url: str = "redis://localhost:6379/0"  # used when bulk_queue_type=redis
+    # Generic Redis retry/backoff knobs for queue consumers and enqueue operations.
+    redis_retry_base_seconds: float = 1.0
+    redis_retry_max_seconds: float = 30.0
+    redis_retry_enqueue_max_attempts: int = 5
 
     # OGC API - Processes: geometric operations (intersection, erase) between collections.
     process_queue_type: str = "redis"  # redis | memory (memory = no separate worker)
@@ -127,6 +141,10 @@ class Settings(BaseSettings):
     stac_search_http_max_retries: int = 8  # attempts after the first (8 => up to 9 tries per catalog)
     stac_search_http_retry_backoff_seconds: float = 2.0  # base delay; exponential backoff
     stac_search_http_retry_backoff_max_seconds: float = 300.0  # cap single retry wait at 5 minutes
+    # Federated STAC pagination: follow rel=next links up to this many pages per catalog request.
+    stac_search_http_max_pages: int = 2
+    # Small delay between page requests to reduce burst pressure on upstream STAC APIs.
+    stac_search_http_page_delay_seconds: float = 0.25
     stac_search_max_catalogs: int = 32
     # Mosaic planner compute queue. redis = offload heavy planning to standalone worker(s).
     mosaic_queue_type: str = "redis"  # redis | inline

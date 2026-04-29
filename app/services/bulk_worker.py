@@ -66,7 +66,11 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
         return
 
     def on_progress(status: str, items_created: int, _total: int | None) -> None:
-        update_job(payload.job_id, status=status, items_created=items_created)
+        try:
+            update_job(payload.job_id, status=status, items_created=items_created)
+        except Exception:
+            # Progress updates are best-effort; do not fail a long-running import due to transient Redis issues.
+            pass
 
     try:
         update_job(payload.job_id, status="running")

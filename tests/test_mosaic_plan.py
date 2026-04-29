@@ -41,6 +41,18 @@ def test_season_datetime_slices_summer():
     assert any("2024-06" in s or "2024-07" in s or "2024-08" in s for s in slices)
 
 
+def test_split_initial_search_bboxes_auto_uses_threshold_based_grid(monkeypatch):
+    import app.core.config as core_config
+
+    settings = SimpleNamespace(
+        mosaic_stac_initial_split_threshold_degrees=6.0,
+        mosaic_stac_initial_split_grid=0,
+    )
+    monkeypatch.setattr(core_config, "get_settings", lambda: settings)
+    out = split_initial_search_bboxes([-10, -10, 20, 20])  # 30x30 => ceil(30/6)=5 each axis
+    assert len(out) == 25
+
+
 def test_mgrs_tile_from_item_id():
     assert mgrs_tile_from_stac_item_id("S2A_MSIL2A_20250810T140849_N0510_R080_T23KNS_20250810T141000") == "23KNS"
     assert mgrs_tile_from_stac_item_id("S2A_23KNS_20250810_1_L2A") == "23KNS"

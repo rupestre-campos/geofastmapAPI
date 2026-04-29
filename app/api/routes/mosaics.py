@@ -97,7 +97,13 @@ async def mosaic_plan(
 ):
     settings = get_settings()
     if async_mode and settings.mosaic_queue_type == "redis":
-        job_id = enqueue_mosaic_plan_job(body.model_dump(), int(current_user.id))
+        try:
+            job_id = enqueue_mosaic_plan_job(body.model_dump(), int(current_user.id))
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Mosaic queue unavailable after retries: {e}",
+            ) from e
         return {"job_id": job_id, "status": "pending"}
     return await compute_mosaic_plan(body, current_user)
 

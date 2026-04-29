@@ -73,6 +73,113 @@ def _retry_wait_seconds(
     return min(cap, wait)
 
 
+def _extract_next_link(part: dict[str, Any]) -> dict[str, Any] | None:
+    links = part.get("links")
+    if not isinstance(links, list):
+        return None
+    for l in links:
+        if not isinstance(l, dict):
+            continue
+        if str(l.get("rel") or "").lower() != "next":
+            continue
+        href = str(l.get("href") or "").strip()
+        if not href:
+            continue
+        method = str(l.get("method") or "GET").upper()
+        body = l.get("body")
+        if method not in ("GET", "POST"):
+            method = "GET"
+        return {"href": href, "method": method, "body": body if isinstance(body, dict) else None}
+    return None
+
+
+async def _request_json_with_retries(
+    client: httpx.AsyncClient,
+    *,
+    catalog: StacCatalog,
+    method: str,
+    url: str,
+    body: dict[str, Any] | None,
+    max_attempts: int,
+    backoff: float,
+    max_backoff: float,
+) -> tuple[dict[str, Any] | None, str | None, int]:
+    for attempt in range(max_attempts):
+        try:
+            if method == "POST":
+                r = await client.post(url, json=body or {}, headers=_stac_client_headers())
+            else:
+                r = await client.get(url, headers=_stac_client_headers())
+            if 200 <= r.status_code < 300:
+                try:
+                    return r.json(), None, r.status_code
+                except Exception as e:
+                    return None, f"Invalid JSON in response ({e})", r.status_code
+            code = r.status_code
+            if code in _RETRYABLE_HTTP_STATUS and attempt < max_attempts - 1:
+                retry_after_sec: float | None = None
+                if code == 429:
+                    ra = r.headers.get("Retry-After")
+                    if ra:
+                        try:
+                            retry_after_sec = float(ra)
+                        except ValueError:
+                            pass
+                wait = _retry_wait_seconds(
+                    base_backoff=backoff,
+                    attempt=attempt,
+                    max_backoff=max_backoff,
+                    retry_after_seconds=retry_after_sec,
+                )
+                logger.info(
+                    "STAC upstream HTTP %s for catalog %s; retry %s/%s in %.1fs (%s)",
+                    code,
+                    catalog.id,
+                    attempt + 1,
+                    max_attempts,
+                    wait,
+                    url,
+                )
+                await asyncio.sleep(wait)
+                continue
+            extra = ""
+            try:
+                ct = (r.headers.get("content-type") or "").lower()
+                if "json" in ct:
+                    j = r.json()
+                    if isinstance(j, dict):
+                        msg = j.get("detail") or j.get("description") or j.get("message")
+                        if msg:
+                            extra = f": {msg}"
+                elif r.text:
+                    extra = f": {r.text[:200]}"
+            except Exception:
+                pass
+            detail = f"HTTP {code}" + (f" {r.reason_phrase}" if r.reason_phrase else "") + extra
+            return None, detail, code
+        except httpx.RequestError as e:
+            if attempt < max_attempts - 1:
+                wait = _retry_wait_seconds(
+                    base_backoff=backoff,
+                    attempt=attempt,
+                    max_backoff=max_backoff,
+                    retry_after_seconds=None,
+                )
+                logger.info(
+                    "STAC search request error for catalog %s (%s): %s; retry %s/%s in %.1fs",
+                    catalog.id,
+                    url,
+                    e,
+                    attempt + 1,
+                    max_attempts,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+                continue
+            return None, str(e) or type(e).__name__, 0
+    return None, "exhausted retries", 0
+
+
 def _merge_item_collections(parts: list[dict[str, Any]], *, catalog_labels: list[str]) -> dict[str, Any]:
     features: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -128,122 +235,87 @@ async def _post_search_with_retries(
     backoff = settings.stac_search_http_retry_backoff_seconds
     max_backoff = max(1.0, float(getattr(settings, "stac_search_http_retry_backoff_max_seconds", 300.0) or 300.0))
 
-    for attempt in range(max_attempts):
-        try:
-            r = await client.post(
-                url,
-                json=req_body,
-                headers=_stac_client_headers(),
+    part, err, code = await _request_json_with_retries(
+        client,
+        catalog=catalog,
+        method="POST",
+        url=url,
+        body=req_body,
+        max_attempts=max_attempts,
+        backoff=backoff,
+        max_backoff=max_backoff,
+    )
+    if part is not None:
+        page_max = max(1, int(getattr(settings, "stac_search_http_max_pages", 1) or 1))
+        page_delay = max(0.0, float(getattr(settings, "stac_search_http_page_delay_seconds", 0.0) or 0.0))
+        merged_feats = list(part.get("features") or [])
+        cur = part
+        page_num = 1
+        while page_num < page_max:
+            nxt = _extract_next_link(cur)
+            if not nxt:
+                break
+            if page_delay > 0:
+                await asyncio.sleep(page_delay)
+            n_part, n_err, _ncode = await _request_json_with_retries(
+                client,
+                catalog=catalog,
+                method=str(nxt["method"]),
+                url=str(nxt["href"]),
+                body=nxt.get("body"),
+                max_attempts=max_attempts,
+                backoff=backoff,
+                max_backoff=max_backoff,
             )
-            if 200 <= r.status_code < 300:
-                try:
-                    return r.json(), None
-                except Exception as e:
-                    detail = f"Invalid JSON in response ({e})"
-                    logger.warning("STAC search failed for catalog %s (%s): %s", catalog.id, url, detail)
-                    return None, detail
-
-            code = r.status_code
-            # Some upstream STAC APIs don't support the Query extension and return 400 when a "query"
-            # filter is included (even if it's lenient like cloud_cover_max=100). In that case,
-            # retry once without the query filter so searches still work.
-            if code == 400 and isinstance(req_body.get("query"), dict) and attempt == 0:
-                q = req_body.get("query") or {}
-                if isinstance(q, dict) and "eo:cloud_cover" in q:
-                    try:
-                        req_body2 = dict(req_body)
-                        req_body2.pop("query", None)
-                        r2 = await client.post(
-                            url,
-                            json=req_body2,
-                            headers=_stac_client_headers(),
-                        )
-                        if 200 <= r2.status_code < 300:
-                            try:
-                                return r2.json(), None
-                            except Exception as e:
-                                detail = f"Invalid JSON in response after dropping query ({e})"
-                                logger.warning("STAC search failed for catalog %s (%s): %s", catalog.id, url, detail)
-                                return None, detail
-                    except httpx.RequestError:
-                        pass
-            if code in _RETRYABLE_HTTP_STATUS and attempt < max_attempts - 1:
-                retry_after_sec: float | None = None
-                if code == 429:
-                    ra = r.headers.get("Retry-After")
-                    if ra:
-                        try:
-                            retry_after_sec = float(ra)
-                        except ValueError:
-                            pass
-                wait = _retry_wait_seconds(
-                    base_backoff=backoff,
-                    attempt=attempt,
-                    max_backoff=max_backoff,
-                    retry_after_seconds=retry_after_sec,
-                )
-                logger.info(
-                    "STAC upstream HTTP %s for catalog %s; retry %s/%s in %.1fs (%s)",
-                    code,
-                    catalog.id,
-                    attempt + 1,
-                    max_attempts,
-                    wait,
-                    url,
-                )
-                await asyncio.sleep(wait)
-                continue
-
-            # Try to include upstream error detail (often JSON with "description"/"detail").
-            extra = ""
-            try:
-                ct = (r.headers.get("content-type") or "").lower()
-                if "json" in ct:
-                    j = r.json()
-                    if isinstance(j, dict):
-                        msg = j.get("detail") or j.get("description") or j.get("message")
-                        if msg:
-                            extra = f": {msg}"
-                elif r.text:
-                    extra = f": {r.text[:200]}"
-            except Exception:
-                pass
-            detail = f"HTTP {code}" + (f" {r.reason_phrase}" if r.reason_phrase else "") + extra
-            if code in _RETRYABLE_HTTP_STATUS:
+            if n_part is None:
                 logger.warning(
-                    "STAC search failed for catalog %s (%s): %s after %s attempts",
+                    "STAC next-page fetch failed for catalog %s (%s): %s",
                     catalog.id,
-                    url,
-                    detail,
-                    max_attempts,
+                    nxt.get("href"),
+                    n_err or "unknown",
                 )
-            else:
-                logger.warning("STAC search failed for catalog %s (%s): %s", catalog.id, url, detail)
-            return None, detail
-
-        except httpx.RequestError as e:
-            if attempt < max_attempts - 1:
-                wait = _retry_wait_seconds(
-                    base_backoff=backoff,
-                    attempt=attempt,
-                    max_backoff=max_backoff,
-                    retry_after_seconds=None,
-                )
-                logger.info(
-                    "STAC search request error for catalog %s (%s): %s; retry %s/%s in %.1fs",
-                    catalog.id,
-                    url,
-                    e,
-                    attempt + 1,
-                    max_attempts,
-                    wait,
-                )
-                await asyncio.sleep(wait)
-                continue
-            logger.warning("STAC search failed for catalog %s (%s): %s", catalog.id, url, e)
-            return None, str(e) or type(e).__name__
-
-    return None, "exhausted retries"
+                break
+            merged_feats.extend(list(n_part.get("features") or []))
+            cur = n_part
+            page_num += 1
+        out = dict(part)
+        out["features"] = merged_feats
+        out["numberReturned"] = len(merged_feats)
+        return out, None
+    # Some upstream STAC APIs don't support the Query extension and return HTTP 400
+    # when a "query" filter is present. Retry once without cloud query in that case.
+    if code == 400 and isinstance(req_body.get("query"), dict):
+        q = req_body.get("query") or {}
+        if isinstance(q, dict) and "eo:cloud_cover" in q:
+            req_body2 = dict(req_body)
+            req_body2.pop("query", None)
+            p2, e2, _c2 = await _request_json_with_retries(
+                client,
+                catalog=catalog,
+                method="POST",
+                url=url,
+                body=req_body2,
+                max_attempts=max_attempts,
+                backoff=backoff,
+                max_backoff=max_backoff,
+            )
+            if p2 is not None:
+                return p2, None
+            if e2:
+                logger.warning("STAC search failed for catalog %s (%s): %s", catalog.id, url, e2)
+                return None, e2
+    if err:
+        if code in _RETRYABLE_HTTP_STATUS:
+            logger.warning(
+                "STAC search failed for catalog %s (%s): %s after %s attempts",
+                catalog.id,
+                url,
+                err,
+                max_attempts,
+            )
+        else:
+            logger.warning("STAC search failed for catalog %s (%s): %s", catalog.id, url, err)
+    return None, err or "exhausted retries"
 
 
 async def federated_search(

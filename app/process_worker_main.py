@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 
 from sqlalchemy import create_engine, text
 
@@ -24,6 +25,7 @@ from app.services.process_worker import (
     process_process_job_sync,
 )
 from app.services.tile_build_queue import create_tile_build_job, enqueue_tile_build
+from app.services.redis_resilience import retry_wait_seconds
 
 
 def _recover_orphaned_running_jobs(settings) -> None:
@@ -108,9 +110,30 @@ def main() -> None:
         pass
     import redis
     r = redis.from_url(settings.redis_url, decode_responses=True)
+    redis_failures = 0
     print("Process worker started. Waiting for jobs...", flush=True)
     while True:
-        result = r.brpop(PROCESS_QUEUE_KEY, timeout=5)
+        try:
+            result = r.brpop(PROCESS_QUEUE_KEY, timeout=5)
+            redis_failures = 0
+        except Exception as e:
+            redis_failures += 1
+            wait = retry_wait_seconds(
+                redis_failures,
+                base=max(0.1, float(settings.redis_retry_base_seconds or 1.0)),
+                max_seconds=max(1.0, float(settings.redis_retry_max_seconds or 30.0)),
+            )
+            print(
+                f"[process-worker] Redis unavailable (attempt {redis_failures}), retrying in {wait:.2f}s: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                r = redis.from_url(settings.redis_url, decode_responses=True)
+            except Exception:
+                pass
+            time.sleep(wait)
+            continue
         if not result:
             continue
         _, payload_json = result

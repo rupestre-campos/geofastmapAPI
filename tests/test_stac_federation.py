@@ -7,7 +7,12 @@ import pytest
 
 import app.core.config as core_config
 from app.services import stac_federation as sf
-from app.services.stac_federation import _merge_item_collections, _retry_wait_seconds
+from app.services.stac_federation import (
+    _extract_next_link,
+    _merge_item_collections,
+    _post_search_with_retries,
+    _retry_wait_seconds,
+)
 
 
 def test_merge_item_collections_two_features():
@@ -108,3 +113,65 @@ def test_retry_wait_seconds_respects_retry_after_but_caps():
         max_backoff=300.0,
         retry_after_seconds=999.0,
     ) == 300.0
+
+
+def test_extract_next_link_prefers_next_rel_and_normalizes_method():
+    part = {
+        "type": "FeatureCollection",
+        "features": [],
+        "links": [
+            {"rel": "self", "href": "https://example.com/self"},
+            {"rel": "next", "href": "https://example.com/next", "method": "post", "body": {"page": 2}},
+        ],
+    }
+    nxt = _extract_next_link(part)
+    assert nxt is not None
+    assert nxt["href"] == "https://example.com/next"
+    assert nxt["method"] == "POST"
+    assert nxt["body"] == {"page": 2}
+
+
+@pytest.mark.asyncio
+async def test_post_search_with_retries_follows_next_pages(monkeypatch):
+    settings = SimpleNamespace(
+        stac_search_http_max_retries=0,
+        stac_search_http_retry_backoff_seconds=0.1,
+        stac_search_http_retry_backoff_max_seconds=1.0,
+        stac_search_http_max_pages=2,
+        stac_search_http_page_delay_seconds=0.0,
+        stac_http_user_agent="test",
+    )
+    monkeypatch.setattr(core_config, "get_settings", lambda: settings)
+    monkeypatch.setattr(sf, "get_settings", lambda: settings)
+
+    calls = {"n": 0}
+
+    async def fake_request_json_with_retries(*_args, **kwargs):
+        calls["n"] += 1
+        if kwargs.get("url", "").endswith("/search"):
+            return (
+                {
+                    "type": "FeatureCollection",
+                    "features": [{"type": "Feature", "id": "a", "properties": {}}],
+                    "links": [{"rel": "next", "href": "https://x/next", "method": "GET"}],
+                },
+                None,
+                200,
+            )
+        return (
+            {
+                "type": "FeatureCollection",
+                "features": [{"type": "Feature", "id": "b", "properties": {}}],
+                "links": [],
+            },
+            None,
+            200,
+        )
+
+    monkeypatch.setattr(sf, "_request_json_with_retries", fake_request_json_with_retries)
+    catalog = SimpleNamespace(id="c1", stac_api_root_url="https://x", default_collections=None)
+    part, err = await _post_search_with_retries(SimpleNamespace(), catalog, {"collections": ["s2"]})  # type: ignore[arg-type]
+    assert err is None
+    assert part is not None
+    assert [f["id"] for f in part["features"]] == ["a", "b"]
+    assert calls["n"] == 2
