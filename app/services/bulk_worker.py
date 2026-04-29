@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -70,6 +71,10 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
     """Load file from storage, run import, update job status, delete file. Optionally queue tile build."""
     storage = get_bulk_storage()
     path = storage.get_path_or_uri(payload.storage_key)
+    print(
+        f"[bulk-worker] start job_id={payload.job_id} kind={payload.job_kind} collection={payload.collection_id} storage_key={payload.storage_key}",
+        flush=True,
+    )
 
     job = get_job(payload.job_id)
     if job and job.status == "cancelled":
@@ -138,6 +143,7 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
                 except Exception:
                     pass
     except Exception as e:
+        print(f"[bulk-worker] job_id={payload.job_id} kind={payload.job_kind} failed: {type(e).__name__}: {e}", flush=True)
         update_job(payload.job_id, status="failed", message=str(e))
     finally:
         # Cleanup strategy differs by job kind.
@@ -182,6 +188,7 @@ def _split_jsonl_to_chunk_keys(path: str, parent_job_id: str, lines_per_part: in
 
 
 def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
+    print(f"[bulk-parent] plan start parent_job_id={payload.job_id} mode={payload.mode} path={path}", flush=True)
     update_job(payload.job_id, status="running", message="Planning sharded import...")
     settings = get_settings()
     shard_payloads: list[BulkJobPayload] = []
@@ -239,6 +246,7 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
                 )
 
     if not shard_payloads:
+        print(f"[bulk-parent] fallback single ingest parent_job_id={payload.job_id}", flush=True)
         created, failed, err = run_bulk_import_sync(
             path,
             payload.collection_id,
@@ -269,6 +277,7 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
     )
     for sp in shard_payloads:
         enqueue(sp)
+    print(f"[bulk-parent] queued parent_job_id={payload.job_id} shards={len(shard_payloads)}", flush=True)
     update_job(
         payload.job_id,
         status="running",
@@ -283,6 +292,10 @@ def _process_shard_bulk_job(payload: BulkJobPayload, path: str) -> None:
     failed = 0
     shard_failed = False
     err_msg = None
+    print(
+        f"[bulk-shard] start parent_job_id={parent_job_id} shard={payload.shard_index}/{payload.shard_total} path={path}",
+        flush=True,
+    )
     try:
         created, failed, err = run_bulk_import_sync(
             path,
@@ -306,6 +319,16 @@ def _process_shard_bulk_job(payload: BulkJobPayload, path: str) -> None:
                 get_bulk_storage().delete(payload.storage_key)
             except Exception:
                 pass
+    if shard_failed:
+        print(
+            f"[bulk-shard] failed parent_job_id={parent_job_id} shard={payload.shard_index}: {err_msg}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[bulk-shard] done parent_job_id={parent_job_id} shard={payload.shard_index} created={created} failed_items={failed}",
+            flush=True,
+        )
 
     if not parent_job_id:
         return
@@ -314,6 +337,8 @@ def _process_shard_bulk_job(payload: BulkJobPayload, path: str) -> None:
         created=created,
         failed=failed,
         shard_failed=shard_failed,
+        shard_index=payload.shard_index,
+        error_message=err_msg,
     )
     if not st:
         return
@@ -326,11 +351,25 @@ def _process_shard_bulk_job(payload: BulkJobPayload, path: str) -> None:
         items_failed=st["items_failed"],
     )
     if st["completed_shards"] >= st["expected_shards"]:
+        error_samples: list[dict] = []
+        try:
+            error_samples = json.loads(st.get("error_samples_json", "[]") or "[]")
+            if not isinstance(error_samples, list):
+                error_samples = []
+        except Exception:
+            error_samples = []
         try:
             finalize_collection_import_sync(payload.collection_id)
             if st["failed_shards"] > 0:
                 msg = f"Sharded import completed with errors: {st['failed_shards']} shard(s) failed."
-                if err_msg:
+                if error_samples:
+                    tail = "; ".join(
+                        f"shard {s.get('shard_index')}: {s.get('error')}"
+                        for s in error_samples[:5]
+                    )
+                    if tail:
+                        msg += f" Sample errors: {tail}"
+                elif err_msg:
                     msg += f" Last error: {err_msg}"
                 update_job(
                     parent_job_id,
@@ -339,6 +378,7 @@ def _process_shard_bulk_job(payload: BulkJobPayload, path: str) -> None:
                     items_created=st["items_created"],
                     items_failed=st["items_failed"],
                 )
+                print(f"[bulk-parent] completed_with_errors parent_job_id={parent_job_id} failed_shards={st['failed_shards']}", flush=True)
             else:
                 update_job(
                     parent_job_id,
@@ -347,7 +387,9 @@ def _process_shard_bulk_job(payload: BulkJobPayload, path: str) -> None:
                     items_created=st["items_created"],
                     items_failed=st["items_failed"],
                 )
+                print(f"[bulk-parent] completed parent_job_id={parent_job_id} shards={st['expected_shards']}", flush=True)
         except Exception as e:
+            print(f"[bulk-parent] finalize failed parent_job_id={parent_job_id}: {e}", flush=True)
             update_job(parent_job_id, status="failed", message=f"Finalize failed: {e}")
         finally:
             try:

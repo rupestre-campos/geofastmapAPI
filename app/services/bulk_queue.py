@@ -116,6 +116,7 @@ def init_parent_state(
         "status": "running",
         "created_at": now,
         "updated_at": now,
+        "error_samples": "[]",
     }
     run_redis_retry(
         "bulk_parent_state_init",
@@ -131,6 +132,8 @@ def record_parent_shard_result(
     created: int,
     failed: int,
     shard_failed: bool,
+    shard_index: int | None = None,
+    error_message: str | None = None,
 ) -> dict[str, int] | None:
     settings = get_settings()
     if settings.bulk_queue_type != "redis":
@@ -148,16 +151,34 @@ def record_parent_shard_result(
     pipe.hincrby(key, "items_failed", int(failed))
     if shard_failed:
         pipe.hincrby(key, "failed_shards", 1)
-    pipe.hset(key, mapping={"updated_at": datetime.utcnow().isoformat() + "Z"})
+    updates: dict[str, str] = {"updated_at": datetime.utcnow().isoformat() + "Z"}
+    if shard_failed and error_message:
+        try:
+            samples = json.loads(r.hget(key, "error_samples") or "[]")
+        except Exception:
+            samples = []
+        if not isinstance(samples, list):
+            samples = []
+        if len(samples) < 12:
+            samples.append(
+                {
+                    "shard_index": int(shard_index) if shard_index is not None else None,
+                    "error": str(error_message)[:500],
+                }
+            )
+        updates["error_samples"] = json.dumps(samples, separators=(",", ":"))
+    pipe.hset(key, mapping=updates)
     pipe.execute()
     raw = r.hgetall(key) or {}
-    return {
+    out = {
         "expected_shards": int(raw.get("expected_shards", 0) or 0),
         "completed_shards": int(raw.get("completed_shards", 0) or 0),
         "failed_shards": int(raw.get("failed_shards", 0) or 0),
         "items_created": int(raw.get("items_created", 0) or 0),
         "items_failed": int(raw.get("items_failed", 0) or 0),
+        "error_samples_json": raw.get("error_samples", "[]"),
     }
+    return out
 
 
 def clear_parent_state(parent_job_id: str) -> None:
