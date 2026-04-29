@@ -1023,7 +1023,9 @@
       var successEl = document.getElementById('bulk-result-success');
       successEl.style.display = 'none';
       var queueTiles = document.getElementById('bulk-queue-compute-tiles').checked;
-      var chunkSize = 8 * 1024 * 1024; // 8 MiB default
+      var chunkSize = 32 * 1024 * 1024; // 32 MiB default
+      var maxParallelParts = 4;
+      var maxPartRetries = 3;
       resultEl.textContent = 'Starting resumable upload session…';
       function uploadLegacyFallback() {
         var formData = new FormData();
@@ -1056,13 +1058,24 @@
           if (sess.chunk_size_bytes && Number(sess.chunk_size_bytes) > 0) chunkSize = Number(sess.chunk_size_bytes);
           var totalParts = Math.ceil(file.size / chunkSize);
           var done = 0;
+          var uploadedBytes = 0;
+          var activeWorkers = 0;
+          var retries = {};
+          function formatBytes(bytes) {
+            var n = Number(bytes || 0);
+            if (!isFinite(n) || n < 0) return '0 B';
+            var units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+            var i = 0;
+            while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+            return (i === 0 ? String(Math.round(n)) : n.toFixed(1)) + ' ' + units[i];
+          }
           function sendPart(partNo) {
             var start = (partNo - 1) * chunkSize;
             var end = Math.min(file.size, start + chunkSize);
             var blob = file.slice(start, end);
             var fd = new FormData();
             fd.append('file', blob, file.name + '.part' + partNo);
-            resultEl.textContent = 'Uploading part ' + partNo + '/' + totalParts + '…';
+            resultEl.textContent = 'Uploading parts ' + done + '/' + totalParts + ' (' + formatBytes(uploadedBytes) + '/' + formatBytes(file.size) + '), active workers: ' + activeWorkers + '…';
             return fetch('/collections/' + encodeURIComponent(collectionId) + '/items/bulk/sessions/' + encodeURIComponent(uploadId) + '/parts/' + partNo, {
               method: 'PUT',
               credentials: 'same-origin',
@@ -1072,16 +1085,42 @@
               return r.json().then(function(j) {
                 if (!r.ok) throw (j || {});
                 done += 1;
-                resultEl.textContent = 'Uploaded ' + done + '/' + totalParts + ' parts…';
+                uploadedBytes += (end - start);
+                resultEl.textContent = 'Uploaded ' + done + '/' + totalParts + ' parts (' + formatBytes(uploadedBytes) + '/' + formatBytes(file.size) + '), active workers: ' + activeWorkers + '…';
                 return j;
               });
             });
           }
-          var p = Promise.resolve();
-          for (var i = 1; i <= totalParts; i++) {
-            (function(partNo) { p = p.then(function() { return sendPart(partNo); }); })(i);
+          function uploadPartWithRetry(partNo) {
+            var attempts = retries[partNo] || 0;
+            return sendPart(partNo).catch(function(err) {
+              attempts += 1;
+              retries[partNo] = attempts;
+              if (attempts >= maxPartRetries) throw err;
+              var waitMs = Math.min(4000, 500 * Math.pow(2, attempts - 1));
+              resultEl.textContent = 'Retrying part ' + partNo + ' (' + attempts + '/' + maxPartRetries + ') in ' + (waitMs / 1000).toFixed(1) + 's…';
+              return new Promise(function(resolve) { setTimeout(resolve, waitMs); }).then(function() {
+                return uploadPartWithRetry(partNo);
+              });
+            });
           }
-          return p.then(function() {
+          function runParallelUploads() {
+            var queue = [];
+            for (var i = 1; i <= totalParts; i++) queue.push(i);
+            var workers = [];
+            var workerCount = Math.min(maxParallelParts, totalParts);
+            function workerLoop() {
+              if (!queue.length) return Promise.resolve();
+              var partNo = queue.shift();
+              activeWorkers += 1;
+              return uploadPartWithRetry(partNo).finally(function() {
+                activeWorkers = Math.max(0, activeWorkers - 1);
+              }).then(workerLoop);
+            }
+            for (var w = 0; w < workerCount; w++) workers.push(workerLoop());
+            return Promise.all(workers);
+          }
+          return runParallelUploads().then(function() {
             resultEl.textContent = 'Finalizing upload and queueing import…';
             var partNums = [];
             for (var n = 1; n <= totalParts; n++) partNums.push(n);

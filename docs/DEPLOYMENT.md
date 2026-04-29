@@ -70,6 +70,8 @@ For multi-GB uploads, tune API + worker envs together (same Redis settings on ev
 - `BULK_UPLOAD_SESSION_TTL_SECONDS`, `BULK_UPLOAD_CHUNK_SIZE_BYTES` (resumable uploads)
 - `BULK_SHARDED_INGEST_ENABLED`, `BULK_SHARD_LINES_PER_PART` (single-file sharded ingest)
 
+Recommended starting point for multi-GB browser uploads: `BULK_UPLOAD_CHUNK_SIZE_BYTES=33554432` (32 MiB). This cuts request count significantly (about 147 parts for a 5GB file, vs ~589 with 8 MiB parts).
+
 For Cloudflare-proxied deployments, prefer the resumable bulk upload session flow:
 
 - `POST /collections/{id}/items/bulk/sessions`
