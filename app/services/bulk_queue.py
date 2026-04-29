@@ -13,6 +13,7 @@ from app.services.redis_resilience import run_redis_retry
 
 QUEUE_KEY = "geofastmap:bulk_import_queue"
 BULK_IMPORT_REG_PREFIX = "geofastmap:bulk_import_meta:"
+BULK_PARENT_STATE_PREFIX = "geofastmap:bulk_parent_state:"
 
 _bulk_reg_lock = threading.Lock()
 _mem_bulk_storage: dict[str, str] = {}
@@ -28,6 +29,11 @@ class BulkJobPayload:
     owner_id: int | None = None
     queue_compute_tiles: bool = True
     zip_inner_shp_paths: list[str] | None = None
+    job_kind: str = "single"  # single | parent | shard
+    parent_job_id: str | None = None
+    shard_index: int | None = None
+    shard_total: int | None = None
+    finalize_collection: bool = True
 
     def to_json(self) -> str:
         out = {
@@ -41,6 +47,16 @@ class BulkJobPayload:
         }
         if self.zip_inner_shp_paths:
             out["zip_inner_shp_paths"] = self.zip_inner_shp_paths
+        if self.job_kind != "single":
+            out["job_kind"] = self.job_kind
+        if self.parent_job_id:
+            out["parent_job_id"] = self.parent_job_id
+        if self.shard_index is not None:
+            out["shard_index"] = int(self.shard_index)
+        if self.shard_total is not None:
+            out["shard_total"] = int(self.shard_total)
+        if not self.finalize_collection:
+            out["finalize_collection"] = False
         return json.dumps(out)
 
     @classmethod
@@ -63,7 +79,99 @@ class BulkJobPayload:
             batch_size=int(d["batch_size"]),
             queue_compute_tiles=queue_compute_tiles,
             zip_inner_shp_paths=zip_inner,
+            job_kind=str(d.get("job_kind") or "single"),
+            parent_job_id=d.get("parent_job_id"),
+            shard_index=int(d["shard_index"]) if d.get("shard_index") is not None else None,
+            shard_total=int(d["shard_total"]) if d.get("shard_total") is not None else None,
+            finalize_collection=bool(d.get("finalize_collection", True)),
         )
+
+
+def _parent_state_key(job_id: str) -> str:
+    return f"{BULK_PARENT_STATE_PREFIX}{job_id}"
+
+
+def init_parent_state(
+    *,
+    parent_job_id: str,
+    collection_id: str,
+    expected_shards: int,
+    mode: str,
+) -> None:
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return
+    import redis
+
+    now = __import__("datetime").datetime.utcnow().isoformat() + "Z"
+    mapping = {
+        "parent_job_id": parent_job_id,
+        "collection_id": collection_id,
+        "mode": mode,
+        "expected_shards": str(max(0, int(expected_shards))),
+        "completed_shards": "0",
+        "failed_shards": "0",
+        "items_created": "0",
+        "items_failed": "0",
+        "status": "running",
+        "created_at": now,
+        "updated_at": now,
+    }
+    run_redis_retry(
+        "bulk_parent_state_init",
+        lambda: redis.from_url(settings.redis_url, decode_responses=True).hset(
+            _parent_state_key(parent_job_id), mapping=mapping
+        ),
+    )
+
+
+def record_parent_shard_result(
+    *,
+    parent_job_id: str,
+    created: int,
+    failed: int,
+    shard_failed: bool,
+) -> dict[str, int] | None:
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return None
+    import redis
+    from datetime import datetime
+
+    r = redis.from_url(settings.redis_url, decode_responses=True)
+    key = _parent_state_key(parent_job_id)
+    if not r.exists(key):
+        return None
+    pipe = r.pipeline()
+    pipe.hincrby(key, "completed_shards", 1)
+    pipe.hincrby(key, "items_created", int(created))
+    pipe.hincrby(key, "items_failed", int(failed))
+    if shard_failed:
+        pipe.hincrby(key, "failed_shards", 1)
+    pipe.hset(key, mapping={"updated_at": datetime.utcnow().isoformat() + "Z"})
+    pipe.execute()
+    raw = r.hgetall(key) or {}
+    return {
+        "expected_shards": int(raw.get("expected_shards", 0) or 0),
+        "completed_shards": int(raw.get("completed_shards", 0) or 0),
+        "failed_shards": int(raw.get("failed_shards", 0) or 0),
+        "items_created": int(raw.get("items_created", 0) or 0),
+        "items_failed": int(raw.get("items_failed", 0) or 0),
+    }
+
+
+def clear_parent_state(parent_job_id: str) -> None:
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return
+    import redis
+
+    run_redis_retry(
+        "bulk_parent_state_clear",
+        lambda: redis.from_url(settings.redis_url, decode_responses=True).delete(
+            _parent_state_key(parent_job_id)
+        ),
+    )
 
 
 def register_bulk_import_job(job_id: str, storage_key: str) -> None:

@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     bulk_db_retry_max_attempts: int = 4
     bulk_db_retry_base_seconds: float = 1.0
     bulk_db_retry_max_seconds: float = 30.0
+    # Resumable upload sessions (chunked upload API).
+    bulk_upload_session_ttl_seconds: int = 86400
+    bulk_upload_chunk_size_bytes: int = 8 * 1024 * 1024  # 8 MiB
+    # Parent/shard ingest mode for large files.
+    bulk_sharded_ingest_enabled: bool = True
+    bulk_shard_lines_per_part: int = 50000
 
     # Bulk storage: where uploaded files go (shared path for API and worker). Future: s3.
     bulk_storage_type: str = "filesystem"  # filesystem | s3 (s3 reserved)

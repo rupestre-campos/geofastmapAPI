@@ -362,6 +362,7 @@ def run_bulk_import_sync(
     on_progress: Callable[[str, int, int | None], None] | None = None,
     zip_inner_shp_paths: list[str] | None = None,
     bulk_import_job_id: str | None = None,
+    finalize_collection: bool = True,
 ) -> tuple[int, int, str | None]:
     """
     Read a geospatial file with fiona and insert features into the collection.
@@ -499,37 +500,38 @@ def run_bulk_import_sync(
                 total_created += created
                 total_failed += failed
 
-            if mode == "replace":
-                _execute_with_retry(
-                    lambda: session.execute(
-                        update(Collection).where(Collection.id == collection_id).values(feature_count=total_created)
-                    ),
-                    "replace_finalize_feature_count",
-                )
-            else:
-                _execute_with_retry(
-                    lambda: session.execute(
-                        update(Collection)
-                        .where(Collection.id == collection_id)
-                        .values(feature_count=Collection.feature_count + total_created)
-                    ),
-                    "append_finalize_feature_count",
-                )
-            session = _commit_with_retry(session)
-
-            extent_mode = str(getattr(settings, "bulk_extent_update_mode", "immediate") or "immediate").lower()
-            if extent_mode not in ("immediate", "deferred", "best_effort"):
-                extent_mode = "immediate"
-            if extent_mode != "deferred":
-                try:
-                    _run_db_retry(
-                        "extent_recompute",
-                        lambda: collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id),
-                        on_retry=_retry_notice,
+            if finalize_collection:
+                if mode == "replace":
+                    _execute_with_retry(
+                        lambda: session.execute(
+                            update(Collection).where(Collection.id == collection_id).values(feature_count=total_created)
+                        ),
+                        "replace_finalize_feature_count",
                     )
-                except Exception:
-                    if extent_mode == "immediate":
-                        raise
+                else:
+                    _execute_with_retry(
+                        lambda: session.execute(
+                            update(Collection)
+                            .where(Collection.id == collection_id)
+                            .values(feature_count=Collection.feature_count + total_created)
+                        ),
+                        "append_finalize_feature_count",
+                    )
+                session = _commit_with_retry(session)
+
+                extent_mode = str(getattr(settings, "bulk_extent_update_mode", "immediate") or "immediate").lower()
+                if extent_mode not in ("immediate", "deferred", "best_effort"):
+                    extent_mode = "immediate"
+                if extent_mode != "deferred":
+                    try:
+                        _run_db_retry(
+                            "extent_recompute",
+                            lambda: collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id),
+                            on_retry=_retry_notice,
+                        )
+                    except Exception:
+                        if extent_mode == "immediate":
+                            raise
 
             if on_progress:
                 on_progress("completed", total_created, total_created)
@@ -543,5 +545,41 @@ def run_bulk_import_sync(
         if on_progress:
             on_progress("failed", 0, None)
         return 0, 0, str(e)
+    finally:
+        engine.dispose()
+
+
+def finalize_collection_import_sync(collection_id: str) -> None:
+    """Finalize a collection after sharded append imports."""
+    settings = get_settings()
+    engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+    try:
+        _update_feature_count_sync(engine, collection_id)
+        extent_mode = str(getattr(settings, "bulk_extent_update_mode", "immediate") or "immediate").lower()
+        if extent_mode not in ("immediate", "deferred", "best_effort"):
+            extent_mode = "immediate"
+        if extent_mode != "deferred":
+            try:
+                _run_db_retry(
+                    "extent_recompute",
+                    lambda: collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id),
+                )
+            except Exception:
+                if extent_mode == "immediate":
+                    raise
+    finally:
+        engine.dispose()
+
+
+def replace_collection_prestage_sync(collection_id: str) -> None:
+    """Delete existing rows before sharded replace imports."""
+    settings = get_settings()
+    engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    try:
+        with SessionLocal() as session:
+            session.execute(delete(Feature).where(Feature.collection_id == collection_id))
+            session.execute(update(Collection).where(Collection.id == collection_id).values(feature_count=0))
+            session.commit()
     finally:
         engine.dispose()

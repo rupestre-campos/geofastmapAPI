@@ -102,6 +102,15 @@
     var BASEMAPS;
     var basemapList;
     var map;
+    function isUsableBbox(b) {
+      if (!Array.isArray(b) || b.length < 4) return false;
+      var minx = Number(b[0]), miny = Number(b[1]), maxx = Number(b[2]), maxy = Number(b[3]);
+      if (![minx, miny, maxx, maxy].every(function(v) { return isFinite(v); })) return false;
+      if (minx >= maxx || miny >= maxy) return false;
+      // Avoid zooming to a near-zero box (e.g. [0,0,0,0]) on new collections.
+      if (Math.abs(maxx - minx) < 1e-9 || Math.abs(maxy - miny) < 1e-9) return false;
+      return true;
+    }
 
     var pointFilter = GeofastmapUtils.pointFilter;
     var notPointFilter = GeofastmapUtils.notPointFilter;
@@ -138,13 +147,13 @@
           paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity }
         });
       }
-      if (extent && extent.bbox && extent.bbox[0]) {
+      if (extent && extent.bbox && isUsableBbox(extent.bbox[0])) {
         var b = extent.bbox[0];
         var bboxGeojson = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[b[0],b[1]],[b[2],b[1]],[b[2],b[3]],[b[0],b[3]],[b[0],b[1]]]] } };
         map.addSource('bbox', { type: 'geojson', data: bboxGeojson });
         map.addLayer({ id: 'bbox-line', type: 'line', source: 'bbox', paint: { 'line-color': '#58a6ff', 'line-width': 2 } });
       }
-      if (extent && extent.bbox && extent.bbox[0]) {
+      if (extent && extent.bbox && isUsableBbox(extent.bbox[0])) {
         var b = extent.bbox[0];
         map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40 });
       }

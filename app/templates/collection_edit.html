@@ -260,6 +260,16 @@
     var basemapList;
     var map;
 
+    function isUsableBbox(b) {
+      if (!Array.isArray(b) || b.length < 4) return false;
+      var minx = Number(b[0]), miny = Number(b[1]), maxx = Number(b[2]), maxy = Number(b[3]);
+      if (![minx, miny, maxx, maxy].every(function(v) { return isFinite(v); })) return false;
+      if (minx >= maxx || miny >= maxy) return false;
+      // Avoid zooming to a near-zero box (e.g. [0,0,0,0]) for empty/new collections.
+      if (Math.abs(maxx - minx) < 1e-9 || Math.abs(maxy - miny) < 1e-9) return false;
+      return true;
+    }
+
     function applyBasemapFromSelect() {
       var sel = document.getElementById('map-basemap');
       if (!sel || !map || !map.getSource('basemap')) return;
@@ -323,8 +333,8 @@
             return b;
           } catch (e) { return null; }
         }
-        var bbox0 = (initialBbox && initialBbox.length >= 4) ? initialBbox : bboxFromFormOrNull();
-        if (bbox0 && bbox0.length >= 4) {
+        var bbox0 = isUsableBbox(initialBbox) ? initialBbox : bboxFromFormOrNull();
+        if (isUsableBbox(bbox0)) {
           try { map.fitBounds([[bbox0[0], bbox0[1]], [bbox0[2], bbox0[3]]], { padding: 60 }); } catch (e) {}
         } else {
           map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
@@ -713,7 +723,7 @@
           geoEditor.setGeoman(geoman);
           map.addControl(geoEditor, 'top-left');
           geoEditor.loadGeoJson(initialGeoJson);
-          if (initialBbox && initialBbox.length >= 4) {
+          if (isUsableBbox(initialBbox)) {
             map.fitBounds([[Number(initialBbox[0]), Number(initialBbox[1])], [Number(initialBbox[2]), Number(initialBbox[3])]], { padding: 60 });
           }
           function hideBboxFill() {
@@ -1009,37 +1019,101 @@
       var file = document.getElementById('bulk-file').files[0];
       if (!file) { alert('Select a file'); return; }
       var mode = document.querySelector('input[name="mode"]:checked').value;
-      var formData = new FormData();
-      formData.append('file', file);
-      formData.append('mode', mode);
-      formData.append('queue_compute_tiles', document.getElementById('bulk-queue-compute-tiles').checked ? 'true' : 'false');
       var resultEl = document.getElementById('bulk-result');
       var successEl = document.getElementById('bulk-result-success');
       successEl.style.display = 'none';
-      resultEl.textContent = 'Uploading…';
-      var bulkUrl = '/collections/' + encodeURIComponent(collectionId) + '/items/bulk';
-      fetch(bulkUrl, { method: 'POST', body: formData, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
-        .then(function(r) { return r.text().then(function(t) { return { r: r, t: t }; }); })
-        .then(function(x) {
-          var r = x.r, t = x.t, ct = (r.headers.get('content-type') || '').toLowerCase();
-          if (r.status === 413 || (t && t.indexOf('413') !== -1 && t.indexOf('Payload Too Large') !== -1)) {
-            throw new Error('HTTP 413: request body too large for the path your browser used. If you use Cloudflare or Cloudflare Tunnel, uploads are usually capped (~100 MB on Free/Pro)—multi‑GB files must use http://localhost:8000 (or LAN IP) from the machine running Docker, or split into smaller files. If you use nginx in front of the API, set client_max_body_size (see deploy/nginx-bulk-upload.conf.example).');
+      var queueTiles = document.getElementById('bulk-queue-compute-tiles').checked;
+      var chunkSize = 8 * 1024 * 1024; // 8 MiB default
+      resultEl.textContent = 'Starting resumable upload session…';
+      function uploadLegacyFallback() {
+        var formData = new FormData();
+        formData.append('file', file);
+        formData.append('mode', mode);
+        formData.append('queue_compute_tiles', queueTiles ? 'true' : 'false');
+        var bulkUrl = '/collections/' + encodeURIComponent(collectionId) + '/items/bulk';
+        return fetch(bulkUrl, { method: 'POST', body: formData, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.text().then(function(t) { return { r: r, t: t }; }); })
+          .then(function(x) {
+            var r = x.r, t = x.t, ct = (r.headers.get('content-type') || '').toLowerCase();
+            if (r.status === 413 || (t && t.indexOf('413') !== -1 && t.indexOf('Payload Too Large') !== -1)) {
+              throw new Error('HTTP 413: request body too large. Use resumable upload or direct origin upload path.');
+            }
+            if (r.ok && ct.indexOf('text/html') !== -1) throw new Error('Got HTML instead of JSON.');
+            var d = t ? JSON.parse(t) : {};
+            if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : (r.statusText || 'Request failed'));
+            return d;
+          });
+      }
+      fetch('/collections/' + encodeURIComponent(collectionId) + '/items/bulk/sessions', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ filename: file.name, mode: mode, queue_compute_tiles: queueTiles })
+      })
+        .then(function(r) { return r.json().then(function(j) { if (!r.ok) throw (j || {}); return j; }); })
+        .then(function(sess) {
+          var uploadId = sess.upload_id;
+          if (sess.chunk_size_bytes && Number(sess.chunk_size_bytes) > 0) chunkSize = Number(sess.chunk_size_bytes);
+          var totalParts = Math.ceil(file.size / chunkSize);
+          var done = 0;
+          function sendPart(partNo) {
+            var start = (partNo - 1) * chunkSize;
+            var end = Math.min(file.size, start + chunkSize);
+            var blob = file.slice(start, end);
+            var fd = new FormData();
+            fd.append('file', blob, file.name + '.part' + partNo);
+            resultEl.textContent = 'Uploading part ' + partNo + '/' + totalParts + '…';
+            return fetch('/collections/' + encodeURIComponent(collectionId) + '/items/bulk/sessions/' + encodeURIComponent(uploadId) + '/parts/' + partNo, {
+              method: 'PUT',
+              credentials: 'same-origin',
+              headers: { 'Accept': 'application/json' },
+              body: fd
+            }).then(function(r) {
+              return r.json().then(function(j) {
+                if (!r.ok) throw (j || {});
+                done += 1;
+                resultEl.textContent = 'Uploaded ' + done + '/' + totalParts + ' parts…';
+                return j;
+              });
+            });
           }
-          if (r.ok && ct.indexOf('text/html') !== -1) {
-            throw new Error('Got an HTML page instead of JSON (often a login or proxy page). Sign in again or open the app using the same URL as in the address bar.');
+          var p = Promise.resolve();
+          for (var i = 1; i <= totalParts; i++) {
+            (function(partNo) { p = p.then(function() { return sendPart(partNo); }); })(i);
           }
-          var d;
-          try { d = t ? JSON.parse(t) : {}; } catch (err) {
-            throw new Error('Server did not return JSON (HTTP ' + r.status + '). If you use a reverse proxy, ensure /collections/... reaches the API. First bytes: ' + t.slice(0, 120).replace(/\s+/g, ' '));
-          }
-          if (!r.ok) {
-            var det = d.detail;
-            throw new Error(typeof det === 'string' ? det : (det ? JSON.stringify(det) : (r.statusText || 'Request failed')));
-          }
-          return d;
+          return p.then(function() {
+            resultEl.textContent = 'Finalizing upload and queueing import…';
+            var partNums = [];
+            for (var n = 1; n <= totalParts; n++) partNums.push(n);
+            return fetch('/collections/' + encodeURIComponent(collectionId) + '/items/bulk/sessions/' + encodeURIComponent(uploadId) + '/complete', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({ parts: partNums })
+            }).then(function(r) {
+              return r.json().then(function(j) { if (!r.ok) throw (j || {}); return j; });
+            });
+          });
         })
-        .then(function(d) { resultEl.textContent = ''; successEl.innerHTML = 'Import queued. <a href="' + base + '/jobs/' + d.job_id + '?f=html">Check job status →</a>'; successEl.style.display = 'block'; if (window.refreshCollectionJobs) window.refreshCollectionJobs(); })
-        .catch(function(e) { resultEl.textContent = 'Error: ' + (e.detail || e.message || e); });
+        .catch(function(e) {
+          var msg = e && (e.detail || e.message) ? (e.detail || e.message) : String(e || 'upload failed');
+          // Fallback to legacy single-request upload when session API is unavailable.
+          if ((msg || '').toLowerCase().indexOf('not found') >= 0 || (msg || '').toLowerCase().indexOf('html') >= 0) {
+            resultEl.textContent = 'Resumable API unavailable, falling back to classic upload…';
+            return uploadLegacyFallback();
+          }
+          throw e;
+        })
+        .then(function(d) {
+          if (!d) return;
+          resultEl.textContent = '';
+          successEl.innerHTML = 'Import queued. <a href="' + base + '/jobs/' + d.job_id + '?f=html">Check job status →</a>';
+          successEl.style.display = 'block';
+          if (window.refreshCollectionJobs) window.refreshCollectionJobs();
+        })
+        .catch(function(e) {
+          resultEl.textContent = 'Error: ' + (e.detail || e.message || JSON.stringify(e));
+        });
     };
   </script>
 {% endblock %}

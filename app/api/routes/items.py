@@ -4,7 +4,7 @@ from pathlib import Path as PathLib
 from urllib.parse import urlencode
 
 import orjson
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, Request, Response, status, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Path, Query, Request, Response, status, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,12 @@ from app.models.feature import Feature
 from app.services.bulk_import import list_shp_in_zip
 from app.services.bulk_queue import BulkJobPayload, enqueue, register_bulk_import_job
 from app.services.bulk_storage import get_bulk_storage
+from app.services.bulk_upload_sessions import (
+    add_uploaded_part,
+    create_upload_session,
+    delete_upload_session,
+    get_upload_session,
+)
 from app.services.job_store import create_job
 from app.schemas.feature import (
     FeatureCollection,
@@ -332,6 +338,185 @@ async def get_collection_queryables(
 
 
 @router.post(
+    "/{collection_id}/items/bulk/sessions",
+    status_code=status.HTTP_201_CREATED,
+    summary="Create resumable bulk upload session",
+)
+async def create_bulk_upload_session(
+    collection_id: str,
+    request: Request,
+    body: dict = Body(default={}),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
+    mode = str(body.get("mode") or "append")
+    if mode not in ("append", "replace"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="mode must be 'append' or 'replace'")
+    settings = get_settings()
+    batch_size = int(body.get("batch_size") or settings.bulk_import_batch_size)
+    if batch_size < 1 or batch_size > 100_000:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="batch_size out of range")
+    filename = str(body.get("filename") or "upload.geojson")
+    qt = bool(body.get("queue_compute_tiles", True))
+    s = create_upload_session(
+        collection_id=collection_id,
+        owner_id=current_user.id if current_user else None,
+        filename=filename,
+        mode=mode,
+        batch_size=batch_size,
+        queue_compute_tiles=qt,
+    )
+    return {
+        "upload_id": s["upload_id"],
+        "status": s["status"],
+        "chunk_size_bytes": settings.bulk_upload_chunk_size_bytes,
+        "expires_in_seconds": settings.bulk_upload_session_ttl_seconds,
+        "parts_uploaded": [],
+        "complete_url": f"{_base_url(request)}/collections/{collection_id}/items/bulk/sessions/{s['upload_id']}/complete",
+    }
+
+
+@router.put(
+    "/{collection_id}/items/bulk/sessions/{upload_id}/parts/{part_no}",
+    summary="Upload one resumable chunk part",
+)
+async def upload_bulk_session_part(
+    collection_id: str,
+    upload_id: str,
+    part_no: int = Path(..., ge=1),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
+    s = get_upload_session(upload_id)
+    if not s or s.get("collection_id") != collection_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload session not found")
+    if s.get("owner_id") is not None and current_user and int(s.get("owner_id")) != int(current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Upload session owner mismatch")
+    storage = get_bulk_storage()
+    part_path = storage.get_chunk_part_path(upload_id, part_no)
+    try:
+        with open(part_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                f.write(chunk)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed writing upload part: {e}") from e
+    s2 = add_uploaded_part(upload_id, part_no)
+    return {"upload_id": upload_id, "part_no": part_no, "parts_uploaded": sorted(s2.get("parts") if s2 else [part_no])}
+
+
+@router.post(
+    "/{collection_id}/items/bulk/sessions/{upload_id}/complete",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Complete resumable upload and enqueue ingest",
+)
+async def complete_bulk_upload_session(
+    request: Request,
+    collection_id: str,
+    upload_id: str,
+    body: dict = Body(default={}),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
+    s = get_upload_session(upload_id)
+    if not s or s.get("collection_id") != collection_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload session not found")
+    parts = [int(p) for p in (body.get("parts") or s.get("parts") or [])]
+    if not parts:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No uploaded parts")
+
+    settings = get_settings()
+    filename = str(s.get("filename") or "upload.geojson")
+    suffix = PathLib(filename).suffix.lower()
+    if suffix not in (".kml", ".gpkg", ".geojson", ".json", ".geojsonl", ".geojsonseq", ".jsonl", ".zip"):
+        suffix = ".geojson"
+    job = create_job(collection_id, owner_id=current_user.id if current_user else None)
+    storage_key = f"{job.job_id}{suffix}"
+    storage = get_bulk_storage()
+    try:
+        write_path = storage.assemble_chunk_parts(upload_id, parts, storage_key)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed assembling upload: {e}") from e
+    finally:
+        storage.delete_upload_parts(upload_id)
+        delete_upload_session(upload_id)
+
+    zip_inner_shp_paths: list[str] | None = None
+    if suffix == ".zip":
+        try:
+            shp_list = list_shp_in_zip(write_path)
+            if shp_list:
+                zip_inner_shp_paths = shp_list
+        except Exception:
+            pass
+
+    payload = BulkJobPayload(
+        job_id=job.job_id,
+        collection_id=collection_id,
+        owner_id=current_user.id if current_user else None,
+        storage_key=storage_key,
+        mode=str(s.get("mode") or "append"),
+        batch_size=int(s.get("batch_size") or settings.bulk_import_batch_size),
+        queue_compute_tiles=bool(s.get("queue_compute_tiles", True)),
+        zip_inner_shp_paths=zip_inner_shp_paths,
+    )
+    if bool(settings.bulk_sharded_ingest_enabled):
+        payload.job_kind = "parent"
+        payload.finalize_collection = True
+    try:
+        register_bulk_import_job(job.job_id, storage_key)
+        enqueue(payload)
+    except Exception as e:
+        try:
+            storage.delete(storage_key)
+        except Exception:
+            pass
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Bulk queue unavailable: {e}") from e
+
+    base = _base_url(request)
+    return {"job_id": job.job_id, "message": "Bulk import queued.", "status_url": f"{base}/jobs/{job.job_id}"}
+
+
+@router.delete(
+    "/{collection_id}/items/bulk/sessions/{upload_id}",
+    summary="Abort resumable bulk upload session",
+)
+async def abort_bulk_upload_session(
+    collection_id: str,
+    upload_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
+    s = get_upload_session(upload_id)
+    if not s or s.get("collection_id") != collection_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload session not found")
+    storage = get_bulk_storage()
+    storage.delete_upload_parts(upload_id)
+    delete_upload_session(upload_id)
+    return {"status": "aborted", "upload_id": upload_id}
+
+
+@router.post(
     "/{collection_id}/items/bulk",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Bulk import from geospatial file",
@@ -396,7 +581,7 @@ async def bulk_import_items(
     qt = queue_compute_tiles is None or str(queue_compute_tiles).lower() not in ("false", "0", "no", "")
     try:
         register_bulk_import_job(job.job_id, storage_key)
-        enqueue(BulkJobPayload(
+        payload = BulkJobPayload(
             job_id=job.job_id,
             collection_id=collection_id,
             owner_id=current_user.id if current_user else None,
@@ -405,7 +590,11 @@ async def bulk_import_items(
             batch_size=batch,
             queue_compute_tiles=qt,
             zip_inner_shp_paths=zip_inner_shp_paths,
-        ))
+        )
+        if bool(settings.bulk_sharded_ingest_enabled):
+            payload.job_kind = "parent"
+            payload.finalize_collection = True
+        enqueue(payload)
     except Exception as e:
         try:
             storage.delete(storage_key)

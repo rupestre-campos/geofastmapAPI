@@ -67,6 +67,15 @@ For multi-GB uploads, tune API + worker envs together (same Redis settings on ev
 - `BULK_EXTENT_UPDATE_MODE` = `best_effort` or `deferred` for very large layers (reduces end-of-job tail latency)
 - `BULK_DB_RETRY_MAX_ATTEMPTS`, `BULK_DB_RETRY_BASE_SECONDS`, `BULK_DB_RETRY_MAX_SECONDS`
 - `REDIS_RETRY_BASE_SECONDS`, `REDIS_RETRY_MAX_SECONDS`, `REDIS_RETRY_ENQUEUE_MAX_ATTEMPTS`
+- `BULK_UPLOAD_SESSION_TTL_SECONDS`, `BULK_UPLOAD_CHUNK_SIZE_BYTES` (resumable uploads)
+- `BULK_SHARDED_INGEST_ENABLED`, `BULK_SHARD_LINES_PER_PART` (single-file sharded ingest)
+
+For Cloudflare-proxied deployments, prefer the resumable bulk upload session flow:
+
+- `POST /collections/{id}/items/bulk/sessions`
+- `PUT /collections/{id}/items/bulk/sessions/{upload_id}/parts/{part_no}`
+- `POST /collections/{id}/items/bulk/sessions/{upload_id}/complete`
+- `DELETE /collections/{id}/items/bulk/sessions/{upload_id}`
 
 Use `immediate` extent updates only when you need bbox refreshed synchronously after each import.
 

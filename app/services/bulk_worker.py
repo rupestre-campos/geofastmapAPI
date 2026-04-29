@@ -3,10 +3,25 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from app.core.config import get_settings
-from app.services.bulk_import import run_bulk_import_sync
-from app.services.bulk_queue import QUEUE_KEY, BulkJobPayload, unregister_bulk_import_job
+from app.services.bulk_import import (
+    finalize_collection_import_sync,
+    list_shp_in_zip,
+    replace_collection_prestage_sync,
+    run_bulk_import_sync,
+)
+from app.services.bulk_queue import (
+    QUEUE_KEY,
+    BulkJobPayload,
+    clear_parent_state,
+    enqueue,
+    get_bulk_import_storage_key,
+    init_parent_state,
+    record_parent_shard_result,
+    unregister_bulk_import_job,
+)
 from app.services.bulk_storage import get_bulk_storage
 from app.services.job_store import get_job, update_job
 from app.services.tile_build_queue import (
@@ -73,6 +88,12 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
             pass
 
     try:
+        if payload.job_kind == "parent":
+            _process_parent_bulk_job(payload, path)
+            return
+        if payload.job_kind == "shard":
+            _process_shard_bulk_job(payload, path)
+            return
         update_job(payload.job_id, status="running")
         created, failed, err = run_bulk_import_sync(
             path,
@@ -119,9 +140,221 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
     except Exception as e:
         update_job(payload.job_id, status="failed", message=str(e))
     finally:
-        # Always remove uploaded file after processing (success or failure)
-        try:
-            storage.delete(payload.storage_key)
-        except Exception:
+        # Cleanup strategy differs by job kind.
+        if payload.job_kind == "single":
+            try:
+                storage.delete(payload.storage_key)
+            except Exception:
+                pass
+            unregister_bulk_import_job(payload.job_id)
+        elif payload.job_kind == "parent":
+            # Keep parent upload while shards run; final shard completion/finalizer handles lifecycle.
             pass
-        unregister_bulk_import_job(payload.job_id)
+        else:
+            # shard jobs are ephemeral and not registered in bulk cancel registry.
+            pass
+
+
+def _split_jsonl_to_chunk_keys(path: str, parent_job_id: str, lines_per_part: int) -> list[str]:
+    storage = get_bulk_storage()
+    out_keys: list[str] = []
+    with open(path, "r", encoding="utf-8", errors="ignore") as src:
+        part_idx = 0
+        line_count = 0
+        dst = None
+        dst_key = ""
+        try:
+            for line in src:
+                if line_count % lines_per_part == 0:
+                    if dst is not None:
+                        dst.close()
+                    part_idx += 1
+                    dst_key = f"{parent_job_id}.shard.{part_idx:04d}.geojsonl"
+                    out_keys.append(dst_key)
+                    dst = open(storage.get_write_path(dst_key), "w", encoding="utf-8")
+                if dst is not None:
+                    dst.write(line)
+                line_count += 1
+        finally:
+            if dst is not None:
+                dst.close()
+    return out_keys
+
+
+def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
+    update_job(payload.job_id, status="running", message="Planning sharded import...")
+    settings = get_settings()
+    shard_payloads: list[BulkJobPayload] = []
+    ext = Path(path).suffix.lower()
+    if payload.mode == "replace":
+        replace_collection_prestage_sync(payload.collection_id)
+
+    if ext == ".zip":
+        inner = payload.zip_inner_shp_paths
+        if not inner:
+            try:
+                inner = list_shp_in_zip(path)
+            except Exception:
+                inner = None
+        if inner and len(inner) > 1:
+            for i, shp in enumerate(inner, start=1):
+                shard_payloads.append(
+                    BulkJobPayload(
+                        job_id=f"{payload.job_id}:shard:{i}",
+                        collection_id=payload.collection_id,
+                        storage_key=payload.storage_key,
+                        mode="append",
+                        batch_size=payload.batch_size,
+                        owner_id=payload.owner_id,
+                        queue_compute_tiles=False,
+                        zip_inner_shp_paths=[shp],
+                        job_kind="shard",
+                        parent_job_id=payload.job_id,
+                        shard_index=i,
+                        shard_total=len(inner),
+                        finalize_collection=False,
+                    )
+                )
+    elif ext in (".geojsonl", ".geojsonseq", ".jsonl") and bool(settings.bulk_sharded_ingest_enabled):
+        shard_keys = _split_jsonl_to_chunk_keys(
+            path, payload.job_id, max(1000, int(settings.bulk_shard_lines_per_part or 50000))
+        )
+        if len(shard_keys) > 1:
+            for i, sk in enumerate(shard_keys, start=1):
+                shard_payloads.append(
+                    BulkJobPayload(
+                        job_id=f"{payload.job_id}:shard:{i}",
+                        collection_id=payload.collection_id,
+                        storage_key=sk,
+                        mode="append",
+                        batch_size=payload.batch_size,
+                        owner_id=payload.owner_id,
+                        queue_compute_tiles=False,
+                        job_kind="shard",
+                        parent_job_id=payload.job_id,
+                        shard_index=i,
+                        shard_total=len(shard_keys),
+                        finalize_collection=False,
+                    )
+                )
+
+    if not shard_payloads:
+        created, failed, err = run_bulk_import_sync(
+            path,
+            payload.collection_id,
+            payload.mode,
+            payload.batch_size,
+            on_progress=lambda st, c, _t: update_job(payload.job_id, status=st, items_created=c),
+            zip_inner_shp_paths=payload.zip_inner_shp_paths,
+            bulk_import_job_id=payload.job_id,
+            finalize_collection=True,
+        )
+        if err:
+            update_job(payload.job_id, status="failed", message=err, items_created=created, items_failed=failed)
+        else:
+            update_job(
+                payload.job_id,
+                status="completed",
+                message=f"Imported {created} features." + (f" {failed} failed." if failed else ""),
+                items_created=created,
+                items_failed=failed,
+            )
+        return
+
+    init_parent_state(
+        parent_job_id=payload.job_id,
+        collection_id=payload.collection_id,
+        expected_shards=len(shard_payloads),
+        mode=payload.mode,
+    )
+    for sp in shard_payloads:
+        enqueue(sp)
+    update_job(
+        payload.job_id,
+        status="running",
+        message=f"Sharded ingest queued ({len(shard_payloads)} shards).",
+        items_in=len(shard_payloads),
+    )
+
+
+def _process_shard_bulk_job(payload: BulkJobPayload, path: str) -> None:
+    parent_job_id = payload.parent_job_id or ""
+    created = 0
+    failed = 0
+    shard_failed = False
+    err_msg = None
+    try:
+        created, failed, err = run_bulk_import_sync(
+            path,
+            payload.collection_id,
+            "append",
+            payload.batch_size,
+            on_progress=None,
+            zip_inner_shp_paths=payload.zip_inner_shp_paths,
+            bulk_import_job_id=parent_job_id or payload.job_id,
+            finalize_collection=False,
+        )
+        if err:
+            shard_failed = True
+            err_msg = err
+    except Exception as e:
+        shard_failed = True
+        err_msg = str(e)
+    finally:
+        if payload.storage_key != (payload.parent_job_id or ""):
+            try:
+                get_bulk_storage().delete(payload.storage_key)
+            except Exception:
+                pass
+
+    if not parent_job_id:
+        return
+    st = record_parent_shard_result(
+        parent_job_id=parent_job_id,
+        created=created,
+        failed=failed,
+        shard_failed=shard_failed,
+    )
+    if not st:
+        return
+    update_job(
+        parent_job_id,
+        status="running",
+        message=f"Shards {st['completed_shards']}/{st['expected_shards']} done"
+        + (f"; failures={st['failed_shards']}" if st["failed_shards"] else ""),
+        items_created=st["items_created"],
+        items_failed=st["items_failed"],
+    )
+    if st["completed_shards"] >= st["expected_shards"]:
+        try:
+            finalize_collection_import_sync(payload.collection_id)
+            if st["failed_shards"] > 0:
+                msg = f"Sharded import completed with errors: {st['failed_shards']} shard(s) failed."
+                if err_msg:
+                    msg += f" Last error: {err_msg}"
+                update_job(
+                    parent_job_id,
+                    status="completed",
+                    message=msg,
+                    items_created=st["items_created"],
+                    items_failed=st["items_failed"],
+                )
+            else:
+                update_job(
+                    parent_job_id,
+                    status="completed",
+                    message=f"Imported {st['items_created']} features via {st['expected_shards']} shards.",
+                    items_created=st["items_created"],
+                    items_failed=st["items_failed"],
+                )
+        except Exception as e:
+            update_job(parent_job_id, status="failed", message=f"Finalize failed: {e}")
+        finally:
+            try:
+                parent_storage_key = get_bulk_import_storage_key(parent_job_id)
+                if parent_storage_key:
+                    get_bulk_storage().delete(parent_storage_key)
+            except Exception:
+                pass
+            unregister_bulk_import_job(parent_job_id)
+            clear_parent_state(parent_job_id)
