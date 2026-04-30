@@ -163,8 +163,9 @@
         <p class="meta" style="margin-top:4px;">When checked, a static tile build is queued for this collection as soon as the bulk import finishes.</p>
       </div>
       <div class="btn-group">
-        <button type="submit" class="btn btn-primary">Upload & import</button>
+        <button type="submit" class="btn btn-primary" id="bulk-upload-submit-btn">Upload & import</button>
       </div>
+      <p id="bulk-upload-loading" class="meta" style="display:none;">Uploading... please do not close this tab or browser until upload completes.</p>
       <p id="bulk-result" class="meta"></p>
       <p id="bulk-result-success" class="alert alert-success" style="display:none;"></p>
     </form>
@@ -1021,7 +1022,11 @@
       var mode = document.querySelector('input[name="mode"]:checked').value;
       var resultEl = document.getElementById('bulk-result');
       var successEl = document.getElementById('bulk-result-success');
+      var loadingEl = document.getElementById('bulk-upload-loading');
+      var submitBtn = document.getElementById('bulk-upload-submit-btn');
       successEl.style.display = 'none';
+      loadingEl.style.display = '';
+      submitBtn.disabled = true;
       var queueTiles = document.getElementById('bulk-queue-compute-tiles').checked;
       var chunkSize = 32 * 1024 * 1024; // 32 MiB default
       var maxParallelParts = 4;
@@ -1146,12 +1151,16 @@
         .then(function(d) {
           if (!d) return;
           resultEl.textContent = '';
-          successEl.innerHTML = 'Import queued. <a href="' + base + '/jobs/' + d.job_id + '?f=html">Check job status →</a>';
+          successEl.innerHTML = 'Upload completed. Import queued. <a href="' + base + '/jobs/' + d.job_id + '?f=html">Check job status →</a>';
           successEl.style.display = 'block';
           if (window.refreshCollectionJobs) window.refreshCollectionJobs();
         })
         .catch(function(e) {
           resultEl.textContent = 'Error: ' + (e.detail || e.message || JSON.stringify(e));
+        })
+        .finally(function() {
+          loadingEl.style.display = 'none';
+          submitBtn.disabled = false;
         });
     };
   </script>

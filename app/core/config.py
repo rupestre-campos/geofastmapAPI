@@ -48,11 +48,17 @@ class Settings(BaseSettings):
 
     # Bulk queue: memory = in-process consumer; redis = separate worker(s), scalable.
     bulk_queue_type: str = "redis"  # memory | redis
+    # Standalone bulk worker (`app.worker_main`): concurrent queue jobs per process (threads). Each job holds DB + CPU; raise with Postgres max_connections in mind.
+    bulk_worker_max_concurrent: int = 2
+    # Tile worker: poll interval while waiting for bulk import to finish on the same collection.
+    tile_build_bulk_wait_poll_seconds: float = 2.0
     redis_url: str = "redis://localhost:6379/0"  # used when bulk_queue_type=redis
     # Generic Redis retry/backoff knobs for queue consumers and enqueue operations.
     redis_retry_base_seconds: float = 1.0
     redis_retry_max_seconds: float = 30.0
     redis_retry_enqueue_max_attempts: int = 5
+    # Hot-path Redis reads (e.g. job cancel polls during bulk import, parent shard aggregation).
+    redis_retry_read_max_attempts: int = 15
 
     # OGC API - Processes: geometric operations (intersection, erase) between collections.
     process_queue_type: str = "redis"  # redis | memory (memory = no separate worker)

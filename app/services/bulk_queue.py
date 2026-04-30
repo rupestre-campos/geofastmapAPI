@@ -141,44 +141,64 @@ def record_parent_shard_result(
     import redis
     from datetime import datetime
 
-    r = redis.from_url(settings.redis_url, decode_responses=True)
     key = _parent_state_key(parent_job_id)
-    if not r.exists(key):
+    read_attempts = max(1, int(getattr(settings, "redis_retry_read_max_attempts", 15) or 15))
+
+    def _mutate() -> bool:
+        """Apply shard counters + error_samples. Returns False if parent key is gone."""
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        if not r.exists(key):
+            return False
+        pipe = r.pipeline()
+        pipe.hincrby(key, "completed_shards", 1)
+        pipe.hincrby(key, "items_created", int(created))
+        pipe.hincrby(key, "items_failed", int(failed))
+        if shard_failed:
+            pipe.hincrby(key, "failed_shards", 1)
+        updates: dict[str, str] = {"updated_at": datetime.utcnow().isoformat() + "Z"}
+        if shard_failed and error_message:
+            try:
+                samples = json.loads(r.hget(key, "error_samples") or "[]")
+            except Exception:
+                samples = []
+            if not isinstance(samples, list):
+                samples = []
+            if len(samples) < 12:
+                samples.append(
+                    {
+                        "shard_index": int(shard_index) if shard_index is not None else None,
+                        "error": str(error_message)[:500],
+                    }
+                )
+            updates["error_samples"] = json.dumps(samples, separators=(",", ":"))
+        pipe.hset(key, mapping=updates)
+        pipe.execute()
+        return True
+
+    def _read_out() -> dict[str, int]:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        raw = r.hgetall(key) or {}
+        return {
+            "expected_shards": int(raw.get("expected_shards", 0) or 0),
+            "completed_shards": int(raw.get("completed_shards", 0) or 0),
+            "failed_shards": int(raw.get("failed_shards", 0) or 0),
+            "items_created": int(raw.get("items_created", 0) or 0),
+            "items_failed": int(raw.get("items_failed", 0) or 0),
+            "error_samples_json": raw.get("error_samples", "[]"),
+        }
+
+    ok = run_redis_retry(
+        "bulk_parent_shard_mutate",
+        _mutate,
+        max_attempts=read_attempts,
+    )
+    if not ok:
         return None
-    pipe = r.pipeline()
-    pipe.hincrby(key, "completed_shards", 1)
-    pipe.hincrby(key, "items_created", int(created))
-    pipe.hincrby(key, "items_failed", int(failed))
-    if shard_failed:
-        pipe.hincrby(key, "failed_shards", 1)
-    updates: dict[str, str] = {"updated_at": datetime.utcnow().isoformat() + "Z"}
-    if shard_failed and error_message:
-        try:
-            samples = json.loads(r.hget(key, "error_samples") or "[]")
-        except Exception:
-            samples = []
-        if not isinstance(samples, list):
-            samples = []
-        if len(samples) < 12:
-            samples.append(
-                {
-                    "shard_index": int(shard_index) if shard_index is not None else None,
-                    "error": str(error_message)[:500],
-                }
-            )
-        updates["error_samples"] = json.dumps(samples, separators=(",", ":"))
-    pipe.hset(key, mapping=updates)
-    pipe.execute()
-    raw = r.hgetall(key) or {}
-    out = {
-        "expected_shards": int(raw.get("expected_shards", 0) or 0),
-        "completed_shards": int(raw.get("completed_shards", 0) or 0),
-        "failed_shards": int(raw.get("failed_shards", 0) or 0),
-        "items_created": int(raw.get("items_created", 0) or 0),
-        "items_failed": int(raw.get("items_failed", 0) or 0),
-        "error_samples_json": raw.get("error_samples", "[]"),
-    }
-    return out
+    return run_redis_retry(
+        "bulk_parent_shard_read",
+        _read_out,
+        max_attempts=read_attempts,
+    )
 
 
 def clear_parent_state(parent_job_id: str) -> None:

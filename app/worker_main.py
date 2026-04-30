@@ -2,18 +2,34 @@
 """
 Standalone bulk import worker. Consumes jobs from Redis and runs imports.
 Run when BULK_QUEUE_TYPE=redis (e.g. in a separate container or machine).
-One process = one job at a time; scale by running more workers.
+
+Concurrency: up to `bulk_worker_max_concurrent` jobs run in parallel (thread pool),
+so one process can use multiple cores on shard-heavy workloads. Scale further by
+running more worker containers.
 """
 from __future__ import annotations
 
 import json
 import sys
 import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
 from app.core.config import get_settings
 from app.services.bulk_queue import QUEUE_KEY, BulkJobPayload
 from app.services.bulk_worker import cleanup_orphan_bulk_uploads, process_bulk_job
 from app.services.redis_resilience import retry_wait_seconds
+
+
+def _process_payload_json(payload_json: str) -> None:
+    try:
+        payload = BulkJobPayload.from_json(payload_json)
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Invalid job payload: {e}", file=sys.stderr, flush=True)
+        return
+    try:
+        process_bulk_job(payload)
+    except Exception as e:
+        print(f"Job {payload.job_id} error: {e}", file=sys.stderr, flush=True)
 
 
 def main() -> None:
@@ -25,45 +41,80 @@ def main() -> None:
     cleanup_orphan_bulk_uploads()
 
     import redis
+
     r = redis.from_url(settings.redis_url, decode_responses=True)
     redis_failures = 0
 
-    print("Bulk import worker started. Waiting for jobs...", flush=True)
-    while True:
-        # BRPOP blocks until a job is available; one job at a time per worker
-        try:
-            result = r.brpop(QUEUE_KEY, timeout=5)
-            redis_failures = 0
-        except Exception as e:
-            redis_failures += 1
-            wait = retry_wait_seconds(
-                redis_failures,
-                base=max(0.1, float(settings.redis_retry_base_seconds or 1.0)),
-                max_seconds=max(1.0, float(settings.redis_retry_max_seconds or 30.0)),
-            )
-            print(
-                f"[bulk-worker] Redis unavailable (attempt {redis_failures}), retrying in {wait:.2f}s: {e}",
-                file=sys.stderr,
-                flush=True,
-            )
+    max_workers = max(1, int(getattr(settings, "bulk_worker_max_concurrent", 2) or 2))
+    print(
+        f"Bulk import worker started (max {max_workers} concurrent jobs). Waiting for jobs...",
+        flush=True,
+    )
+
+    futures: set[Future[None]] = set()
+
+    def _reap_done() -> None:
+        nonlocal futures
+        done = {f for f in futures if f.done()}
+        for fut in done:
+            futures.discard(fut)
             try:
-                r = redis.from_url(settings.redis_url, decode_responses=True)
-            except Exception:
-                pass
-            time.sleep(wait)
-            continue
-        if not result:
-            continue
-        _key, payload_json = result
-        try:
-            payload = BulkJobPayload.from_json(payload_json)
-        except (json.JSONDecodeError, KeyError) as e:
-            print(f"Invalid job payload: {e}", file=sys.stderr)
-            continue
-        try:
-            process_bulk_job(payload)
-        except Exception as e:
-            print(f"Job {payload.job_id} error: {e}", file=sys.stderr)
+                fut.result()
+            except Exception as e:
+                print(f"[bulk-worker] job thread error: {e}", file=sys.stderr, flush=True)
+
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bulkjob") as executor:
+        while True:
+            _reap_done()
+            in_flight = len(futures)
+            slots = max_workers - in_flight
+
+            if slots <= 0:
+                done_set, not_done = wait(futures, return_when=FIRST_COMPLETED, timeout=120)
+                futures = set(not_done)
+                for fut in done_set:
+                    try:
+                        fut.result()
+                    except Exception as e:
+                        print(f"[bulk-worker] job thread error: {e}", file=sys.stderr, flush=True)
+                continue
+
+            brpop_timeout = 1 if in_flight > 0 else 5
+            try:
+                result = r.brpop(QUEUE_KEY, timeout=brpop_timeout)
+                redis_failures = 0
+            except Exception as e:
+                redis_failures += 1
+                wait_s = retry_wait_seconds(
+                    redis_failures,
+                    base=max(0.1, float(settings.redis_retry_base_seconds or 1.0)),
+                    max_seconds=max(1.0, float(settings.redis_retry_max_seconds or 30.0)),
+                )
+                print(
+                    f"[bulk-worker] Redis unavailable (attempt {redis_failures}), retrying in {wait_s:.2f}s: {e}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                try:
+                    r = redis.from_url(settings.redis_url, decode_responses=True)
+                except Exception:
+                    pass
+                time.sleep(wait_s)
+                continue
+
+            if not result:
+                if in_flight > 0:
+                    done_set, not_done = wait(futures, return_when=FIRST_COMPLETED, timeout=2)
+                    futures = set(not_done)
+                    for fut in done_set:
+                        try:
+                            fut.result()
+                        except Exception as e:
+                            print(f"[bulk-worker] job thread error: {e}", file=sys.stderr, flush=True)
+                continue
+
+            _key, payload_json = result
+            futures.add(executor.submit(_process_payload_json, payload_json))
 
 
 if __name__ == "__main__":

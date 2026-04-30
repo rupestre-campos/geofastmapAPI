@@ -14,6 +14,7 @@ from app.services.tile_build_queue import (
     get_tile_build_job,
     update_tile_build_job,
 )
+from app.services.bulk_collection_activity import wait_until_collection_bulk_idle
 from app.services.tile_builder import BUILD_CANCELLED, build_pmtiles_sync
 
 
@@ -62,6 +63,17 @@ def main() -> None:
         def stop_check() -> bool:
             j = get_tile_build_job(job_id)
             return j is not None and j.status == "cancelled"
+
+        if not wait_until_collection_bulk_idle(
+            cid,
+            stop_check=stop_check,
+            on_waiting_message=lambda: update_tile_build_job(
+                job_id, message="Waiting for bulk import to finish..."
+            ),
+        ):
+            print(f"Tile build for {cid} cancelled while waiting for bulk import (job_id={job_id})", flush=True)
+            clear_pending(cid)
+            continue
 
         err = build_pmtiles_sync(cid, options=payload.options, stop_check=stop_check)
         clear_pending(cid)

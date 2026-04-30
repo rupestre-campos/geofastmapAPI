@@ -29,6 +29,7 @@ from app.utils.feature_subdivide import (
     subdivide_geometry_by_vertices,
 )
 from app.utils.geometry_limits import geometry_exceeds_limit
+from app.services.bulk_collection_activity import decr_collection_bulk_activity, incr_collection_bulk_activity
 from app.services.job_store import get_job
 
 class BulkImportCancelled(Exception):
@@ -382,178 +383,188 @@ def run_bulk_import_sync(
         (items_created, items_failed, error_message).
         error_message is "cancelled" if the user cancelled; otherwise set if a fatal error occurred.
     """
-    import fiona
-
-    settings = get_settings()
-    sync_url = settings.database_sync_url
-    engine = create_engine(sync_url, pool_pre_ping=True, future=True)
-    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
-    heartbeat_seconds = max(0.0, float(getattr(settings, "bulk_progress_heartbeat_seconds", 5.0) or 0.0))
-
-    is_zip = file_path.lower().endswith(".zip")
-    sources: list[tuple[str, str]] = []  # (open_path, driver)
-
-    if is_zip:
-        if zip_inner_shp_paths:
-            zip_path = os.path.abspath(file_path)
-            for inner in zip_inner_shp_paths:
-                open_path = f"/vsizip/{zip_path}/{inner}"
-                sources.append((open_path, "ESRI Shapefile"))
-            if not sources:
-                return 0, 0, "ZIP contains no .shp files to import"
-        else:
-            try:
-                open_path, driver = _resolve_zip_shapefile(file_path)
-                sources = [(open_path, driver)]
-            except ValueError as e:
-                return 0, 0, str(e)
-    else:
-        driver = _driver_for_path(file_path)
-        if not driver:
-            return 0, 0, (
-                f"Unsupported file type. Supported: "
-                f"{', '.join(sorted(set(_FIONA_DRIVERS.values())))} or .zip (shapefile inside)"
-            )
-        sources = [(file_path, driver)]
-
+    incr_collection_bulk_activity(collection_id)
+    engine: Engine | None = None
     try:
-        with SessionLocal() as session:
-            from app.models.collection import Collection
-            coll = session.get(Collection, collection_id)
-            if not coll:
-                return 0, 0, "Collection not found"
+        import fiona
 
-            def _retry_notice(attempt: int, wait: float, reason: str) -> None:
-                if on_progress:
-                    on_progress("running", 0, None)
-                print(
-                    f"[bulk-import] retry attempt={attempt} wait={wait:.2f}s reason={reason}",
-                    flush=True,
-                )
+        settings = get_settings()
+        sync_url = settings.database_sync_url
+        engine = create_engine(sync_url, pool_pre_ping=True, future=True)
+        SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+        heartbeat_seconds = max(0.0, float(getattr(settings, "bulk_progress_heartbeat_seconds", 5.0) or 0.0))
 
-            def _commit_with_retry(sess: Session) -> Session:
-                def _do_commit() -> None:
-                    sess.commit()
+        is_zip = file_path.lower().endswith(".zip")
+        sources: list[tuple[str, str]] = []  # (open_path, driver)
 
+        if is_zip:
+            if zip_inner_shp_paths:
+                zip_path = os.path.abspath(file_path)
+                for inner in zip_inner_shp_paths:
+                    open_path = f"/vsizip/{zip_path}/{inner}"
+                    sources.append((open_path, "ESRI Shapefile"))
+                if not sources:
+                    return 0, 0, "ZIP contains no .shp files to import"
+            else:
                 try:
-                    _run_db_retry("bulk_commit", _do_commit, on_retry=_retry_notice)
-                    return sess
-                except Exception:
-                    try:
-                        sess.rollback()
-                    except Exception:
-                        pass
-                    raise
+                    open_path, driver = _resolve_zip_shapefile(file_path)
+                    sources = [(open_path, driver)]
+                except ValueError as e:
+                    return 0, 0, str(e)
+        else:
+            driver = _driver_for_path(file_path)
+            if not driver:
+                return 0, 0, (
+                    f"Unsupported file type. Supported: "
+                    f"{', '.join(sorted(set(_FIONA_DRIVERS.values())))} or .zip (shapefile inside)"
+                )
+            sources = [(file_path, driver)]
 
-            def _execute_with_retry(fn: Callable[[], None], label: str) -> None:
-                def _wrapped() -> None:
+        try:
+            with SessionLocal() as session:
+                from app.models.collection import Collection
+                coll = session.get(Collection, collection_id)
+                if not coll:
+                    return 0, 0, "Collection not found"
+    
+                def _retry_notice(attempt: int, wait: float, reason: str) -> None:
+                    if on_progress:
+                        on_progress("running", 0, None)
+                    print(
+                        f"[bulk-import] retry attempt={attempt} wait={wait:.2f}s reason={reason}",
+                        flush=True,
+                    )
+    
+                def _commit_with_retry(sess: Session) -> Session:
+                    def _do_commit() -> None:
+                        sess.commit()
+    
                     try:
-                        fn()
+                        _run_db_retry("bulk_commit", _do_commit, on_retry=_retry_notice)
+                        return sess
                     except Exception:
                         try:
-                            session.rollback()
+                            sess.rollback()
                         except Exception:
                             pass
                         raise
-
-                _run_db_retry(label, _wrapped, on_retry=_retry_notice)
-
-            _raise_if_bulk_cancelled(bulk_import_job_id)
-
-            if mode == "replace":
-                if on_progress:
-                    on_progress("replacing", 0, None)
-                _execute_with_retry(
-                    lambda: session.execute(delete(Feature).where(Feature.collection_id == collection_id)),
-                    "replace_delete_features",
-                )
-                _execute_with_retry(
-                    lambda: session.execute(
-                        update(Collection).where(Collection.id == collection_id).values(feature_count=0)
-                    ),
-                    "replace_reset_feature_count",
-                )
-                session = _commit_with_retry(session)
-
-            if on_progress:
-                on_progress("running", 0, None)
-
-            total_created = 0
-            total_failed = 0
-            now = datetime.utcnow()
-
-            for open_path, driver in sources:
-                _raise_if_bulk_cancelled(bulk_import_job_id)
-                created, failed = _import_one_source(
-                    session,
-                    open_path,
-                    driver,
-                    collection_id,
-                    batch_size,
-                    on_progress,
-                    total_created,
-                    now,
-                    heartbeat_seconds,
-                    _commit_with_retry,
-                    bulk_import_job_id=bulk_import_job_id,
-                )
-                total_created += created
-                total_failed += failed
-
-            if finalize_collection:
-                if mode == "replace":
-                    _execute_with_retry(
-                        lambda: session.execute(
-                            update(Collection).where(Collection.id == collection_id).values(feature_count=total_created)
-                        ),
-                        "replace_finalize_feature_count",
-                    )
-                else:
-                    _execute_with_retry(
-                        lambda: session.execute(
-                            update(Collection)
-                            .where(Collection.id == collection_id)
-                            .values(feature_count=Collection.feature_count + total_created)
-                        ),
-                        "append_finalize_feature_count",
-                    )
-                session = _commit_with_retry(session)
-
-                extent_mode = str(getattr(settings, "bulk_extent_update_mode", "immediate") or "immediate").lower()
-                if extent_mode not in ("immediate", "deferred", "best_effort"):
-                    extent_mode = "immediate"
-                if extent_mode != "deferred":
-                    try:
-                        _run_db_retry(
-                            "extent_recompute",
-                            lambda: collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id),
-                            on_retry=_retry_notice,
-                        )
-                    except Exception:
-                        if extent_mode == "immediate":
+    
+                def _execute_with_retry(fn: Callable[[], None], label: str) -> None:
+                    def _wrapped() -> None:
+                        try:
+                            fn()
+                        except Exception:
+                            try:
+                                session.rollback()
+                            except Exception:
+                                pass
                             raise
+    
+                    _run_db_retry(label, _wrapped, on_retry=_retry_notice)
+    
+                _raise_if_bulk_cancelled(bulk_import_job_id)
+    
+                if mode == "replace":
+                    if on_progress:
+                        on_progress("replacing", 0, None)
+                    _execute_with_retry(
+                        lambda: session.execute(delete(Feature).where(Feature.collection_id == collection_id)),
+                        "replace_delete_features",
+                    )
+                    _execute_with_retry(
+                        lambda: session.execute(
+                            update(Collection).where(Collection.id == collection_id).values(feature_count=0)
+                        ),
+                        "replace_reset_feature_count",
+                    )
+                    session = _commit_with_retry(session)
+    
+                if on_progress:
+                    on_progress("running", 0, None)
+    
+                total_created = 0
+                total_failed = 0
+                now = datetime.utcnow()
+    
+                for open_path, driver in sources:
+                    _raise_if_bulk_cancelled(bulk_import_job_id)
+                    created, failed = _import_one_source(
+                        session,
+                        open_path,
+                        driver,
+                        collection_id,
+                        batch_size,
+                        on_progress,
+                        total_created,
+                        now,
+                        heartbeat_seconds,
+                        _commit_with_retry,
+                        bulk_import_job_id=bulk_import_job_id,
+                    )
+                    total_created += created
+                    total_failed += failed
+    
+                if finalize_collection:
+                    if mode == "replace":
+                        _execute_with_retry(
+                            lambda: session.execute(
+                                update(Collection).where(Collection.id == collection_id).values(feature_count=total_created)
+                            ),
+                            "replace_finalize_feature_count",
+                        )
+                    else:
+                        _execute_with_retry(
+                            lambda: session.execute(
+                                update(Collection)
+                                .where(Collection.id == collection_id)
+                                .values(feature_count=Collection.feature_count + total_created)
+                            ),
+                            "append_finalize_feature_count",
+                        )
+                    session = _commit_with_retry(session)
+    
+                    extent_mode = str(getattr(settings, "bulk_extent_update_mode", "immediate") or "immediate").lower()
+                    if extent_mode not in ("immediate", "deferred", "best_effort"):
+                        extent_mode = "immediate"
+                    if extent_mode != "deferred":
+                        try:
+                            _run_db_retry(
+                                "extent_recompute",
+                                lambda: collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id),
+                                on_retry=_retry_notice,
+                            )
+                        except Exception:
+                            if extent_mode == "immediate":
+                                raise
+    
+                if on_progress:
+                    on_progress("completed", total_created, total_created)
+                return total_created, total_failed, None
 
+        except BulkImportCancelled:
+            if bulk_import_job_id:
+                _sync_delete_bulk_import_rows_and_refresh(engine, collection_id, bulk_import_job_id)
+            return 0, 0, "cancelled"
+        except Exception as e:
             if on_progress:
-                on_progress("completed", total_created, total_created)
-            return total_created, total_failed, None
-
-    except BulkImportCancelled:
-        if bulk_import_job_id:
-            _sync_delete_bulk_import_rows_and_refresh(engine, collection_id, bulk_import_job_id)
-        return 0, 0, "cancelled"
-    except Exception as e:
-        if on_progress:
-            on_progress("failed", 0, None)
-        return 0, 0, str(e)
+                on_progress("failed", 0, None)
+            return 0, 0, str(e)
     finally:
-        engine.dispose()
+        if engine is not None:
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+        decr_collection_bulk_activity(collection_id)
 
 
 def finalize_collection_import_sync(collection_id: str) -> None:
     """Finalize a collection after sharded append imports."""
-    settings = get_settings()
-    engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+    incr_collection_bulk_activity(collection_id)
+    engine: Engine | None = None
     try:
+        settings = get_settings()
+        engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
         _update_feature_count_sync(engine, collection_id)
         extent_mode = str(getattr(settings, "bulk_extent_update_mode", "immediate") or "immediate").lower()
         if extent_mode not in ("immediate", "deferred", "best_effort"):
@@ -568,18 +579,30 @@ def finalize_collection_import_sync(collection_id: str) -> None:
                 if extent_mode == "immediate":
                     raise
     finally:
-        engine.dispose()
+        if engine is not None:
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+        decr_collection_bulk_activity(collection_id)
 
 
 def replace_collection_prestage_sync(collection_id: str) -> None:
     """Delete existing rows before sharded replace imports."""
-    settings = get_settings()
-    engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
-    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    incr_collection_bulk_activity(collection_id)
+    engine: Engine | None = None
     try:
+        settings = get_settings()
+        engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+        SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
         with SessionLocal() as session:
             session.execute(delete(Feature).where(Feature.collection_id == collection_id))
             session.execute(update(Collection).where(Collection.id == collection_id).values(feature_count=0))
             session.commit()
     finally:
-        engine.dispose()
+        if engine is not None:
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+        decr_collection_bulk_activity(collection_id)

@@ -26,6 +26,24 @@ _EXPORT_CHUNK_SIZE = 50_000
 _QUEUE_MAX_SIZE = 8  # allow producer to read ahead so file write is not the bottleneck
 
 
+def _stream_pipe(pipe, target, capture: list[str] | None = None) -> None:
+    """Forward process output to target stream and optionally capture it."""
+    try:
+        while True:
+            line = pipe.readline()
+            if not line:
+                break
+            target.write(line)
+            target.flush()
+            if capture is not None:
+                capture.append(line)
+    finally:
+        try:
+            pipe.close()
+        except Exception:
+            pass
+
+
 def _consumer(queue: Queue, file_handle) -> None:
     """Consume (id, geometry_geojson_str, properties) chunks; build GeoJSONSeq lines; batch-write to file.
     Uses numeric feature ids (Mapbox tippecanoe requirement); original id kept in properties."""
@@ -216,7 +234,22 @@ def build_pmtiles_sync(
             # Never exclude "id" so popup links use the real feature id (UUID)
         print(f"[tile_builder] Running tippecanoe for {collection_id} ({total_features} features)...", file=sys.stderr, flush=True)
         tippecanoe_started = True
-        proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, text=True)
+        stderr_lines: list[str] = []
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        stdout_thread = threading.Thread(target=_stream_pipe, args=(proc.stdout, sys.stdout), daemon=True)
+        stderr_thread = threading.Thread(
+            target=_stream_pipe,
+            args=(proc.stderr, sys.stderr, stderr_lines),
+            daemon=True,
+        )
+        stdout_thread.start()
+        stderr_thread.start()
         while proc.poll() is None:
             time.sleep(1)
             if stopped():
@@ -231,15 +264,21 @@ def build_pmtiles_sync(
                         os.unlink(out_path_tmp)
                     except OSError:
                         pass
+                stdout_thread.join(timeout=1)
+                stderr_thread.join(timeout=1)
                 return BUILD_CANCELLED
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=5)
         if proc.returncode != 0:
-            print("[tile_builder] tippecanoe failed (see above for details)", file=sys.stderr, flush=True)
+            err_text = "".join(stderr_lines).strip()
             if out_path_tmp and os.path.exists(out_path_tmp):
                 try:
                     os.unlink(out_path_tmp)
                 except OSError:
                     pass
-            return "tippecanoe failed"
+            if err_text:
+                return f"tippecanoe failed: {err_text[-4000:]}"
+            return f"tippecanoe failed with exit code {proc.returncode}"
         # Atomic install: readers keep using the previous file until this succeeds.
         try:
             os.replace(out_path_tmp, out_path_final)

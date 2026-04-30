@@ -67,8 +67,10 @@ For multi-GB uploads, tune API + worker envs together (same Redis settings on ev
 - `BULK_EXTENT_UPDATE_MODE` = `best_effort` or `deferred` for very large layers (reduces end-of-job tail latency)
 - `BULK_DB_RETRY_MAX_ATTEMPTS`, `BULK_DB_RETRY_BASE_SECONDS`, `BULK_DB_RETRY_MAX_SECONDS`
 - `REDIS_RETRY_BASE_SECONDS`, `REDIS_RETRY_MAX_SECONDS`, `REDIS_RETRY_ENQUEUE_MAX_ATTEMPTS`
+- `REDIS_RETRY_READ_MAX_ATTEMPTS` (default `15`): retries for frequent Redis reads during bulk import (cancel checks via `get_job`) and parent shard aggregation. On unstable residential LANs, keep backoff caps and consider raising this before raising parallel worker load.
 - `BULK_UPLOAD_SESSION_TTL_SECONDS`, `BULK_UPLOAD_CHUNK_SIZE_BYTES` (resumable uploads)
 - `BULK_SHARDED_INGEST_ENABLED`, `BULK_SHARD_LINES_PER_PART` (single-file sharded ingest)
+- `BULK_WORKER_MAX_CONCURRENT` (default `2`): standalone bulk worker threads per process; increase for more parallel shard imports on one machine (watch Postgres `max_connections` and RAM).
 
 Recommended starting point for multi-GB browser uploads: `BULK_UPLOAD_CHUNK_SIZE_BYTES=33554432` (32 MiB). This cuts request count significantly (about 147 parts for a 5GB file, vs ~589 with 8 MiB parts).
 

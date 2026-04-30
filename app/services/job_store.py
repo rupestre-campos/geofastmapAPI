@@ -142,9 +142,14 @@ def _create_job_redis(collection_id: str, owner_id: int | None = None) -> JobInf
 def _get_job_redis(job_id: str) -> JobInfo | None:
     import redis
     settings = get_settings()
-    r = redis.from_url(settings.redis_url, decode_responses=True)
     key = _redis_key(job_id)
-    raw = r.hgetall(key)
+    read_attempts = max(1, int(getattr(settings, "redis_retry_read_max_attempts", 15) or 15))
+
+    def _read() -> dict:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        return r.hgetall(key)
+
+    raw = run_redis_retry("get_job", _read, max_attempts=read_attempts)
     if not raw:
         return None
     finished_at = None
