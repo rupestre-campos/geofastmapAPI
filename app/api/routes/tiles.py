@@ -6,6 +6,7 @@ import gzip
 import json
 import os
 import re
+from urllib.parse import urlencode
 from datetime import datetime
 from pathlib import Path
 import httpx
@@ -45,6 +46,7 @@ from app.services.tile_build_queue import (
     get_pending_job_id,
     update_tile_build_job,
 )
+from app.services.collection_tiles_revision import compute_collection_tiles_revision
 
 router = APIRouter()
 
@@ -72,9 +74,19 @@ def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
-def _static_tile_cache_headers() -> dict[str, str]:
-    """Browser cache for static (MBTiles) vector tiles: 1 hour at all zooms."""
-    return {"Cache-Control": "public, max-age=3600"}
+def _static_tile_cache_headers(*, etag: str | None = None, versioned: bool = False) -> dict[str, str]:
+    """Browser cache for static (MBTiles) vector tiles; immutable when URL is revision-pinned."""
+    headers = {"Cache-Control": "public, max-age=31536000, immutable" if versioned else "public, max-age=3600"}
+    if etag:
+        headers["ETag"] = f'"{etag}"'
+    return headers
+
+
+def _tile_url_with_revision(base_url: str, collection_id: str, revision: str | None) -> str:
+    path = f"{base_url}/collections/{collection_id}/tiles/static/{{z}}/{{x}}/{{y}}.pbf"
+    if not revision:
+        return path
+    return f"{path}?{urlencode({'v': revision})}"
 
 
 def _dynamic_tile_cache_headers_for_zoom(z: int) -> dict[str, str]:
@@ -334,12 +346,13 @@ async def get_tiles_tilejson(
     settings = get_settings()
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     has_static = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
+    tiles_revision = compute_collection_tiles_revision(collection_id, rec.pmtiles_path if rec else None)
     minzoom = rec.minzoom if (rec and rec.minzoom is not None) else 0
     maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
     # Prefer static ZXY URL when static tiles (MBTiles) exist so clients can use a single tile endpoint
     tile_urls = [f"{base}/collections/{collection_id}/tiles/dynamic/{{z}}/{{x}}/{{y}}.pbf"]
     if has_static:
-        tile_urls.insert(0, f"{base}/collections/{collection_id}/tiles/static/{{z}}/{{x}}/{{y}}.pbf")
+        tile_urls.insert(0, _tile_url_with_revision(base, collection_id, tiles_revision))
     layer_id = mvt_layer_name(collection_id)
     tilejson = {
         "tilejson": "2.2.0",
@@ -350,6 +363,7 @@ async def get_tiles_tilejson(
         "tiles": tile_urls,
         "minzoom": minzoom,
         "maxzoom": maxzoom,
+        "tiles_revision": tiles_revision,
         "vector_layers": [{"id": layer_id, "description": "", "minzoom": minzoom, "maxzoom": maxzoom}],
     }
     return JSONResponse(content=tilejson)
@@ -927,6 +941,7 @@ def _read_tile_from_mbtiles(path: Path, z: int, x: int, y: int) -> bytes | None:
     description="Returns the tile at z/x/y from the built MBTiles file for this collection.",
 )
 async def get_tiles_static_zxy(
+    request: Request,
     collection_id: str,
     z: int,
     x: int,
@@ -949,17 +964,21 @@ async def get_tiles_static_zxy(
     path = Path(rec.pmtiles_path)
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tiles file missing.")
+    tiles_revision = compute_collection_tiles_revision(collection_id, rec.pmtiles_path)
+    version_query = request.query_params.get("v")
+    pinned_version = bool(tiles_revision and version_query and version_query == tiles_revision)
+    cache_headers = _static_tile_cache_headers(etag=tiles_revision, versioned=pinned_version)
     tile_bytes = await asyncio.to_thread(_read_tile_from_mbtiles, path, z, x, y)
     if tile_bytes is None:
         return Response(
             content=b"",
             media_type="application/x-protobuf",
-            headers=_static_tile_cache_headers(),
+            headers=cache_headers,
         )
     return Response(
         content=tile_bytes,
         media_type="application/x-protobuf",
-        headers=_static_tile_cache_headers(),
+        headers=cache_headers,
     )
 
 

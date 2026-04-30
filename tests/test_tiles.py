@@ -1,6 +1,9 @@
 """Tests for OGC API Tiles routes (TileJSON, build, cancel, status, dynamic/static tiles)."""
+import os
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from app.services.collection_tiles_revision import compute_collection_tiles_revision
 
 
 @pytest.mark.asyncio
@@ -102,5 +105,23 @@ async def test_tiles_static_404_when_no_static_tiles(client):
     await client.post("/collections", json={"id": "c1", "title": "C1", "description": ""})
     resp = await client.get("/collections/c1/tiles/static/0/0/0.pbf")
     assert resp.status_code == 404, resp.text
+
+
+def test_collection_tiles_revision_changes_when_file_changes(tmp_path):
+    p = tmp_path / "c1.mbtiles"
+    p.write_bytes(b"abc")
+    rev1 = compute_collection_tiles_revision("c1", str(p))
+    assert rev1
+    os.utime(p, None)
+    p.write_bytes(b"abcd")
+    rev2 = compute_collection_tiles_revision("c1", str(p))
+    assert rev2
+    assert rev2 != rev1
+
+
+def test_static_tile_url_appends_revision_query():
+    from app.api.routes import tiles as tiles_route
+    url = tiles_route._tile_url_with_revision("http://localhost", "c1", "abc123")
+    assert url.endswith("/collections/c1/tiles/static/{z}/{x}/{y}.pbf?v=abc123")
 
 

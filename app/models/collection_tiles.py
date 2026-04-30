@@ -21,3 +21,4 @@ class CollectionTiles(Base):
     features_updated_at = Column(DateTime(timezone=True), nullable=True)
     minzoom = Column(Integer, nullable=True)
     maxzoom = Column(Integer, nullable=True)
+    tiles_revision = Column(String(64), nullable=True)

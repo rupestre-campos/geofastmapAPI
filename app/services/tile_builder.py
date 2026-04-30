@@ -15,6 +15,7 @@ from typing import Callable
 import orjson
 
 from app.core.config import get_settings
+from app.services.collection_tiles_revision import compute_collection_tiles_revision
 from app.services.tile_build_queue import TileBuildOptions
 from app.utils.geo import mvt_layer_name
 
@@ -128,10 +129,10 @@ def build_pmtiles_sync(
         with SessionLocal() as s:
             s.execute(
                 text("""
-                    INSERT INTO collection_tiles (collection_id, pmtiles_path, built_at, features_updated_at, minzoom, maxzoom)
-                    VALUES (:cid, NULL, :now, NULL, NULL, NULL)
+                    INSERT INTO collection_tiles (collection_id, pmtiles_path, built_at, features_updated_at, minzoom, maxzoom, tiles_revision)
+                    VALUES (:cid, NULL, :now, NULL, NULL, NULL, NULL)
                     ON CONFLICT (collection_id) DO UPDATE SET
-                        pmtiles_path = NULL, built_at = :now, features_updated_at = NULL, minzoom = NULL, maxzoom = NULL
+                        pmtiles_path = NULL, built_at = :now, features_updated_at = NULL, minzoom = NULL, maxzoom = NULL, tiles_revision = NULL
                 """),
                 {"cid": collection_id, "now": datetime.now(timezone.utc)},
             )
@@ -303,6 +304,7 @@ def build_pmtiles_sync(
                 pass
 
     # Remove previous file if DB pointed elsewhere (e.g. legacy path); live path is out_path_final.
+    tiles_revision = compute_collection_tiles_revision(collection_id, out_path_final)
     with SessionLocal() as session:
         old = session.execute(
             text("SELECT pmtiles_path FROM collection_tiles WHERE collection_id = :cid"),
@@ -316,16 +318,25 @@ def build_pmtiles_sync(
                 pass
         session.execute(
             text("""
-                INSERT INTO collection_tiles (collection_id, pmtiles_path, built_at, features_updated_at, minzoom, maxzoom)
-                VALUES (:cid, :path, :now, :fua, :minz, :maxz)
+                INSERT INTO collection_tiles (collection_id, pmtiles_path, built_at, features_updated_at, minzoom, maxzoom, tiles_revision)
+                VALUES (:cid, :path, :now, :fua, :minz, :maxz, :rev)
                 ON CONFLICT (collection_id) DO UPDATE SET
                     pmtiles_path = EXCLUDED.pmtiles_path,
                     built_at = EXCLUDED.built_at,
                     features_updated_at = EXCLUDED.features_updated_at,
                     minzoom = EXCLUDED.minzoom,
-                    maxzoom = EXCLUDED.maxzoom
+                    maxzoom = EXCLUDED.maxzoom,
+                    tiles_revision = EXCLUDED.tiles_revision
             """),
-            {"cid": collection_id, "path": out_path_final, "now": datetime.now(timezone.utc), "fua": max_updated, "minz": minz, "maxz": maxz},
+            {
+                "cid": collection_id,
+                "path": out_path_final,
+                "now": datetime.now(timezone.utc),
+                "fua": max_updated,
+                "minz": minz,
+                "maxz": maxz,
+                "rev": tiles_revision,
+            },
         )
         session.commit()
 
