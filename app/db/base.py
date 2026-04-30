@@ -16,6 +16,7 @@ from app.models import (
     feature,
     map as map_model,
     observability,
+    raster_style,
     runtime_setting,
     resource_share,
     style,

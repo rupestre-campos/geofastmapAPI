@@ -29,6 +29,7 @@ from app.api.routes import (
     processes,
     project_docs,
     raster_views,
+    raster_styles,
     rasters,
     root,
     stac,
@@ -156,6 +157,7 @@ def create_app() -> FastAPI:
     app.include_router(coverages.router, prefix="/collections", tags=["coverages"])
     app.include_router(titiler_proxy.router, prefix="/collections", tags=["titiler"])
     app.include_router(rasters.router, prefix="/collections", tags=["rasters"])
+    app.include_router(raster_styles.router, prefix="/collections", tags=["raster-styles"])
     app.include_router(internal_raster.router, prefix="/internal", tags=["internal"])
     app.include_router(stac.router, prefix="/stac", tags=["stac"])
     app.include_router(stac_items.router, prefix="/stac", tags=["stac"])

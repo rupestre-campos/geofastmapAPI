@@ -47,6 +47,7 @@ from app.services.tile_build_queue import (
     update_tile_build_job,
 )
 from app.services.collection_tiles_revision import compute_collection_tiles_revision
+from app.services.collection_type_guard import ensure_vector_collection
 
 router = APIRouter()
 
@@ -114,6 +115,7 @@ async def get_tile_build_page(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    ensure_vector_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     settings = get_settings()
@@ -146,6 +148,7 @@ async def build_tiles(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    ensure_vector_collection(collection)
     settings = get_settings()
     if settings.bulk_queue_type != "redis":
         raise HTTPException(
@@ -259,6 +262,7 @@ async def cancel_tile_build(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    ensure_vector_collection(collection)
     settings = get_settings()
     if settings.bulk_queue_type != "redis":
         raise HTTPException(
@@ -291,6 +295,7 @@ async def delete_tiles_static(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    ensure_vector_collection(collection)
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     if rec and rec.pmtiles_path:
         path = Path(rec.pmtiles_path)
@@ -316,6 +321,7 @@ async def invalidate_tiles_cache(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    ensure_vector_collection(collection)
     invalidate_collection_cache(collection_id)
     return JSONResponse(
         status_code=status.HTTP_200_OK,
@@ -340,6 +346,7 @@ async def get_tiles_tilejson(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    ensure_vector_collection(collection)
     if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     base = _base_url(request)

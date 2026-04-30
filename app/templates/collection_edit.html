@@ -139,6 +139,24 @@
     </div>
   </div>
 
+  {% if (collection.collection_type or 'vector') == 'raster' %}
+  <div class="card" id="dem-panel">
+    <h2 class="card-title">DEM terrain</h2>
+    <p class="meta">Mark raster items as DEM and choose `terrainrgb` or `terrarium` for MapLibre terrain usage.</p>
+    <div class="form-row">
+      <label for="dem-encoding-default">Default DEM encoding</label>
+      <select id="dem-encoding-default">
+        <option value="terrainrgb">terrainrgb (MapLibre encoding: mapbox)</option>
+        <option value="terrarium">terrarium</option>
+      </select>
+      <button type="button" class="btn btn-sm" id="btn-refresh-rasters">Refresh</button>
+    </div>
+    <p id="terrain-tilejson-url" class="meta"></p>
+    <pre id="terrain-maplibre-snippet" class="meta" style="white-space:pre-wrap;"></pre>
+    <div id="dem-items-wrap"></div>
+  </div>
+  {% endif %}
+
   {% if patch_url is defined and shares_url is defined %}
   {% include "_sharing_card.html" with context %}
   {% endif %}
@@ -228,6 +246,7 @@
     const collectionStylesUrl = {{ collection_styles_url | tojson if collection_styles_url else 'null' }};
     const googleKey = {{ google_maps_api_key | tojson }};
     const isAdmin = {{ is_admin | default(false) | tojson }};
+    const collectionType = {{ (collection.collection_type or 'vector') | tojson }};
 
     function bboxToPolygonFeature(bbox) {
       if (!bbox || bbox.length < 4) return null;
@@ -945,6 +964,73 @@
         .then(function(d) { if (d.extent && d.extent.bbox) location.reload(); else { alert('No extent (no features with geometry).'); btn.disabled = false; } })
         .catch(function(e) { alert('Error: ' + (e.detail || e.message || e)); btn.disabled = false; });
     };
+
+    async function refreshRasterDemPanel() {
+      if (collectionType !== 'raster') return;
+      var wrap = document.getElementById('dem-items-wrap');
+      var tilejsonUrlEl = document.getElementById('terrain-tilejson-url');
+      var snippetEl = document.getElementById('terrain-maplibre-snippet');
+      var defaultEncSel = document.getElementById('dem-encoding-default');
+      if (!wrap || !tilejsonUrlEl || !snippetEl || !defaultEncSel) return;
+      wrap.innerHTML = '<p class="meta">Loading raster items…</p>';
+      try {
+        var enc = defaultEncSel.value || 'terrainrgb';
+        var listRes = await fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters', { headers: { 'Accept': 'application/json' } });
+        var listData = await listRes.json();
+        if (!listRes.ok) throw new Error(listData.detail || 'Could not load rasters');
+        var tjUrl = base + '/collections/' + encodeURIComponent(collectionId) + '/rasters/terrain/tilejson.json?dem_encoding=' + encodeURIComponent(enc);
+        tilejsonUrlEl.textContent = 'Terrain TileJSON: ' + tjUrl;
+        snippetEl.textContent =
+          "map.addSource('terrain-dem', {\\n" +
+          "  type: 'raster-dem',\\n" +
+          "  url: '" + tjUrl + "',\\n" +
+          "  encoding: '" + (enc === 'terrainrgb' ? 'mapbox' : 'terrarium') + "',\\n" +
+          "  tileSize: 256\\n" +
+          "});\\n" +
+          "map.setTerrain({ source: 'terrain-dem', exaggeration: 1.0 });";
+        var items = listData.items || [];
+        if (items.length === 0) {
+          wrap.innerHTML = '<p class="meta">No raster items yet.</p>';
+          return;
+        }
+        var html = '<table><thead><tr><th>Item</th><th>DEM</th><th>Encoding</th><th>Actions</th></tr></thead><tbody>';
+        items.forEach(function(it) {
+          html += '<tr data-item-id=\"' + it.id + '\">';
+          html += '<td>' + (it.title || it.id) + '</td>';
+          html += '<td><input type=\"checkbox\" class=\"dem-flag\" ' + (it.is_dem ? 'checked' : '') + '></td>';
+          html += '<td><select class=\"dem-enc\"><option value=\"terrainrgb\"' + (it.dem_encoding === 'terrainrgb' ? ' selected' : '') + '>terrainrgb</option><option value=\"terrarium\"' + (it.dem_encoding === 'terrarium' ? ' selected' : '') + '>terrarium</option></select></td>';
+          html += '<td><button type=\"button\" class=\"btn btn-sm dem-save\">Save</button> ';
+          html += '<button type=\"button\" class=\"btn btn-sm btn-danger dem-delete\">Delete</button> ';
+          html += '<a class=\"btn btn-sm\" href=\"' + base + '/maps/new?f=html\">Add to map</a></td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        wrap.innerHTML = html;
+        wrap.querySelectorAll('.dem-save').forEach(function(btn) {
+          btn.onclick = async function() {
+            var tr = btn.closest('tr');
+            var fid = tr.getAttribute('data-item-id');
+            var isDem = tr.querySelector('.dem-flag').checked;
+            var demEnc = tr.querySelector('.dem-enc').value;
+            var rr = await fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters/' + encodeURIComponent(fid) + '/dem?is_dem=' + (isDem ? 'true' : 'false') + '&dem_encoding=' + encodeURIComponent(demEnc), { method: 'PATCH', headers: { 'Accept': 'application/json' } });
+            if (!rr.ok) alert('Failed updating DEM settings');
+            await refreshRasterDemPanel();
+          };
+        });
+        wrap.querySelectorAll('.dem-delete').forEach(function(btn) {
+          btn.onclick = async function() {
+            var tr = btn.closest('tr');
+            var fid = tr.getAttribute('data-item-id');
+            if (!confirm('Delete raster item ' + fid + '?')) return;
+            var rr = await fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(fid), { method: 'DELETE' });
+            if (!rr.ok) alert('Delete failed');
+            await refreshRasterDemPanel();
+          };
+        });
+      } catch (err) {
+        wrap.innerHTML = '<p class=\"meta err\">Failed loading DEM items.</p>';
+      }
+    }
     (function jobsTable() {
       var loadingEl = document.getElementById('jobs-loading');
       var tableEl = document.getElementById('jobs-table');
@@ -1163,5 +1249,12 @@
           submitBtn.disabled = false;
         });
     };
+    if (collectionType === 'raster') {
+      var refreshBtn = document.getElementById('btn-refresh-rasters');
+      var encSel = document.getElementById('dem-encoding-default');
+      if (refreshBtn) refreshBtn.onclick = refreshRasterDemPanel;
+      if (encSel) encSel.onchange = refreshRasterDemPanel;
+      refreshRasterDemPanel();
+    }
   </script>
 {% endblock %}

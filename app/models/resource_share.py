@@ -19,6 +19,10 @@ def style_resource_id(collection_id: str, style_id: str) -> str:
     return f"{collection_id}:{style_id}"
 
 
+def raster_style_resource_id(collection_id: str, style_id: str) -> str:
+    return f"raster:{collection_id}:{style_id}"
+
+
 class ResourceShare(Base):
     __tablename__ = "resource_shares"
 

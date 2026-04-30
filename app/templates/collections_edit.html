@@ -22,6 +22,13 @@
         <input type="text" id="create-description" name="description" placeholder="Optional">
       </div>
       <div class="form-row">
+        <label for="create-type">Collection type</label>
+        <select id="create-type" name="collection_type">
+          <option value="vector" selected>Vector</option>
+          <option value="raster">Raster</option>
+        </select>
+      </div>
+      <div class="form-row">
         <label for="create-bbox">Bounding box <span class="meta">(optional: minx, miny, maxx, maxy WGS84)</span></label>
         <input type="text" id="create-bbox" name="bbox" placeholder="-180, -90, 180, 90">
       </div>
@@ -46,10 +53,12 @@
       const id = document.getElementById('create-id').value.trim();
       const title = document.getElementById('create-title').value.trim();
       const description = document.getElementById('create-description').value.trim();
+      const collectionType = document.getElementById('create-type').value || 'vector';
       const bboxStr = document.getElementById('create-bbox').value.trim();
       const body = { id: id };
       if (title) body.title = title;
       if (description) body.description = description;
+      body.collection_type = collectionType;
       if (bboxStr) {
         const parts = bboxStr.split(/[\s,]+/).filter(Boolean);
         if (parts.length === 4) {

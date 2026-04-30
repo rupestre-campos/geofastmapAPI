@@ -1548,7 +1548,37 @@
               btn.type = 'button';
               btn.className = 'collection-search-item';
               btn.textContent = (c.title || c.id) + (c.id !== (c.title || c.id) ? ' (' + c.id + ')' : '');
-              btn.onclick = function() { addCollection(c.id); resultsEl.innerHTML = ''; document.getElementById('collection-search').value = ''; };
+              btn.onclick = function() {
+                if (String(c.collection_type || 'vector') === 'raster') {
+                  fetch(base + '/collections/' + encodeURIComponent(c.id) + '/rasters', { headers: { 'Accept': 'application/json' } })
+                    .then(function(r) { return r.ok ? r.json() : null; })
+                    .then(function(info) {
+                      if (!info || !info.item_count) return;
+                      if (info.item_count > 1) {
+                        state.layers.push({
+                          collection_id: c.id,
+                          layer_id: 'raster-mosaic-' + c.id,
+                          order: state.layers.length,
+                          style_spec: { rasterOpacity: 1 },
+                          popup: false,
+                          popup_id_property: null,
+                          raster_tiles: true,
+                          raster_collection_mode: 'mosaic',
+                          tiles_url: info.mosaic_tiles_url || null
+                        });
+                        renderLayers();
+                        syncMapFromState();
+                      } else if (info.items && info.items.length === 1) {
+                        addRasterCollectionItem(c.id, info.items[0].id);
+                      }
+                    })
+                    .catch(function() {});
+                } else {
+                  addCollection(c.id);
+                }
+                resultsEl.innerHTML = '';
+                document.getElementById('collection-search').value = '';
+              };
               resultsEl.appendChild(btn);
             });
             if (list.length === 0) resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">No collections with static tiles (or already added). Build static tiles on a collection edit page first.</div>';
@@ -1595,6 +1625,38 @@
             });
             renderLayers();
           });
+      }
+
+      function addRasterCollectionItem(collectionId, featureId) {
+        var cid = String(collectionId || '').trim();
+        var fid = String(featureId || '').trim();
+        if (!cid || !fid) return;
+        for (var j = 0; j < state.layers.length; j++) {
+          var l = state.layers[j];
+          if (!l || !l.raster_tiles) continue;
+          if (String(l.collection_id || '') === cid && String(l.raster_feature_id || '') === fid) return;
+        }
+        var spec = Object.assign({}, DEFAULT_SPEC);
+        spec.rasterOpacity = 1;
+        var tilesUrl = base + '/collections/' + encodeURIComponent(cid) + '/rasters/tiles/WebMercatorQuad/{z}/{x}/{y}.png'
+          + '?mode=item&feature_id=' + encodeURIComponent(fid);
+        state.layers.push({
+          collection_id: cid,
+          layer_id: 'raster-item-' + cid + '-' + fid,
+          order: state.layers.length,
+          style_spec: spec,
+          popup: false,
+          popup_id_property: null,
+          raster_tiles: true,
+          raster_collection_mode: 'item',
+          raster_feature_id: fid,
+          tiles_url: tilesUrl
+        });
+        var prevBefore = state.layers.length > 1 ? sourceId(layerKey(state.layers[state.layers.length - 2])) + '-fill' : undefined;
+        addLayerToMap(state.layers[state.layers.length - 1], spec, state.layers.length - 1, prevBefore).then(function() {
+          if (state.layers.length === 1) trySetInitialExtentFromFirstLayer();
+        });
+        renderLayers();
       }
 
       function addMosaicLayer(viewId) {
@@ -1667,7 +1729,37 @@
                 btn.type = 'button';
                 btn.className = 'collection-search-item';
                 btn.textContent = (c.title || c.id) + (c.id !== (c.title || c.id) ? ' (' + c.id + ')' : '');
-                btn.onclick = function() { addCollection(c.id); resultsEl.innerHTML = ''; document.getElementById('collection-search').value = ''; };
+                btn.onclick = function() {
+                  if (String(c.collection_type || 'vector') === 'raster') {
+                    fetch(base + '/collections/' + encodeURIComponent(c.id) + '/rasters', { headers: { 'Accept': 'application/json' } })
+                      .then(function(r) { return r.ok ? r.json() : null; })
+                      .then(function(info) {
+                        if (!info || !info.item_count) return;
+                        if (info.item_count > 1) {
+                          state.layers.push({
+                            collection_id: c.id,
+                            layer_id: 'raster-mosaic-' + c.id,
+                            order: state.layers.length,
+                            style_spec: { rasterOpacity: 1 },
+                            popup: false,
+                            popup_id_property: null,
+                            raster_tiles: true,
+                            raster_collection_mode: 'mosaic',
+                            tiles_url: info.mosaic_tiles_url || null
+                          });
+                          renderLayers();
+                          syncMapFromState();
+                        } else if (info.items && info.items.length === 1) {
+                          addRasterCollectionItem(c.id, info.items[0].id);
+                        }
+                      })
+                      .catch(function() {});
+                  } else {
+                    addCollection(c.id);
+                  }
+                  resultsEl.innerHTML = '';
+                  document.getElementById('collection-search').value = '';
+                };
                 resultsEl.appendChild(btn);
               });
               if (list.length === 0) resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">No collections with static tiles match, or already added.</div>';

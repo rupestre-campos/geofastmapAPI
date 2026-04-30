@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import re
 import uuid
+import hashlib
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.api.deps import get_current_user_optional
 from app.core.config import get_settings
@@ -89,6 +91,33 @@ async def _definition_with_mosaic_tile_revision_urls(
         lyr = dict(layer)
         mid = _mosaic_view_id_from_map_layer(lyr)
         if not mid:
+            # Raster collection layer: generate Titiler URL when caller provided collection_id + raster_tiles
+            if lyr.get("raster_tiles") and not lyr.get("tiles_url"):
+                cid = lyr.get("collection_id") or lyr.get("collectionId")
+                if isinstance(cid, str) and cid and cid != "_stac":
+                    mode = str(lyr.get("raster_collection_mode") or "mosaic")
+                    fid = lyr.get("raster_feature_id")
+                    sid = lyr.get("raster_style_id")
+                    mv = None
+                    if mode == "mosaic":
+                        q = await db.execute(
+                            text("SELECT DISTINCT id FROM features WHERE collection_id = :cid ORDER BY id"),
+                            {"cid": cid},
+                        )
+                        ids = [r.id for r in q.fetchall()]
+                        if len(ids) > 1:
+                            mv = hashlib.sha256(f"{cid}:{','.join(ids)}".encode()).hexdigest()[:16]
+                    tile_url = (
+                        f"{base}/collections/{cid}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
+                        f"?mode={mode}"
+                    )
+                    if mode == "item" and fid:
+                        tile_url += f"&feature_id={fid}"
+                    if sid:
+                        tile_url += f"&style_id={sid}"
+                    if mv:
+                        tile_url += f"&mv={mv}"
+                    lyr["tiles_url"] = tile_url
             new_layers.append(lyr)
             continue
         if lyr.get("mosaic_view_id") is None and lyr.get("mosaicViewId") is None:

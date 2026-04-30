@@ -16,6 +16,8 @@ from app.crud import styles as styles_crud
 from app.db.features_partitions import ensure_features_partition
 from app.models.collection import (
     Collection,
+    COLLECTION_TYPE_RASTER,
+    COLLECTION_TYPE_VECTOR,
     VISIBILITY_LOGGED,
     VISIBILITY_PUBLIC,
 )
@@ -57,6 +59,7 @@ async def list_collections(
     has_static_tiles: bool = False,
     current_user: "User | None" = None,
     only_public: bool = False,
+    collection_type: str | None = None,
 ) -> Tuple[Sequence[Collection], int]:
     """
     List collections with optional full-text search (id, title, description),
@@ -75,6 +78,9 @@ async def list_collections(
         )
         base = base.where(Collection.id.in_(static_ids))
         count_base = count_base.where(Collection.id.in_(static_ids))
+    if collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER):
+        base = base.where(Collection.collection_type == collection_type)
+        count_base = count_base.where(Collection.collection_type == collection_type)
 
     # Visibility: only_public forces public; else admin sees all; anon sees public; logged sees public+logged+owned+shared
     if only_public:
@@ -268,6 +274,7 @@ async def create_collection(
         stac_source=data.stac_source,
         owner_id=owner_id,
         visibility=visibility,
+        collection_type=data.collection_type if data.collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER) else COLLECTION_TYPE_VECTOR,
     )
     db.add(collection)
     await db.commit()
@@ -286,6 +293,7 @@ async def replace_collection(
     collection.description = data.description
     collection.extent = data.extent.model_dump() if data.extent else None
     collection.stac_source = data.stac_source
+    collection.collection_type = data.collection_type if data.collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER) else COLLECTION_TYPE_VECTOR
     await db.commit()
     await db.refresh(collection)
     return collection
@@ -311,6 +319,8 @@ async def patch_collection(
         collection.viewer_can_edit = data.viewer_can_edit
     if "stac_source" in data.model_fields_set:
         collection.stac_source = data.stac_source
+    if "collection_type" in data.model_fields_set and data.collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER):
+        collection.collection_type = data.collection_type
     await db.commit()
     await db.refresh(collection)
     return collection

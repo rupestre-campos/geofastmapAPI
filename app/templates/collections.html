@@ -81,6 +81,7 @@
             <th>ID</th>
             <th>Items</th>
             <th>Title</th>
+            <th>Type</th>
             <th>Description</th>
             <th>Owner</th>
             <th class="col-actions">Edit</th>
@@ -94,6 +95,7 @@
             <td class="col-id"><a href="{{ base }}/collections/{{ c.id }}?f=html">{{ c.id }}</a></td>
             <td>{{ c.feature_count if c.feature_count is not none else '—' }}</td>
             <td>{{ c.title or '—' }}</td>
+            <td>{{ c.collection_type or 'vector' }}</td>
             <td>{{ (c.description or '—')[:80] }}{% if (c.description or '')|length > 80 %}…{% endif %}</td>
             <td>{{ c.owner_username or '—' }}</td>
             <td class="col-actions">{% if c.can_edit %}<a href="{{ base }}/collections/{{ c.id }}/edit?f=html" class="btn btn-sm">Edit</a>{% else %}—{% endif %}</td>

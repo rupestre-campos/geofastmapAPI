@@ -68,6 +68,7 @@ class CollectionBase(BaseModel):
         default=None,
         description="Optional link to external STAC: catalog_id, collection_id.",
     )
+    collection_type: str = Field(default="vector", description="Collection type: vector or raster.")
 
 
 class CollectionCreate(CollectionBase):
@@ -81,6 +82,7 @@ class CollectionReplace(BaseModel):
     description: str | None = None
     extent: Extent | None = None
     stac_source: dict[str, Any] | None = None
+    collection_type: str = "vector"
 
 
 class CollectionPatch(BaseModel):
@@ -92,6 +94,7 @@ class CollectionPatch(BaseModel):
     stac_source: dict[str, Any] | None = None
     visibility: str | None = None  # private | logged | public
     viewer_can_edit: bool | None = None  # when True, everyone who can view can edit
+    collection_type: str | None = None  # vector | raster
 
 
 class CollectionRead(CollectionBase):

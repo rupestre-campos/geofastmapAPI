@@ -24,6 +24,30 @@ Stop: `docker compose down`. Add `-v` only if you want to **delete** Docker volu
 
 That is the full story for development and for many small deployments.
 
+### DEM terrain tiles (MapLibre)
+
+GeoFastMap can serve on-the-fly DEM terrain tiles for raster collections through Titiler (no pre-processing queue required):
+
+- Mark raster items as DEM in `Collection edit` (`/collections/{id}/edit?f=html`) in the **DEM terrain** panel.
+- Choose DEM encoding:
+  - `terrainrgb` (MapLibre source encoding `mapbox`)
+  - `terrarium` (MapLibre source encoding `terrarium`)
+- Use terrain TileJSON endpoint:
+  - `GET /collections/{collection_id}/rasters/terrain/tilejson.json`
+  - optional query params: `mode=item|mosaic`, `feature_id`, `dem_encoding`
+
+MapLibre usage example:
+
+```js
+map.addSource("terrain-dem", {
+  type: "raster-dem",
+  url: "https://<api>/collections/<collection_id>/rasters/terrain/tilejson.json?dem_encoding=terrainrgb",
+  encoding: "mapbox",
+  tileSize: 256
+});
+map.setTerrain({ source: "terrain-dem", exaggeration: 1.0 });
+```
+
 ---
 
 ## Splitting across hosts (optional)

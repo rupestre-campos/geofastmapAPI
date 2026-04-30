@@ -42,6 +42,7 @@ from app.api.responses import GeoJSONResponse
 from app.schemas.ogc import Link
 from app.utils.geo import bbox_from_geometries, geometry_to_geojson
 from app.utils.datetime_parse import parse_datetime_param
+from app.services.collection_type_guard import ensure_vector_collection
 from app.utils.property_filters import parse_filter_param
 
 router = APIRouter()
@@ -108,6 +109,7 @@ async def list_items(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
+    ensure_vector_collection(collection)
     if not await can_see_collection(db, collection, current_user):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -920,6 +922,7 @@ async def replace_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
+    ensure_vector_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     updated = await features_crud.replace_feature(db, collection_id, feature_id, payload)
@@ -997,6 +1000,7 @@ async def create_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
+    ensure_vector_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
 

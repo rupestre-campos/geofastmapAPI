@@ -7,6 +7,8 @@ from app.db.base import Base
 VISIBILITY_PUBLIC = "public"
 VISIBILITY_LOGGED = "logged"
 VISIBILITY_PRIVATE = "private"
+COLLECTION_TYPE_VECTOR = "vector"
+COLLECTION_TYPE_RASTER = "raster"
 
 
 class Collection(Base):
@@ -26,6 +28,7 @@ class Collection(Base):
     visibility: str = Column(String(32), nullable=False, default=VISIBILITY_PRIVATE, server_default="private")
     # When True, everyone who can see the collection (by visibility) can edit; when False, only owner + explicit editor shares can edit.
     viewer_can_edit: bool = Column(Boolean, nullable=False, default=False, server_default="false")
+    collection_type: str = Column(String(16), nullable=False, default=COLLECTION_TYPE_VECTOR, server_default=COLLECTION_TYPE_VECTOR)
 
     created_at: datetime = Column(
         DateTime(timezone=True),

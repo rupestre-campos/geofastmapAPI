@@ -39,6 +39,26 @@ class MapLayer(BaseModel):
         None,
         description="Query string for viewer (no leading ?), restoring render params e.g. f=html&asset=...",
     )
+    raster_collection_mode: str | None = Field(
+        None,
+        description="Raster collection render mode: mosaic (default) or item.",
+    )
+    raster_feature_id: str | None = Field(
+        None,
+        description="Raster feature id for item mode.",
+    )
+    raster_style_id: str | None = Field(
+        None,
+        description="Optional raster style preset id to apply when rendering.",
+    )
+    terrain_enabled: bool = Field(
+        False,
+        description="When true and raster_tiles is true, layer may be used as map terrain source.",
+    )
+    terrain_exaggeration: float | None = Field(
+        None,
+        description="Optional terrain exaggeration factor.",
+    )
 
 
 class MapDefinition(BaseModel):

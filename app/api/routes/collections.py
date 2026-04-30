@@ -20,6 +20,7 @@ from app.crud import styles as styles_crud
 from app.core.html import html_response, wants_html
 from app.db.session import get_db
 from app.models.resource_share import RESOURCE_TYPE_COLLECTION
+from app.models.collection import COLLECTION_TYPE_RASTER, COLLECTION_TYPE_VECTOR
 from app.schemas.collection import (
     CollectionCreate,
     CollectionPatch,
@@ -72,6 +73,7 @@ async def list_collections(
     limit: int | None = Query(None, ge=1, le=1000, description="Max collections per page."),
     offset: int = Query(0, ge=0, description="Number of collections to skip."),
     has_static_tiles: bool = Query(False, description="If true, only list collections that have static tiles built (for map layer picker)."),
+    collection_type: str | None = Query(None, description="Filter by collection type: vector or raster."),
 ):
     base = _base_url(request)
     bbox_tuple: tuple[float, float, float, float] | None = None
@@ -95,6 +97,7 @@ async def list_collections(
         offset=offset,
         has_static_tiles=has_static_tiles,
         current_user=current_user,
+        collection_type=collection_type,
     )
     collections_out = []
     for item in items_list:
@@ -148,6 +151,7 @@ async def list_collections(
                     "id": c.id,
                     "title": c.title,
                     "description": c.description,
+                    "collection_type": getattr(c, "collection_type", "vector"),
                     "feature_count": c.feature_count,
                     "owner_username": owner_names.get(c.owner_id) if getattr(c, "owner_id", None) else None,
                     "can_edit": can_edit_list[i],
@@ -237,7 +241,12 @@ async def get_collection_edit_form(
         username=current_user.username if current_user else None,
         is_admin=current_user.is_admin if current_user else False,
         collection_id=collection_id,
-        collection={"id": out.id, "title": out.title, "description": out.description},
+        collection={
+            "id": out.id,
+            "title": out.title,
+            "description": out.description,
+            "collection_type": getattr(collection, "collection_type", "vector"),
+        },
         extent_geojson=out.extent.model_dump() if out.extent else None,
         has_static_tiles=has_static_tiles,
         static_minzoom=static_minzoom,
@@ -298,7 +307,12 @@ async def get_collection(
             base=base,
             username=current_user.username if current_user else None,
             is_admin=current_user.is_admin if current_user else False,
-            collection={"id": out.id, "title": out.title, "description": out.description},
+            collection={
+                "id": out.id,
+                "title": out.title,
+                "description": out.description,
+                "collection_type": getattr(collection, "collection_type", "vector"),
+            },
             owner_username=owner_username,
             extent_geojson=out.extent.model_dump() if out.extent else None,
             has_static_tiles=has_static_tiles,
