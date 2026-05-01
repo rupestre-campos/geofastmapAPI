@@ -20,6 +20,7 @@ from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.crud import raster_styles as raster_styles_crud
 from app.db.session import get_db
+from app.services.coverages import cog_path_for
 from app.services.bulk_queue import BulkJobPayload, enqueue, register_bulk_import_job
 from app.services.bulk_storage import get_bulk_storage
 from app.services.collection_type_guard import ensure_raster_collection
@@ -72,7 +73,7 @@ def _collection_dem_settings(collection) -> tuple[bool, str]:
     return (bool(rs.get("is_dem", False)), _normalize_dem_encoding(rs.get("dem_encoding")))
 
 
-def _extract_raster_footprint_and_href(feature: object, base: str, secret: str) -> tuple[str, object] | None:
+def _extract_raster_footprint_and_href(feature: object) -> tuple[str, object] | None:
     from shapely.geometry import shape
     from app.utils.geo import geometry_to_geojson
 
@@ -85,11 +86,7 @@ def _extract_raster_footprint_and_href(feature: object, base: str, secret: str) 
     gj = geometry_to_geojson(geom) if geom is not None else None
     if not gj:
         return None
-    href = (
-        f"{base}/internal/collections/{feature.collection_id}/coverages/{feature.id}/cog"
-        f"?token={quote(secret, safe='')}"
-    )
-    return href, shape(gj)
+    return cog_path, shape(gj)
 
 
 async def _queue_raster_upload_job(
@@ -392,18 +389,24 @@ async def get_raster_collection_tile(
                 feature_id = item_ids[0]
             else:
                 raise HTTPException(status_code=400, detail="feature_id is required when mode=item")
-        cog_url = (
-            f"{fetch_base}/internal/collections/{collection_id}/coverages/{feature_id}/cog"
-            f"?token={quote(secret, safe='')}"
-        )
+        cog_url: str | None = None
         upstream = f"{titiler}/cog/tiles/{tile_matrix_set_id}/{z}/{x}/{y}.{ext}"
-        params.append(("url", cog_url))
         if feature_id:
             f = await features_crud.get_feature(db, collection_id, feature_id)
             if f:
+                props = f.properties or {}
+                raster = props.get("raster") if isinstance(props, dict) else None
+                cog_val = raster.get("cog_path") if isinstance(raster, dict) else None
+                if isinstance(cog_val, str) and cog_val:
+                    cog_url = cog_val
+                else:
+                    cog_url = str(cog_path_for(settings.raster_storage_path, collection_id, feature_id))
                 is_dem, dem_enc = _feature_dem_settings(f)
                 if is_dem or collection_is_dem:
                     dem_algorithm = dem_enc if is_dem else collection_dem_encoding
+        if not cog_url:
+            cog_url = str(cog_path_for(settings.raster_storage_path, collection_id, feature_id))
+        params.append(("url", cog_url))
     else:
         mosaic_url = (
             f"{fetch_base}/internal/collections/{collection_id}/rasters/mosaic.json"
@@ -549,17 +552,12 @@ async def get_raster_collection_mosaic_json(
     ids = await _raster_collection_item_ids(db, collection_id)
     if not ids:
         raise HTTPException(status_code=404, detail="No raster items found for this collection")
-    settings = get_settings()
-    base = settings.raster_internal_fetch_base_url.rstrip("/")
-    secret = settings.titiler_internal_secret
-    if not base or not secret:
-        raise HTTPException(status_code=503, detail="Titiler internal fetch is not configured")
     pairs = []
     for fid in ids:
         f = await features_crud.get_feature(db, collection_id, fid)
         if not f:
             continue
-        pair = _extract_raster_footprint_and_href(f, base, secret)
+        pair = _extract_raster_footprint_and_href(f)
         if pair is not None:
             pairs.append(pair)
     if not pairs:

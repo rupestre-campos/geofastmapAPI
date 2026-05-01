@@ -148,9 +148,6 @@ async def internal_fetch_collection_mosaic_json(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    fetch_base = settings.raster_internal_fetch_base_url.rstrip("/")
-    if not fetch_base:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Not configured")
     ids_r = await db.execute(
         text("SELECT DISTINCT id FROM features WHERE collection_id = :cid ORDER BY id"),
         {"cid": collection_id},
@@ -169,7 +166,7 @@ async def internal_fetch_collection_mosaic_json(
         gj = geometry_to_geojson(feature.geometry) if feature.geometry is not None else None
         if not gj:
             continue
-        href = f"{fetch_base}/internal/collections/{collection_id}/coverages/{fid}/cog?token={token}"
+        href = cog_path
         pairs.append((href, shape(gj)))
     if not pairs:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
