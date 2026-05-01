@@ -47,6 +47,10 @@ def _cog_path_from_feature(feature) -> str | None:
     summary="Internal COG bytes (Titiler fetch)",
     include_in_schema=False,
 )
+@router.head(
+    "/collections/{collection_id}/coverages/{feature_id}/cog",
+    include_in_schema=False,
+)
 async def internal_fetch_cog(
     collection_id: str,
     feature_id: str,

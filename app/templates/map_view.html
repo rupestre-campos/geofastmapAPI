@@ -843,10 +843,12 @@
             if (layer.terrain_enabled === true) {
               var demSid = sid + '-dem';
               var demEncoding = layer.terrain_encoding || ((String(layer.dem_encoding || 'terrainrgb') === 'terrarium') ? 'terrarium' : 'mapbox');
+              var demAlg = demEncoding === 'terrarium' ? 'terrarium' : 'terrainrgb';
+              var demUrl = rasterTU + (rasterTU.indexOf('?') >= 0 ? '&' : '?') + 'dem_encoding=' + encodeURIComponent(demAlg);
               if (!map.getSource(demSid)) {
                 map.addSource(demSid, {
                   type: 'raster-dem',
-                  tiles: [rasterTU],
+                  tiles: [demUrl],
                   tileSize: 256,
                   encoding: demEncoding
                 });

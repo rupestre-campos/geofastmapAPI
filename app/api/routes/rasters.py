@@ -371,6 +371,7 @@ async def get_raster_collection_tile(
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     ensure_raster_collection(collection)
+    collection_is_dem, collection_dem_encoding = _collection_dem_settings(collection)
     titiler = settings.titiler_internal_url.rstrip("/")
     if not titiler:
         raise HTTPException(status_code=503, detail="Titiler not configured")
@@ -398,8 +399,8 @@ async def get_raster_collection_tile(
             f = await features_crud.get_feature(db, collection_id, feature_id)
             if f:
                 is_dem, dem_enc = _feature_dem_settings(f)
-                if is_dem:
-                    params.append(("algorithm", dem_enc))
+                if is_dem or collection_is_dem:
+                    params.append(("algorithm", dem_enc if is_dem else collection_dem_encoding))
     else:
         mosaic_url = (
             f"{fetch_base}/internal/collections/{collection_id}/rasters/mosaic.json"
