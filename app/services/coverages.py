@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from os import PathLike
 from pathlib import Path
 
 import rasterio
@@ -19,7 +20,7 @@ def cog_path_for(storage_root: str, collection_id: str, feature_id: str) -> Path
     return root / collection_id / f"{feature_id}.tif"
 
 
-def convert_geotiff_to_cog_4326(src_path: Path, dst_path: Path) -> dict:
+def convert_geotiff_to_cog_4326(src_path: str | PathLike[str], dst_path: Path) -> dict:
     """
     Convert a GeoTIFF to a Cloud Optimized GeoTIFF on disk.
 

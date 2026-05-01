@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+import zipfile
 from pathlib import Path
 from urllib.parse import quote
 
@@ -125,31 +126,15 @@ async def _upload_one_raster(
                     )
                 out.write(chunk)
 
-        try:
-            conv = convert_geotiff_to_cog_4326(tmp_path_p, dst)
-        except ValueError as e:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
-
-        footprint = conv["footprint_geojson"]
-        meta = conv["meta"]
-        raster_props = {
-            "cog_path": conv["cog_path"],
-            "meta": meta,
-            "is_dem": bool(is_dem),
-            "dem_encoding": _normalize_dem_encoding(dem_encoding),
-        }
-        if title:
-            raster_props["title"] = title
-        props: dict = {"raster": raster_props}
-        if title:
-            props["title"] = title
-
-        data = FeatureCreate(
+        feature = await _create_raster_feature_from_source(
             collection_id=collection_id,
-            geometry=Geometry(**footprint),
-            properties=props,
+            source_path=tmp_path_p,
+            feature_id=feature_id,
+            title=title,
+            db=db,
+            is_dem=is_dem,
+            dem_encoding=dem_encoding,
         )
-        feature = await features_crud.create_feature_with_id(db, data, feature_id)
     except HTTPException:
         try:
             dst.unlink(missing_ok=True)
@@ -182,6 +167,89 @@ async def _upload_one_raster(
             Link(href=f"{base}/collections/{collection_id}/coverages/{feature.id}", rel="related", type="image/tiff"),
         ],
     )
+
+
+async def _create_raster_feature_from_source(
+    *,
+    collection_id: str,
+    source_path: str | Path,
+    feature_id: str,
+    title: str | None,
+    db: AsyncSession,
+    is_dem: bool = False,
+    dem_encoding: str | None = None,
+):
+    settings = get_settings()
+    dst = cog_path_for(settings.raster_storage_path, collection_id, feature_id)
+    try:
+        conv = convert_geotiff_to_cog_4326(source_path, dst)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+    footprint = conv["footprint_geojson"]
+    meta = conv["meta"]
+    raster_props = {
+        "cog_path": conv["cog_path"],
+        "meta": meta,
+        "is_dem": bool(is_dem),
+        "dem_encoding": _normalize_dem_encoding(dem_encoding),
+    }
+    if title:
+        raster_props["title"] = title
+    props: dict = {"raster": raster_props}
+    if title:
+        props["title"] = title
+
+    data = FeatureCreate(
+        collection_id=collection_id,
+        geometry=Geometry(**footprint),
+        properties=props,
+    )
+    try:
+        return await features_crud.create_feature_with_id(db, data, feature_id)
+    except Exception:
+        try:
+            dst.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+async def _save_upload_to_temp(file: UploadFile, *, suffix: str) -> Path:
+    settings = get_settings()
+    max_b = settings.raster_upload_max_bytes
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+    os.close(tmp_fd)
+    out_path = Path(tmp_path)
+    with open(out_path, "wb") as out:
+        total = 0
+        while chunk := await file.read(1024 * 1024):
+            total += len(chunk)
+            if total > max_b:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"File too large (max {max_b} bytes)",
+                )
+            out.write(chunk)
+    return out_path
+
+
+def _zip_tiff_members(zip_path: Path) -> list[str]:
+    members: list[str] = []
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            suffix = Path(info.filename).suffix.lower()
+            if suffix in _ALLOWED_SUFFIX:
+                members.append(info.filename)
+    return members
+
+
+def _vsizip_member_path(zip_path: Path, member_name: str) -> str:
+    # Use GDAL virtual filesystem path so TIFF + sidecars (e.g. .tfw) can be read without extraction.
+    safe_member = member_name.lstrip("/")
+    return f"/vsizip/{zip_path.as_posix()}/{safe_member}"
 
 
 def _feature_dem_settings(feature) -> tuple[bool, str]:
@@ -314,16 +382,77 @@ async def upload_raster_batch(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     items: list[dict] = []
     for f in files:
-        one = await _upload_one_raster(
-            request=request,
-            collection_id=collection_id,
-            file=f,
-            title=None,
-            db=db,
-            is_dem=is_dem,
-            dem_encoding=dem_encoding,
-        )
-        items.append(one.model_dump(mode="json"))
+        name = (f.filename or "").lower()
+        suffix = Path(name).suffix.lower()
+        if suffix in _ALLOWED_SUFFIX:
+            one = await _upload_one_raster(
+                request=request,
+                collection_id=collection_id,
+                file=f,
+                title=None,
+                db=db,
+                is_dem=is_dem,
+                dem_encoding=dem_encoding,
+            )
+            items.append(one.model_dump(mode="json"))
+            continue
+        if suffix != ".zip":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported raster batch input {suffix!r}; expected TIFF or ZIP.",
+            )
+        zip_tmp: Path | None = None
+        try:
+            zip_tmp = await _save_upload_to_temp(f, suffix=".zip")
+            members = _zip_tiff_members(zip_tmp)
+            if not members:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="ZIP does not contain any .tif/.tiff/.geotiff files.",
+                )
+            for member in members:
+                feature_id = str(uuid7())
+                title = Path(member).stem
+                feature = await _create_raster_feature_from_source(
+                    collection_id=collection_id,
+                    source_path=_vsizip_member_path(zip_tmp, member),
+                    feature_id=feature_id,
+                    title=title,
+                    db=db,
+                    is_dem=is_dem,
+                    dem_encoding=dem_encoding,
+                )
+                base = _base_url(request)
+                from app.utils.geo import geometry_to_geojson
+
+                geom_dict = geometry_to_geojson(feature.geometry) if feature.geometry is not None else None
+                one = FeatureGeoJSON(
+                    id=feature.id,
+                    type="Feature",
+                    geometry=Geometry(**geom_dict) if geom_dict else None,
+                    properties=feature.properties,
+                    links=[
+                        Link(
+                            href=f"{base}/collections/{collection_id}/items/{feature.id}",
+                            rel="self",
+                            type="application/geo+json",
+                        ),
+                        Link(
+                            href=f"{base}/collections/{collection_id}/coverages/{feature.id}",
+                            rel="related",
+                            type="image/tiff",
+                        ),
+                    ],
+                )
+                items.append(one.model_dump(mode="json"))
+        except zipfile.BadZipFile as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid ZIP file: {e}") from e
+        finally:
+            if zip_tmp is not None:
+                try:
+                    zip_tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
     return JSONResponse(content={"collection_id": collection_id, "uploaded": len(items), "items": items})
 
 
