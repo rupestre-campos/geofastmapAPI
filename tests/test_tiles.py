@@ -125,3 +125,21 @@ def test_static_tile_url_appends_revision_query():
     assert url.endswith("/collections/c1/tiles/static/{z}/{x}/{y}.pbf?v=abc123")
 
 
+def test_static_pbf_cache_headers_versioned_like_raster():
+    from app.api.routes import tiles as tiles_route
+    h = tiles_route._static_tile_cache_headers(etag="deadbeef", versioned=True)
+    assert "immutable" in h["Cache-Control"]
+    assert "s-maxage=31536000" in h["Cache-Control"]
+    assert h["CDN-Cache-Control"] == h["Cache-Control"]
+    assert h["Surrogate-Control"] == h["Cache-Control"]
+    assert h["ETag"] == '"deadbeef"'
+
+
+def test_static_pbf_cache_headers_unversioned_short_ttl():
+    from app.api.routes import tiles as tiles_route
+    h = tiles_route._static_tile_cache_headers(etag="abc", versioned=False)
+    assert h["Cache-Control"] == "public, max-age=3600"
+    assert "CDN-Cache-Control" not in h
+    assert h["ETag"] == '"abc"'
+
+

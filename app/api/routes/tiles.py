@@ -75,9 +75,20 @@ def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
+# When ?v= matches tiles_revision (content-addressable), same hard caching as versioned raster/mosaic tiles.
+_STATIC_VECTOR_TILE_CACHE_VERSIONED = "public, max-age=31536000, s-maxage=31536000, immutable"
+
+
 def _static_tile_cache_headers(*, etag: str | None = None, versioned: bool = False) -> dict[str, str]:
-    """Browser cache for static (MBTiles) vector tiles; immutable when URL is revision-pinned."""
-    headers = {"Cache-Control": "public, max-age=31536000, immutable" if versioned else "public, max-age=3600"}
+    """Browser + CDN cache for static (MBTiles) vector PBF; immutable when URL is revision-pinned (?v=)."""
+    if versioned:
+        headers = {
+            "Cache-Control": _STATIC_VECTOR_TILE_CACHE_VERSIONED,
+            "CDN-Cache-Control": _STATIC_VECTOR_TILE_CACHE_VERSIONED,
+            "Surrogate-Control": _STATIC_VECTOR_TILE_CACHE_VERSIONED,
+        }
+    else:
+        headers = {"Cache-Control": "public, max-age=3600"}
     if etag:
         headers["ETag"] = f'"{etag}"'
     return headers
