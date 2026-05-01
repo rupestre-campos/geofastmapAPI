@@ -272,6 +272,7 @@ async def create_collection(
         description=data.description,
         extent=data.extent.model_dump() if data.extent else None,
         stac_source=data.stac_source,
+        raster_settings=data.raster_settings,
         owner_id=owner_id,
         visibility=visibility,
         collection_type=data.collection_type if data.collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER) else COLLECTION_TYPE_VECTOR,
@@ -293,6 +294,7 @@ async def replace_collection(
     collection.description = data.description
     collection.extent = data.extent.model_dump() if data.extent else None
     collection.stac_source = data.stac_source
+    collection.raster_settings = data.raster_settings
     collection.collection_type = data.collection_type if data.collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER) else COLLECTION_TYPE_VECTOR
     await db.commit()
     await db.refresh(collection)
@@ -319,6 +321,8 @@ async def patch_collection(
         collection.viewer_can_edit = data.viewer_can_edit
     if "stac_source" in data.model_fields_set:
         collection.stac_source = data.stac_source
+    if "raster_settings" in data.model_fields_set:
+        collection.raster_settings = data.raster_settings
     if "collection_type" in data.model_fields_set and data.collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER):
         collection.collection_type = data.collection_type
     await db.commit()

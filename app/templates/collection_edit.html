@@ -142,7 +142,19 @@
   {% if (collection.collection_type or 'vector') == 'raster' %}
   <div class="card" id="dem-panel">
     <h2 class="card-title">DEM terrain</h2>
-    <p class="meta">Mark raster items as DEM and choose `terrainrgb` or `terrarium` for MapLibre terrain usage.</p>
+    <p class="meta">Mark this collection as DEM terrain for map 3D usage, and optionally override per item.</p>
+    <div class="form-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <label style="margin:0;">
+        <input type="checkbox" id="collection-dem-enabled" {% if collection.raster_settings and collection.raster_settings.is_dem %}checked{% endif %}>
+        Use this raster collection as DEM terrain
+      </label>
+      <label for="collection-dem-encoding" style="margin:0;">Collection DEM encoding</label>
+      <select id="collection-dem-encoding" style="max-width:260px;">
+        <option value="terrainrgb" {% if not collection.raster_settings or (collection.raster_settings.dem_encoding or 'terrainrgb') == 'terrainrgb' %}selected{% endif %}>terrainrgb (MapLibre encoding: mapbox)</option>
+        <option value="terrarium" {% if collection.raster_settings and collection.raster_settings.dem_encoding == 'terrarium' %}selected{% endif %}>terrarium</option>
+      </select>
+      <button type="button" class="btn btn-sm" id="btn-save-collection-dem">Save collection DEM</button>
+    </div>
     <div class="form-row">
       <label for="dem-encoding-default">Default DEM encoding</label>
       <select id="dem-encoding-default">
@@ -163,12 +175,17 @@
 
   <div class="card">
     <h2 class="card-title">Bulk upload</h2>
+    {% if (collection.collection_type or 'vector') == 'raster' %}
+    <p class="meta">Upload GeoTIFF files or a .zip containing one or more .tif/.tiff (sidecars such as .tfw are read from the zip). Each file is converted to COG and stored as a raster item. Large uploads may take a while; keep this tab open.</p>
+    {% else %}
     <p class="meta">Import from GeoJSON, GeoJSONSeq, KML, GPKG, or .zip (single or multiple shapefiles; all .shp inside the zip, including in subfolders, are imported into this collection). Runs in the background.</p>
+    {% endif %}
     <form id="form-bulk-upload">
       <div class="form-row">
-        <label for="bulk-file">File</label>
-        <input type="file" id="bulk-file" name="file" accept=".geojson,.json,.geojsonl,.geojsonseq,.jsonl,.kml,.gpkg,.zip" required>
+        <label for="bulk-file">{% if (collection.collection_type or 'vector') == 'raster' %}File(s){% else %}File{% endif %}</label>
+        <input type="file" id="bulk-file" name="file" {% if (collection.collection_type or 'vector') == 'raster' %}accept=".tif,.tiff,.geotiff,.zip" multiple{% else %}accept=".geojson,.json,.geojsonl,.geojsonseq,.jsonl,.kml,.gpkg,.zip"{% endif %} required>
       </div>
+      {% if (collection.collection_type or 'vector') != 'raster' %}
       <div class="form-row">
         <label>Import mode</label>
         <div class="radio-group">
@@ -176,12 +193,26 @@
           <label><input type="radio" name="mode" value="replace"> Replace all (delete then import)</label>
         </div>
       </div>
+      {% endif %}
       <div class="form-row">
-        <label><input type="checkbox" id="bulk-queue-compute-tiles" name="queue_compute_tiles" value="true" checked> Queue compute tiles after import</label>
+        <label>
+          <input
+            type="checkbox"
+            id="bulk-queue-compute-tiles"
+            name="queue_compute_tiles"
+            value="true"
+            {% if (collection.collection_type or 'vector') == 'raster' %}disabled{% else %}checked{% endif %}
+          >
+          Queue compute tiles after import
+        </label>
+        {% if (collection.collection_type or 'vector') == 'raster' %}
+        <p class="meta" style="margin-top:4px;">Static vector tile build queue is not used for raster collections.</p>
+        {% else %}
         <p class="meta" style="margin-top:4px;">When checked, a static tile build is queued for this collection as soon as the bulk import finishes.</p>
+        {% endif %}
       </div>
       <div class="btn-group">
-        <button type="submit" class="btn btn-primary" id="bulk-upload-submit-btn">Upload & import</button>
+        <button type="submit" class="btn btn-primary" id="bulk-upload-submit-btn">{% if (collection.collection_type or 'vector') == 'raster' %}Upload raster(s){% else %}Upload & import{% endif %}</button>
       </div>
       <p id="bulk-upload-loading" class="meta" style="display:none;">Uploading... please do not close this tab or browser until upload completes.</p>
       <p id="bulk-result" class="meta"></p>
@@ -247,6 +278,7 @@
     const googleKey = {{ google_maps_api_key | tojson }};
     const isAdmin = {{ is_admin | default(false) | tojson }};
     const collectionType = {{ (collection.collection_type or 'vector') | tojson }};
+    const collectionRasterSettings = {{ (collection.raster_settings or {}) | tojson }};
 
     function bboxToPolygonFeature(bbox) {
       if (!bbox || bbox.length < 4) return null;
@@ -971,13 +1003,47 @@
       var tilejsonUrlEl = document.getElementById('terrain-tilejson-url');
       var snippetEl = document.getElementById('terrain-maplibre-snippet');
       var defaultEncSel = document.getElementById('dem-encoding-default');
+      var collectionDemEnabled = document.getElementById('collection-dem-enabled');
+      var collectionDemEnc = document.getElementById('collection-dem-encoding');
+      var saveCollectionDemBtn = document.getElementById('btn-save-collection-dem');
       if (!wrap || !tilejsonUrlEl || !snippetEl || !defaultEncSel) return;
+      if (collectionDemEnabled && collectionDemEnc) {
+        collectionDemEnabled.checked = !!collectionRasterSettings.is_dem;
+        collectionDemEnc.value = (collectionRasterSettings.dem_encoding === 'terrarium') ? 'terrarium' : 'terrainrgb';
+      }
+      if (saveCollectionDemBtn && !saveCollectionDemBtn.dataset.bound) {
+        saveCollectionDemBtn.dataset.bound = '1';
+        saveCollectionDemBtn.onclick = async function() {
+          try {
+            saveCollectionDemBtn.disabled = true;
+            var isDem = !!(collectionDemEnabled && collectionDemEnabled.checked);
+            var demEnc = (collectionDemEnc && collectionDemEnc.value) ? collectionDemEnc.value : 'terrainrgb';
+            var rr = await fetch(base + '/collections/' + encodeURIComponent(collectionId), {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({ raster_settings: { is_dem: isDem, dem_encoding: demEnc } })
+            });
+            if (!rr.ok) throw new Error('Failed updating collection DEM settings');
+            collectionRasterSettings.is_dem = isDem;
+            collectionRasterSettings.dem_encoding = demEnc;
+            await refreshRasterDemPanel();
+          } catch (e) {
+            alert(e.message || 'Failed updating collection DEM settings');
+          } finally {
+            saveCollectionDemBtn.disabled = false;
+          }
+        };
+      }
       wrap.innerHTML = '<p class="meta">Loading raster items…</p>';
       try {
-        var enc = defaultEncSel.value || 'terrainrgb';
+        var enc = defaultEncSel.value || collectionRasterSettings.dem_encoding || 'terrainrgb';
         var listRes = await fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters', { headers: { 'Accept': 'application/json' } });
         var listData = await listRes.json();
         if (!listRes.ok) throw new Error(listData.detail || 'Could not load rasters');
+        if (collectionDemEnabled) collectionDemEnabled.checked = !!listData.collection_is_dem;
+        if (collectionDemEnc) collectionDemEnc.value = (listData.collection_dem_encoding === 'terrarium') ? 'terrarium' : 'terrainrgb';
+        collectionRasterSettings.is_dem = !!listData.collection_is_dem;
+        collectionRasterSettings.dem_encoding = (listData.collection_dem_encoding === 'terrarium') ? 'terrarium' : 'terrainrgb';
         var tjUrl = base + '/collections/' + encodeURIComponent(collectionId) + '/rasters/terrain/tilejson.json?dem_encoding=' + encodeURIComponent(enc);
         tilejsonUrlEl.textContent = 'Terrain TileJSON: ' + tjUrl;
         snippetEl.textContent =
@@ -1103,9 +1169,9 @@
 
     document.getElementById('form-bulk-upload').onsubmit = function(e) {
       e.preventDefault();
-      var file = document.getElementById('bulk-file').files[0];
-      if (!file) { alert('Select a file'); return; }
-      var mode = document.querySelector('input[name="mode"]:checked').value;
+      var bulkInput = document.getElementById('bulk-file');
+      var fileList = bulkInput && bulkInput.files ? bulkInput.files : null;
+      if (!fileList || fileList.length === 0) { alert('Select a file'); return; }
       var resultEl = document.getElementById('bulk-result');
       var successEl = document.getElementById('bulk-result-success');
       var loadingEl = document.getElementById('bulk-upload-loading');
@@ -1113,7 +1179,50 @@
       successEl.style.display = 'none';
       loadingEl.style.display = '';
       submitBtn.disabled = true;
-      var queueTiles = document.getElementById('bulk-queue-compute-tiles').checked;
+      if (collectionType === 'raster') {
+        resultEl.textContent = 'Uploading and converting to COG…';
+        var fd = new FormData();
+        for (var fi = 0; fi < fileList.length; fi++) {
+          fd.append('files', fileList[fi], fileList[fi].name);
+        }
+        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters/batch', {
+          method: 'POST',
+          body: fd,
+          credentials: 'same-origin',
+          headers: { 'Accept': 'application/json' }
+        })
+          .then(function(r) {
+            return r.text().then(function(t) {
+              var d = {};
+              if (t) { try { d = JSON.parse(t); } catch (err) { d = {}; } }
+              if (!r.ok) {
+                var msg = typeof d.detail === 'string' ? d.detail : (t || r.statusText || 'Request failed');
+                throw new Error(msg);
+              }
+              return d;
+            });
+          })
+          .then(function(d) {
+            resultEl.textContent = '';
+            var n = (d && d.uploaded != null) ? d.uploaded : ((d && d.items) ? d.items.length : 0);
+            successEl.innerHTML = 'Imported ' + n + ' raster item(s).';
+            successEl.style.display = 'block';
+            if (typeof refreshRasterDemPanel === 'function') {
+              refreshRasterDemPanel();
+            }
+          })
+          .catch(function(err) {
+            resultEl.textContent = 'Error: ' + (err && err.message ? err.message : String(err));
+          })
+          .finally(function() {
+            loadingEl.style.display = 'none';
+            submitBtn.disabled = false;
+          });
+        return;
+      }
+      var file = fileList[0];
+      var mode = document.querySelector('input[name="mode"]:checked').value;
+      var queueTiles = (collectionType !== 'raster') && document.getElementById('bulk-queue-compute-tiles').checked;
       var chunkSize = 32 * 1024 * 1024; // 32 MiB default
       var maxParallelParts = 4;
       var maxPartRetries = 3;

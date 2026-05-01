@@ -383,7 +383,10 @@
           stac_item_id: l.stac_item_id || null,
           stac_viewer_path: l.stac_viewer_path || null,
           stac_viewer_query: l.stac_viewer_query != null ? l.stac_viewer_query : null,
-          mosaic_view_id: l.mosaic_view_id || l.mosaicViewId || null
+          mosaic_view_id: l.mosaic_view_id || l.mosaicViewId || null,
+          terrain_enabled: l.terrain_enabled === true,
+          terrain_exaggeration: (typeof l.terrain_exaggeration === 'number' && isFinite(l.terrain_exaggeration)) ? l.terrain_exaggeration : null,
+          terrain_encoding: l.terrain_encoding || null
         });
       });
 
@@ -1611,12 +1614,15 @@
                           popup_id_property: null,
                           raster_tiles: true,
                           raster_collection_mode: 'mosaic',
-                          tiles_url: info.mosaic_tiles_url || null
+                          tiles_url: info.mosaic_tiles_url || null,
+                          terrain_enabled: info.collection_is_dem === true,
+                          terrain_encoding: info.collection_dem_encoding === 'terrarium' ? 'terrarium' : 'mapbox',
+                          terrain_exaggeration: info.collection_is_dem === true ? 1.0 : null
                         });
                         renderLayers();
                         syncMapFromState();
                       } else if (info.items && info.items.length === 1) {
-                        addRasterCollectionItem(c.id, info.items[0].id);
+                        addRasterCollectionItem(c.id, info.items[0].id, info.items[0].map_layer || null);
                       }
                     })
                     .catch(function() {});
@@ -1674,7 +1680,7 @@
           });
       }
 
-      function addRasterCollectionItem(collectionId, featureId) {
+      function addRasterCollectionItem(collectionId, featureId, mapLayerHint) {
         var cid = String(collectionId || '').trim();
         var fid = String(featureId || '').trim();
         if (!cid || !fid) return;
@@ -1697,7 +1703,10 @@
           raster_tiles: true,
           raster_collection_mode: 'item',
           raster_feature_id: fid,
-          tiles_url: tilesUrl
+          tiles_url: tilesUrl,
+          terrain_enabled: !!(mapLayerHint && mapLayerHint.terrain_enabled === true),
+          terrain_exaggeration: (mapLayerHint && mapLayerHint.terrain_enabled === true) ? 1.0 : null,
+          terrain_encoding: (mapLayerHint && mapLayerHint.terrain_encoding) ? mapLayerHint.terrain_encoding : null
         });
         var prevBefore = state.layers.length > 1 ? sourceId(layerKey(state.layers[state.layers.length - 2])) + '-fill' : undefined;
         addLayerToMap(state.layers[state.layers.length - 1], spec, state.layers.length - 1, prevBefore).then(function() {
@@ -1797,7 +1806,7 @@
                           renderLayers();
                           syncMapFromState();
                         } else if (info.items && info.items.length === 1) {
-                          addRasterCollectionItem(c.id, info.items[0].id);
+                          addRasterCollectionItem(c.id, info.items[0].id, info.items[0].map_layer || null);
                         }
                       })
                       .catch(function() {});
@@ -1877,7 +1886,10 @@
                 stac_item_id: l.stac_item_id || null,
                 stac_viewer_path: l.stac_viewer_path || null,
                 stac_viewer_query: l.stac_viewer_query != null ? l.stac_viewer_query : null,
-                mosaic_view_id: l.mosaic_view_id || null
+                mosaic_view_id: l.mosaic_view_id || null,
+                terrain_enabled: l.terrain_enabled === true,
+                terrain_exaggeration: (l.terrain_exaggeration != null ? Number(l.terrain_exaggeration) : null),
+                terrain_encoding: l.terrain_encoding || null
               };
             }),
             bbox: state.bbox,

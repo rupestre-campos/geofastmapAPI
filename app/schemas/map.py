@@ -59,6 +59,10 @@ class MapLayer(BaseModel):
         None,
         description="Optional terrain exaggeration factor.",
     )
+    terrain_encoding: str | None = Field(
+        None,
+        description="Optional DEM encoding hint: mapbox (terrainrgb) or terrarium.",
+    )
 
 
 class MapDefinition(BaseModel):

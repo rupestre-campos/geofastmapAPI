@@ -65,6 +65,13 @@ def _maplibre_dem_encoding(algorithm: str) -> str:
     return "mapbox" if algorithm == "terrainrgb" else "terrarium"
 
 
+def _collection_dem_settings(collection) -> tuple[bool, str]:
+    rs = getattr(collection, "raster_settings", None)
+    if not isinstance(rs, dict):
+        return (False, "terrainrgb")
+    return (bool(rs.get("is_dem", False)), _normalize_dem_encoding(rs.get("dem_encoding")))
+
+
 def _extract_raster_footprint_and_href(feature: object, base: str, secret: str) -> tuple[str, object] | None:
     from shapely.geometry import shape
     from app.utils.geo import geometry_to_geojson
@@ -276,6 +283,7 @@ async def list_raster_items(
     base = _base_url(request)
     item_ids = await _raster_collection_item_ids(db, collection_id)
     mosaic_vid = _mosaic_version_id(collection_id, item_ids)
+    collection_is_dem, collection_dem_encoding = _collection_dem_settings(collection)
     items = []
     for fid in item_ids:
         f = await features_crud.get_feature(db, collection_id, fid)
@@ -304,8 +312,8 @@ async def list_raster_items(
                         f"{base}/collections/{collection_id}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
                         f"?mode=item&feature_id={fid}"
                     ),
-                    "terrain_enabled": is_dem,
-                    "terrain_encoding": _maplibre_dem_encoding(dem_encoding),
+                    "terrain_enabled": bool(is_dem or collection_is_dem),
+                    "terrain_encoding": _maplibre_dem_encoding(dem_encoding if is_dem else collection_dem_encoding),
                 },
             }
         )
@@ -323,6 +331,8 @@ async def list_raster_items(
             "default_mode": "mosaic" if len(item_ids) > 1 else ("item" if len(item_ids) == 1 else None),
             "mosaic_tiles_url": mosaic_url,
             "terrain_tilejson_url": f"{base}/collections/{collection_id}/rasters/terrain/tilejson.json",
+            "collection_is_dem": collection_is_dem,
+            "collection_dem_encoding": collection_dem_encoding,
             "items": items,
         }
     )
@@ -597,11 +607,12 @@ async def get_raster_collection_terrain_tilejson(
     ensure_raster_collection(collection)
     base = _base_url(request)
     item_ids = await _raster_collection_item_ids(db, collection_id)
+    collection_is_dem, collection_dem_encoding = _collection_dem_settings(collection)
     if not item_ids:
         raise HTTPException(status_code=404, detail="No raster items found for this collection")
     selected_mode = (mode or ("item" if len(item_ids) == 1 else "mosaic")).lower()
     selected_feature_id = feature_id
-    algorithm = _normalize_dem_encoding(dem_encoding)
+    algorithm = _normalize_dem_encoding(dem_encoding) if dem_encoding is not None else collection_dem_encoding
     if selected_mode == "item":
         if not selected_feature_id:
             if len(item_ids) == 1:
@@ -612,9 +623,9 @@ async def get_raster_collection_terrain_tilejson(
         if not f:
             raise HTTPException(status_code=404, detail="Raster item not found")
         is_dem, item_alg = _feature_dem_settings(f)
-        if not is_dem and dem_encoding is None:
+        if not is_dem and dem_encoding is None and not collection_is_dem:
             raise HTTPException(status_code=400, detail="Selected item is not marked as DEM")
-        if dem_encoding is None:
+        if dem_encoding is None and is_dem:
             algorithm = item_alg
         bounds = (f.properties or {}).get("raster", {}).get("meta", {}).get("bounds")
     else:
@@ -637,7 +648,7 @@ async def get_raster_collection_terrain_tilejson(
                 merged[1] = min(merged[1], float(b[1]))
                 merged[2] = max(merged[2], float(b[2]))
                 merged[3] = max(merged[3], float(b[3]))
-        if not found_dem and dem_encoding is None:
+        if not found_dem and dem_encoding is None and not collection_is_dem:
             raise HTTPException(status_code=400, detail="No DEM-marked raster items found in collection")
         if merged[0] <= merged[2] and merged[1] <= merged[3]:
             bounds = merged
