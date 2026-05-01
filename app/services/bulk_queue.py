@@ -97,6 +97,7 @@ def init_parent_state(
     collection_id: str,
     expected_shards: int,
     mode: str,
+    queue_compute_tiles: bool = True,
 ) -> None:
     settings = get_settings()
     if settings.bulk_queue_type != "redis":
@@ -117,6 +118,7 @@ def init_parent_state(
         "created_at": now,
         "updated_at": now,
         "error_samples": "[]",
+        "queue_compute_tiles": "1" if queue_compute_tiles else "0",
     }
     run_redis_retry(
         "bulk_parent_state_init",
@@ -134,7 +136,7 @@ def record_parent_shard_result(
     shard_failed: bool,
     shard_index: int | None = None,
     error_message: str | None = None,
-) -> dict[str, int] | None:
+) -> dict[str, int | bool | str] | None:
     settings = get_settings()
     if settings.bulk_queue_type != "redis":
         return None
@@ -175,7 +177,7 @@ def record_parent_shard_result(
         pipe.execute()
         return True
 
-    def _read_out() -> dict[str, int]:
+    def _read_out() -> dict[str, int | bool | str]:
         r = redis.from_url(settings.redis_url, decode_responses=True)
         raw = r.hgetall(key) or {}
         return {
@@ -185,6 +187,7 @@ def record_parent_shard_result(
             "items_created": int(raw.get("items_created", 0) or 0),
             "items_failed": int(raw.get("items_failed", 0) or 0),
             "error_samples_json": raw.get("error_samples", "[]"),
+            "queue_compute_tiles": str(raw.get("queue_compute_tiles", "1")).lower() not in ("0", "false", "no", ""),
         }
 
     ok = run_redis_retry(

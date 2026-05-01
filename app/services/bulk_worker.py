@@ -32,6 +32,17 @@ from app.services.tile_build_queue import (
 )
 
 
+def _queue_tile_build_if_requested(collection_id: str, owner_id: int | None, queue_requested: bool) -> None:
+    if not queue_requested or get_settings().bulk_queue_type != "redis":
+        return
+    try:
+        tile_job = create_tile_build_job(collection_id, owner_id=owner_id)
+        update_tile_build_job(tile_job.job_id, message="Tile build")
+        enqueue_tile_build(collection_id, tile_job.job_id)
+    except Exception:
+        pass
+
+
 def cleanup_orphan_bulk_uploads() -> None:
     """At startup, delete any file in bulk storage that does not have a job pending on the queue."""
     settings = get_settings()
@@ -135,13 +146,11 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
                 items_created=created,
                 items_failed=failed,
             )
-            if payload.queue_compute_tiles and get_settings().bulk_queue_type == "redis":
-                try:
-                    tile_job = create_tile_build_job(payload.collection_id, owner_id=payload.owner_id)
-                    update_tile_build_job(tile_job.job_id, message="Tile build")
-                    enqueue_tile_build(payload.collection_id, tile_job.job_id)
-                except Exception:
-                    pass
+            _queue_tile_build_if_requested(
+                payload.collection_id,
+                payload.owner_id,
+                payload.queue_compute_tiles,
+            )
     except Exception as e:
         print(f"[bulk-worker] job_id={payload.job_id} kind={payload.job_kind} failed: {type(e).__name__}: {e}", flush=True)
         update_job(payload.job_id, status="failed", message=str(e))
@@ -267,6 +276,11 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
                 items_created=created,
                 items_failed=failed,
             )
+            _queue_tile_build_if_requested(
+                payload.collection_id,
+                payload.owner_id,
+                payload.queue_compute_tiles,
+            )
         return
 
     init_parent_state(
@@ -274,6 +288,7 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
         collection_id=payload.collection_id,
         expected_shards=len(shard_payloads),
         mode=payload.mode,
+        queue_compute_tiles=payload.queue_compute_tiles,
     )
     for sp in shard_payloads:
         enqueue(sp)
@@ -388,6 +403,11 @@ def _process_shard_bulk_job(payload: BulkJobPayload, path: str) -> None:
                     items_failed=st["items_failed"],
                 )
                 print(f"[bulk-parent] completed parent_job_id={parent_job_id} shards={st['expected_shards']}", flush=True)
+                _queue_tile_build_if_requested(
+                    payload.collection_id,
+                    payload.owner_id,
+                    bool(st.get("queue_compute_tiles", True)),
+                )
         except Exception as e:
             print(f"[bulk-parent] finalize failed parent_job_id={parent_job_id}: {e}", flush=True)
             update_job(parent_job_id, status="failed", message=f"Finalize failed: {e}")
