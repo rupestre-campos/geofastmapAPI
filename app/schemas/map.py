@@ -67,6 +67,10 @@ class MapDefinition(BaseModel):
     layers: list[MapLayer] = Field(default_factory=list, description="Layers in display order")
     bbox: list[float] | None = Field(None, description="Initial map extent [minx, miny, maxx, maxy] WGS84")
     basemap: str | None = Field(None, description="Initial basemap key e.g. osm, satellite")
+    center: list[float] | None = Field(None, description="Optional initial map center [lon, lat].")
+    zoom: float | None = Field(None, description="Optional initial zoom.")
+    bearing: float | None = Field(None, description="Optional initial bearing (degrees).")
+    pitch: float | None = Field(None, description="Optional initial pitch (degrees).")
 
 
 class MapCreate(BaseModel):

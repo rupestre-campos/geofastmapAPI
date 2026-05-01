@@ -124,6 +124,17 @@
       <input type="url" id="map-thumbnail" value="{{ map_thumbnail | e }}" placeholder="https://… (optional)">
       <p class="meta">Optional image URL for the gallery card, or upload an image below.</p>
     </div>
+    <div class="form-row">
+      <label>Initial camera (optional)</label>
+      <div class="bbox-row">
+        <input type="number" id="camera-center-lon" placeholder="center lon" step="any">
+        <input type="number" id="camera-center-lat" placeholder="center lat" step="any">
+        <input type="number" id="camera-zoom" placeholder="zoom" step="any">
+        <input type="number" id="camera-bearing" placeholder="bearing" step="any">
+        <input type="number" id="camera-pitch" placeholder="pitch" step="any">
+      </div>
+      <p class="meta">Use “Set extent from current view” in the map card to capture current bbox and camera.</p>
+    </div>
     {% if map_id %}
     <div class="form-row">
       <label>Upload thumbnail</label>
@@ -327,6 +338,10 @@
       }
       var initialBbox = {{ map_definition.bbox | tojson if map_definition and map_definition.bbox is defined else 'null' }};
       var initialBasemap = {{ map_definition.basemap | tojson if map_definition and map_definition.basemap is defined else 'null' }};
+      var initialCenter = {{ map_definition.center | tojson if map_definition and map_definition.center is defined else 'null' }};
+      var initialZoom = {{ map_definition.zoom | tojson if map_definition and map_definition.zoom is defined else 'null' }};
+      var initialBearing = {{ map_definition.bearing | tojson if map_definition and map_definition.bearing is defined else 'null' }};
+      var initialPitch = {{ map_definition.pitch | tojson if map_definition and map_definition.pitch is defined else 'null' }};
 
       var DEFAULT_SPEC = { fillColor: '#58a6ff', lineColor: '#58a6ff', fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1, linePattern: 'solid', fillEnabled: true, lineEnabled: true, pointEnabled: true, pointColor: '#58a6ff', pointOpacity: 1, pointSize: 8, pointIcon: 'circle', rasterOpacity: 1 };
       var LINE_DASH = { solid: [1, 0], dashed: [4, 2], dotted: [1, 2] };
@@ -339,7 +354,16 @@
       var pointFilter = GeofastmapUtils.pointFilter;
       var notPointFilter = ['!', ['in', ['geometry-type'], ['literal', ['Point', 'MultiPoint']]]];
 
-      var state = { layers: [], selectedLayerIndex: null, bbox: initialBbox && initialBbox.length === 4 ? initialBbox.slice() : null, basemap: initialBasemap || null };
+      var state = {
+        layers: [],
+        selectedLayerIndex: null,
+        bbox: initialBbox && initialBbox.length === 4 ? initialBbox.slice() : null,
+        basemap: initialBasemap || null,
+        center: initialCenter && initialCenter.length === 2 ? initialCenter.slice() : null,
+        zoom: (typeof initialZoom === 'number' && isFinite(initialZoom)) ? initialZoom : null,
+        bearing: (typeof initialBearing === 'number' && isFinite(initialBearing)) ? initialBearing : null,
+        pitch: (typeof initialPitch === 'number' && isFinite(initialPitch)) ? initialPitch : null
+      };
       var styleToolboxApplySpec = null;
       var refreshMapEditRuleFields = function() {};
       // Load layers from saved map definition. Each layer's style_spec is stored with the map (map-specific, not collection/public styles).
@@ -391,7 +415,15 @@
         if (!initial) return;
         var mapStyle = GeofastmapUtils.buildMapStyleWithBasemap(initial);
         mapStyle.glyphs = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
-        map = new maplibregl.Map({ container: 'map', style: mapStyle, center: [0, 20], zoom: 2, renderWorldCopies: false });
+        map = new maplibregl.Map({
+          container: 'map',
+          style: mapStyle,
+          center: state.center || [0, 20],
+          zoom: state.zoom != null ? state.zoom : 2,
+          bearing: state.bearing != null ? state.bearing : 0,
+          pitch: state.pitch != null ? state.pitch : 0,
+          renderWorldCopies: false
+        });
         GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
         sel.value = initialId;
         state.basemap = initialId;
@@ -417,6 +449,21 @@
         document.getElementById('btn-set-extent').onclick = function() {
           var b = map.getBounds();
           if (b) state.bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+          var c = map.getCenter();
+          state.center = [c.lng, c.lat];
+          state.zoom = map.getZoom();
+          state.bearing = map.getBearing();
+          state.pitch = map.getPitch();
+          var lonEl = document.getElementById('camera-center-lon');
+          var latEl = document.getElementById('camera-center-lat');
+          var zoomEl = document.getElementById('camera-zoom');
+          var bearingEl = document.getElementById('camera-bearing');
+          var pitchEl = document.getElementById('camera-pitch');
+          if (lonEl) lonEl.value = String(state.center[0]);
+          if (latEl) latEl.value = String(state.center[1]);
+          if (zoomEl) zoomEl.value = String(state.zoom);
+          if (bearingEl) bearingEl.value = String(state.bearing);
+          if (pitchEl) pitchEl.value = String(state.pitch);
         };
       }
 
@@ -1834,7 +1881,15 @@
               };
             }),
             bbox: state.bbox,
-            basemap: state.basemap || null
+            basemap: state.basemap || null,
+            center: (function() {
+              var lon = Number(document.getElementById('camera-center-lon').value);
+              var lat = Number(document.getElementById('camera-center-lat').value);
+              return (isFinite(lon) && isFinite(lat)) ? [lon, lat] : state.center;
+            })(),
+            zoom: (function() { var v = Number(document.getElementById('camera-zoom').value); return isFinite(v) ? v : state.zoom; })(),
+            bearing: (function() { var v = Number(document.getElementById('camera-bearing').value); return isFinite(v) ? v : state.bearing; })(),
+            pitch: (function() { var v = Number(document.getElementById('camera-pitch').value); return isFinite(v) ? v : state.pitch; })()
           }
         };
         // If this map is already public (or user selected public in sharing card),
@@ -2021,6 +2076,18 @@
         if (state.bbox && state.bbox.length === 4) {
           map.fitBounds([[state.bbox[0], state.bbox[1]], [state.bbox[2], state.bbox[3]]], { padding: 60 });
         }
+        var lonEl = document.getElementById('camera-center-lon');
+        var latEl = document.getElementById('camera-center-lat');
+        var zoomEl = document.getElementById('camera-zoom');
+        var bearingEl = document.getElementById('camera-bearing');
+        var pitchEl = document.getElementById('camera-pitch');
+        if (state.center && state.center.length === 2) {
+          if (lonEl) lonEl.value = String(state.center[0]);
+          if (latEl) latEl.value = String(state.center[1]);
+        }
+        if (state.zoom != null && zoomEl) zoomEl.value = String(state.zoom);
+        if (state.bearing != null && bearingEl) bearingEl.value = String(state.bearing);
+        if (state.pitch != null && pitchEl) pitchEl.value = String(state.pitch);
         if (state.basemap && BASEMAPS[state.basemap]) {
           document.getElementById('map-basemap').value = state.basemap;
           var b = BASEMAPS[state.basemap];
