@@ -89,6 +89,18 @@ def build_job_view_dict(
         "finished_at": d.get("finished_at"),
     }
 
+    jl = getattr(job, "job_label", None)
+    if jl == "raster_batch":
+        d["job_category"] = "raster_import"
+        d["job_type_label"] = "Raster import (COG)"
+        d["input_summary"] = f"Collection: {job.collection_id}"
+        details["raster_import"] = {
+            "collection_id": job.collection_id,
+            "note": "GeoTIFF upload; converts to Cloud Optimized GeoTIFF (EPSG:4326) in the background.",
+        }
+        d["details"] = details
+        return d
+
     if meta and meta.get("process_id"):
         pid = str(meta["process_id"])
         d["job_category"] = "process"

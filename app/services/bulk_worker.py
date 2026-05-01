@@ -25,6 +25,7 @@ from app.services.bulk_queue import (
 )
 from app.services.bulk_storage import get_bulk_storage
 from app.services.job_store import get_job, update_job
+from app.services.raster_batch import run_raster_batch_job
 from app.services.tile_build_queue import (
     create_tile_build_job,
     enqueue_tile_build,
@@ -109,6 +110,26 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
             return
         if payload.job_kind == "shard":
             _process_shard_bulk_job(payload, path)
+            return
+        if payload.job_kind == "raster_batch":
+            try:
+                run_raster_batch_job(
+                    job_id=payload.job_id,
+                    collection_id=payload.collection_id,
+                    archive_path=path,
+                )
+            except Exception as e:
+                print(
+                    f"[bulk-worker] job_id={payload.job_id} raster_batch failed: {type(e).__name__}: {e}",
+                    flush=True,
+                )
+                update_job(payload.job_id, status="failed", message=str(e))
+            finally:
+                try:
+                    storage.delete(payload.storage_key)
+                except Exception:
+                    pass
+                unregister_bulk_import_job(payload.job_id)
             return
         update_job(payload.job_id, status="running")
         created, failed, err = run_bulk_import_sync(

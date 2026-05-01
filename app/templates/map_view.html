@@ -949,7 +949,7 @@
         if (mapBbox && mapBbox.length === 4) {
           map.fitBounds([[mapBbox[0], mapBbox[1]], [mapBbox[2], mapBbox[3]]], { padding: 60 });
         }
-        terrainEnabled = !!terrainSourceId;
+        terrainEnabled = false;
         applyTerrain();
         var terrainBtn = document.getElementById('btn-terrain-toggle');
         var terrainSlider = document.getElementById('terrain-exaggeration');
@@ -1065,6 +1065,8 @@
           function next() {
             if (i >= layers.length) {
               syncMosaicRasterSourcesTiles();
+              terrainEnabled = !!terrainSourceId;
+              applyTerrain();
               return;
             }
             var layer = layers[i++];

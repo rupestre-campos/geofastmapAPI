@@ -26,6 +26,7 @@ class JobInfo:
     updated_at: datetime = field(default_factory=datetime.utcnow)
     finished_at: datetime | None = None  # set when status becomes completed, failed, or cancelled
     owner_id: int | None = None  # user id; None = legacy (only admin can see)
+    job_label: str | None = None  # e.g. raster_batch — for UI classification (optional)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -42,6 +43,8 @@ class JobInfo:
         }
         if self.owner_id is not None:
             out["owner_id"] = self.owner_id
+        if self.job_label:
+            out["job_label"] = self.job_label
         return out
 
 
@@ -50,9 +53,17 @@ _mem_lock = threading.Lock()
 _mem_jobs: dict[str, JobInfo] = {}
 
 
-def _create_job_memory(collection_id: str, owner_id: int | None = None) -> JobInfo:
+def _create_job_memory(
+    collection_id: str, owner_id: int | None = None, job_label: str | None = None
+) -> JobInfo:
     job_id = str(uuid.uuid4())
-    job = JobInfo(job_id=job_id, collection_id=collection_id, status="pending", owner_id=owner_id)
+    job = JobInfo(
+        job_id=job_id,
+        collection_id=collection_id,
+        status="pending",
+        owner_id=owner_id,
+        job_label=job_label,
+    )
     with _mem_lock:
         _mem_jobs[job_id] = job
     return job
@@ -105,12 +116,20 @@ def _jobs_by_collection_key(collection_id: str) -> str:
     return f"geofastmap:jobs_by_collection:{collection_id}"
 
 
-def _create_job_redis(collection_id: str, owner_id: int | None = None) -> JobInfo:
+def _create_job_redis(
+    collection_id: str, owner_id: int | None = None, job_label: str | None = None
+) -> JobInfo:
     import redis
     settings = get_settings()
     r = redis.from_url(settings.redis_url, decode_responses=True)
     job_id = str(uuid.uuid4())
-    job = JobInfo(job_id=job_id, collection_id=collection_id, status="pending", owner_id=owner_id)
+    job = JobInfo(
+        job_id=job_id,
+        collection_id=collection_id,
+        status="pending",
+        owner_id=owner_id,
+        job_label=job_label,
+    )
     key = _redis_key(job_id)
     mapping: dict[str, str] = {
         "job_id": job_id,
@@ -127,6 +146,8 @@ def _create_job_redis(collection_id: str, owner_id: int | None = None) -> JobInf
         mapping["finished_at"] = job.finished_at.isoformat() + "Z"
     if owner_id is not None:
         mapping["owner_id"] = str(owner_id)
+    if job_label:
+        mapping["job_label"] = job_label
     def _write() -> None:
         r.hset(key, mapping=mapping)
         r.expire(key, 86400 * 7)  # 7 days
@@ -161,6 +182,7 @@ def _get_job_redis(job_id: str) -> JobInfo | None:
             owner_id = int(raw["owner_id"])
         except ValueError:
             pass
+    jl = raw.get("job_label") or None
     return JobInfo(
         job_id=raw["job_id"],
         collection_id=raw["collection_id"],
@@ -173,6 +195,7 @@ def _get_job_redis(job_id: str) -> JobInfo | None:
         updated_at=datetime.fromisoformat(raw["updated_at"].replace("Z", "+00:00")),
         finished_at=finished_at,
         owner_id=owner_id,
+        job_label=str(jl) if jl else None,
     )
 
 
@@ -215,11 +238,13 @@ def _update_job_redis(
 
 
 # ----- Public API (config-driven) -----
-def create_job(collection_id: str, owner_id: int | None = None) -> JobInfo:
+def create_job(
+    collection_id: str, owner_id: int | None = None, *, job_label: str | None = None
+) -> JobInfo:
     settings = get_settings()
     if settings.bulk_queue_type == "redis":
-        return _create_job_redis(collection_id, owner_id=owner_id)
-    return _create_job_memory(collection_id, owner_id=owner_id)
+        return _create_job_redis(collection_id, owner_id=owner_id, job_label=job_label)
+    return _create_job_memory(collection_id, owner_id=owner_id, job_label=job_label)
 
 
 def get_job(job_id: str) -> JobInfo | None:

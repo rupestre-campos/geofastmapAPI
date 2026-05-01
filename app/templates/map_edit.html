@@ -157,9 +157,9 @@
 
   <div class="card">
     <h2 class="card-title">Map</h2>
-    <p class="meta">Only collections with static tiles built are listed. Click the search bar to list them; type to search. Add a collection to see it on the map (it gets a default style). Edit a layer's style in the Style editor below; styles are saved with the map, not with the collection.</p>
+    <p class="meta">Vector and raster collections are listed. Click the search bar to list them; type to search. Add a collection to see it on the map. Edit layer styles below; styles are saved with the map.</p>
     <div class="collection-search-wrap">
-      <input type="text" id="collection-search" placeholder="Search collections with static tiles… (click to list)" autocomplete="off">
+      <input type="text" id="collection-search" placeholder="Search collections… (click to list)" autocomplete="off">
       <div id="collection-search-results" class="collection-search-results" aria-live="polite"></div>
     </div>
     <p class="meta" style="margin-top:var(--space);">Saved <strong>mosaic</strong> (multi-image Titiler layer): <input type="text" id="map-edit-mosaic-id" placeholder="Mosaic view ID" style="max-width:220px;"> <button type="button" class="btn btn-sm" id="map-edit-add-mosaic">Add mosaic layer</button> <a href="{{ base }}/mosaics?f=html">Browse mosaics</a></p>
@@ -393,6 +393,12 @@
       var map = null;
       var BASEMAPS;
       var basemapList;
+      var terrainSourceId = null;
+      var terrainExaggeration = 1.0;
+      function applyTerrainInEditor() {
+        if (!map || !terrainSourceId) return;
+        try { map.setTerrain({ source: terrainSourceId, exaggeration: terrainExaggeration }); } catch (e) {}
+      }
 
       // Expose a stable binder on window. Always overwrite to avoid stale/cached closures.
       window.ensureStyleToolboxBound = function() {
@@ -607,6 +613,18 @@
             if (layer.stac_viewer_path || layer.stacViewerPath) rs.attribution = 'STAC / Titiler';
             map.addSource(sid, rs);
             safeAddLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
+            if (layer.terrain_enabled === true && rasterTU) {
+              var demSid = sid + '-dem';
+              var demEncoding = layer.terrain_encoding || ((String(layer.dem_encoding || 'terrainrgb') === 'terrarium') ? 'terrarium' : 'mapbox');
+              if (!map.getSource(demSid)) {
+                map.addSource(demSid, { type: 'raster-dem', tiles: [rasterTU], tileSize: 256, encoding: demEncoding });
+              }
+              if (!terrainSourceId) terrainSourceId = demSid;
+              if (layer.terrain_exaggeration != null && isFinite(Number(layer.terrain_exaggeration))) {
+                terrainExaggeration = Number(layer.terrain_exaggeration);
+              }
+              applyTerrainInEditor();
+            }
             resolve(sid + '-raster');
           });
         }
@@ -904,6 +922,10 @@
         state.layers.forEach(function(layer) {
           var sid = sourceId(layerKey(layer));
           if (!map.getSource(sid)) return;
+          if (map.getSource(sid + '-dem')) {
+            if (terrainSourceId === sid + '-dem') terrainSourceId = null;
+            map.removeSource(sid + '-dem');
+          }
           if (map.getLayer(sid + '-raster')) map.removeLayer(sid + '-raster');
           if (map.getLayer(sid + '-symbol')) map.removeLayer(sid + '-symbol');
           if (map.getLayer(sid + '-circle')) map.removeLayer(sid + '-circle');
@@ -1586,7 +1608,7 @@
       function fetchFirst10Collections() {
         var resultsEl = document.getElementById('collection-search-results');
         resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">Loading…</div>';
-        fetch(base + '/collections?limit=10&has_static_tiles=true', { headers: { 'Accept': 'application/json' } })
+        fetch(base + '/collections?limit=10', { headers: { 'Accept': 'application/json' } })
           .then(function(r) { return r.json(); })
           .then(function(data) {
             var list = data.collections || [];
@@ -1773,7 +1795,7 @@
         if (!q) { fetchFirst10Collections(); return; }
         searchTimeout = setTimeout(function() {
           resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">Searching…</div>';
-          fetch(base + '/collections?limit=20&has_static_tiles=true&q=' + encodeURIComponent(q), { headers: { 'Accept': 'application/json' } })
+          fetch(base + '/collections?limit=20&q=' + encodeURIComponent(q), { headers: { 'Accept': 'application/json' } })
             .then(function(r) { return r.json(); })
             .then(function(data) {
               var list = data.collections || [];
@@ -1818,7 +1840,7 @@
                 };
                 resultsEl.appendChild(btn);
               });
-              if (list.length === 0) resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">No collections with static tiles match, or already added.</div>';
+              if (list.length === 0) resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--text-secondary);">No collections match, or already added.</div>';
             })
             .catch(function() { resultsEl.innerHTML = '<div style="padding:8px 12px;color:var(--danger);">Search failed.</div>'; });
         }, 220);
@@ -2115,10 +2137,63 @@
         refreshMosaicTilesRevisionInStateLayers().then(function() {
           syncMapFromState();
           try {
-            var _mpv = new URLSearchParams(window.location.search).get('mosaic_view');
+            var qs = new URLSearchParams(window.location.search);
+            var _mpv = qs.get('mosaic_view');
             if (_mpv) {
               var ex = state.layers.some(function(l) { return l.mosaic_view_id && String(l.mosaic_view_id) === String(_mpv); });
               if (!ex) addMosaicLayer(_mpv);
+            }
+            var rcid = qs.get('raster_collection_id');
+            if (rcid) {
+              var rfid = qs.get('raster_feature_id');
+              fetch(base + '/collections/' + encodeURIComponent(rcid) + '/rasters', { headers: { 'Accept': 'application/json' } })
+                .then(function(r) { return r.ok ? r.json() : null; })
+                .then(function(info) {
+                  if (!info || !info.item_count) return;
+                  if (rfid) {
+                    var itemHint = null;
+                    if (Array.isArray(info.items)) {
+                      var item = info.items.find(function(it) { return String(it.id) === String(rfid); });
+                      itemHint = item && item.map_layer ? item.map_layer : null;
+                    }
+                    addRasterCollectionItem(rcid, rfid, itemHint);
+                    return;
+                  }
+                  if (info.item_count > 1) {
+                    var exists = state.layers.some(function(l) {
+                      return l.raster_tiles && String(l.collection_id || '') === String(rcid) && String(l.raster_collection_mode || 'mosaic') === 'mosaic';
+                    });
+                    if (!exists) {
+                      state.layers.push({
+                        collection_id: rcid,
+                        layer_id: 'raster-mosaic-' + rcid,
+                        order: state.layers.length,
+                        style_spec: { rasterOpacity: 1 },
+                        popup: false,
+                        popup_id_property: null,
+                        raster_tiles: true,
+                        raster_collection_mode: 'mosaic',
+                        tiles_url: info.mosaic_tiles_url || null,
+                        terrain_enabled: info.collection_is_dem === true,
+                        terrain_encoding: info.collection_dem_encoding === 'terrarium' ? 'terrarium' : 'mapbox',
+                        terrain_exaggeration: info.collection_is_dem === true ? 1.0 : null
+                      });
+                      renderLayers();
+                      syncMapFromState();
+                    }
+                  } else if (info.items && info.items.length === 1) {
+                    addRasterCollectionItem(rcid, info.items[0].id, info.items[0].map_layer || null);
+                  }
+                })
+                .catch(function() {});
+            }
+            var bqp = qs.get('bbox');
+            if (bqp && (!state.bbox || state.bbox.length < 4)) {
+              var parts = String(bqp).split(',').map(function(v) { return Number(v); });
+              if (parts.length >= 4 && parts.every(function(v) { return isFinite(v); })) {
+                state.bbox = parts.slice(0, 4);
+                try { map.fitBounds([[state.bbox[0], state.bbox[1]], [state.bbox[2], state.bbox[3]]], { padding: 60, duration: 350 }); } catch (eB) {}
+              }
             }
           } catch (eMpv) {}
         });

@@ -17,7 +17,7 @@
       <h2 class="card-title">Actions</h2>
       <div class="card-actions">
         {% set collection_id = collection.id %}{% set show_add_feature = false %}{% include '_collection_edit_actions.html' with context %}
-        <a href="{{ base }}/collections/{{ collection.id }}/items?f=html" class="btn">View items</a>
+        <a href="{{ base }}/collections/{{ collection.id }}/items?f=html" class="btn">{% if (collection.collection_type or 'vector') == 'raster' %}View items (raster){% else %}View items{% endif %}</a>
         {% if username %}
         <a href="{{ base }}/collections/{{ collection.id }}/items/data" class="btn" download>Download GeoJSONL</a>
         {% endif %}
@@ -95,6 +95,7 @@
     const tileUrlStatic = hasStaticTiles ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' : null;
     const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
     const collectionStylesUrl = {{ collection_styles_url | tojson if collection_styles_url else 'null' }};
+    const collectionType = {{ (collection.collection_type or 'vector') | tojson }};
 
     const googleKey = {{ google_maps_api_key | tojson }};
     var canEditByCollection = {};
@@ -115,7 +116,22 @@
     var pointFilter = GeofastmapUtils.pointFilter;
     var notPointFilter = GeofastmapUtils.notPointFilter;
     function addOverlayLayers() {
-      if (tileUrlStatic) {
+      if (collectionType === 'raster') {
+        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters', { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(info) {
+            if (!info) return;
+            var rasterUrl = null;
+            if (info.default_mode === 'mosaic' && info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
+            else if (info.items && info.items.length === 1 && info.items[0].tiles_url) rasterUrl = info.items[0].tiles_url;
+            if (!rasterUrl) return;
+            if (!map.getSource('raster-layer')) {
+              map.addSource('raster-layer', { type: 'raster', tiles: [rasterUrl], tileSize: 256, maxzoom: 18 });
+              map.addLayer({ id: 'raster-layer', type: 'raster', source: 'raster-layer', paint: { 'raster-opacity': 1 } });
+            }
+          })
+          .catch(function() {});
+      } else if (tileUrlStatic) {
         var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
         var s = GeofastmapUtils.specToPaint(spec);
         map.addSource('tiles', { type: 'vector', tiles: [tileUrlStatic], minzoom: staticMinzoom, maxzoom: staticMaxzoom });
@@ -199,7 +215,7 @@
             map.setLayoutProperty('bbox-line', 'visibility', this.checked ? 'visible' : 'none');
           };
         }
-        if (hasStaticTiles && map.getLayer('layer')) {
+        if (collectionType !== 'raster' && hasStaticTiles && map.getLayer('layer')) {
           GeofastmapInlineFeatureEdit.setPageOptions({
             map: map,
             base: base,

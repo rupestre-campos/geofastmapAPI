@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
-import tempfile
-import zipfile
 from pathlib import Path
 from urllib.parse import quote
 
@@ -14,8 +11,6 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from uuid6 import uuid7
-
 from app.api.deps import get_current_user_required
 from app.models.user import User
 from app.core.config import get_settings
@@ -24,15 +19,18 @@ from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.crud import raster_styles as raster_styles_crud
 from app.db.session import get_db
-from app.schemas.feature import FeatureCreate, FeatureGeoJSON, Geometry
-from app.schemas.ogc import Link
-from app.services.coverages import cog_path_for, convert_geotiff_to_cog_4326
+from app.services.bulk_queue import BulkJobPayload, enqueue, register_bulk_import_job
+from app.services.bulk_storage import get_bulk_storage
 from app.services.collection_type_guard import ensure_raster_collection
+from app.services.job_store import create_job, update_job
 from app.services.mosaic_plan import build_mosaicjson_from_footprints
+from app.services.raster_batch import (
+    RasterBatchUploadTooLargeError,
+    write_raster_batch_archive,
+)
 
 router = APIRouter()
 
-_ALLOWED_SUFFIX = frozenset({".tif", ".tiff", ".geotiff"})
 _DEM_ENCODINGS = frozenset({"terrainrgb", "terrarium"})
 
 
@@ -92,174 +90,78 @@ def _extract_raster_footprint_and_href(feature: object, base: str, secret: str) 
     return href, shape(gj)
 
 
-async def _upload_one_raster(
+async def _queue_raster_upload_job(
     *,
     request: Request,
     collection_id: str,
-    file: UploadFile,
-    title: str | None,
-    db: AsyncSession,
-    is_dem: bool = False,
-    dem_encoding: str | None = None,
-    source_crs: str | None = None,
-) -> FeatureGeoJSON:
-    settings = get_settings()
-    name = (file.filename or "upload.tif").lower()
-    suffix = Path(name).suffix.lower()
-    if suffix not in _ALLOWED_SUFFIX:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Expected .tif / .tiff file, got suffix {suffix!r}",
-        )
-
-    root = Path(settings.raster_storage_path)
-    root.mkdir(parents=True, exist_ok=True)
-
-    max_b = settings.raster_upload_max_bytes
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-    os.close(tmp_fd)
-    tmp_path_p = Path(tmp_path)
-    feature_id = str(uuid7())
-    dst = cog_path_for(settings.raster_storage_path, collection_id, feature_id)
-
+    files: list[UploadFile],
+    current_user: User,
+    is_dem: bool,
+    dem_encoding: str | None,
+    source_crs: str | None,
+) -> JSONResponse:
+    if not files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files uploaded")
+    storage = get_bulk_storage()
+    job = create_job(collection_id, owner_id=current_user.id, job_label="raster_batch")
+    storage_key = f"{job.job_id}.raster_batch.zip"
+    dest_path = storage.get_write_path(storage_key)
     try:
-        with open(tmp_path, "wb") as out:
-            total = 0
-            while chunk := await file.read(1024 * 1024):
-                total += len(chunk)
-                if total > max_b:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail=f"File too large (max {max_b} bytes)",
-                    )
-                out.write(chunk)
-
-        feature = await _create_raster_feature_from_source(
-            collection_id=collection_id,
-            source_path=tmp_path_p,
-            feature_id=feature_id,
-            title=title,
-            db=db,
+        n, _ = await write_raster_batch_archive(
+            files=files,
+            dest_path=dest_path,
             is_dem=is_dem,
             dem_encoding=dem_encoding,
             source_crs=source_crs,
         )
-    except HTTPException:
+    except RasterBatchUploadTooLargeError as e:
         try:
-            dst.unlink(missing_ok=True)
-        except OSError:
+            storage.delete(storage_key)
+        except Exception:
             pass
-        raise
-    except Exception:
-        try:
-            dst.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-    finally:
-        try:
-            tmp_path_p.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    base = _base_url(request)
-    from app.utils.geo import geometry_to_geojson
-
-    geom_dict = geometry_to_geojson(feature.geometry) if feature.geometry is not None else None
-    return FeatureGeoJSON(
-        id=feature.id,
-        type="Feature",
-        geometry=Geometry(**geom_dict) if geom_dict else None,
-        properties=feature.properties,
-        links=[
-            Link(href=f"{base}/collections/{collection_id}/items/{feature.id}", rel="self", type="application/geo+json"),
-            Link(href=f"{base}/collections/{collection_id}/coverages/{feature.id}", rel="related", type="image/tiff"),
-        ],
-    )
-
-
-async def _create_raster_feature_from_source(
-    *,
-    collection_id: str,
-    source_path: str | Path,
-    feature_id: str,
-    title: str | None,
-    db: AsyncSession,
-    is_dem: bool = False,
-    dem_encoding: str | None = None,
-    source_crs: str | None = None,
-):
-    settings = get_settings()
-    dst = cog_path_for(settings.raster_storage_path, collection_id, feature_id)
-    try:
-        conv = convert_geotiff_to_cog_4326(source_path, dst, source_crs=source_crs)
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(e)) from e
     except ValueError as e:
+        try:
+            storage.delete(storage_key)
+        except Exception:
+            pass
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
-
-    footprint = conv["footprint_geojson"]
-    meta = conv["meta"]
-    raster_props = {
-        "cog_path": conv["cog_path"],
-        "meta": meta,
-        "is_dem": bool(is_dem),
-        "dem_encoding": _normalize_dem_encoding(dem_encoding),
-    }
-    if title:
-        raster_props["title"] = title
-    props: dict = {"raster": raster_props}
-    if title:
-        props["title"] = title
-
-    data = FeatureCreate(
-        collection_id=collection_id,
-        geometry=Geometry(**footprint),
-        properties=props,
-    )
-    try:
-        return await features_crud.create_feature_with_id(db, data, feature_id)
     except Exception:
         try:
-            dst.unlink(missing_ok=True)
-        except OSError:
+            storage.delete(storage_key)
+        except Exception:
             pass
         raise
-
-
-async def _save_upload_to_temp(file: UploadFile, *, suffix: str) -> Path:
-    settings = get_settings()
-    max_b = settings.raster_upload_max_bytes
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-    os.close(tmp_fd)
-    out_path = Path(tmp_path)
-    with open(out_path, "wb") as out:
-        total = 0
-        while chunk := await file.read(1024 * 1024):
-            total += len(chunk)
-            if total > max_b:
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=f"File too large (max {max_b} bytes)",
-                )
-            out.write(chunk)
-    return out_path
-
-
-def _zip_tiff_members(zip_path: Path) -> list[str]:
-    members: list[str] = []
-    with zipfile.ZipFile(zip_path) as zf:
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-            suffix = Path(info.filename).suffix.lower()
-            if suffix in _ALLOWED_SUFFIX:
-                members.append(info.filename)
-    return members
-
-
-def _vsizip_member_path(zip_path: Path, member_name: str) -> str:
-    # Use GDAL virtual filesystem path so TIFF + sidecars (e.g. .tfw) can be read without extraction.
-    safe_member = member_name.lstrip("/")
-    return f"/vsizip/{zip_path.as_posix()}/{safe_member}"
+    register_bulk_import_job(job.job_id, storage_key)
+    update_job(
+        job.job_id,
+        message="Raster upload received; queued for COG conversion.",
+        items_in=n,
+    )
+    enqueue(
+        BulkJobPayload(
+            job_id=job.job_id,
+            collection_id=collection_id,
+            storage_key=storage_key,
+            mode="append",
+            batch_size=1000,
+            owner_id=current_user.id,
+            queue_compute_tiles=False,
+            job_kind="raster_batch",
+        )
+    )
+    base = _base_url(request)
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "collection_id": collection_id,
+            "job_id": job.job_id,
+            "status": "pending",
+            "queued_files": n,
+            "message": "Upload stored; raster processing runs in the background.",
+            "job_url": f"{base}/jobs/{job.job_id}",
+        },
+    )
 
 
 def _feature_dem_settings(feature) -> tuple[bool, str]:
@@ -343,17 +245,17 @@ async def list_raster_items(
 
 @router.post(
     "/{collection_id}/rasters",
-    summary="Upload a GeoTIFF as Cloud Optimized GeoTIFF (EPSG:4326)",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Upload one GeoTIFF and queue background ingest",
     description=(
-        "Converts to COG on disk in EPSG:4326. If the file has no CRS, georeferencing is assumed to be WGS84. "
-        "Use source_crs (EPSG:xxxx, proj4, or WKT) when tags are missing or wrong so the server can reproject."
+        "Stores the upload first, then creates a background job to convert to COG in EPSG:4326 and create an item. "
+        "If the file has no CRS, georeferencing is assumed to be WGS84 unless source_crs is provided."
     ),
 )
 async def upload_raster(
     request: Request,
     collection_id: str,
     file: UploadFile = File(..., description="GeoTIFF (EPSG:4326 or source_crs)"),
-    title: str | None = Form(None, description="Optional title stored in properties"),
     is_dem: bool = Form(False, description="Mark uploaded raster as DEM for terrain rendering."),
     dem_encoding: str | None = Form("terrainrgb", description="DEM encoding for terrain tiles: terrainrgb or terrarium."),
     source_crs: str | None = Form(
@@ -370,12 +272,11 @@ async def upload_raster(
     ensure_raster_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
-    return await _upload_one_raster(
+    return await _queue_raster_upload_job(
         request=request,
         collection_id=collection_id,
-        file=file,
-        title=title,
-        db=db,
+        files=[file],
+        current_user=current_user,
         is_dem=is_dem,
         dem_encoding=dem_encoding,
         source_crs=source_crs.strip() if source_crs and source_crs.strip() else None,
@@ -405,83 +306,15 @@ async def upload_raster_batch(
     ensure_raster_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
-    crs_opt = source_crs.strip() if source_crs and source_crs.strip() else None
-    items: list[dict] = []
-    for f in files:
-        name = (f.filename or "").lower()
-        suffix = Path(name).suffix.lower()
-        if suffix in _ALLOWED_SUFFIX:
-            one = await _upload_one_raster(
-                request=request,
-                collection_id=collection_id,
-                file=f,
-                title=None,
-                db=db,
-                is_dem=is_dem,
-                dem_encoding=dem_encoding,
-                source_crs=crs_opt,
-            )
-            items.append(one.model_dump(mode="json"))
-            continue
-        if suffix != ".zip":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported raster batch input {suffix!r}; expected TIFF or ZIP.",
-            )
-        zip_tmp: Path | None = None
-        try:
-            zip_tmp = await _save_upload_to_temp(f, suffix=".zip")
-            members = _zip_tiff_members(zip_tmp)
-            if not members:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="ZIP does not contain any .tif/.tiff/.geotiff files.",
-                )
-            for member in members:
-                feature_id = str(uuid7())
-                title = Path(member).stem
-                feature = await _create_raster_feature_from_source(
-                    collection_id=collection_id,
-                    source_path=_vsizip_member_path(zip_tmp, member),
-                    feature_id=feature_id,
-                    title=title,
-                    db=db,
-                    is_dem=is_dem,
-                    dem_encoding=dem_encoding,
-                    source_crs=crs_opt,
-                )
-                base = _base_url(request)
-                from app.utils.geo import geometry_to_geojson
-
-                geom_dict = geometry_to_geojson(feature.geometry) if feature.geometry is not None else None
-                one = FeatureGeoJSON(
-                    id=feature.id,
-                    type="Feature",
-                    geometry=Geometry(**geom_dict) if geom_dict else None,
-                    properties=feature.properties,
-                    links=[
-                        Link(
-                            href=f"{base}/collections/{collection_id}/items/{feature.id}",
-                            rel="self",
-                            type="application/geo+json",
-                        ),
-                        Link(
-                            href=f"{base}/collections/{collection_id}/coverages/{feature.id}",
-                            rel="related",
-                            type="image/tiff",
-                        ),
-                    ],
-                )
-                items.append(one.model_dump(mode="json"))
-        except zipfile.BadZipFile as e:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid ZIP file: {e}") from e
-        finally:
-            if zip_tmp is not None:
-                try:
-                    zip_tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
-    return JSONResponse(content={"collection_id": collection_id, "uploaded": len(items), "items": items})
+    return await _queue_raster_upload_job(
+        request=request,
+        collection_id=collection_id,
+        files=files,
+        current_user=current_user,
+        is_dem=is_dem,
+        dem_encoding=dem_encoding,
+        source_crs=source_crs.strip() if source_crs and source_crs.strip() else None,
+    )
 
 
 @router.patch(
