@@ -231,6 +231,14 @@
           <input type="range" id="map-edit-raster-simple-opacity" min="0" max="100" value="100" style="width:140px;">
           <span id="map-edit-raster-simple-opacity-val" class="meta">100%</span>
         </div>
+        <div class="form-row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px;">
+          <label><input type="checkbox" id="map-edit-raster-terrain-enabled"> Use as terrain elevation provider only</label>
+        </div>
+        <div class="form-row" style="align-items:center;gap:12px;" id="map-edit-raster-terrain-exag-wrap">
+          <label for="map-edit-raster-terrain-exag" class="label-text">Terrain exaggeration</label>
+          <input type="range" id="map-edit-raster-terrain-exag" min="0" max="8" step="0.1" value="1" style="width:140px;">
+          <span id="map-edit-raster-terrain-exag-val" class="meta">1.0x</span>
+        </div>
       </div>
     </details>
   </div>
@@ -431,6 +439,7 @@
           zoom: state.zoom != null ? state.zoom : 2,
           bearing: state.bearing != null ? state.bearing : 0,
           pitch: state.pitch != null ? state.pitch : 0,
+          maxPitch: 85,
           renderWorldCopies: false
         });
         GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
@@ -605,6 +614,7 @@
             }
             var ro = (s.rasterOpacity != null) ? Number(s.rasterOpacity) : 1;
             if (!isFinite(ro) || ro < 0) ro = 1;
+            if (layer.terrain_enabled === true) ro = 0;
             var rasterTU = layer.tiles_url;
             if (!rasterTU && (layer.mosaic_view_id || layer.mosaicViewId)) {
               rasterTU = mosaicRasterTilesUrlTemplateWithV(base, layer.mosaic_view_id || layer.mosaicViewId, '');
@@ -706,6 +716,7 @@
         if (layerRasterTrue(layer) && layer.tiles_url && map.getLayer(sid + '-raster')) {
           var ro = (s.rasterOpacity != null) ? Number(s.rasterOpacity) : 1;
           if (!isFinite(ro) || ro < 0) ro = 1;
+          if (layer.terrain_enabled === true) ro = 0;
           map.setPaintProperty(sid + '-raster', 'raster-opacity', ro);
           var rsrc = map.getSource(sid);
           if (rsrc && typeof rsrc.setTiles === 'function' && layer.tiles_url) {
@@ -995,10 +1006,20 @@
             drs.open = true;
             var op2 = document.getElementById('map-edit-raster-simple-opacity');
             var opv2 = document.getElementById('map-edit-raster-simple-opacity-val');
+            var te = document.getElementById('map-edit-raster-terrain-enabled');
+            var tx = document.getElementById('map-edit-raster-terrain-exag');
+            var txv = document.getElementById('map-edit-raster-terrain-exag-val');
+            var txw = document.getElementById('map-edit-raster-terrain-exag-wrap');
             var ro2 = (lyr.style_spec && lyr.style_spec.rasterOpacity != null) ? Number(lyr.style_spec.rasterOpacity) : 1;
             var pct2 = Math.round(Math.max(0, Math.min(1, ro2)) * 100);
             if (op2) op2.value = String(pct2);
             if (opv2) opv2.textContent = pct2 + '%';
+            var terrainOn = lyr.terrain_enabled === true;
+            if (te) te.checked = terrainOn;
+            var exag = (lyr.terrain_exaggeration != null && isFinite(Number(lyr.terrain_exaggeration))) ? Number(lyr.terrain_exaggeration) : 1.0;
+            if (tx) tx.value = String(exag);
+            if (txv) txv.textContent = exag.toFixed(1) + 'x';
+            if (txw) txw.style.display = terrainOn ? '' : 'none';
           }
         }
       }
@@ -1028,6 +1049,42 @@
             state.layers[i].style_spec = state.layers[i].style_spec || {};
             state.layers[i].style_spec.rasterOpacity = parseInt(ros.value, 10) / 100;
             try { applyLayerStyleToMap(i); } catch (e) {}
+          });
+        }
+        var terrainEnabled = document.getElementById('map-edit-raster-terrain-enabled');
+        if (terrainEnabled && !terrainEnabled.dataset.bound) {
+          terrainEnabled.dataset.bound = '1';
+          terrainEnabled.addEventListener('change', function() {
+            var i = state.selectedLayerIndex;
+            if (i == null || !state.layers[i] || !state.layers[i].raster_tiles) return;
+            state.layers[i].terrain_enabled = terrainEnabled.checked === true;
+            if (state.layers[i].terrain_enabled && !isFinite(Number(state.layers[i].terrain_exaggeration))) {
+              state.layers[i].terrain_exaggeration = 1.0;
+            }
+            if (state.layers[i].terrain_enabled && !state.layers[i].terrain_encoding) {
+              state.layers[i].terrain_encoding = 'mapbox';
+            }
+            var txw = document.getElementById('map-edit-raster-terrain-exag-wrap');
+            if (txw) txw.style.display = state.layers[i].terrain_enabled ? '' : 'none';
+            removeAllLayerSourcesFromMap();
+            syncMapFromState();
+            renderLayers();
+          });
+        }
+        var terrainExag = document.getElementById('map-edit-raster-terrain-exag');
+        if (terrainExag && !terrainExag.dataset.bound) {
+          terrainExag.dataset.bound = '1';
+          terrainExag.addEventListener('input', function() {
+            var i = state.selectedLayerIndex;
+            var v = document.getElementById('map-edit-raster-terrain-exag-val');
+            var ex = Number(terrainExag.value || 1);
+            if (!isFinite(ex)) ex = 1;
+            if (v) v.textContent = ex.toFixed(1) + 'x';
+            if (i == null || !state.layers[i] || !state.layers[i].raster_tiles) return;
+            state.layers[i].terrain_exaggeration = ex;
+            state.layers[i].terrain_enabled = true;
+            terrainExaggeration = ex;
+            try { applyTerrainInEditor(); } catch (e) {}
           });
         }
       }

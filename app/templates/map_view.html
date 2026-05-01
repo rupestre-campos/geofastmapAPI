@@ -318,6 +318,7 @@
           zoom: mapZoom != null ? mapZoom : 2,
           bearing: mapBearing,
           pitch: mapPitch,
+          maxPitch: 85,
           renderWorldCopies: false
         });
         GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
@@ -832,6 +833,7 @@
             if (map.getSource(sid)) { resolve(sid + '-raster'); return; }
             var ro = (style && style.rasterOpacity != null) ? Number(style.rasterOpacity) : ((layer.style_spec && layer.style_spec.rasterOpacity != null) ? Number(layer.style_spec.rasterOpacity) : 1);
             if (!isFinite(ro) || ro < 0) ro = 1;
+            if (layer.terrain_enabled === true) ro = 0;
             var rasterTU = layer.tiles_url;
             if (!rasterTU && (layer.mosaic_view_id || layer.mosaicViewId)) {
               rasterTU = mosaicRasterTilesUrlTemplateWithV(base, layer.mosaic_view_id || layer.mosaicViewId, '');

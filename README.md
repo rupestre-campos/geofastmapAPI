@@ -168,7 +168,7 @@ Optional:
 ```bash
 pip install -r requirements.txt
 alembic upgrade head
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --ws wsproto
 ```
 
 For bulk import and tile builds you’ll need workers (same codebase: `python -m app.worker_main`, `python -m app.tile_worker_main`, `python -m app.process_worker_main`) and Redis so they can consume the same queues.
