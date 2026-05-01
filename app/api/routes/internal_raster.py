@@ -17,6 +17,7 @@ from app.crud import features as features_crud
 from app.crud import raster_views as raster_views_crud
 from app.db.session import get_db
 from app.models.user import User
+from app.services.coverages import cog_path_for
 from app.services.mosaic_plan import build_mosaicjson_from_footprints
 
 router = APIRouter()
@@ -61,6 +62,17 @@ async def internal_fetch_cog(
     secret = settings.titiler_internal_secret
     if not secret or token != secret:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    # Hot path: COG location is deterministic (storage_root/collection_id/feature_id.tif).
+    # Avoid DB queries for every tile/range request to keep pool usage low under Titiler load.
+    deterministic = cog_path_for(settings.raster_storage_path, collection_id, feature_id)
+    if deterministic.exists():
+        return FileResponse(
+            deterministic,
+            media_type="image/tiff; application=geotiff",
+            filename=deterministic.name,
+            headers={"Cache-Control": "private, max-age=60"},
+        )
 
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
