@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 from urllib.parse import quote
 
@@ -30,6 +31,7 @@ from app.services.raster_batch import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _DEM_ENCODINGS = frozenset({"terrainrgb", "terrarium"})
 
@@ -383,6 +385,7 @@ async def get_raster_collection_tile(
     item_ids = await _raster_collection_item_ids(db, collection_id)
     mode = (mode or ("item" if len(item_ids) == 1 else "mosaic")).lower()
     params: list[tuple[str, str]] = []
+    dem_algorithm: str | None = None
     if mode == "item":
         if not feature_id:
             if len(item_ids) == 1:
@@ -400,7 +403,7 @@ async def get_raster_collection_tile(
             if f:
                 is_dem, dem_enc = _feature_dem_settings(f)
                 if is_dem or collection_is_dem:
-                    params.append(("algorithm", dem_enc if is_dem else collection_dem_encoding))
+                    dem_algorithm = dem_enc if is_dem else collection_dem_encoding
     else:
         mosaic_url = (
             f"{fetch_base}/internal/collections/{collection_id}/rasters/mosaic.json"
@@ -412,7 +415,7 @@ async def get_raster_collection_tile(
         if mv:
             params.append(("mv", mv))
     for k, v in request.query_params.multi_items():
-        if k not in ("mode", "feature_id", "style_id"):
+        if k not in ("mode", "feature_id", "style_id", "dem_encoding"):
             params.append((k, v))
     style = None
     if style_id:
@@ -432,11 +435,21 @@ async def get_raster_collection_tile(
     # Allow explicit DEM encoding override for terrain clients.
     dem_encoding_q = request.query_params.get("dem_encoding")
     if dem_encoding_q:
-        params.append(("algorithm", _normalize_dem_encoding(dem_encoding_q))
-        )
+        dem_algorithm = _normalize_dem_encoding(dem_encoding_q)
+    if dem_algorithm:
+        params.append(("algorithm", dem_algorithm))
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.get(upstream, params=params)
     if resp.status_code >= 400:
+        logger.warning(
+            "Titiler tile error status=%s upstream=%s collection=%s mode=%s feature_id=%s body=%s",
+            resp.status_code,
+            upstream,
+            collection_id,
+            mode,
+            feature_id,
+            (resp.text or "")[:1000],
+        )
         raise HTTPException(status_code=resp.status_code, detail=resp.text[:1000] or "Titiler error")
     return Response(content=resp.content, media_type=resp.headers.get("content-type", "image/png"))
 
