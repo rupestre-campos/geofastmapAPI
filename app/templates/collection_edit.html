@@ -185,6 +185,13 @@
         <label for="bulk-file">{% if (collection.collection_type or 'vector') == 'raster' %}File(s){% else %}File{% endif %}</label>
         <input type="file" id="bulk-file" name="file" {% if (collection.collection_type or 'vector') == 'raster' %}accept=".tif,.tiff,.geotiff,.zip" multiple{% else %}accept=".geojson,.json,.geojsonl,.geojsonseq,.jsonl,.kml,.gpkg,.zip"{% endif %} required>
       </div>
+      {% if (collection.collection_type or 'vector') == 'raster' %}
+      <div class="form-row">
+        <label for="bulk-raster-source-crs">Source CRS (optional)</label>
+        <input type="text" id="bulk-raster-source-crs" name="source_crs" placeholder="EPSG:32722 or proj4 / WKT if GeoTIFF CRS is missing or wrong" autocomplete="off" style="max-width:100%;">
+        <p class="meta" style="margin-top:4px;">Leave empty if the file is already WGS84 lon/lat (or has correct EPSG:4326). Otherwise set the true CRS so the server can reproject to 4326.</p>
+      </div>
+      {% endif %}
       {% if (collection.collection_type or 'vector') != 'raster' %}
       <div class="form-row">
         <label>Import mode</label>
@@ -1184,6 +1191,10 @@
         var fd = new FormData();
         for (var fi = 0; fi < fileList.length; fi++) {
           fd.append('files', fileList[fi], fileList[fi].name);
+        }
+        var crsEl = document.getElementById('bulk-raster-source-crs');
+        if (crsEl && crsEl.value && String(crsEl.value).trim()) {
+          fd.append('source_crs', String(crsEl.value).trim());
         }
         fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters/batch', {
           method: 'POST',

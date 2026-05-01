@@ -101,6 +101,7 @@ async def _upload_one_raster(
     db: AsyncSession,
     is_dem: bool = False,
     dem_encoding: str | None = None,
+    source_crs: str | None = None,
 ) -> FeatureGeoJSON:
     settings = get_settings()
     name = (file.filename or "upload.tif").lower()
@@ -141,6 +142,7 @@ async def _upload_one_raster(
             db=db,
             is_dem=is_dem,
             dem_encoding=dem_encoding,
+            source_crs=source_crs,
         )
     except HTTPException:
         try:
@@ -185,11 +187,12 @@ async def _create_raster_feature_from_source(
     db: AsyncSession,
     is_dem: bool = False,
     dem_encoding: str | None = None,
+    source_crs: str | None = None,
 ):
     settings = get_settings()
     dst = cog_path_for(settings.raster_storage_path, collection_id, feature_id)
     try:
-        conv = convert_geotiff_to_cog_4326(source_path, dst)
+        conv = convert_geotiff_to_cog_4326(source_path, dst, source_crs=source_crs)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
@@ -341,15 +344,22 @@ async def list_raster_items(
 @router.post(
     "/{collection_id}/rasters",
     summary="Upload a GeoTIFF as Cloud Optimized GeoTIFF (EPSG:4326)",
-    description="Converts to COG on disk and creates one feature with geometry from the raster footprint.",
+    description=(
+        "Converts to COG on disk in EPSG:4326. If the file has no CRS, georeferencing is assumed to be WGS84. "
+        "Use source_crs (EPSG:xxxx, proj4, or WKT) when tags are missing or wrong so the server can reproject."
+    ),
 )
 async def upload_raster(
     request: Request,
     collection_id: str,
-    file: UploadFile = File(..., description="GeoTIFF in EPSG:4326"),
+    file: UploadFile = File(..., description="GeoTIFF (EPSG:4326 or source_crs)"),
     title: str | None = Form(None, description="Optional title stored in properties"),
     is_dem: bool = Form(False, description="Mark uploaded raster as DEM for terrain rendering."),
     dem_encoding: str | None = Form("terrainrgb", description="DEM encoding for terrain tiles: terrainrgb or terrarium."),
+    source_crs: str | None = Form(
+        None,
+        description="Optional CRS of the source file (EPSG:xxxx, proj4, WKT). Overrides embedded CRS when set.",
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_required),
 ):
@@ -368,6 +378,7 @@ async def upload_raster(
         db=db,
         is_dem=is_dem,
         dem_encoding=dem_encoding,
+        source_crs=source_crs.strip() if source_crs and source_crs.strip() else None,
     )
 
 
@@ -381,6 +392,10 @@ async def upload_raster_batch(
     files: list[UploadFile] = File(...),
     is_dem: bool = Form(False, description="Mark all uploaded rasters as DEM."),
     dem_encoding: str | None = Form("terrainrgb", description="DEM encoding for all uploaded rasters."),
+    source_crs: str | None = Form(
+        None,
+        description="Optional CRS for all files in this request (EPSG:xxxx, proj4, WKT).",
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_required),
 ):
@@ -390,6 +405,7 @@ async def upload_raster_batch(
     ensure_raster_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
+    crs_opt = source_crs.strip() if source_crs and source_crs.strip() else None
     items: list[dict] = []
     for f in files:
         name = (f.filename or "").lower()
@@ -403,6 +419,7 @@ async def upload_raster_batch(
                 db=db,
                 is_dem=is_dem,
                 dem_encoding=dem_encoding,
+                source_crs=crs_opt,
             )
             items.append(one.model_dump(mode="json"))
             continue
@@ -431,6 +448,7 @@ async def upload_raster_batch(
                     db=db,
                     is_dem=is_dem,
                     dem_encoding=dem_encoding,
+                    source_crs=crs_opt,
                 )
                 base = _base_url(request)
                 from app.utils.geo import geometry_to_geojson
