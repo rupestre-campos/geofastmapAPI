@@ -280,7 +280,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofastmap-utils.js?v=3"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=4"></script>
   {% include "_style_editor_toolbox_script.html" %}
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   <script>
@@ -424,6 +424,20 @@
       var basemapList;
       var terrainSourceId = null;
       var terrainExaggeration = 1.0;
+      var terrainExagMapApplyTimer = null;
+      function scheduleTerrainExaggerationMapApply() {
+        if (terrainExagMapApplyTimer) clearTimeout(terrainExagMapApplyTimer);
+        terrainExagMapApplyTimer = setTimeout(function() {
+          terrainExagMapApplyTimer = null;
+          try { applyTerrainInEditor(); } catch (e) {}
+        }, 1000);
+      }
+      function clearTerrainExagMapDebounce() {
+        if (terrainExagMapApplyTimer) {
+          clearTimeout(terrainExagMapApplyTimer);
+          terrainExagMapApplyTimer = null;
+        }
+      }
       function applyTerrainInEditor() {
         if (!map || !terrainSourceId) return;
         try {
@@ -1095,6 +1109,7 @@
         if (terrainEnabled && !terrainEnabled.dataset.bound) {
           terrainEnabled.dataset.bound = '1';
           terrainEnabled.addEventListener('change', function() {
+            clearTerrainExagMapDebounce();
             var i = state.selectedLayerIndex;
             if (i == null || !state.layers[i] || !state.layers[i].raster_tiles) return;
             state.layers[i].terrain_enabled = terrainEnabled.checked === true;
@@ -1122,7 +1137,7 @@
             state.layers[i].terrain_exaggeration = ex;
             state.layers[i].terrain_enabled = true;
             terrainExaggeration = ex;
-            try { applyTerrainInEditor(); } catch (e) {}
+            scheduleTerrainExaggerationMapApply();
           });
         }
       }
@@ -1982,6 +1997,8 @@
             applyLayerStyleToMap(state.selectedLayerIndex);
           }
         } catch (eSync) {}
+        clearTerrainExagMapDebounce();
+        try { applyTerrainInEditor(); } catch (eFlush) {}
         var msgEl = document.getElementById('map-save-message');
         msgEl.textContent = 'Saving…';
         var payload = {

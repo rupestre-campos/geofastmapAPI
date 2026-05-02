@@ -223,7 +223,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofastmap-utils.js?v=3"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=4"></script>
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   <script>
     (function() {
@@ -359,6 +359,20 @@
           GeofastmapUtils.clearTerrainAtmosphere(map);
         }
         updateTerrainUi();
+      }
+      var terrainExagApplyTimer = null;
+      function scheduleTerrainExaggerationApply() {
+        if (terrainExagApplyTimer) clearTimeout(terrainExagApplyTimer);
+        terrainExagApplyTimer = setTimeout(function() {
+          terrainExagApplyTimer = null;
+          if (terrainEnabled && terrainSourceId) applyTerrain();
+        }, 1000);
+      }
+      function clearTerrainExagDebounce() {
+        if (terrainExagApplyTimer) {
+          clearTimeout(terrainExagApplyTimer);
+          terrainExagApplyTimer = null;
+        }
       }
       var canEditByCollection = {{ can_edit_by_collection | default({}) | tojson }};
       function layerKey(layer) { return (layer && (layer.layer_id || layer.collectionId)) || (layer && layer.collection_id) || ''; }
@@ -970,6 +984,7 @@
         if (terrainBtn) {
           terrainBtn.onclick = function() {
             if (!terrainSourceId) return;
+            clearTerrainExagDebounce();
             terrainEnabled = !terrainEnabled;
             applyTerrain();
           };
@@ -978,8 +993,13 @@
           terrainSlider.value = String(terrainExaggeration);
           terrainSlider.oninput = function() {
             terrainExaggeration = Number(terrainSlider.value || 1);
-            if (terrainEnabled) applyTerrain();
-            else updateTerrainUi();
+            var valEl = document.getElementById('terrain-exaggeration-value');
+            if (valEl) valEl.textContent = terrainExaggeration.toFixed(1) + 'x';
+            if (!terrainEnabled) {
+              updateTerrainUi();
+              return;
+            }
+            scheduleTerrainExaggerationApply();
           };
         }
         function getPopupLayerIdsFiltered() {

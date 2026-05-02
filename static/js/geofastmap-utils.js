@@ -183,24 +183,48 @@
   }
 
   /**
-   * Atmospheric fog for 3D terrain (tilted map): replaces default dark upper sky with a daylight blue.
+   * Blue sky + horizon haze for 3D terrain. MapLibre 5+ uses setSky (style spec sky); legacy setFog alone
+   * often leaves a black band above the horizon with terrain.
    * Call after map.setTerrain(...); call clearTerrainAtmosphere when terrain is off.
    */
   function setTerrainAtmosphere(map) {
-    if (!map || typeof map.setFog !== 'function') return;
-    map.setFog({
-      range: [1, 24],
-      color: 'rgb(190, 215, 238)',
-      'high-color': 'rgb(100, 165, 230)',
-      'horizon-blend': 0.38,
-      'space-color': 'rgb(55, 125, 205)',
-      'star-intensity': 0
-    });
+    if (!map) return;
+    if (typeof map.setSky === 'function') {
+      map.setSky({
+        'sky-color': '#4DA6E8',
+        'sky-horizon-blend': 0.72,
+        'horizon-color': '#E8F3FB',
+        'horizon-fog-blend': 0.48,
+        'fog-color': '#8EC5EE',
+        'fog-ground-blend': 0.22,
+        'atmosphere-blend': 1
+      });
+      return;
+    }
+    if (typeof map.setFog === 'function') {
+      map.setFog({
+        range: [0.5, 28],
+        color: 'rgb(200, 228, 248)',
+        'high-color': 'rgb(120, 185, 235)',
+        'horizon-blend': 0.45,
+        'space-color': 'rgb(75, 150, 220)',
+        'star-intensity': 0
+      });
+    }
   }
 
   function clearTerrainAtmosphere(map) {
-    if (!map || typeof map.setFog !== 'function') return;
-    map.setFog(null);
+    if (!map) return;
+    if (typeof map.setSky === 'function') {
+      try {
+        map.setSky(undefined);
+      } catch (e) {
+        try {
+          map.setSky(null);
+        } catch (e2) {}
+      }
+    }
+    if (typeof map.setFog === 'function') map.setFog(null);
   }
 
   /**
