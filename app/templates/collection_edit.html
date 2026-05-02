@@ -198,15 +198,11 @@
 
   <div class="card" id="raster-style-panel">
     <h2 class="card-title">Raster visualization style</h2>
-    <p class="meta">Save default Titiler rendering params for this collection (used by raster collection tiles).</p>
+    <p class="meta">Same Titiler controls as the <a href="{{ base }}/stac?f=html">STAC</a> item style editor. Use the preview below, then save the default style for this collection&rsquo;s tile URLs.</p>
     <div class="form-row"><label for="raster-style-title">Style name</label><input type="text" id="raster-style-title" value="Default raster style"></div>
-    <div class="form-row"><label for="raster-style-asset">asset</label><input type="text" id="raster-style-asset" placeholder="e.g. cog"></div>
-    <div class="form-row"><label for="raster-style-assets">assets</label><input type="text" id="raster-style-assets" placeholder="comma-separated assets"></div>
-    <div class="form-row"><label for="raster-style-bidx">bidx</label><input type="text" id="raster-style-bidx" placeholder="e.g. 1 or 1,2,3"></div>
-    <div class="form-row"><label for="raster-style-rescale">rescale</label><input type="text" id="raster-style-rescale" placeholder="e.g. 0,3000"></div>
-    <div class="form-row"><label for="raster-style-expression">expression</label><input type="text" id="raster-style-expression" placeholder="e.g. (b4-b3)/(b4+b3)"></div>
-    <div class="form-row"><label for="raster-style-colormap">colormap_name</label><input type="text" id="raster-style-colormap" placeholder="e.g. viridis"></div>
-    <div class="btn-group"><button type="button" class="btn btn-primary" id="btn-save-raster-style">Save default raster style</button></div>
+    <p class="meta" style="margin:0 0 8px;"><a class="btn btn-sm" href="{{ base }}/collections/{{ collection_id }}/raster-studio?f=html" target="_blank" rel="noopener noreferrer">Open style studio in a new tab</a></p>
+    <iframe id="collection-raster-studio-iframe" title="Raster style studio" src="{{ base }}/collections/{{ collection_id }}/raster-studio?f=html" style="width:100%;min-height:540px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);"></iframe>
+    <div class="btn-group" style="margin-top:10px;"><button type="button" class="btn btn-primary" id="btn-save-raster-style">Save default raster style</button></div>
     <p class="meta" id="raster-style-status"></p>
   </div>
   {% endif %}
@@ -443,6 +439,22 @@
         try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) sel.value = s; } catch(e) {}
         applyBasemapFromSelect();
         sel.onchange = function() { try { localStorage.setItem('geofastmap-basemap', this.value); } catch(e) {} applyBasemapFromSelect(); };
+        if (collectionType === 'raster') {
+          fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters', { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(info) {
+              if (!info) return;
+              var rasterUrl = null;
+              if (info.default_mode === 'mosaic' && info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
+              else if (info.items && info.items.length === 1 && info.items[0].tiles_url) rasterUrl = info.items[0].tiles_url;
+              if (!rasterUrl) return;
+              if (!map.getSource('collection-raster-underlay')) {
+                map.addSource('collection-raster-underlay', { type: 'raster', tiles: [rasterUrl], tileSize: 256, maxzoom: 18 });
+                map.addLayer({ id: 'collection-raster-underlay', type: 'raster', source: 'collection-raster-underlay', paint: { 'raster-opacity': 0.9 } });
+              }
+            })
+            .catch(function() {});
+        }
         if (tileUrlStatic) {
         var tileSpec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
         var s = GeofastmapUtils.specToPaint(tileSpec);
@@ -1192,16 +1204,6 @@
         var el = document.getElementById(id);
         return el && el.value ? String(el.value).trim() : '';
       }
-      function applySpecToForm(spec) {
-        spec = spec || {};
-        var setv = function(id, v) { var el = document.getElementById(id); if (el) el.value = v || ''; };
-        setv('raster-style-asset', spec.asset || '');
-        setv('raster-style-assets', Array.isArray(spec.assets) ? spec.assets.join(',') : (spec.assets || ''));
-        setv('raster-style-bidx', Array.isArray(spec.bidx) ? spec.bidx.join(',') : (spec.bidx || ''));
-        setv('raster-style-rescale', Array.isArray(spec.rescale) ? spec.rescale.join(',') : (spec.rescale || ''));
-        setv('raster-style-expression', spec.expression || '');
-        setv('raster-style-colormap', spec.colormap_name || '');
-      }
       fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/raster-styles', { headers: { 'Accept': 'application/json' } })
         .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
         .then(function(d) {
@@ -1210,24 +1212,14 @@
           if (!def) return;
           var titleEl = document.getElementById('raster-style-title');
           if (titleEl) titleEl.value = def.title || 'Default raster style';
-          applySpecToForm(def.style_spec || {});
           saveBtn.dataset.styleId = def.id || '';
         })
         .catch(function() {});
       saveBtn.onclick = function() {
-        var spec = {};
-        var asset = val('raster-style-asset');
-        var assets = val('raster-style-assets');
-        var bidx = val('raster-style-bidx');
-        var rescale = val('raster-style-rescale');
-        var expression = val('raster-style-expression');
-        var colormap = val('raster-style-colormap');
-        if (asset) spec.asset = asset;
-        if (assets) spec.assets = assets.split(',').map(function(x) { return x.trim(); }).filter(Boolean);
-        if (bidx) spec.bidx = bidx.split(',').map(function(x) { return x.trim(); }).filter(Boolean);
-        if (rescale) spec.rescale = rescale.split(',').map(function(x) { return x.trim(); }).filter(Boolean);
-        if (expression) spec.expression = expression;
-        if (colormap) spec.colormap_name = colormap;
+        var iframe = document.getElementById('collection-raster-studio-iframe');
+        var exp = iframe && iframe.contentWindow && typeof iframe.contentWindow.__geofastExportRasterStyleSpec === 'function'
+          ? iframe.contentWindow.__geofastExportRasterStyleSpec() : null;
+        var spec = (exp && exp.style_spec) ? exp.style_spec : {};
         var styleId = saveBtn.dataset.styleId || 'default';
         var payload = { id: styleId, title: val('raster-style-title') || 'Default raster style', style_spec: spec, set_default: true };
         saveBtn.disabled = true;
