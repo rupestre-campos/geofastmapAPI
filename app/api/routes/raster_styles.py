@@ -65,6 +65,26 @@ async def list_raster_styles(
     return RasterStyleList(styles=[_to_read(base, s) for s in items])
 
 
+@router.get("/{collection_id}/raster-styles/{style_id}", response_model=RasterStyleRead)
+async def get_raster_style(
+    request: Request,
+    collection_id: str,
+    style_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    c = await collections_crud.get_collection(db, collection_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    ensure_raster_collection(c)
+    if not await can_see_collection(db, c, current_user):
+        raise HTTPException(status_code=404, detail="Collection not found")
+    s = await raster_styles_crud.get_raster_style(db, collection_id, style_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Style not found")
+    return _to_read(_base_url(request), s)
+
+
 @router.post("/{collection_id}/raster-styles", response_model=RasterStyleRead, status_code=status.HTTP_201_CREATED)
 async def create_raster_style(
     request: Request,
@@ -87,6 +107,7 @@ async def create_raster_style(
         style_spec=payload.style_spec,
         owner_id=current_user.id if current_user else None,
         set_default=payload.set_default,
+        visibility=payload.visibility,
     )
     return _to_read(_base_url(request), s)
 
@@ -109,6 +130,7 @@ async def patch_raster_style(
     cur = await raster_styles_crud.get_raster_style(db, collection_id, style_id)
     if not cur:
         raise HTTPException(status_code=404, detail="Style not found")
+    set_default = bool(payload.set_default) if payload.set_default is not None else False
     s = await raster_styles_crud.upsert_raster_style(
         db,
         collection_id=collection_id,
@@ -116,12 +138,9 @@ async def patch_raster_style(
         title=payload.title if payload.title is not None else cur.title,
         style_spec=payload.style_spec if payload.style_spec is not None else cur.style_spec,
         owner_id=cur.owner_id,
-        set_default=bool(payload.set_default),
+        set_default=set_default,
+        visibility=payload.visibility,
     )
-    if payload.visibility is not None:
-        s.visibility = payload.visibility
-        await db.commit()
-        await db.refresh(s)
     return _to_read(_base_url(request), s)
 
 

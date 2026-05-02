@@ -28,6 +28,7 @@ from app.api.routes import (
     mosaics,
     processes,
     project_docs,
+    raster_public_styles,
     raster_views,
     raster_styles,
     rasters,
@@ -168,6 +169,7 @@ def create_app() -> FastAPI:
     # Register /styles/basemaps before /styles so it is not captured by /styles/{style_id}.
     app.include_router(basemaps_api.router, prefix="/styles/basemaps", tags=["basemaps"])
     app.include_router(styles.router, prefix="/styles", tags=["styles"])
+    app.include_router(raster_public_styles.router, prefix="/raster-styles", tags=["raster-styles"])
     app.include_router(basemaps_pages.router, prefix="/basemaps", tags=["basemaps-pages"])
     app.include_router(processes.router, prefix="/processes", tags=["processes"])
     app.include_router(jobs.router, prefix="/jobs", tags=["jobs"])

@@ -70,6 +70,69 @@
     .modal-close { background: none; border: none; color: var(--text-secondary); font-size: 1.5rem; cursor: pointer; padding: 0 0.25rem; line-height: 1; }
     .modal-close:hover { color: var(--text); }
     .modal-body { padding: var(--space-lg); overflow: auto; flex: 1; min-height: 0; }
+    {% if (collection.collection_type or 'vector') == 'raster' %}
+    .stac-raster-controls {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem 1rem;
+      align-items: end;
+      margin-bottom: var(--space);
+    }
+    @media (max-width: 620px) {
+      .stac-raster-controls { grid-template-columns: 1fr; }
+    }
+    .stac-raster-controls .form-row { margin: 0; min-width: 0; }
+    .stac-raster-controls label { font-size: 0.85rem; }
+    .stac-raster-controls input[type="text"], .stac-raster-controls select { max-width: 100%; }
+    .stac-raster-controls input[type="range"] { width: 10rem; }
+    .stac-raster-controls .stac-mode-row { min-width: 12rem; }
+    .stac-actions-row { margin-top: 0.9rem; display: flex; justify-content: flex-start; gap: 0.75rem; flex-wrap: wrap; }
+    .stac-actions-row .btn { min-width: 10rem; }
+    .stac-advanced-block { display: none; margin-top: var(--space); }
+    .stac-advanced-block.is-open { display: block; }
+    .stac-rgb-grid { display: grid; gap: 0.6rem 0.75rem; align-items: start; }
+    @media (min-width: 720px) { .stac-rgb-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    .stac-rgb-grid .form-row label { min-height: 1.15em; }
+    .stac-rgb-grid select { width: 100%; }
+    .stac-inline-hint { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem; }
+    .stac-cf-details {
+      margin-top: var(--space);
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--border);
+      max-width: 44rem;
+    }
+    .stac-cf-summary {
+      cursor: pointer;
+      list-style: none;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      user-select: none;
+    }
+    .stac-cf-summary::-webkit-details-marker { display: none; }
+    .stac-cf-summary::before { content: '▸ '; display: inline-block; transition: transform 0.15s; }
+    details[open] > .stac-cf-summary::before { transform: rotate(90deg); }
+    .stac-cf-details-inner { padding-top: 0.75rem; }
+    .stac-cf-mode-row { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-bottom: 0.65rem; align-items: center; }
+    .stac-cf-mode-row label { display: inline-flex; gap: 0.35rem; align-items: center; cursor: pointer; margin: 0; }
+    .stac-cf-op-block {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
+      margin-bottom: 0.55rem; padding: 0.45rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .stac-cf-op-block:last-of-type { border-bottom: none; }
+    .stac-cf-op-block .stac-cf-include-main { min-width: 9rem; font-weight: 500; }
+    .stac-cf-op-block .stac-cf-include-main input { margin-right: 0.35rem; }
+    .stac-cf-bands-row {
+      display: flex; flex-wrap: wrap; gap: 0.75rem 1rem; align-items: center;
+      margin: 0.5rem 0 0.25rem 0;
+      padding-top: 0.5rem;
+      border-top: 1px dashed var(--border);
+    }
+    .stac-cf-bands-row .stac-cf-bands-label { font-size: 0.85rem; color: var(--text-secondary); margin-right: 0.25rem; }
+    .stac-cf-bands-row label { display: inline-flex; gap: 0.35rem; align-items: center; margin: 0; cursor: pointer; font-size: 0.9rem; }
+    #stac-cf-preview { margin: 0.5rem 0 0 0; word-break: break-word; }
+    {% endif %}
   </style>
 {% endblock %}
 {% block content %}
@@ -108,6 +171,16 @@
         <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
       </div>
     </div>
+    {% if (collection.collection_type or 'vector') == 'raster' %}
+    <details id="raster-style" class="layer-style-collapsible" open>
+      <summary class="layer-style-summary">
+        <span>Raster style</span>
+      </summary>
+      {% with tile_assets=raster_tile_assets, default_tile_asset=raster_default_tile_asset %}
+      {% include '_raster_style_toolbox.html' %}
+      {% endwith %}
+    </details>
+    {% endif %}
     <details id="layer-style-details" class="layer-style-collapsible" style="display:none">
       <summary class="layer-style-summary">
         <span>Layer style</span>
@@ -196,15 +269,6 @@
     </div>
   </div>
 
-  <div class="card" id="raster-style-panel">
-    <h2 class="card-title">Raster visualization style</h2>
-    <p class="meta">Same Titiler controls as the <a href="{{ base }}/stac?f=html">STAC</a> item style editor. Use the preview below, then save the default style for this collection&rsquo;s tile URLs.</p>
-    <div class="form-row"><label for="raster-style-title">Style name</label><input type="text" id="raster-style-title" value="Default raster style"></div>
-    <p class="meta" style="margin:0 0 8px;"><a class="btn btn-sm" href="{{ base }}/collections/{{ collection_id }}/raster-studio?f=html" target="_blank" rel="noopener noreferrer">Open style studio in a new tab</a></p>
-    <iframe id="collection-raster-studio-iframe" title="Raster style studio" src="{{ base }}/collections/{{ collection_id }}/raster-studio?f=html" style="width:100%;min-height:540px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);"></iframe>
-    <div class="btn-group" style="margin-top:10px;"><button type="button" class="btn btn-primary" id="btn-save-raster-style">Save default raster style</button></div>
-    <p class="meta" id="raster-style-status"></p>
-  </div>
   {% endif %}
 
   {% if patch_url is defined and shares_url is defined %}
@@ -308,6 +372,9 @@
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
   <script src="{{ base }}/static/js/geofastmap-job-times.js"></script>
+  {% if (collection.collection_type or 'vector') == 'raster' %}
+  <script src="{{ base }}/static/js/geofastmap-raster-style-editor.js"></script>
+  {% endif %}
   {% include "_style_editor_toolbox_script.html" %}
   <script>
     const base = {{ base | tojson }};
@@ -324,6 +391,11 @@
     const isAdmin = {{ is_admin | default(false) | tojson }};
     const collectionType = {{ (collection.collection_type or 'vector') | tojson }};
     const collectionRasterSettings = {{ (collection.raster_settings or {}) | tojson }};
+    const rasterMosaicVersionId = {{ raster_mosaic_version_id | default('') | tojson }};
+    const titilerConfiguredFlag = {{ titiler_configured | default(false) | tojson }};
+    const rasterTileAssetsLen = {{ (raster_tile_assets | default([]) | length) | tojson }};
+    const publicRasterStylesUrl = {{ public_raster_styles_url | default(base + '/raster-styles') | tojson }};
+    const collectionRasterStylesUrl = {{ collection_raster_styles_url | default(base + '/collections/' + collection_id + '/raster-styles') | tojson }};
 
     function bboxToPolygonFeature(bbox) {
       if (!bbox || bbox.length < 4) return null;
@@ -454,6 +526,299 @@
               }
             })
             .catch(function() {});
+          if (typeof GeofastmapRasterStyleEditor !== 'undefined') {
+            GeofastmapRasterStyleEditor.init({
+              map: map,
+              base: base,
+              collectionId: collectionId,
+              mosaicVersionId: rasterMosaicVersionId,
+              titilerConfigured: titilerConfiguredFlag,
+              tileAssetsLen: rasterTileAssetsLen,
+              sourceId: 'collection-raster-underlay',
+              layerId: 'collection-raster-underlay'
+            });
+            (function wireRasterStyleLoadSave() {
+              var styleListCacheRaster = { '': null };
+              function safeJsonResponse(r) {
+                if (!r) return Promise.reject({ detail: 'Request failed' });
+                if (r.ok) return r.json();
+                return r.text().then(function(t) {
+                  try { throw JSON.parse(t); } catch (e) { throw { detail: t || r.statusText || 'Request failed' }; }
+                });
+              }
+              function updateRasterLoadTrigger() {
+                var sel = document.getElementById('raster-style-select');
+                var val = sel ? sel.value : '';
+                var labelEl = document.getElementById('raster-style-load-label-text');
+                if (labelEl) labelEl.textContent = (val && styleListCacheRaster[val]) ? (styleListCacheRaster[val].title || styleListCacheRaster[val].id) : 'Current';
+              }
+              function loadRasterStylesList() {
+                var sel = document.getElementById('raster-style-select');
+                var listEl = document.getElementById('raster-style-load-list');
+                if (!sel) return Promise.resolve();
+                styleListCacheRaster = { '': null };
+                while (sel.firstChild) sel.removeChild(sel.firstChild);
+                if (listEl) listEl.innerHTML = '';
+                function addItem(value, label, spec) {
+                  if (value) styleListCacheRaster[value] = { id: value.replace(/^[cp]:/, ''), title: label, style_spec: spec || {} };
+                  sel.appendChild(new Option(label, value));
+                  if (!listEl) return;
+                  var item = document.createElement('button');
+                  item.type = 'button';
+                  item.className = 'vector-style-load-item';
+                  item.setAttribute('role', 'option');
+                  item.dataset.value = value;
+                  var legSpan = document.createElement('span');
+                  legSpan.className = 'vector-style-load-item-legend';
+                  legSpan.style.background = 'linear-gradient(90deg,#2d5016,#e6b800,#c2410c)';
+                  legSpan.style.borderColor = '#58a6ff';
+                  var labSpan = document.createElement('span');
+                  labSpan.className = 'vector-style-load-item-label';
+                  labSpan.textContent = label;
+                  item.appendChild(legSpan);
+                  item.appendChild(labSpan);
+                  item.onclick = (function(v) { return function() {
+                    sel.value = v;
+                    sel.dispatchEvent(new Event('change'));
+                    listEl.classList.remove('open');
+                    document.getElementById('raster-style-load-trigger').setAttribute('aria-expanded', 'false');
+                    updateRasterLoadTrigger();
+                  }; })(value);
+                  listEl.appendChild(item);
+                }
+                function addCollectionStyles() {
+                  return fetch(collectionRasterStylesUrl, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+                    .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
+                    .then(function(data) {
+                      var list = data.styles || [];
+                      if (list.length && listEl) {
+                        var gl = document.createElement('div');
+                        gl.className = 'vector-style-load-group-label';
+                        gl.textContent = 'Collection raster styles';
+                        listEl.appendChild(gl);
+                      }
+                      list.forEach(function(s) {
+                        var val = 'c:' + s.id;
+                        styleListCacheRaster[val] = { id: s.id, title: s.title || s.id, style_spec: s.style_spec || {} };
+                        sel.appendChild(new Option(s.title || s.id, val));
+                        if (listEl) {
+                          var item = document.createElement('button');
+                          item.type = 'button';
+                          item.className = 'vector-style-load-item';
+                          item.setAttribute('role', 'option');
+                          item.dataset.value = val;
+                          var legSpan = document.createElement('span');
+                          legSpan.className = 'vector-style-load-item-legend';
+                          legSpan.style.background = 'linear-gradient(90deg,#2d5016,#e6b800,#c2410c)';
+                          legSpan.style.borderColor = '#58a6ff';
+                          var labSpan = document.createElement('span');
+                          labSpan.className = 'vector-style-load-item-label';
+                          labSpan.textContent = s.title || s.id;
+                          item.appendChild(legSpan);
+                          item.appendChild(labSpan);
+                          item.onclick = (function(v) { return function() {
+                            sel.value = v;
+                            sel.dispatchEvent(new Event('change'));
+                            listEl.classList.remove('open');
+                            document.getElementById('raster-style-load-trigger').setAttribute('aria-expanded', 'false');
+                            updateRasterLoadTrigger();
+                          }; })(val);
+                          listEl.appendChild(item);
+                        }
+                      });
+                    })
+                    .catch(function(err) { console.warn('Load collection raster styles failed', err); });
+                }
+                function addPublicStyles() {
+                  return fetch(publicRasterStylesUrl, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+                    .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
+                    .then(function(data) {
+                      var list = data.styles || [];
+                      if (list.length && listEl) {
+                        var gl = document.createElement('div');
+                        gl.className = 'vector-style-load-group-label';
+                        gl.textContent = 'Public raster presets';
+                        listEl.appendChild(gl);
+                      }
+                      list.forEach(function(s) {
+                        var val = 'p:' + s.id;
+                        styleListCacheRaster[val] = { id: s.id, title: s.title || s.id, style_spec: s.style_spec || {} };
+                        sel.appendChild(new Option(s.title || s.id, val));
+                        if (listEl) {
+                          var item = document.createElement('button');
+                          item.type = 'button';
+                          item.className = 'vector-style-load-item';
+                          item.setAttribute('role', 'option');
+                          item.dataset.value = val;
+                          var legSpan = document.createElement('span');
+                          legSpan.className = 'vector-style-load-item-legend';
+                          legSpan.style.background = 'linear-gradient(90deg,#2d5016,#e6b800,#c2410c)';
+                          legSpan.style.borderColor = '#58a6ff';
+                          var labSpan = document.createElement('span');
+                          labSpan.className = 'vector-style-load-item-label';
+                          labSpan.textContent = s.title || s.id;
+                          item.appendChild(legSpan);
+                          item.appendChild(labSpan);
+                          item.onclick = (function(v) { return function() {
+                            sel.value = v;
+                            sel.dispatchEvent(new Event('change'));
+                            listEl.classList.remove('open');
+                            document.getElementById('raster-style-load-trigger').setAttribute('aria-expanded', 'false');
+                            updateRasterLoadTrigger();
+                          }; })(val);
+                          listEl.appendChild(item);
+                        }
+                      });
+                    })
+                    .catch(function(err) { console.warn('Load public raster styles failed', err); });
+                }
+                addItem('', 'Current', null);
+                return addCollectionStyles().then(addPublicStyles).then(function() { updateRasterLoadTrigger(); });
+              }
+              var loadTrigger = document.getElementById('raster-style-load-trigger');
+              var loadList = document.getElementById('raster-style-load-list');
+              if (loadTrigger && loadList) {
+                loadTrigger.onclick = function(e) {
+                  e.stopPropagation();
+                  var open = loadList.classList.toggle('open');
+                  loadTrigger.setAttribute('aria-expanded', open);
+                };
+                document.addEventListener('click', function() {
+                  loadList.classList.remove('open');
+                  loadTrigger.setAttribute('aria-expanded', 'false');
+                });
+              }
+              function populateRasterReplaceDropdown(saveTo) {
+                var rep = document.getElementById('save-raster-style-replace');
+                if (!rep) return;
+                rep.options.length = 1;
+                var url = saveTo === 'public' ? publicRasterStylesUrl : collectionRasterStylesUrl;
+                fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+                  .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
+                  .then(function(data) {
+                    (data.styles || []).forEach(function(s) {
+                      rep.add(new Option(s.title || s.id, s.id));
+                    });
+                  })
+                  .catch(function() {});
+              }
+              var rsSel = document.getElementById('raster-style-select');
+              if (rsSel) rsSel.onchange = function() {
+                var val = this.value;
+                if (!val) return;
+                var isPublic = val.indexOf('p:') === 0;
+                var id = val.slice(2);
+                var url = isPublic ? (publicRasterStylesUrl + '/' + encodeURIComponent(id)) : (collectionRasterStylesUrl + '/' + encodeURIComponent(id));
+                fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+                  .then(safeJsonResponse)
+                  .then(function(s) {
+                    if (s.style_spec && window.GeofastmapRasterStyleEditor) {
+                      window.GeofastmapRasterStyleEditor.applySpec(s.style_spec);
+                    }
+                    updateRasterLoadTrigger();
+                  })
+                  .catch(function() {});
+              };
+              var btnSaveRaster = document.getElementById('btn-save-raster-style');
+              if (btnSaveRaster) btnSaveRaster.onclick = function() {
+                var form = document.getElementById('save-raster-style-form');
+                if (form) form.style.display = 'flex';
+                var toEl = document.getElementById('save-raster-style-to');
+                if (toEl) toEl.value = 'collection';
+                var dw = document.getElementById('save-raster-style-default-wrap');
+                if (dw) dw.style.display = '';
+                populateRasterReplaceDropdown('collection');
+              };
+              var saveToEl = document.getElementById('save-raster-style-to');
+              if (saveToEl) saveToEl.onchange = function() {
+                var isPublic = this.value === 'public';
+                var dw = document.getElementById('save-raster-style-default-wrap');
+                if (dw) dw.style.display = isPublic ? 'none' : '';
+                var defCb = document.getElementById('save-raster-style-default');
+                if (defCb) defCb.checked = false;
+                populateRasterReplaceDropdown(this.value);
+              };
+              var cancelBtn = document.getElementById('btn-save-raster-style-cancel');
+              if (cancelBtn) cancelBtn.onclick = function() {
+                var form = document.getElementById('save-raster-style-form');
+                if (form) form.style.display = 'none';
+              };
+              var repSel = document.getElementById('save-raster-style-replace');
+              if (repSel) repSel.onchange = function() {
+                if (this.value) {
+                  var idIn = document.getElementById('save-raster-style-id');
+                  if (idIn) idIn.value = this.value;
+                }
+              };
+              var submitBtn = document.getElementById('btn-save-raster-style-submit');
+              if (submitBtn) submitBtn.onclick = function() {
+                var statusEl = document.getElementById('raster-style-status');
+                var replaceVal = document.getElementById('save-raster-style-replace').value;
+                var idInput = document.getElementById('save-raster-style-id').value.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+                var id = replaceVal || idInput || null;
+                if (!id) { alert('Enter a style id (letters, numbers, hyphen, underscore)'); return; }
+                var title = document.getElementById('save-raster-style-title').value.trim() || null;
+                var saveTo = document.getElementById('save-raster-style-to').value;
+                var setDefault = document.getElementById('save-raster-style-default').checked;
+                var specPayload = window.GeofastmapRasterStyleEditor ? window.GeofastmapRasterStyleEditor.getSpec().style_spec : {};
+                var method = 'POST';
+                var url = saveTo === 'public' ? publicRasterStylesUrl : collectionRasterStylesUrl;
+                var body = { id: id, style_spec: specPayload };
+                if (title) body.title = title;
+                if (saveTo === 'collection') body.set_default = setDefault;
+                if (saveTo === 'public') body.visibility = 'public';
+                if (saveTo === 'public' && replaceVal) {
+                  method = 'PUT';
+                  url = publicRasterStylesUrl + '/' + encodeURIComponent(id);
+                  body = { style_spec: specPayload };
+                  if (title) body.title = title;
+                }
+                if (statusEl) statusEl.textContent = 'Saving…';
+                fetch(url, {
+                  method: method,
+                  credentials: 'same-origin',
+                  headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                  body: JSON.stringify(body)
+                })
+                  .then(safeJsonResponse)
+                  .then(function() {
+                    var form = document.getElementById('save-raster-style-form');
+                    if (form) form.style.display = 'none';
+                    var idIn = document.getElementById('save-raster-style-id');
+                    if (idIn) idIn.value = '';
+                    var tit = document.getElementById('save-raster-style-title');
+                    if (tit) tit.value = '';
+                    var rep = document.getElementById('save-raster-style-replace');
+                    if (rep) rep.value = '';
+                    var defCb = document.getElementById('save-raster-style-default');
+                    if (defCb) defCb.checked = false;
+                    if (statusEl) statusEl.textContent = 'Saved raster style.';
+                    var newVal = (saveTo === 'public' ? 'p:' : 'c:') + id;
+                    loadRasterStylesList().then(function() {
+                      var s2 = document.getElementById('raster-style-select');
+                      if (s2) s2.value = newVal;
+                      updateRasterLoadTrigger();
+                    });
+                  })
+                  .catch(function(e) {
+                    if (statusEl) statusEl.textContent = 'Error: ' + ((e && (e.detail || e.message)) ? (e.detail || e.message) : JSON.stringify(e));
+                  });
+              };
+              loadRasterStylesList().then(function() {
+                return fetch(collectionRasterStylesUrl, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+                  .then(function(r) { return r.ok ? r.json() : { styles: [] }; });
+              }).then(function(d) {
+                var styles = (d && d.styles) ? d.styles : [];
+                var def = styles.find(function(s) { return s.is_default; }) || styles[0];
+                if (def && def.style_spec && window.GeofastmapRasterStyleEditor) {
+                  window.GeofastmapRasterStyleEditor.applySpec(def.style_spec);
+                  var sel = document.getElementById('raster-style-select');
+                  if (sel && def.id) sel.value = 'c:' + def.id;
+                  updateRasterLoadTrigger();
+                }
+              }).catch(function() {});
+            })();
+          }
         }
         if (tileUrlStatic) {
         var tileSpec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
@@ -1195,52 +1560,6 @@
       if (cancelBtn) cancelBtn.onclick = closeModal;
     })();
 
-    (function rasterStylePanel() {
-      if (collectionType !== 'raster') return;
-      var saveBtn = document.getElementById('btn-save-raster-style');
-      var statusEl = document.getElementById('raster-style-status');
-      if (!saveBtn || !statusEl) return;
-      function val(id) {
-        var el = document.getElementById(id);
-        return el && el.value ? String(el.value).trim() : '';
-      }
-      fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/raster-styles', { headers: { 'Accept': 'application/json' } })
-        .then(function(r) { return r.ok ? r.json() : { styles: [] }; })
-        .then(function(d) {
-          var styles = d.styles || [];
-          var def = styles.find(function(s) { return s.is_default; }) || styles[0];
-          if (!def) return;
-          var titleEl = document.getElementById('raster-style-title');
-          if (titleEl) titleEl.value = def.title || 'Default raster style';
-          saveBtn.dataset.styleId = def.id || '';
-        })
-        .catch(function() {});
-      saveBtn.onclick = function() {
-        var iframe = document.getElementById('collection-raster-studio-iframe');
-        var exp = iframe && iframe.contentWindow && typeof iframe.contentWindow.__geofastExportRasterStyleSpec === 'function'
-          ? iframe.contentWindow.__geofastExportRasterStyleSpec() : null;
-        var spec = (exp && exp.style_spec) ? exp.style_spec : {};
-        var styleId = saveBtn.dataset.styleId || 'default';
-        var payload = { id: styleId, title: val('raster-style-title') || 'Default raster style', style_spec: spec, set_default: true };
-        saveBtn.disabled = true;
-        statusEl.textContent = 'Saving…';
-        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/raster-styles', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: JSON.stringify(payload)
-        })
-          .then(function(r) { return r.json().then(function(j) { if (!r.ok) throw (j || {}); return j; }); })
-          .then(function(saved) {
-            saveBtn.dataset.styleId = saved.id || styleId;
-            statusEl.textContent = 'Saved default raster style.';
-          })
-          .catch(function(e) {
-            statusEl.textContent = 'Error: ' + ((e && (e.detail || e.message)) ? (e.detail || e.message) : 'save failed');
-          })
-          .finally(function() { saveBtn.disabled = false; });
-      };
-    })();
     (function jobsTable() {
       var loadingEl = document.getElementById('jobs-loading');
       var tableEl = document.getElementById('jobs-table');

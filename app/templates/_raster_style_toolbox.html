@@ -1,0 +1,37 @@
+{# Titiler controls + load/save for raster collection edit (ids do not collide with vector toolbox). #}
+{% if not titiler_configured %}
+  <p class="meta">Configure <code>TITILER_INTERNAL_URL</code>, <code>TITILER_INTERNAL_SECRET</code>, and <code>RASTER_INTERNAL_FETCH_BASE_URL</code> for live raster previews.</p>
+{% elif (tile_assets | length) == 0 %}
+  <p class="meta">No raster items yet. Upload GeoTIFFs to this collection, then reopen this page.</p>
+{% else %}
+  <p class="meta">Preview uses the map above. Adjust render parameters, then <strong>Apply</strong> or change options to refresh the overlay.</p>
+  {% set raster_asset_label = 'Mosaic or item' %}
+  {% include "_stac_raster_style_markup.html" %}
+{% endif %}
+<div class="style-toolbox-section" style="margin-top: var(--space);">
+  <h3>Load &amp; save</h3>
+  <div class="form-row">
+    <label><span class="label-text">Load</span>
+    <span class="vector-style-load-wrap">
+      <button type="button" class="vector-style-load-trigger" id="raster-style-load-trigger" title="Load a saved raster style" aria-haspopup="listbox" aria-expanded="false">
+        <span class="vector-style-load-legend" id="raster-style-load-legend" style="border-color:#58a6ff;background:linear-gradient(90deg,#2d5016,#e6b800,#c2410c);"></span>
+        <span class="vector-style-load-label-text" id="raster-style-load-label-text">Current</span>
+      </button>
+      <div class="vector-style-load-list" id="raster-style-load-list" role="listbox" aria-hidden="true"></div>
+    </span>
+    <select id="raster-style-select" aria-hidden="true" tabindex="-1" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden"><option value="">Current</option></select>
+    </label>
+  </div>
+  <div class="form-row"><button type="button" class="btn btn-sm" id="btn-save-raster-style">Save style…</button></div>
+  <div id="save-raster-style-form" class="save-style-form" style="display:none; flex-wrap: wrap; gap: 10px; margin-top: 10px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); font-size: 0.85rem;">
+    <span class="vector-style-label">Save raster style</span>
+    <label>To <select id="save-raster-style-to"><option value="public">Public</option><option value="collection">Collection</option></select></label>
+    <label>Id <input type="text" id="save-raster-style-id" placeholder="e.g. ndvi-default" pattern="[a-zA-Z0-9_-]+"></label>
+    <label>Title <input type="text" id="save-raster-style-title" placeholder="Optional"></label>
+    <label>Replace <select id="save-raster-style-replace"><option value="">New</option></select></label>
+    <span id="save-raster-style-default-wrap"><label><input type="checkbox" id="save-raster-style-default"> Set as default</label></span>
+    <button type="button" class="btn btn-sm btn-primary" id="btn-save-raster-style-submit">Save</button>
+    <button type="button" class="btn btn-sm" id="btn-save-raster-style-cancel">Cancel</button>
+  </div>
+  <p class="meta" id="raster-style-status" style="margin-top:8px;"></p>
+</div>

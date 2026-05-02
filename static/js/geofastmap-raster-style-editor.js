@@ -1,23 +1,16 @@
 /**
- * Collection raster studio: STAC-style Titiler controls wired to
+ * Raster collection Titiler style controls for the collection edit map (same tile URL builder as STAC studio).
  * GET /collections/{id}/rasters/tiles/WebMercatorQuad/...
  */
-(function () {
-  var CFG = window.__GEOFAST_RASTER_STUDIO__;
-  if (!CFG || !CFG.collectionId) return;
-
-  var base = CFG.base;
-  var collectionId = CFG.collectionId;
-  var mosaicVersionId = CFG.mosaicVersionId || '';
-  var titilerConfigured = CFG.titilerConfigured;
-  var googleKey = CFG.googleKey || '';
+(function (global) {
+  var _cfg = null;
 
   function el(id) {
     return document.getElementById(id);
   }
 
-  function escapeRegex(s) {
-    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  function getMap() {
+    return _cfg && _cfg.map;
   }
 
   function tileAssetKeysAll() {
@@ -145,9 +138,9 @@
 
   function collectionTileTemplate() {
     return (
-      base +
+      _cfg.base +
       '/collections/' +
-      encodeURIComponent(collectionId) +
+      encodeURIComponent(_cfg.collectionId) +
       '/rasters/tiles/WebMercatorQuad/{z}/{x}/{y}.png'
     );
   }
@@ -157,7 +150,7 @@
     var qs = [];
     if (assetKey === '__mosaic__') {
       qs.push('mode=mosaic');
-      if (mosaicVersionId) qs.push('mv=' + encodeURIComponent(mosaicVersionId));
+      if (_cfg.mosaicVersionId) qs.push('mv=' + encodeURIComponent(_cfg.mosaicVersionId));
     } else {
       qs.push('mode=item');
       qs.push('feature_id=' + encodeURIComponent(assetKey));
@@ -187,7 +180,7 @@
     var modeEl = el('stac-render-mode');
     var mode = modeEl ? modeEl.value : 'rgb_bands';
 
-      if (mode === 'expression') {
+    if (mode === 'expression') {
       var ex = el('stac-expression');
       if (ex && ex.value.trim()) {
         var rawEx = ex.value.trim();
@@ -231,10 +224,12 @@
   }
 
   function removeRasterLayer() {
-    if (!window._crsMap) return;
-    var map = window._crsMap;
-    if (map.getLayer('crs-raster')) map.removeLayer('crs-raster');
-    if (map.getSource('crs-raster')) map.removeSource('crs-raster');
+    var map = getMap();
+    if (!map) return;
+    var lid = _cfg.layerId;
+    var sid = _cfg.sourceId;
+    if (map.getLayer(lid)) map.removeLayer(lid);
+    if (map.getSource(sid)) map.removeSource(sid);
   }
 
   function getRasterOpacity01() {
@@ -246,8 +241,8 @@
   }
 
   function addOrRefreshRaster() {
-    if (!titilerConfigured || !CFG.tileAssetsLen) return;
-    var map = window._crsMap;
+    if (!_cfg || !_cfg.titilerConfigured || !_cfg.tileAssetsLen) return;
+    var map = getMap();
     if (!map || !map.loaded()) return;
     syncColorFormula();
     updateExpressionPreview();
@@ -273,23 +268,45 @@
         }
       }
     }
-    removeRasterLayer();
     var tileUrl = buildCollectionTileUrl(assetKey);
-    map.addSource('crs-raster', {
-      type: 'raster',
-      tiles: [tileUrl],
-      tileSize: 256,
-      maxzoom: 18,
-      attribution: 'Titiler',
-    });
-    map.addLayer({
-      id: 'crs-raster',
-      type: 'raster',
-      source: 'crs-raster',
-      paint: { 'raster-opacity': 1 },
-    });
+    var srcId = _cfg.sourceId;
+    var layerId = _cfg.layerId;
+    if (map.getSource(srcId)) {
+      map.getSource(srcId).setTiles([tileUrl]);
+    } else {
+      map.addSource(srcId, {
+        type: 'raster',
+        tiles: [tileUrl],
+        tileSize: 256,
+        maxzoom: 18,
+        attribution: 'Titiler',
+      });
+      var beforeId;
+      try {
+        var layers = map.getStyle().layers || [];
+        for (var li = 0; li < layers.length; li++) {
+          if (layers[li].id === 'tiles-fill' || layers[li].id === 'tiles-line' || layers[li].id === 'tiles-circle') {
+            beforeId = layers[li].id;
+            break;
+          }
+        }
+      } catch (e1) {}
+      map.addLayer(
+        {
+          id: layerId,
+          type: 'raster',
+          source: srcId,
+          paint: { 'raster-opacity': 0.9 },
+        },
+        beforeId
+      );
+    }
     var roPaint = getRasterOpacity01();
-    if (isFinite(roPaint)) map.setPaintProperty('crs-raster', 'raster-opacity', roPaint);
+    if (map.getLayer(layerId) && isFinite(roPaint)) map.setPaintProperty(layerId, 'raster-opacity', roPaint);
+  }
+
+  function maybeRefresh() {
+    addOrRefreshRaster();
   }
 
   function bandTokenCf() {
@@ -309,7 +326,7 @@
     if (mode === 'custom') {
       var cu = el('stac-cf-custom');
       hidden.value = cu && cu.value.trim() ? cu.value.trim() : '';
-      if (preview) preview.textContent = hidden.value ? ('Sent to Titiler: ' + hidden.value) : 'No color formula.';
+      if (preview) preview.textContent = hidden.value ? 'Sent to Titiler: ' + hidden.value : 'No color formula.';
       return;
     }
     var incG = el('stac-cf-include-gamma');
@@ -352,22 +369,24 @@
     if (bw) bw.style.display = mode === 'builder' ? 'block' : 'none';
     if (cw) cw.style.display = mode === 'custom' ? 'block' : 'none';
     syncColorFormula();
-    if (window._crsMap && window._crsMap.loaded()) addOrRefreshRaster();
+    maybeRefresh();
   }
 
   function initColorFormulaPanel() {
     function cfMaybeRefresh() {
       syncColorFormula();
-      if (window._crsMap && window._crsMap.loaded()) addOrRefreshRaster();
+      maybeRefresh();
     }
     var mb = el('stac-cf-mode-builder');
     var mc = el('stac-cf-mode-custom');
-    if (mb) mb.addEventListener('change', function () {
-      if (mb.checked) setCfModeUi('builder');
-    });
-    if (mc) mc.addEventListener('change', function () {
-      if (mc.checked) setCfModeUi('custom');
-    });
+    if (mb)
+      mb.addEventListener('change', function () {
+        if (mb.checked) setCfModeUi('builder');
+      });
+    if (mc)
+      mc.addEventListener('change', function () {
+        if (mc.checked) setCfModeUi('custom');
+      });
     ['stac-cf-include-gamma', 'stac-cf-include-sigmoidal', 'stac-cf-include-sat'].forEach(function (id) {
       var e = el(id);
       if (e) e.addEventListener('change', cfMaybeRefresh);
@@ -454,12 +473,10 @@
     if (n.unsupportedMultiItem) {
       prev.style.color = 'var(--danger)';
       prev.textContent =
-        'Multi-item expressions across raster items are not supported in this studio; use one COG item or a single-band expression.';
+        'Multi-item expressions across raster items are not supported here; use one COG item or a single-band expression.';
       return;
     }
-    var vopts = n.multiAssetCount
-      ? { multiAssetCount: n.multiAssetCount }
-      : { assetKey: n.cogAssetKey };
+    var vopts = n.multiAssetCount ? { multiAssetCount: n.multiAssetCount } : { assetKey: n.cogAssetKey };
     var err = titilerExpressionValidationError(n.normalizedExpr, vopts);
     var sub = n.normalizedExpr;
     if (err) {
@@ -493,18 +510,12 @@
     if (keys[2]) bSel.value = keys[2];
   }
 
-  function stripUnsupportedModes() {
-    var modeEl = el('stac-render-mode');
-    if (!modeEl) return;
-    var ra = modeEl.querySelector('option[value="rgb_assets"]');
-    if (ra) ra.remove();
-  }
-
   function exportRasterStyleSpec() {
     var spec = {};
     var mode = el('stac-render-mode').value;
     var mainSel = el('stac-asset-select');
     var mainKey = mainSel && mainSel.value;
+    if (mainKey) spec.asset = mainKey;
     var rescale = el('stac-rescale').value.trim();
     if (rescale) spec.rescale = rescale.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
     var cm = el('stac-colormap');
@@ -521,6 +532,15 @@
     } else if (mode === 'single') {
       var b = el('stac-band-single');
       if (b && b.value) spec.bidx = [String(b.value)];
+    } else if (mode === 'rgb_assets') {
+      var ar = el('stac-asset-r');
+      var ag = el('stac-asset-g');
+      var ab = el('stac-asset-b');
+      var trip = [];
+      if (ar && ar.value) trip.push(String(ar.value));
+      if (ag && ag.value) trip.push(String(ag.value));
+      if (ab && ab.value) trip.push(String(ab.value));
+      if (trip.length) spec.assets = trip;
     } else if (mode === 'rgb_bands') {
       var br = el('stac-band-r');
       var bg = el('stac-band-g');
@@ -534,171 +554,142 @@
     return spec;
   }
 
-  window.__geofastExportRasterStyleSpec = function () {
-    return { style_spec: exportRasterStyleSpec() };
-  };
-
-  function fetchDefaultRasterStyle() {
-    fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/raster-styles', {
-      credentials: 'same-origin',
-      headers: { Accept: 'application/json' },
-    })
-      .then(function (r) {
-        return r.ok ? r.json() : { styles: [] };
-      })
-      .then(function (d) {
-        var styles = d.styles || [];
-        var def = styles.find(function (s) {
-          return s.is_default;
-        }) || styles[0];
-        if (!def || !def.style_spec) return;
-        var sp = def.style_spec;
-        if (sp.rescale) {
-          var rsc = el('stac-rescale');
-          if (rsc)
-            rsc.value = Array.isArray(sp.rescale) ? sp.rescale.join(',') : String(sp.rescale);
+  function applySpec(spec) {
+    if (!spec || typeof spec !== 'object') return;
+    var aSel = el('stac-asset-select');
+    if (spec.asset && aSel) {
+      for (var ai = 0; ai < aSel.options.length; ai++) {
+        if (aSel.options[ai].value === spec.asset) {
+          aSel.value = spec.asset;
+          break;
         }
-        if (sp.colormap_name && el('stac-colormap')) el('stac-colormap').value = sp.colormap_name;
-        if (sp.color_formula && el('stac-cf-custom')) {
-          el('stac-cf-custom').value = sp.color_formula;
-          var mc = el('stac-cf-mode-custom');
-          if (mc) mc.checked = true;
-          setCfModeUi('custom');
-        }
-        if (sp.expression && el('stac-expression')) {
-          el('stac-render-mode').value = 'expression';
-          el('stac-expression').value = sp.expression;
-          setMode('expression', { skipRescaleDefault: true });
-        }
-      })
-      .catch(function () {});
+      }
+    }
+    if (spec.rescale) {
+      var rsc = el('stac-rescale');
+      if (rsc) rsc.value = Array.isArray(spec.rescale) ? spec.rescale.join(',') : String(spec.rescale);
+    }
+    if (spec.colormap_name && el('stac-colormap')) el('stac-colormap').value = spec.colormap_name;
+    if (spec.color_formula && el('stac-cf-custom')) {
+      el('stac-cf-custom').value = spec.color_formula;
+      var mc = el('stac-cf-mode-custom');
+      if (mc) mc.checked = true;
+      setCfModeUi('custom');
+    }
+    if (spec.expression && el('stac-expression')) {
+      el('stac-render-mode').value = 'expression';
+      el('stac-expression').value = spec.expression;
+      setMode('expression', { skipRescaleDefault: true });
+    } else if (spec.assets && Array.isArray(spec.assets) && spec.assets.length >= 3) {
+      el('stac-render-mode').value = 'rgb_assets';
+      setMode('rgb_assets', { skipRescaleDefault: true });
+      populateRgbAssetSelects();
+      if (el('stac-asset-r')) el('stac-asset-r').value = spec.assets[0];
+      if (el('stac-asset-g')) el('stac-asset-g').value = spec.assets[1];
+      if (el('stac-asset-b')) el('stac-asset-b').value = spec.assets[2];
+    } else if (spec.bidx && Array.isArray(spec.bidx)) {
+      if (spec.bidx.length >= 3) {
+        el('stac-render-mode').value = 'rgb_bands';
+        setMode('rgb_bands', { skipRescaleDefault: true });
+        refreshBandSelectors();
+        if (el('stac-band-r')) el('stac-band-r').value = String(spec.bidx[0]);
+        if (el('stac-band-g')) el('stac-band-g').value = String(spec.bidx[1]);
+        if (el('stac-band-b')) el('stac-band-b').value = String(spec.bidx[2]);
+      } else if (spec.bidx.length === 1) {
+        el('stac-render-mode').value = 'single';
+        setMode('single', { skipRescaleDefault: true });
+        refreshBandSelectors();
+        if (el('stac-band-single')) el('stac-band-single').value = String(spec.bidx[0]);
+      }
+    }
+    syncColorFormula();
+    updateExpressionPreview();
+    refreshBandSelectors();
+    maybeRefresh();
   }
 
-  function initMap() {
-    var mapEl = el('collection-raster-studio-map');
-    if (!mapEl || typeof maplibregl === 'undefined') return;
-    var sel = el('map-basemap');
-    function runMapInit(BASEMAPS, basemapList) {
-      GeofastmapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
-      var initialId = null;
-      try {
-        var s = localStorage.getItem('geofastmap-basemap');
-        if (s && BASEMAPS[s]) initialId = s;
-      } catch (e) {}
-      if (!initialId && basemapList.length) initialId = basemapList[0].id;
-      if (!initialId && BASEMAPS.osm) initialId = 'osm';
-      var initial =
-        initialId && BASEMAPS[initialId]
-          ? BASEMAPS[initialId]
-          : BASEMAPS.osm || (basemapList[0] && BASEMAPS[basemapList[0].id]);
-      if (!initial) return;
-      if (sel) sel.value = initialId || (sel.options[0] && sel.options[0].value);
-      var mapStyle = GeofastmapUtils.buildMapStyleWithBasemap(initial);
-      mapStyle.glyphs = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
-      var map = new maplibregl.Map({
-        container: 'collection-raster-studio-map',
-        style: mapStyle,
-        center: [0, 20],
-        zoom: 2,
-        renderWorldCopies: false,
-      });
-      window._crsMap = map;
-      GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
-      map.on('load', function () {
-        GeofastmapUtils.setupFullscreenForMap(map);
-        try {
-          var s2 = localStorage.getItem('geofastmap-basemap');
-          if (s2 && BASEMAPS[s2] && sel) sel.value = s2;
-        } catch (e) {}
-        sel.onchange = function () {
-          try {
-            localStorage.setItem('geofastmap-basemap', this.value);
-          } catch (e) {}
-          var cfg = BASEMAPS[this.value];
-          if (cfg) GeofastmapUtils.applyBasemapToMap(map, cfg, {});
-          if (titilerConfigured && CFG.tileAssetsLen) addOrRefreshRaster();
-        };
-        var cfg0 = BASEMAPS[sel.value];
-        if (cfg0) GeofastmapUtils.applyBasemapToMap(map, cfg0, {});
-        map.fitBounds(
-          [
-            [-180, -85],
-            [180, 85],
-          ],
-          { padding: 0 },
-        );
-        if (titilerConfigured && CFG.tileAssetsLen) {
-          addOrRefreshRaster();
-          map.once('idle', function () {
-            addOrRefreshRaster();
-          });
-        }
+  function init(config) {
+    if (!config || !config.map || !config.collectionId) return;
+    _cfg = {
+      map: config.map,
+      base: config.base,
+      collectionId: config.collectionId,
+      mosaicVersionId: config.mosaicVersionId || '',
+      titilerConfigured: !!config.titilerConfigured,
+      tileAssetsLen: config.tileAssetsLen || 0,
+      sourceId: config.sourceId || 'collection-raster-underlay',
+      layerId: config.layerId || 'collection-raster-underlay',
+    };
+
+    initColorFormulaPanel();
+    populateRgbAssetSelects();
+    refreshBandSelectors();
+
+    var modeEl0 = el('stac-render-mode');
+    if (modeEl0) {
+      setMode(modeEl0.value, {});
+      modeEl0.addEventListener('change', function () {
+        setMode(this.value, {});
+        maybeRefresh();
       });
     }
-    GeofastmapUtils.fetchBasemaps(base)
-      .then(function (result) {
-        runMapInit(result.byId, result.basemaps);
-      })
-      .catch(function () {
-        var BASEMAPS = GeofastmapUtils.getBasemaps(googleKey);
-        var basemapList = Object.keys(BASEMAPS).map(function (id) {
-          return { id: id, name: BASEMAPS[id].name || id };
-        });
-        runMapInit(BASEMAPS, basemapList);
+
+    ['stac-band-r', 'stac-band-g', 'stac-band-b', 'stac-band-single', 'stac-expression', 'stac-rescale', 'stac-colormap', 'stac-asset-r', 'stac-asset-g', 'stac-asset-b'].forEach(function (id) {
+      var e = el(id);
+      if (!e) return;
+      e.addEventListener('change', function () {
+        maybeRefresh();
       });
+    });
+    var stacExprEl = el('stac-expression');
+    if (stacExprEl)
+      stacExprEl.addEventListener('input', function () {
+        updateExpressionPreview();
+      });
+
+    var assetSel = el('stac-asset-select');
+    if (assetSel)
+      assetSel.addEventListener('change', function () {
+        refreshBandSelectors();
+        updateExpressionPreview();
+        maybeRefresh();
+      });
+
+    var applyBtn = el('stac-apply-raster');
+    if (applyBtn) applyBtn.addEventListener('click', function () { maybeRefresh(); });
+
+    var opEl = el('stac-raster-opacity');
+    if (opEl)
+      opEl.addEventListener('input', function () {
+        var map = getMap();
+        var lid = _cfg.layerId;
+        if (map && map.getLayer(lid)) {
+          map.setPaintProperty(lid, 'raster-opacity', parseInt(this.value, 10) / 100);
+        }
+      });
+
+    var basemapSel = document.getElementById('map-basemap');
+    if (basemapSel)
+      basemapSel.addEventListener('change', function () {
+        window.setTimeout(maybeRefresh, 50);
+      });
+
+    function onMapReady() {
+      maybeRefresh();
+    }
+    if (_cfg.map.loaded()) onMapReady();
+    else _cfg.map.once('load', onMapReady);
   }
 
-  stripUnsupportedModes();
-  initColorFormulaPanel();
-  populateRgbAssetSelects();
-  refreshBandSelectors();
-
-  var modeEl0 = el('stac-render-mode');
-  if (modeEl0) {
-    setMode(modeEl0.value, {});
-    modeEl0.addEventListener('change', function () {
-      setMode(this.value, {});
-      if (window._crsMap && window._crsMap.loaded()) addOrRefreshRaster();
-    });
-  }
-
-  ['stac-band-r', 'stac-band-g', 'stac-band-b', 'stac-band-single', 'stac-expression', 'stac-rescale', 'stac-colormap', 'stac-asset-r', 'stac-asset-g', 'stac-asset-b'].forEach(function (id) {
-    var e = el(id);
-    if (!e) return;
-    e.addEventListener('change', function () {
-      if (window._crsMap && window._crsMap.loaded()) addOrRefreshRaster();
-    });
-  });
-  var stacExprEl = el('stac-expression');
-  if (stacExprEl)
-    stacExprEl.addEventListener('input', function () {
-      updateExpressionPreview();
-    });
-
-  var assetSel = el('stac-asset-select');
-  if (assetSel)
-    assetSel.addEventListener('change', function () {
-      refreshBandSelectors();
-      updateExpressionPreview();
-      if (window._crsMap && window._crsMap.loaded()) addOrRefreshRaster();
-    });
-
-  var applyBtn = el('stac-apply-raster');
-  if (applyBtn)
-    applyBtn.addEventListener('click', function () {
-      if (window._crsMap && window._crsMap.loaded()) addOrRefreshRaster();
-    });
-
-  var opEl = el('stac-raster-opacity');
-  if (opEl)
-    opEl.addEventListener('input', function () {
-      if (window._crsMap && window._crsMap.getLayer('crs-raster')) {
-        window._crsMap.setPaintProperty('crs-raster', 'raster-opacity', parseInt(this.value, 10) / 100);
-      }
-    });
-
-  if (titilerConfigured && CFG.tileAssetsLen) {
-    fetchDefaultRasterStyle();
-    initMap();
-  }
-})();
+  global.GeofastmapRasterStyleEditor = {
+    init: init,
+    getSpec: function () {
+      return { style_spec: exportRasterStyleSpec() };
+    },
+    applySpec: applySpec,
+    refreshLayer: maybeRefresh,
+  };
+  global.__geofastExportRasterStyleSpec = function () {
+    return { style_spec: exportRasterStyleSpec() };
+  };
+})(typeof window !== 'undefined' ? window : this);

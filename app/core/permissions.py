@@ -17,7 +17,7 @@ from app.models.resource_share import (
     ROLE_EDITOR,
     ROLE_VIEWER,
 )
-from app.models.resource_share import ResourceShare, style_resource_id
+from app.models.resource_share import ResourceShare, raster_style_resource_id, style_resource_id
 from app.models.user import User
 
 
@@ -153,6 +153,31 @@ async def can_see_style(
         return True
     if user:
         rid = style_resource_id(collection_id, style_id)
+        role = await get_share_role(db, RESOURCE_TYPE_STYLE, rid, user.username)
+        if role in (ROLE_VIEWER, ROLE_EDITOR):
+            return True
+    return False
+
+
+async def can_see_raster_style(
+    db: AsyncSession,
+    style_owner_id: int | None,
+    style_visibility: str,
+    collection_id: str,
+    style_id: str,
+    user: User | None,
+) -> bool:
+    """Visibility + shares for raster style presets (collection-scoped or public with collection_id '')."""
+    if user and user.is_admin:
+        return True
+    if style_visibility == VISIBILITY_PUBLIC:
+        return True
+    if user and style_visibility == VISIBILITY_LOGGED:
+        return True
+    if user and style_owner_id == user.id:
+        return True
+    if user:
+        rid = raster_style_resource_id(collection_id, style_id)
         role = await get_share_role(db, RESOURCE_TYPE_STYLE, rid, user.username)
         if role in (ROLE_VIEWER, ROLE_EDITOR):
             return True

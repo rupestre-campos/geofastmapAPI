@@ -13,7 +13,6 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from app.api.deps import get_current_user_required
-from app.core.html import html_response, wants_html
 from app.models.user import User
 from app.core.config import get_settings
 from app.core.permissions import can_edit_collection
@@ -243,64 +242,6 @@ async def list_raster_items(
     )
 
 
-@router.get(
-    "/{collection_id}/raster-studio",
-    summary="Raster collection Titiler style studio (HTML, editors only)",
-    description="STAC-style Titiler controls + preview map for default raster visualization. Use ?f=html.",
-    include_in_schema=False,
-)
-async def get_collection_raster_studio(
-    request: Request,
-    collection_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user_required),
-):
-    if not wants_html(request):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="HTML only")
-    collection = await collections_crud.get_collection(db, collection_id)
-    if not collection:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    ensure_raster_collection(collection)
-    if not await can_edit_collection(db, collection, current_user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
-    settings = get_settings()
-    base = _base_url(request)
-    item_ids = await _raster_collection_item_ids(db, collection_id)
-    mosaic_vid = _mosaic_version_id(collection_id, item_ids)
-    tile_assets: list[dict[str, str]] = []
-    if len(item_ids) > 1:
-        tile_assets.append({"key": "__mosaic__", "title": "Mosaic (all items)"})
-    for fid in item_ids:
-        f = await features_crud.get_feature(db, collection_id, fid)
-        title = str(fid)
-        if f and isinstance(f.properties, dict):
-            t = f.properties.get("title")
-            if t:
-                title = f"{t}"
-        tile_assets.append({"key": str(fid), "title": title[:120]})
-    default_tile_asset: str | None = None
-    if len(item_ids) == 1:
-        default_tile_asset = str(item_ids[0])
-    elif len(item_ids) > 1:
-        default_tile_asset = "__mosaic__"
-    titiler_ok = bool(
-        settings.titiler_internal_url
-        and settings.titiler_internal_secret
-        and settings.raster_internal_fetch_base_url
-    )
-    return html_response(
-        "collection_raster_studio.html",
-        base=base,
-        username=current_user.username,
-        collection_id=collection_id,
-        tile_assets=tile_assets,
-        default_tile_asset=default_tile_asset,
-        mosaic_version_id=mosaic_vid or "",
-        titiler_configured=titiler_ok,
-        google_maps_api_key=settings.google_maps_api_key or "",
-    )
-
-
 @router.post(
     "/{collection_id}/rasters",
     status_code=status.HTTP_202_ACCEPTED,
@@ -482,6 +423,8 @@ async def get_raster_collection_tile(
     style = None
     if style_id:
         style = await raster_styles_crud.get_raster_style(db, collection_id, style_id)
+        if style is None:
+            style = await raster_styles_crud.get_public_raster_style(db, style_id)
     elif mode == "mosaic":
         style = await raster_styles_crud.get_default_raster_style(db, collection_id)
     if style and isinstance(style.style_spec, dict):

@@ -21,6 +21,12 @@ class RasterStyleCreate(BaseModel):
     title: str | None = None
     style_spec: dict = Field(default_factory=default_raster_style_spec)
     set_default: bool = False
+    visibility: str | None = None
+
+
+class RasterStyleReplace(BaseModel):
+    title: str | None = None
+    style_spec: dict = Field(default_factory=default_raster_style_spec)
 
 
 class RasterStylePatch(BaseModel):
