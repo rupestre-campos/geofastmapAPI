@@ -441,6 +441,19 @@ async def get_raster_collection_tile(
     dem_encoding_q = request.query_params.get("dem_encoding")
     if dem_encoding_q:
         dem_algorithm = _normalize_dem_encoding(dem_encoding_q)
+    # DEM terrain RGB conflicts with analytic viz (single band / colormap / expr). Multi-bidx RGB keeps terrain.
+    bidx_vals = request.query_params.getlist("bidx")
+    assets_vals = request.query_params.getlist("assets")
+    force_analytic = bool(
+        request.query_params.get("expression")
+        or request.query_params.get("colormap_name")
+        or request.query_params.get("color_formula")
+        or len(assets_vals) >= 2
+    )
+    if len(bidx_vals) == 1:
+        force_analytic = True
+    if force_analytic:
+        dem_algorithm = None
     if dem_algorithm:
         params.append(("algorithm", dem_algorithm))
     async with httpx.AsyncClient(timeout=60.0) as client:

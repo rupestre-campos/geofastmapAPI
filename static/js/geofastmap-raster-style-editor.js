@@ -409,11 +409,21 @@
     syncColorFormula();
   }
 
+  function getBandMax() {
+    var bc = _cfg && _cfg.bandCounts;
+    if (!bc || typeof bc !== 'object') return 12;
+    var sel = el('stac-asset-select');
+    var key = sel && sel.value ? sel.value : '__mosaic__';
+    var n = bc[key];
+    if (typeof n !== 'number' || !isFinite(n) || n < 1) return 12;
+    return Math.min(12, Math.max(1, Math.floor(n)));
+  }
+
   function populateBandSelect(selectEl, chosenValue) {
     if (!selectEl) return;
     var prev = chosenValue || selectEl.value;
     selectEl.innerHTML = '';
-    var max = 12;
+    var max = getBandMax();
     for (var j = 1; j <= max; j++) {
       var o2 = document.createElement('option');
       o2.value = String(j);
@@ -424,9 +434,10 @@
   }
 
   function refreshBandSelectors() {
+    var max = getBandMax();
     populateBandSelect(el('stac-band-r'), '1');
-    populateBandSelect(el('stac-band-g'), '2');
-    populateBandSelect(el('stac-band-b'), '3');
+    populateBandSelect(el('stac-band-g'), max >= 2 ? '2' : '1');
+    populateBandSelect(el('stac-band-b'), max >= 3 ? '3' : max >= 2 ? '2' : '1');
     populateBandSelect(el('stac-band-single'), '1');
   }
 
@@ -617,6 +628,7 @@
       mosaicVersionId: config.mosaicVersionId || '',
       titilerConfigured: !!config.titilerConfigured,
       tileAssetsLen: config.tileAssetsLen || 0,
+      bandCounts: config.bandCounts && typeof config.bandCounts === 'object' ? config.bandCounts : {},
       sourceId: config.sourceId || 'collection-raster-underlay',
       layerId: config.layerId || 'collection-raster-underlay',
     };

@@ -270,6 +270,7 @@ async def get_collection_edit_form(
         raster_tile_assets=raster_ctx["tile_assets"] if raster_ctx else [],
         raster_default_tile_asset=raster_ctx["default_tile_asset"] if raster_ctx else None,
         raster_mosaic_version_id=raster_ctx["mosaic_version_id"] if raster_ctx else "",
+        raster_band_counts=raster_ctx["band_counts"] if raster_ctx else {},
         titiler_configured=raster_ctx["titiler_configured"] if raster_ctx else False,
         public_raster_styles_url=f"{base}/raster-styles",
         collection_raster_styles_url=f"{base}/collections/{collection_id}/raster-styles",

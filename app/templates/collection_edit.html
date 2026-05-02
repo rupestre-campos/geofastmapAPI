@@ -396,6 +396,7 @@
     const rasterTileAssetsLen = {{ (raster_tile_assets | default([]) | length) | tojson }};
     const publicRasterStylesUrl = {{ public_raster_styles_url | default(base + '/raster-styles') | tojson }};
     const collectionRasterStylesUrl = {{ collection_raster_styles_url | default(base + '/collections/' + collection_id + '/raster-styles') | tojson }};
+    const rasterBandCounts = {{ raster_band_counts | default({}) | tojson }};
 
     function bboxToPolygonFeature(bbox) {
       if (!bbox || bbox.length < 4) return null;
@@ -534,6 +535,7 @@
               mosaicVersionId: rasterMosaicVersionId,
               titilerConfigured: titilerConfiguredFlag,
               tileAssetsLen: rasterTileAssetsLen,
+              bandCounts: rasterBandCounts,
               sourceId: 'collection-raster-underlay',
               layerId: 'collection-raster-underlay'
             });

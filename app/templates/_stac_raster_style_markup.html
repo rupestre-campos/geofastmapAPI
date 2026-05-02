@@ -4,7 +4,7 @@
     <label for="stac-asset-select">{{ raster_asset_label | default('Asset') }}</label>
     <select id="stac-asset-select">
       {% for a in tile_assets %}
-      <option value="{{ a.key }}" {% if a.key == default_tile_asset %}selected{% endif %}>{{ a.key }}{% if a.title != a.key %} — {{ a.title }}{% endif %}</option>
+      <option value="{{ a.key }}" {% if a.key == default_tile_asset %}selected{% endif %}>{{ a.title }}</option>
       {% endfor %}
     </select>
   </div>

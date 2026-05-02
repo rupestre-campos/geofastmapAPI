@@ -19,29 +19,46 @@ def mosaic_version_id(collection_id: str, item_ids: list[str]) -> str | None:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def _band_count_from_feature(f) -> int:
+    if not f or not isinstance(getattr(f, "properties", None), dict):
+        return 1
+    meta = (f.properties.get("raster") or {}).get("meta") or {}
+    if not isinstance(meta, dict):
+        return 1
+    n = meta.get("count")
+    if isinstance(n, int) and n >= 1:
+        return min(n, 512)
+    return 1
+
+
 async def get_raster_style_edit_context(db: AsyncSession, collection_id: str) -> dict[str, Any]:
-    """Returns tile_assets, default_tile_asset, mosaic_version_id, titiler_configured for template + JS."""
+    """Returns tile_assets, default_tile_asset, mosaic_version_id, titiler_configured, band_counts for template + JS."""
     q = await db.execute(
         text("SELECT DISTINCT id FROM features WHERE collection_id = :cid ORDER BY id"),
         {"cid": collection_id},
     )
     item_ids = [r.id for r in q.fetchall()]
     mv = mosaic_version_id(collection_id, item_ids)
+    band_counts: dict[str, int] = {}
+    per_item_counts: list[int] = []
     tile_assets: list[dict[str, str]] = []
-    if len(item_ids) > 1:
-        tile_assets.append({"key": "__mosaic__", "title": "Mosaic (all items)"})
-    for fid in item_ids:
-        f = await features_crud.get_feature(db, collection_id, fid)
-        title = str(fid)
-        if f and isinstance(f.properties, dict):
-            t = f.properties.get("title")
-            if t:
-                title = f"{t}"
-        tile_assets.append({"key": str(fid), "title": title[:120]})
+    # Full-collection mosaic: always offer first when there is at least one raster item.
+    if item_ids:
+        for fid in item_ids:
+            f = await features_crud.get_feature(db, collection_id, fid)
+            cnt = _band_count_from_feature(f)
+            band_counts[str(fid)] = cnt
+            per_item_counts.append(cnt)
+            title = str(fid)
+            if f and isinstance(f.properties, dict):
+                t = f.properties.get("title")
+                if t:
+                    title = str(t)[:120]
+            tile_assets.append({"key": str(fid), "title": f"Item — {title}"})
+        band_counts["__mosaic__"] = max(per_item_counts) if per_item_counts else 1
+        tile_assets.insert(0, {"key": "__mosaic__", "title": "Collection"})
     default_tile_asset: str | None = None
-    if len(item_ids) == 1:
-        default_tile_asset = str(item_ids[0])
-    elif len(item_ids) > 1:
+    if item_ids:
         default_tile_asset = "__mosaic__"
     settings = get_settings()
     titiler_ok = bool(
@@ -52,4 +69,5 @@ async def get_raster_style_edit_context(db: AsyncSession, collection_id: str) ->
         "default_tile_asset": default_tile_asset,
         "mosaic_version_id": mv or "",
         "titiler_configured": titiler_ok,
+        "band_counts": band_counts,
     }
