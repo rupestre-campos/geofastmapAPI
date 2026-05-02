@@ -231,14 +231,21 @@
           <input type="range" id="map-edit-raster-simple-opacity" min="0" max="100" value="100" style="width:140px;">
           <span id="map-edit-raster-simple-opacity-val" class="meta">100%</span>
         </div>
-        <div class="form-row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px;">
-          <label><input type="checkbox" id="map-edit-raster-terrain-enabled"> Use as terrain elevation provider only</label>
+      </div>
+    </details>
+    <details id="style-editor-details-terrain" class="layer-style-collapsible" style="display:none;" open>
+      <summary>3D terrain (DEM)</summary>
+      <div style="padding:0 var(--space) var(--space);">
+        <p class="meta" style="margin:0 0 10px;">Select a <strong>raster</strong> layer in the table above. Use terrain for elevation in 3D; exaggeration applies when terrain is on.</p>
+        <div class="form-row" style="align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px;">
+          <label><input type="checkbox" id="map-edit-raster-terrain-enabled"> Use as terrain elevation only (hide 2D imagery)</label>
         </div>
         <div class="form-row" style="align-items:center;gap:12px;" id="map-edit-raster-terrain-exag-wrap">
-          <label for="map-edit-raster-terrain-exag" class="label-text">Terrain exaggeration</label>
-          <input type="range" id="map-edit-raster-terrain-exag" min="0" max="8" step="0.1" value="1" style="width:140px;">
+          <label for="map-edit-raster-terrain-exag" class="label-text">3D exaggeration</label>
+          <input type="range" id="map-edit-raster-terrain-exag" min="0" max="8" step="0.1" value="1" style="width:160px;">
           <span id="map-edit-raster-terrain-exag-val" class="meta">1.0x</span>
         </div>
+        <p class="meta" style="margin:8px 0 0;">Tip: tilt the map with right-drag or touch; saved pitch is under Map details.</p>
       </div>
     </details>
   </div>
@@ -970,9 +977,11 @@
         var dv = document.getElementById('style-editor-details-vector');
         var dr = document.getElementById('style-editor-details-raster');
         var drs = document.getElementById('style-editor-details-raster-simple');
+        var dterr = document.getElementById('style-editor-details-terrain');
         var lyr = state.selectedLayerIndex != null ? state.layers[state.selectedLayerIndex] : null;
         var isStacRaster = lyr && lyr.raster_tiles && (lyr.stac_viewer_path || lyr.stacViewerPath);
         var isPlainRaster = lyr && lyr.raster_tiles && !isStacRaster;
+        var isAnyRaster = !!(lyr && lyr.raster_tiles);
         if (dv) {
           dv.style.display = (lyr && !lyr.raster_tiles) ? '' : 'none';
           if (lyr && !lyr.raster_tiles) dv.open = true;
@@ -1006,20 +1015,28 @@
             drs.open = true;
             var op2 = document.getElementById('map-edit-raster-simple-opacity');
             var opv2 = document.getElementById('map-edit-raster-simple-opacity-val');
-            var te = document.getElementById('map-edit-raster-terrain-enabled');
-            var tx = document.getElementById('map-edit-raster-terrain-exag');
-            var txv = document.getElementById('map-edit-raster-terrain-exag-val');
-            var txw = document.getElementById('map-edit-raster-terrain-exag-wrap');
             var ro2 = (lyr.style_spec && lyr.style_spec.rasterOpacity != null) ? Number(lyr.style_spec.rasterOpacity) : 1;
             var pct2 = Math.round(Math.max(0, Math.min(1, ro2)) * 100);
             if (op2) op2.value = String(pct2);
             if (opv2) opv2.textContent = pct2 + '%';
+          }
+        }
+        if (dterr) {
+          dterr.style.display = isAnyRaster ? '' : 'none';
+          if (isAnyRaster) {
+            dterr.open = true;
+            var te = document.getElementById('map-edit-raster-terrain-enabled');
+            var tx = document.getElementById('map-edit-raster-terrain-exag');
+            var txv = document.getElementById('map-edit-raster-terrain-exag-val');
             var terrainOn = lyr.terrain_enabled === true;
             if (te) te.checked = terrainOn;
             var exag = (lyr.terrain_exaggeration != null && isFinite(Number(lyr.terrain_exaggeration))) ? Number(lyr.terrain_exaggeration) : 1.0;
             if (tx) tx.value = String(exag);
             if (txv) txv.textContent = exag.toFixed(1) + 'x';
-            if (txw) txw.style.display = terrainOn ? '' : 'none';
+            if (terrainOn && lyr.terrain_exaggeration != null && isFinite(Number(lyr.terrain_exaggeration))) {
+              terrainExaggeration = Number(lyr.terrain_exaggeration);
+              try { applyTerrainInEditor(); } catch (eT) {}
+            }
           }
         }
       }
@@ -1064,8 +1081,6 @@
             if (state.layers[i].terrain_enabled && !state.layers[i].terrain_encoding) {
               state.layers[i].terrain_encoding = 'mapbox';
             }
-            var txw = document.getElementById('map-edit-raster-terrain-exag-wrap');
-            if (txw) txw.style.display = state.layers[i].terrain_enabled ? '' : 'none';
             removeAllLayerSourcesFromMap();
             syncMapFromState();
             renderLayers();
