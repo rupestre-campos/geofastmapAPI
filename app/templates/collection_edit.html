@@ -52,10 +52,25 @@
     .vector-style-load-list { position: absolute; top: 100%; left: 0; margin-top: 2px; min-width: 180px; max-height: 240px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 2000; display: none; }
     .vector-style-load-list.open { display: block; }
     .vector-style-load-group-label { padding: 4px 8px; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
-    .vector-style-load-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; font-size: 0.85rem; border: none; background: none; width: 100%; text-align: left; }
+    .vector-style-load-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; font-size: 0.85rem; font-family: inherit; border: none; background: none; width: 100%; text-align: left; color: var(--text); }
     .vector-style-load-item:hover { background: var(--bg-elevated); }
     .vector-style-load-item-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
     .vector-style-load-item-label { flex: 1; }
+    /* Dark theme: floating menus are hard to read on --card; use a light surface like form selects. */
+    [data-theme="dark"] .vector-style-load-list {
+      background: #ffffff;
+      border-color: #d0d7de;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    }
+    [data-theme="dark"] .vector-style-load-list .vector-style-load-group-label {
+      color: #656d76;
+    }
+    [data-theme="dark"] .vector-style-load-list .vector-style-load-item {
+      color: #1f2328;
+    }
+    [data-theme="dark"] .vector-style-load-list .vector-style-load-item:hover {
+      background: #f6f8fa;
+    }
     .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
     .save-style-form .vector-style-label { font-weight: 600; margin-right: 4px; }
     .btn-sm { padding: 4px 10px; font-size: 0.8rem; }

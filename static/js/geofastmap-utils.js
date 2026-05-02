@@ -183,6 +183,27 @@
   }
 
   /**
+   * Atmospheric fog for 3D terrain (tilted map): replaces default dark upper sky with a daylight blue.
+   * Call after map.setTerrain(...); call clearTerrainAtmosphere when terrain is off.
+   */
+  function setTerrainAtmosphere(map) {
+    if (!map || typeof map.setFog !== 'function') return;
+    map.setFog({
+      range: [1, 24],
+      color: 'rgb(190, 215, 238)',
+      'high-color': 'rgb(100, 165, 230)',
+      'horizon-blend': 0.38,
+      'space-color': 'rgb(55, 125, 205)',
+      'star-intensity': 0
+    });
+  }
+
+  function clearTerrainAtmosphere(map) {
+    if (!map || typeof map.setFog !== 'function') return;
+    map.setFog(null);
+  }
+
+  /**
    * Populate a <select id="map-basemap"> with options from basemap list. Option value = id, text = name.
    * basemapList: array of { id, name } (from fetchBasemaps().basemaps or Object.keys(getBasemaps()) with name from byId).
    */
@@ -807,6 +828,8 @@
     attachMultiLayerFeaturePopup: attachMultiLayerFeaturePopup,
     setupLayeredPopupNavigation: setupLayeredPopupNavigation,
     setupFullscreenForMap: setupFullscreenForMap,
+    setTerrainAtmosphere: setTerrainAtmosphere,
+    clearTerrainAtmosphere: clearTerrainAtmosphere,
     isEarthSearchStacUrl: isEarthSearchStacUrl,
     DEFAULT_EARTH_SEARCH_COLLECTION_ID: DEFAULT_EARTH_SEARCH_COLLECTION_ID
   };

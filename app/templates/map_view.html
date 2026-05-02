@@ -223,7 +223,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofastmap-utils.js?v=2"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=3"></script>
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   <script>
     (function() {
@@ -351,8 +351,13 @@
       }
       function applyTerrain() {
         if (!terrainSourceId) return;
-        if (terrainEnabled) map.setTerrain({ source: terrainSourceId, exaggeration: terrainExaggeration });
-        else map.setTerrain(null);
+        if (terrainEnabled) {
+          map.setTerrain({ source: terrainSourceId, exaggeration: terrainExaggeration });
+          GeofastmapUtils.setTerrainAtmosphere(map);
+        } else {
+          map.setTerrain(null);
+          GeofastmapUtils.clearTerrainAtmosphere(map);
+        }
         updateTerrainUi();
       }
       var canEditByCollection = {{ can_edit_by_collection | default({}) | tojson }};
@@ -950,8 +955,13 @@
         setupLegendToggle();
         setupFullscreen();
         map.resize();
+        // Saved bbox is a rough extent; fitBounds picks its own zoom/center and clears tilt. When the map
+        // definition includes center + zoom (saved from the editor), use that camera instead.
         if (mapBbox && mapBbox.length === 4) {
-          map.fitBounds([[mapBbox[0], mapBbox[1]], [mapBbox[2], mapBbox[3]]], { padding: 60 });
+          var hasSavedCamera = mapCenter && mapCenter.length === 2 && mapZoom != null && isFinite(Number(mapZoom));
+          if (!hasSavedCamera) {
+            map.fitBounds([[mapBbox[0], mapBbox[1]], [mapBbox[2], mapBbox[3]]], { padding: 60 });
+          }
         }
         terrainEnabled = false;
         applyTerrain();

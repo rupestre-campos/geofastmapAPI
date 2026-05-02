@@ -53,10 +53,24 @@
     .vector-style-load-list { position: absolute; top: 100%; left: 0; margin-top: 2px; min-width: 180px; max-height: 240px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 2000; display: none; }
     .vector-style-load-list.open { display: block; }
     .vector-style-load-group-label { padding: 4px 8px; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
-    .vector-style-load-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; font-size: 0.85rem; border: none; background: none; width: 100%; text-align: left; }
+    .vector-style-load-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; font-size: 0.85rem; font-family: inherit; border: none; background: none; width: 100%; text-align: left; color: var(--text); }
     .vector-style-load-item:hover { background: var(--bg-elevated); }
     .vector-style-load-item-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
     .vector-style-load-item-label { flex: 1; }
+    [data-theme="dark"] .vector-style-load-list {
+      background: #ffffff;
+      border-color: #d0d7de;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    }
+    [data-theme="dark"] .vector-style-load-list .vector-style-load-group-label {
+      color: #656d76;
+    }
+    [data-theme="dark"] .vector-style-load-list .vector-style-load-item {
+      color: #1f2328;
+    }
+    [data-theme="dark"] .vector-style-load-list .vector-style-load-item:hover {
+      background: #f6f8fa;
+    }
     .vector-style-load-legend { width: 24px; height: 14px; border-radius: 2px; border: 3px solid; flex-shrink: 0; }
     .vector-style-load-label-text { flex: 1; text-align: left; }
     .save-style-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 0.85rem; }
@@ -266,7 +280,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofastmap-utils.js?v=2"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=3"></script>
   {% include "_style_editor_toolbox_script.html" %}
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   <script>
@@ -412,7 +426,10 @@
       var terrainExaggeration = 1.0;
       function applyTerrainInEditor() {
         if (!map || !terrainSourceId) return;
-        try { map.setTerrain({ source: terrainSourceId, exaggeration: terrainExaggeration }); } catch (e) {}
+        try {
+          map.setTerrain({ source: terrainSourceId, exaggeration: terrainExaggeration });
+          GeofastmapUtils.setTerrainAtmosphere(map);
+        } catch (e) {}
       }
 
       // Expose a stable binder on window. Always overwrite to avoid stale/cached closures.
@@ -953,6 +970,12 @@
           if (map.getLayer(sid + '-fill')) map.removeLayer(sid + '-fill');
           map.removeSource(sid);
         });
+        try {
+          if (!terrainSourceId) {
+            map.setTerrain(null);
+            GeofastmapUtils.clearTerrainAtmosphere(map);
+          }
+        } catch (e2) {}
       }
 
       function moveLayerToIndex(fromIdx, toIdx) {
@@ -2181,8 +2204,13 @@
         // Bind toolbox once the map is ready.
         if (window.ensureStyleToolboxBound) window.ensureStyleToolboxBound();
         setupMapEditLegendUI();
+        // bbox + fitBounds replace center/zoom and reset pitch/bearing. If the map was saved with a camera
+        // (Set extent from current view), keep that exact view instead.
         if (state.bbox && state.bbox.length === 4) {
-          map.fitBounds([[state.bbox[0], state.bbox[1]], [state.bbox[2], state.bbox[3]]], { padding: 60 });
+          var hasSavedCamera = state.center && state.center.length === 2 && state.zoom != null && isFinite(Number(state.zoom));
+          if (!hasSavedCamera) {
+            map.fitBounds([[state.bbox[0], state.bbox[1]], [state.bbox[2], state.bbox[3]]], { padding: 60 });
+          }
         }
         var lonEl = document.getElementById('camera-center-lon');
         var latEl = document.getElementById('camera-center-lat');
