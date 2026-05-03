@@ -280,7 +280,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofastmap-utils.js?v=4"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=5"></script>
   {% include "_style_editor_toolbox_script.html" %}
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   <script>
@@ -443,6 +443,7 @@
         try {
           map.setTerrain({ source: terrainSourceId, exaggeration: terrainExaggeration });
           GeofastmapUtils.setTerrainAtmosphere(map);
+          GeofastmapUtils.configureTerrainCameraClamp(map, true);
         } catch (e) {}
       }
 
@@ -988,6 +989,7 @@
           if (!terrainSourceId) {
             map.setTerrain(null);
             GeofastmapUtils.clearTerrainAtmosphere(map);
+            GeofastmapUtils.configureTerrainCameraClamp(map, false);
           }
         } catch (e2) {}
       }

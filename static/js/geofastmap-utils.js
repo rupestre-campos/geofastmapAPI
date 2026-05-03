@@ -228,6 +228,19 @@
   }
 
   /**
+   * Default MapLibre behavior clamps the camera center to terrain elevation after each pan gesture ends,
+   * which often reads as a small vertical snap (“step”) when 3D terrain is on. Disable that clamp while
+   * terrain is active; restore default clamp when returning to flat mode.
+   * @see https://github.com/maplibre/maplibre-gl-js/issues/7025
+   */
+  function configureTerrainCameraClamp(map, terrain3dActive) {
+    if (!map || typeof map.setCenterClampedToGround !== 'function') return;
+    try {
+      map.setCenterClampedToGround(!terrain3dActive);
+    } catch (e) {}
+  }
+
+  /**
    * Populate a <select id="map-basemap"> with options from basemap list. Option value = id, text = name.
    * basemapList: array of { id, name } (from fetchBasemaps().basemaps or Object.keys(getBasemaps()) with name from byId).
    */
@@ -854,6 +867,7 @@
     setupFullscreenForMap: setupFullscreenForMap,
     setTerrainAtmosphere: setTerrainAtmosphere,
     clearTerrainAtmosphere: clearTerrainAtmosphere,
+    configureTerrainCameraClamp: configureTerrainCameraClamp,
     isEarthSearchStacUrl: isEarthSearchStacUrl,
     DEFAULT_EARTH_SEARCH_COLLECTION_ID: DEFAULT_EARTH_SEARCH_COLLECTION_ID
   };
