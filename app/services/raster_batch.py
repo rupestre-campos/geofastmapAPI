@@ -14,6 +14,7 @@ from fastapi import UploadFile
 from uuid6 import uuid7
 
 from app.core.config import get_settings
+from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.db.session import AsyncSessionLocal
 from app.schemas.feature import FeatureCreate, Geometry
@@ -28,6 +29,13 @@ MANIFEST_VERSION = 1
 def _normalize_dem_encoding(value: str | None) -> str:
     enc = (value or "terrainrgb").strip().lower()
     return enc if enc in _DEM_ENCODINGS else "terrainrgb"
+
+
+def _collection_dem_settings(collection) -> tuple[bool, str]:
+    rs = getattr(collection, "raster_settings", None) if collection is not None else None
+    if not isinstance(rs, dict):
+        return (False, "terrainrgb")
+    return (bool(rs.get("is_dem", False)), _normalize_dem_encoding(rs.get("dem_encoding")))
 
 
 def zip_tiff_members(zip_path: Path) -> list[str]:
@@ -184,14 +192,24 @@ async def _process_raster_batch_async(
     crs_opt = manifest.get("source_crs")
     if isinstance(crs_opt, str):
         crs_opt = crs_opt.strip() or None
-    is_dem = bool(manifest.get("is_dem", False))
-    dem_enc = manifest.get("dem_encoding")
+    is_dem_upload = bool(manifest.get("is_dem", False))
+    dem_enc_manifest = manifest.get("dem_encoding")
 
     created = 0
     failed = 0
     last_err: str | None = None
 
     async with AsyncSessionLocal() as db:
+        coll = await collections_crud.get_collection(db, collection_id)
+        collection_is_dem, collection_dem_enc = _collection_dem_settings(coll)
+        is_dem = is_dem_upload or collection_is_dem
+        if is_dem_upload:
+            dem_enc = _normalize_dem_encoding(dem_enc_manifest)
+        elif collection_is_dem:
+            dem_enc = collection_dem_enc
+        else:
+            dem_enc = _normalize_dem_encoding(dem_enc_manifest)
+
         for ent in entries:
             _raise_if_raster_job_cancelled(job_id)
             kind = str(ent.get("kind") or "")

@@ -461,7 +461,11 @@ async def get_raster_collection_tile(
         # Query params from the style editor / clients win over preset keys to avoid duplicate Titiler args.
         for key in ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula"):
             if mode == "mosaic" and key in mosaic_style_keys_skip:
-                continue
+                # Single-item collections still use mosaic URL; allow default bidx so bare ?mode=mosaic&mv= works.
+                if key == "bidx" and len(item_ids) == 1:
+                    pass
+                else:
+                    continue
             if key in request_keys:
                 continue
             value = style_spec.get(key)
@@ -480,6 +484,9 @@ async def get_raster_collection_tile(
     assets_vals = request.query_params.getlist("assets")
 
     def _style_supplies(key: str) -> bool:
+        # Keys skipped for mosaic are not merged into Titiler params; do not treat them as forcing analytic mode.
+        if mode == "mosaic" and key in mosaic_style_keys_skip:
+            return False
         v = style_spec.get(key)
         if v is None or v == "" or v == []:
             return False
@@ -504,6 +511,14 @@ async def get_raster_collection_tile(
             force_analytic = True
     if force_analytic:
         dem_algorithm = None
+    # Mosaic path never sets dem_algorithm from a single item; apply collection DEM when not doing analytic viz.
+    if (
+        mode == "mosaic"
+        and dem_algorithm is None
+        and not force_analytic
+        and collection_is_dem
+    ):
+        dem_algorithm = collection_dem_encoding
     if dem_algorithm:
         params.append(("algorithm", dem_algorithm))
     async with httpx.AsyncClient(timeout=60.0) as client:
