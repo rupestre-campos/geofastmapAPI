@@ -295,6 +295,26 @@ def test_build_mosaicjson_two_neighbors_indexed():
     assert "https://example.com/b.tif" in flat
 
 
+def test_build_mosaicjson_second_asset_in_every_quadkey_over_its_footprint():
+    """Each asset must be listed for every quadkey overlapping its bounds (Titiler picks per tile)."""
+    import mercantile
+
+    href_a = "https://example.com/a.tif"
+    href_b = "https://example.com/b.tif"
+    a = box(0, 0, 1, 1)
+    b = box(1, 0, 2, 1)
+    mj = build_mosaicjson_from_footprints([(href_a, a), (href_b, b)], minzoom=6, maxzoom=18)
+    qkz = mj["quadkey_zoom"]
+    for tile in mercantile.tiles(1.0, 0.0, 2.0, 1.0, [qkz]):
+        qk = mercantile.quadkey(tile)
+        lst = mj["tiles"].get(qk, [])
+        assert href_b in lst, f"B missing from quadkey {qk}: {lst}"
+    for tile in mercantile.tiles(0.0, 0.0, 1.0, 1.0, [qkz]):
+        qk = mercantile.quadkey(tile)
+        lst = mj["tiles"].get(qk, [])
+        assert href_a in lst, f"A missing from quadkey {qk}: {lst}"
+
+
 def test_can_access_raster_tiles_anonymous():
     assert can_access_raster_view_tiles_anonymous(visibility="public", allow_public_maps=False)
     assert can_access_raster_view_tiles_anonymous(visibility="private", allow_public_maps=True)
