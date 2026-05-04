@@ -11,12 +11,12 @@ import zipfile
 from pathlib import Path
 
 from fastapi import UploadFile
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from uuid6 import uuid7
 
 from app.core.config import get_settings
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
-from app.db.session import AsyncSessionLocal
 from app.schemas.feature import FeatureCreate, Geometry
 from app.services.coverages import cog_path_for, convert_geotiff_to_cog_4326
 from app.services.job_store import update_job
@@ -188,6 +188,12 @@ async def _process_raster_batch_async(
     extract_dir: Path,
     manifest: dict,
 ) -> tuple[int, int, str | None]:
+    """Use a dedicated AsyncEngine per run so Redis/thread workers work with asyncio.run().
+
+    The app-wide engine in ``app.db.session`` must not be shared across threads or across
+    successive ``asyncio.run()`` calls: asyncpg connections are bound to the event loop
+    that created them (\"Future attached to a different loop\").
+    """
     entries = manifest.get("entries") or []
     crs_opt = manifest.get("source_crs")
     if isinstance(crs_opt, str):
@@ -199,63 +205,52 @@ async def _process_raster_batch_async(
     failed = 0
     last_err: str | None = None
 
-    async with AsyncSessionLocal() as db:
-        coll = await collections_crud.get_collection(db, collection_id)
-        collection_is_dem, collection_dem_enc = _collection_dem_settings(coll)
-        is_dem = is_dem_upload or collection_is_dem
-        if is_dem_upload:
-            dem_enc = _normalize_dem_encoding(dem_enc_manifest)
-        elif collection_is_dem:
-            dem_enc = collection_dem_enc
-        else:
-            dem_enc = _normalize_dem_encoding(dem_enc_manifest)
+    settings = get_settings()
+    engine = create_async_engine(
+        settings.database_url,
+        echo=False,
+        future=True,
+        pool_size=settings.database_pool_size,
+        max_overflow=settings.database_pool_max_overflow,
+        pool_timeout=settings.database_pool_timeout,
+        pool_pre_ping=True,
+    )
+    SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    try:
+        async with SessionLocal() as db:
+            coll = await collections_crud.get_collection(db, collection_id)
+            collection_is_dem, collection_dem_enc = _collection_dem_settings(coll)
+            is_dem = is_dem_upload or collection_is_dem
+            if is_dem_upload:
+                dem_enc = _normalize_dem_encoding(dem_enc_manifest)
+            elif collection_is_dem:
+                dem_enc = collection_dem_enc
+            else:
+                dem_enc = _normalize_dem_encoding(dem_enc_manifest)
 
-        for ent in entries:
-            _raise_if_raster_job_cancelled(job_id)
-            kind = str(ent.get("kind") or "")
-            name = str(ent.get("name") or "")
-            if ".." in name or name.startswith("/"):
-                failed += 1
-                last_err = "Invalid archive path in manifest"
-                continue
-            path = extract_dir / name
-            if not path.is_file():
-                failed += 1
-                last_err = f"Missing file in archive: {name}"
-                continue
-            try:
-                if kind == "geotiff":
-                    fid = str(uuid7())
-                    title = ent.get("title") if isinstance(ent.get("title"), str) else None
-                    if not title:
-                        title = path.stem
-                    await create_raster_feature_from_source(
-                        db,
-                        collection_id=collection_id,
-                        source_path=path,
-                        feature_id=fid,
-                        title=title,
-                        is_dem=is_dem,
-                        dem_encoding=dem_enc,
-                        source_crs=crs_opt,
-                    )
-                    created += 1
-                elif kind == "zip":
-                    zpath = path
-                    members = zip_tiff_members(zpath)
-                    if not members:
-                        failed += 1
-                        last_err = f"ZIP has no GeoTIFFs: {name}"
-                        continue
-                    for member in members:
-                        _raise_if_raster_job_cancelled(job_id)
+            for ent in entries:
+                _raise_if_raster_job_cancelled(job_id)
+                kind = str(ent.get("kind") or "")
+                name = str(ent.get("name") or "")
+                if ".." in name or name.startswith("/"):
+                    failed += 1
+                    last_err = "Invalid archive path in manifest"
+                    continue
+                path = extract_dir / name
+                if not path.is_file():
+                    failed += 1
+                    last_err = f"Missing file in archive: {name}"
+                    continue
+                try:
+                    if kind == "geotiff":
                         fid = str(uuid7())
-                        title = Path(member).stem
-                        vsip = vsizip_member_path(zpath, member)
+                        title = ent.get("title") if isinstance(ent.get("title"), str) else None
+                        if not title:
+                            title = path.stem
                         await create_raster_feature_from_source(
                             db,
                             collection_id=collection_id,
-                            source_path=vsip,
+                            source_path=path,
                             feature_id=fid,
                             title=title,
                             is_dem=is_dem,
@@ -263,13 +258,38 @@ async def _process_raster_batch_async(
                             source_crs=crs_opt,
                         )
                         created += 1
-                else:
+                    elif kind == "zip":
+                        zpath = path
+                        members = zip_tiff_members(zpath)
+                        if not members:
+                            failed += 1
+                            last_err = f"ZIP has no GeoTIFFs: {name}"
+                            continue
+                        for member in members:
+                            _raise_if_raster_job_cancelled(job_id)
+                            fid = str(uuid7())
+                            title = Path(member).stem
+                            vsip = vsizip_member_path(zpath, member)
+                            await create_raster_feature_from_source(
+                                db,
+                                collection_id=collection_id,
+                                source_path=vsip,
+                                feature_id=fid,
+                                title=title,
+                                is_dem=is_dem,
+                                dem_encoding=dem_enc,
+                                source_crs=crs_opt,
+                            )
+                            created += 1
+                    else:
+                        failed += 1
+                        last_err = f"Unknown manifest entry kind: {kind}"
+                except Exception as e:
                     failed += 1
-                    last_err = f"Unknown manifest entry kind: {kind}"
-            except Exception as e:
-                failed += 1
-                last_err = str(e)[:500]
-            update_job(job_id, status="running", items_created=created, items_failed=failed)
+                    last_err = str(e)[:500]
+                update_job(job_id, status="running", items_created=created, items_failed=failed)
+    finally:
+        await engine.dispose()
 
     return created, failed, last_err
 
