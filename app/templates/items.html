@@ -476,6 +476,7 @@
     function overlayBeforeLayerId() {
       if (map.getLayer('results-fill')) return 'results-fill';
       if (map.getLayer('results-raster-fill')) return 'results-raster-fill';
+      if (map.getLayer('items-raster-mosaic')) return 'items-raster-mosaic';
       return undefined;
     }
     function addCollectionTilesLayer() {
@@ -501,8 +502,10 @@
       ['results-line', 'results-fill', 'results-circle', 'results-raster-line', 'results-raster-fill', 'results-raster-circle'].forEach(function(lid) {
         if (map.getLayer(lid)) map.removeLayer(lid);
       });
+      if (map.getLayer('items-raster-mosaic')) map.removeLayer('items-raster-mosaic');
       if (map.getSource('results-tiles')) map.removeSource('results-tiles');
       if (map.getSource('results-geojson')) map.removeSource('results-geojson');
+      if (map.getSource('items-raster-mosaic')) map.removeSource('items-raster-mosaic');
     }
     function footprintFeatureCollection() {
       return {
@@ -523,32 +526,47 @@
       removeResultsLayer();
       var s = GeofastmapUtils.specToPaint(defaultStyle && defaultStyle.style_spec);
       if (isRaster) {
-        var fc = footprintFeatureCollection();
-        map.addSource('results-geojson', { type: 'geojson', data: fc });
-        map.addLayer({
-          id: 'results-raster-fill',
-          type: 'fill',
-          source: 'results-geojson',
-          filter: ['match', ['geometry-type'], 'Polygon', true, 'MultiPolygon', true, false],
-          paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity != null ? Math.min(0.45, s.fillOpacity * 0.75) : 0.35 }
-        });
-        map.addLayer({
-          id: 'results-raster-line',
-          type: 'line',
-          source: 'results-geojson',
-          filter: ['match', ['geometry-type'], 'Polygon', true, 'MultiPolygon', true, 'LineString', true, 'MultiLineString', true, false],
-          paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth != null ? s.lineWidth : 2, 'line-opacity': s.lineOpacity != null ? s.lineOpacity : 1 }
-        });
-        map.addLayer({
-          id: 'results-raster-circle',
-          type: 'circle',
-          source: 'results-geojson',
-          filter: ['==', ['geometry-type'], 'Point'],
-          paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius != null ? s.pointRadius : 8, 'circle-opacity': s.pointOpacity != null ? s.pointOpacity : 0.9 }
-        });
-        if (!s.fillEnabled) map.setLayoutProperty('results-raster-fill', 'visibility', 'none');
-        if (!s.lineEnabled) map.setLayoutProperty('results-raster-line', 'visibility', 'none');
-        if (!s.pointEnabled) map.setLayoutProperty('results-raster-circle', 'visibility', 'none');
+        function addRasterFootprintsOnly() {
+          var fc = footprintFeatureCollection();
+          map.addSource('results-geojson', { type: 'geojson', data: fc });
+          map.addLayer({
+            id: 'results-raster-fill',
+            type: 'fill',
+            source: 'results-geojson',
+            filter: ['match', ['geometry-type'], 'Polygon', true, 'MultiPolygon', true, false],
+            paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity != null ? Math.min(0.45, s.fillOpacity * 0.75) : 0.35 }
+          });
+          map.addLayer({
+            id: 'results-raster-line',
+            type: 'line',
+            source: 'results-geojson',
+            filter: ['match', ['geometry-type'], 'Polygon', true, 'MultiPolygon', true, 'LineString', true, 'MultiLineString', true, false],
+            paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth != null ? s.lineWidth : 2, 'line-opacity': s.lineOpacity != null ? s.lineOpacity : 1 }
+          });
+          map.addLayer({
+            id: 'results-raster-circle',
+            type: 'circle',
+            source: 'results-geojson',
+            filter: ['==', ['geometry-type'], 'Point'],
+            paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius != null ? s.pointRadius : 8, 'circle-opacity': s.pointOpacity != null ? s.pointOpacity : 0.9 }
+          });
+          if (!s.fillEnabled) map.setLayoutProperty('results-raster-fill', 'visibility', 'none');
+          if (!s.lineEnabled) map.setLayoutProperty('results-raster-line', 'visibility', 'none');
+          if (!s.pointEnabled) map.setLayoutProperty('results-raster-circle', 'visibility', 'none');
+        }
+        fetch(apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) + '/rasters', { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(info) {
+            var rasterUrl = null;
+            if (info && info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
+            else if (info && info.items && info.items.length === 1 && info.items[0].tiles_url) rasterUrl = info.items[0].tiles_url;
+            if (rasterUrl) {
+              map.addSource('items-raster-mosaic', { type: 'raster', tiles: [rasterUrl], tileSize: 256, maxzoom: 18 });
+              map.addLayer({ id: 'items-raster-mosaic', type: 'raster', source: 'items-raster-mosaic', paint: { 'raster-opacity': 0.88 } });
+            }
+            addRasterFootprintsOnly();
+          })
+          .catch(function() { addRasterFootprintsOnly(); });
         return;
       }
       var tileUrl = getDynamicTileUrl();

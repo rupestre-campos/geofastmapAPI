@@ -157,6 +157,7 @@
     function overlayBeforeLayerIdItem() {
       if (map.getLayer('feature-fill')) return 'feature-fill';
       if (map.getLayer('feature-raster-fill')) return 'feature-raster-fill';
+      if (map.getLayer('item-raster-cog')) return 'item-raster-cog';
       return undefined;
     }
     function addCollectionTilesLayer() {
@@ -237,6 +238,9 @@
     function addOverlayLayers() {
       if (!featureGeojson) return;
       if (isRaster) {
+        var ru = apiBaseUrlItem() + '/collections/' + encodeURIComponent(collectionId) + '/rasters/tiles/WebMercatorQuad/{z}/{x}/{y}.png?mode=item&feature_id=' + encodeURIComponent(featureId);
+        map.addSource('item-raster-cog', { type: 'raster', tiles: [ru], tileSize: 256, maxzoom: 18 });
+        map.addLayer({ id: 'item-raster-cog', type: 'raster', source: 'item-raster-cog', paint: { 'raster-opacity': 0.92 } });
         addRasterFootprintLayers();
         return;
       }
@@ -289,7 +293,7 @@
           if (!err && img) { try { map.addImage('geofastmap-pin', img); } catch (e) {} }
         });
         function itemPopupLayerIds() {
-          return ['feature-fill', 'feature-line', 'feature-circle', 'feature-raster-fill', 'feature-raster-line', 'feature-raster-circle', 'tiles-fill', 'tiles-line', 'tiles-circle'].filter(function(id) { try { return map.getLayer(id); } catch (e) { return false; } });
+          return ['feature-fill', 'feature-line', 'feature-circle', 'feature-raster-fill', 'feature-raster-line', 'feature-raster-circle', 'item-raster-cog', 'tiles-fill', 'tiles-line', 'tiles-circle'].filter(function(id) { try { return map.getLayer(id); } catch (e) { return false; } });
         }
         GeofastmapInlineFeatureEdit.setPageOptions({
           map: map,

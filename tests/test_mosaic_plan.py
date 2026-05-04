@@ -279,6 +279,22 @@ def test_build_mosaicjson():
     assert mj["bounds"]
 
 
+def test_build_mosaicjson_two_neighbors_indexed():
+    """Adjacent COGs should both appear in at least one quadkey list covering the union."""
+    a = box(0, 0, 1, 1)
+    b = box(1, 0, 2, 1)
+    mj = build_mosaicjson_from_footprints(
+        [("https://example.com/a.tif", a), ("https://example.com/b.tif", b)],
+        minzoom=6,
+        maxzoom=18,
+    )
+    flat: list[str] = []
+    for lst in mj["tiles"].values():
+        flat.extend(lst)
+    assert "https://example.com/a.tif" in flat
+    assert "https://example.com/b.tif" in flat
+
+
 def test_can_access_raster_tiles_anonymous():
     assert can_access_raster_view_tiles_anonymous(visibility="public", allow_public_maps=False)
     assert can_access_raster_view_tiles_anonymous(visibility="private", allow_public_maps=True)

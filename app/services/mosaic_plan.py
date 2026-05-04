@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 import mercantile
-from shapely.geometry import Polygon, box, mapping, shape
+from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
 from shapely.validation import make_valid
@@ -813,8 +813,21 @@ def same_pass_date_strips_select(
     return _dedupe_candidates_by_key(selected), remaining, uncovered_frac
 
 
+def _footprint_for_mosaic_index(g: Polygon | MultiPolygon) -> Polygon | MultiPolygon:
+    """Slightly inflate footprints so quadkey intersection catches neighbors sharing an edge (FP fuzz)."""
+    try:
+        gg = make_valid(g) if not g.is_valid else g
+        # ~10 cm … few m in mid-lat — avoids dropping adjacent COGs from tile indices
+        buf = gg.buffer(1e-6)
+        if buf.is_empty:
+            return gg
+        return buf
+    except Exception:
+        return g
+
+
 def build_mosaicjson_from_footprints(
-    items: list[tuple[str, Polygon]],
+    items: list[tuple[str, Polygon | MultiPolygon]],
     *,
     minzoom: int = 6,
     maxzoom: int = 18,
@@ -823,10 +836,11 @@ def build_mosaicjson_from_footprints(
     if not items:
         raise ValueError("No raster assets for mosaic")
     urls = [x[0] for x in items]
-    geoms = [x[1] for x in items]
+    geoms = [_footprint_for_mosaic_index(x[1]) for x in items]
     union = unary_union(geoms)
     west, south, east, north = union.bounds
-    quadkey_zoom = min(14, max(minzoom, 7))
+    # Finer index than z=7 helps Titiler pick the right COGs near footprint boundaries (neighbors).
+    quadkey_zoom = min(14, max(minzoom, 9))
     tiles: dict[str, list[str]] = {}
     for tile in mercantile.tiles(west, south, east, north, [quadkey_zoom]):
         qk = mercantile.quadkey(tile)
