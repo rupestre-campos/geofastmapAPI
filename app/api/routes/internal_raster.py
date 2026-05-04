@@ -165,15 +165,20 @@ async def internal_fetch_collection_mosaic_json(
         props = feature.properties or {}
         raster = props.get("raster") if isinstance(props, dict) else None
         cog_path = raster.get("cog_path") if isinstance(raster, dict) else None
+        # Prefer canonical storage path so MosaicJSON matches Titiler's volume layout. DB cog_path
+        # may point at an API-only absolute path that exists on the API host but not inside Titiler.
         det = cog_path_for(settings.raster_storage_path, collection_id, fid)
         href: str | None = None
-        if isinstance(cog_path, str) and cog_path and Path(cog_path).exists():
-            href = cog_path
-        elif det.exists():
+        if det.exists():
             href = os.fspath(det)
+        elif isinstance(cog_path, str) and cog_path and Path(cog_path).exists():
+            href = cog_path
         if not href:
             continue
-        pairs.append((href, shape(gj)))
+        try:
+            pairs.append((href, shape(gj)))
+        except Exception:
+            continue
     if not pairs:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     mosaic = build_mosaicjson_from_footprints(pairs)

@@ -419,9 +419,11 @@ async def get_raster_collection_tile(
         if mv:
             params.append(("mv", mv))
     request_keys = frozenset(request.query_params.keys())
+    # Avoid forwarding duplicate keys Titiler may reject (mv is set above for mosaic).
     for k, v in request.query_params.multi_items():
-        if k not in ("mode", "feature_id", "style_id", "dem_encoding"):
-            params.append((k, v))
+        if k in ("mode", "feature_id", "style_id", "dem_encoding", "mv"):
+            continue
+        params.append((k, v))
     style = None
     if style_id:
         style = await raster_styles_crud.get_raster_style(db, collection_id, style_id)
