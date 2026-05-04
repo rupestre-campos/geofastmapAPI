@@ -7,8 +7,9 @@ Verification when a second COG does not appear on the map:
 2. Request ``GET {raster_internal_fetch_base_url}/internal/collections/{collection_id}/rasters/mosaic.json?token=...``
    using the same secret Titiler uses.
 3. Flatten every URL string in the JSON ``tiles`` object (each key is a quadkey).
-   Expect one distinct asset URL per raster item (HTTP
-   ``.../coverages/{feature_id}/cog?token=...`` when HTTP mode is enabled).
+   Expect one distinct asset path or URL per raster item (filesystem paths by default when COGs
+   exist under ``raster_storage_path``; HTTP internal COG URLs only when
+   ``RASTER_MOSAIC_ASSET_HREFS_HTTP=true``).
 4. If only one URL appears, check API logs for ``raster mosaic skip`` warnings
    (missing file or footprint on disk).
 """
@@ -52,7 +53,13 @@ def resolve_mosaic_asset_href(
 ) -> str | None:
     """
     Return the ``href`` for one MosaicJSON asset, or None if no COG file is available
-    on the API host (Titiler will fetch this URL or path).
+    on the API host.
+
+    By default uses **filesystem paths** (same as single-item Titiler tiles): Titiler opens COGs
+    from ``raster_storage_path`` when that volume is mounted identically in the Titiler container.
+
+    Set ``raster_mosaic_asset_hrefs_http`` (env ``RASTER_MOSAIC_ASSET_HREFS_HTTP``) to use HTTP
+    internal COG URLs instead (only when Titiler cannot share disk with the API).
     """
     viable = False
     if deterministic_path.exists():
@@ -62,7 +69,8 @@ def resolve_mosaic_asset_href(
     if not viable:
         return None
     http_u = internal_cog_http_url(settings, collection_id, feature_id)
-    if http_u:
+    use_http = bool(getattr(settings, "raster_mosaic_asset_hrefs_http", False) and http_u)
+    if use_http:
         return http_u
     if deterministic_path.exists():
         return os.fspath(deterministic_path)

@@ -73,6 +73,8 @@ TITILER_TILE_CACHE_TTL_SECONDS=3600
 TITILER_MOSAIC_TILE_CACHE_TTL_SECONDS=86400
 RASTER_INTERNAL_FETCH_BASE_URL=http://YOUR_API_HOST:8000
 TITILER_INTERNAL_SECRET=change-me-titiler-secret
+# MosaicJSON COG hrefs: false = file paths under RASTER_STORAGE_PATH (Titiler must mount same path). true = HTTP internal COG URLs (GDAL vsicurl + ?token= can fail).
+RASTER_MOSAIC_ASSET_HREFS_HTTP=false
 TITILER_HTTP_READ_TIMEOUT_SECONDS=600
 # Per API worker: max parallel httpx calls to Titiler (0 = unlimited). Waiters are LIFO when saturated.
 TITILER_UPSTREAM_MAX_CONCURRENT=8

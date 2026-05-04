@@ -27,13 +27,33 @@ def test_internal_cog_http_url_requires_secret_and_base():
     assert internal_cog_http_url(SimpleNamespace(titiler_internal_secret="a", raster_internal_fetch_base_url=""), "c", "f") is None
 
 
-def test_resolve_mosaic_asset_href_uses_http_when_configured(tmp_path: Path):
+def test_resolve_mosaic_asset_href_prefers_filesystem_when_http_flag_off(tmp_path: Path):
     det = tmp_path / "c" / "f" / "x.tif"
     det.parent.mkdir(parents=True, exist_ok=True)
     det.write_bytes(b"fake")
     settings = SimpleNamespace(
         titiler_internal_secret="t",
         raster_internal_fetch_base_url="http://api:8000",
+        raster_mosaic_asset_hrefs_http=False,
+    )
+    href = resolve_mosaic_asset_href(
+        settings,
+        "coll-1",
+        "feat-9",
+        deterministic_path=det,
+        db_cog_path=None,
+    )
+    assert href == str(det)
+
+
+def test_resolve_mosaic_asset_href_uses_http_when_flag_on(tmp_path: Path):
+    det = tmp_path / "c" / "f" / "x.tif"
+    det.parent.mkdir(parents=True, exist_ok=True)
+    det.write_bytes(b"fake")
+    settings = SimpleNamespace(
+        titiler_internal_secret="t",
+        raster_internal_fetch_base_url="http://api:8000",
+        raster_mosaic_asset_hrefs_http=True,
     )
     href = resolve_mosaic_asset_href(
         settings,

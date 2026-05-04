@@ -21,6 +21,7 @@ from app.services.titiler_cancel import ClientDisconnected, raise_if_disconnecte
 from app.services.titiler_gate import titiler_upstream_gate_run
 from app.services.titiler_http import get_titiler_http_client
 from app.services.titiler_inflight import await_tile_singleflight
+from app.services.titiler_error_sanitize import sanitize_titiler_upstream_error_text
 from app.services.titiler_tile_cache import (
     cache_key_for_titiler_request,
     get_cached_tile,
@@ -157,7 +158,11 @@ async def titiler_proxy_tile(
         if r.status_code >= 400:
             raise HTTPException(
                 status_code=r.status_code,
-                detail=r.text[:2000] if r.text else "Titiler error",
+                detail=sanitize_titiler_upstream_error_text(
+                    r.text,
+                    shared_secret=settings.titiler_internal_secret,
+                    max_len=2000,
+                ),
                 headers={
                     "X-Titiler-Upstream-Ms": ms_header,
                     "X-Titiler-Upstream-Attempts": att_header,

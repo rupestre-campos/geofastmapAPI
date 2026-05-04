@@ -26,6 +26,7 @@ from app.services.stac_item_client import (
     get_thumbnail_href,
     list_tile_assets,
 )
+from app.services.titiler_error_sanitize import sanitize_titiler_upstream_error_text
 from app.services.titiler_cancel import ClientDisconnected, raise_if_disconnected, titiler_get_cancel_on_disconnect
 from app.services.titiler_gate import titiler_upstream_gate_run
 from app.services.titiler_http import get_titiler_http_client
@@ -326,7 +327,11 @@ async def stac_item_titiler_tile(
         if r.status_code >= 400:
             raise HTTPException(
                 status_code=r.status_code,
-                detail=r.text[:2000] if r.text else "Titiler error",
+                detail=sanitize_titiler_upstream_error_text(
+                    r.text,
+                    shared_secret=settings.titiler_internal_secret,
+                    max_len=2000,
+                ),
                 headers={
                     "X-Titiler-Upstream-Ms": ms_header,
                     "X-Titiler-Upstream-Attempts": att_header,

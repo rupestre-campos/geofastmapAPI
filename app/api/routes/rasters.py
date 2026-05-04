@@ -27,6 +27,7 @@ from app.services.collection_type_guard import ensure_raster_collection
 from app.services.job_store import create_job, update_job
 from app.services.mosaic_plan import build_mosaicjson_from_footprints
 from app.services.raster_collection_mosaic import collect_raster_collection_mosaic_pairs
+from app.services.titiler_error_sanitize import sanitize_titiler_upstream_error_text
 from app.services.raster_batch import (
     RasterBatchUploadTooLargeError,
     write_raster_batch_archive,
@@ -494,7 +495,14 @@ async def get_raster_collection_tile(
             feature_id,
             (resp.text or "")[:1000],
         )
-        raise HTTPException(status_code=resp.status_code, detail=resp.text[:1000] or "Titiler error")
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=sanitize_titiler_upstream_error_text(
+                resp.text,
+                shared_secret=secret,
+                max_len=1000,
+            ),
+        )
     return Response(content=resp.content, media_type=resp.headers.get("content-type", "image/png"))
 
 
