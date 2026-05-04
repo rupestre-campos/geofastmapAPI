@@ -309,6 +309,13 @@
     addOrRefreshRaster();
   }
 
+  /** Update mosaic cache-bust id after new raster items are imported (must match GET /rasters mosaic_version_id). */
+  function setMosaicVersionId(mv) {
+    if (!_cfg) return;
+    _cfg.mosaicVersionId = mv != null && mv !== undefined ? String(mv) : '';
+    maybeRefresh();
+  }
+
   function bandTokenCf() {
     var r = el('stac-cf-band-r');
     var g = el('stac-cf-band-g');
@@ -700,6 +707,7 @@
     },
     applySpec: applySpec,
     refreshLayer: maybeRefresh,
+    setMosaicVersionId: setMosaicVersionId,
   };
   global.__geofastExportRasterStyleSpec = function () {
     return { style_spec: exportRasterStyleSpec() };

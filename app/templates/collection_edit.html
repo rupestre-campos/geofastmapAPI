@@ -529,36 +529,7 @@
         applyBasemapFromSelect();
         sel.onchange = function() { try { localStorage.setItem('geofastmap-basemap', this.value); } catch(e) {} applyBasemapFromSelect(); };
         if (collectionType === 'raster') {
-          fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters', { headers: { 'Accept': 'application/json' } })
-            .then(function(r) { return r.ok ? r.json() : null; })
-            .then(function(info) {
-              if (!info) return;
-              var rasterUrl = null;
-              if (info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
-              else if (info.items && info.items.length === 1 && info.items[0].tiles_url) rasterUrl = info.items[0].tiles_url;
-              if (!rasterUrl) return;
-              if (!map.getSource('collection-raster-underlay')) {
-                map.addSource('collection-raster-underlay', { type: 'raster', tiles: [rasterUrl], tileSize: 256, maxzoom: 18 });
-                map.addLayer({ id: 'collection-raster-underlay', type: 'raster', source: 'collection-raster-underlay', paint: { 'raster-opacity': 0.9 } });
-              }
-            })
-            .catch(function() {});
-          if (typeof GeofastmapRasterStyleEditor !== 'undefined') {
-            GeofastmapRasterStyleEditor.init({
-              map: map,
-              base: base,
-              collectionId: collectionId,
-              mosaicVersionId: rasterMosaicVersionId,
-              titilerConfigured: titilerConfiguredFlag,
-              tileAssetsLen: rasterTileAssetsLen,
-              bandCounts: rasterBandCounts,
-              sourceId: 'collection-raster-underlay',
-              layerId: 'collection-raster-underlay'
-            });
-            if (defaultRasterStyle && defaultRasterStyle.style_spec && typeof GeofastmapRasterStyleEditor.applySpec === 'function') {
-              try { GeofastmapRasterStyleEditor.applySpec(defaultRasterStyle.style_spec); } catch (eRS) {}
-            }
-            (function wireRasterStyleLoadSave() {
+          function wireRasterStyleLoadSave() {
               var styleListCacheRaster = { '': null };
               function safeJsonResponse(r) {
                 if (!r) return Promise.reject({ detail: 'Request failed' });
@@ -838,8 +809,48 @@
                   updateRasterLoadTrigger();
                 }
               }).catch(function() {});
-            })();
           }
+
+          fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters', { headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(info) {
+              if (!info) return;
+              var rasterUrl = null;
+              if (info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
+              else if (info.items && info.items.length === 1 && info.items[0].tiles_url) rasterUrl = info.items[0].tiles_url;
+              if (!rasterUrl) return;
+              var liveMv = info.mosaic_version_id || '';
+              if (!map.getSource('collection-raster-underlay')) {
+                map.addSource('collection-raster-underlay', { type: 'raster', tiles: [rasterUrl], tileSize: 256, maxzoom: 18 });
+                map.addLayer({ id: 'collection-raster-underlay', type: 'raster', source: 'collection-raster-underlay', paint: { 'raster-opacity': 0.9 } });
+              } else {
+                try { map.getSource('collection-raster-underlay').setTiles([rasterUrl]); } catch (eT) {}
+              }
+              if (typeof GeofastmapRasterStyleEditor !== 'undefined') {
+                if (!window.__geofastRasterStyleEditorReady) {
+                  window.__geofastRasterStyleEditorReady = true;
+                  GeofastmapRasterStyleEditor.init({
+                    map: map,
+                    base: base,
+                    collectionId: collectionId,
+                    mosaicVersionId: liveMv,
+                    titilerConfigured: titilerConfiguredFlag,
+                    tileAssetsLen: rasterTileAssetsLen,
+                    bandCounts: rasterBandCounts,
+                    sourceId: 'collection-raster-underlay',
+                    layerId: 'collection-raster-underlay'
+                  });
+                  if (defaultRasterStyle && defaultRasterStyle.style_spec && typeof GeofastmapRasterStyleEditor.applySpec === 'function') {
+                    try { GeofastmapRasterStyleEditor.applySpec(defaultRasterStyle.style_spec); } catch (eRS) {}
+                  }
+                  wireRasterStyleLoadSave();
+                } else {
+                  if (typeof GeofastmapRasterStyleEditor.setMosaicVersionId === 'function') GeofastmapRasterStyleEditor.setMosaicVersionId(liveMv);
+                  try { map.getSource('collection-raster-underlay').setTiles([rasterUrl]); } catch (e2) {}
+                }
+              }
+            })
+            .catch(function() {});
         }
         if (tileUrlStatic) {
         var tileSpec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
