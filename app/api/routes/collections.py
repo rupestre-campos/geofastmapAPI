@@ -17,6 +17,7 @@ from app.utils.geo import mvt_layer_name
 from app.crud import collections as collections_crud
 from app.services.raster_style_edit_context import get_raster_style_edit_context
 from app.crud import resource_share as resource_share_crud
+from app.crud import raster_styles as raster_styles_crud
 from app.crud import styles as styles_crud
 from app.core.html import html_response, wants_html
 from app.db.session import get_db
@@ -238,6 +239,11 @@ async def get_collection_edit_form(
     shares = await resource_share_crud.list_shares(db, RESOURCE_TYPE_COLLECTION, collection_id)
     is_raster = getattr(collection, "collection_type", "vector") == "raster"
     raster_ctx = await get_raster_style_edit_context(db, collection_id) if is_raster else None
+    default_raster_style = None
+    if is_raster:
+        dr = await raster_styles_crud.get_default_raster_style(db, collection_id)
+        if dr:
+            default_raster_style = {"id": dr.id, "title": dr.title, "style_spec": dr.style_spec}
     return html_response(
         "collection_edit.html",
         base=base,
@@ -274,6 +280,7 @@ async def get_collection_edit_form(
         titiler_configured=raster_ctx["titiler_configured"] if raster_ctx else False,
         public_raster_styles_url=f"{base}/raster-styles",
         collection_raster_styles_url=f"{base}/collections/{collection_id}/raster-styles",
+        default_raster_style=default_raster_style,
     )
 
 

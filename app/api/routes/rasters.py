@@ -425,11 +425,16 @@ async def get_raster_collection_tile(
         style = await raster_styles_crud.get_raster_style(db, collection_id, style_id)
         if style is None:
             style = await raster_styles_crud.get_public_raster_style(db, style_id)
-    elif mode == "mosaic":
+    else:
+        # Mosaic always had default; item (single-feature collections) did not — tiles stayed raw RGB.
         style = await raster_styles_crud.get_default_raster_style(db, collection_id)
     if style and isinstance(style.style_spec, dict):
         spec = style.style_spec
+        # Query params from the style editor / clients win over preset keys to avoid duplicate Titiler args.
+        request_keys = frozenset(request.query_params.keys())
         for key in ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula"):
+            if key in request_keys:
+                continue
             value = spec.get(key)
             if value is None:
                 continue

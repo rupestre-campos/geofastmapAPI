@@ -412,6 +412,7 @@
     const publicRasterStylesUrl = {{ public_raster_styles_url | default(base + '/raster-styles') | tojson }};
     const collectionRasterStylesUrl = {{ collection_raster_styles_url | default(base + '/collections/' + collection_id + '/raster-styles') | tojson }};
     const rasterBandCounts = {{ raster_band_counts | default({}) | tojson }};
+    const defaultRasterStyle = {{ default_raster_style | tojson if default_raster_style else 'null' }};
 
     function bboxToPolygonFeature(bbox) {
       if (!bbox || bbox.length < 4) return null;
@@ -554,6 +555,9 @@
               sourceId: 'collection-raster-underlay',
               layerId: 'collection-raster-underlay'
             });
+            if (defaultRasterStyle && defaultRasterStyle.style_spec && typeof GeofastmapRasterStyleEditor.applySpec === 'function') {
+              try { GeofastmapRasterStyleEditor.applySpec(defaultRasterStyle.style_spec); } catch (eRS) {}
+            }
             (function wireRasterStyleLoadSave() {
               var styleListCacheRaster = { '': null };
               function safeJsonResponse(r) {
