@@ -109,7 +109,6 @@ async def list_items(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
-    ensure_vector_collection(collection)
     if not await can_see_collection(db, collection, current_user):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -157,8 +156,10 @@ async def list_items(
     props_include_set: set[str] | None = None
     if properties_include:
         props_include_set = {p.strip() for p in properties_include.split(",") if p.strip()}
-    # HTML view: skip full geometry (bbox only) and skip COUNT query when no filters — faster load, fewer DB round-trips
-    include_geometry = not wants_html(request)
+    # HTML view: skip full geometry for vector (bbox only); raster needs footprints on the map.
+    collection_type = getattr(collection, "collection_type", "vector") or "vector"
+    is_raster = collection_type == "raster"
+    include_geometry = (wants_html(request) and is_raster) or (not wants_html(request))
     skip_count = wants_html(request)
     features, number_matched = await features_crud.list_features_paginated(
         db,
@@ -308,6 +309,7 @@ async def list_items(
             has_static_tiles=has_static_tiles,
             tile_layer_id=mvt_layer_name(collection_id),
             google_maps_api_key=get_settings().google_maps_api_key or "",
+            collection_type=collection_type,
         )
     fc = FeatureCollection(
         features=read_list,
@@ -824,6 +826,7 @@ async def get_item(
         rec = await tiles_crud.get_collection_tiles(db, collection_id)
         has_static_tiles = bool(rec and rec.pmtiles_path and PathLib(rec.pmtiles_path).exists())
         can_edit = await can_edit_collection(db, collection, current_user)
+        collection_type_item = getattr(collection, "collection_type", "vector") or "vector"
         return html_response(
             "item.html",
             base=base,
@@ -838,6 +841,7 @@ async def get_item(
             has_static_tiles=has_static_tiles,
             tile_layer_id=mvt_layer_name(collection_id),
             google_maps_api_key=get_settings().google_maps_api_key or "",
+            collection_type=collection_type_item,
         )
     return GeoJSONResponse(content=feat_geojson.model_dump(mode="json"))
 

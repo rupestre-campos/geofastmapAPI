@@ -1,8 +1,66 @@
 import asyncio
 import json
-from unittest.mock import patch
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from app.models.collection import COLLECTION_TYPE_RASTER, VISIBILITY_PUBLIC, Collection
+from app.models.feature import Feature
+from app.utils.geo import geojson_to_wkt_element
+from tests.fake_db import FakeCollectionTilesCrud
+
+
+@pytest.mark.asyncio
+async def test_raster_collection_items_list_ok(client, store):
+    """Raster collections can list items (GeoJSON + HTML) without vector-only guard."""
+    now = datetime.now(timezone.utc)
+    cid = "raster_items_test_c"
+    store.collections[cid] = Collection(
+        id=cid,
+        title="Raster C",
+        description=None,
+        extent={"bbox": [[0.0, 0.0, 1.0, 1.0]], "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"},
+        stac_source=None,
+        raster_settings=None,
+        feature_count=1,
+        owner_id=None,
+        visibility=VISIBILITY_PUBLIC,
+        viewer_can_edit=False,
+        collection_type=COLLECTION_TYPE_RASTER,
+        created_at=now,
+        updated_at=now,
+    )
+    fid = "raster-feat-1"
+    store.features[(cid, fid)] = Feature(
+        id=fid,
+        collection_id=cid,
+        part_index=0,
+        geometry=geojson_to_wkt_element(
+            {"type": "Polygon", "coordinates": [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]]}
+        ),
+        properties={"raster": {"meta": {"bounds": [0.0, 0.0, 1.0, 1.0]}}},
+        created_at=now,
+        updated_at=now,
+    )
+
+    fake_tiles = FakeCollectionTilesCrud()
+    with patch("app.api.routes.items.styles_crud") as mock_styles, patch(
+        "app.api.routes.items.tiles_crud", fake_tiles
+    ):
+        mock_styles.get_default_style = AsyncMock(return_value=None)
+        resp = await client.get(f"/collections/{cid}/items", headers={"Accept": "application/geo+json"})
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert "vector collections" not in body.lower()
+        data = resp.json()
+        assert data.get("type") == "FeatureCollection"
+        assert len(data.get("features", [])) == 1
+
+        resp_html = await client.get(f"/collections/{cid}/items", params={"f": "html"})
+        assert resp_html.status_code == 200, resp_html.text
+        assert "vector collections" not in resp_html.text.lower()
+        assert "results-geojson" in resp_html.text or "isRaster" in resp_html.text
 
 
 @pytest.mark.asyncio

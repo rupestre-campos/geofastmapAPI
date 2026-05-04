@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Tuple
 from uuid import uuid4
 
-from app.models.collection import Collection
+from app.models.collection import VISIBILITY_PRIVATE, Collection
 from app.models.feature import Feature
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
 from app.schemas.feature import FeatureCreate, FeaturePatch, FeatureReplace
@@ -203,8 +203,13 @@ class FakeCollectionsCrud:
             title=data.title,
             description=data.description,
             extent=data.extent.model_dump() if data.extent else None,
+            stac_source=data.stac_source,
+            raster_settings=data.raster_settings,
             created_at=now,
             updated_at=now,
+            visibility=VISIBILITY_PRIVATE,
+            viewer_can_edit=False,
+            collection_type=data.collection_type or "vector",
         )
         self._store.collections[data.id] = collection
         return collection
@@ -286,6 +291,9 @@ class FakeFeaturesCrud:
         structured_filters: Sequence[PropertyFilter] | None = None,
         fulltext_q: str | None = None,
         collection_feature_count: int | None = None,
+        include_geometry: bool = True,
+        skip_count: bool = False,
+        **_: Any,
     ) -> Tuple[Sequence[Feature], int]:
         items = [
             f for (cid, _), f in self._store.features.items()
@@ -307,7 +315,13 @@ class FakeFeaturesCrud:
             items = [f for f in items if (f.created_at or datetime.min.replace(tzinfo=timezone.utc)) >= datetime_start]
         if datetime_end is not None:
             items = [f for f in items if (f.created_at or datetime.max.replace(tzinfo=timezone.utc)) <= datetime_end]
-        total = len(items)
+        has_filters = bool(
+            bbox or property_filters or structured_filters or fulltext_q or datetime_start or datetime_end
+        )
+        if skip_count and not has_filters and collection_feature_count is not None:
+            total = int(collection_feature_count)
+        else:
+            total = len(items)
         items.sort(key=lambda f: self._sort_key(f, sortby, sortdesc), reverse=sortdesc)
         page = items[offset : offset + limit]
         return (page, total)

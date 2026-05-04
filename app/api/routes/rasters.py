@@ -431,9 +431,16 @@ async def get_raster_collection_tile(
         # Mosaic always had default; item (single-feature collections) did not — tiles stayed raw RGB.
         style = await raster_styles_crud.get_default_raster_style(db, collection_id)
     style_spec: dict = (style.style_spec if style and isinstance(style.style_spec, dict) else {}) or {}
+    # Mosaic composites multiple COGs; per-dataset style keys (bidx, rescale, etc.) are for one reader only.
+    # Applying the collection default to the whole mosaic breaks tiles once a second image has a different band layout.
+    mosaic_style_keys_skip = frozenset(
+        ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula")
+    )
     if style_spec:
         # Query params from the style editor / clients win over preset keys to avoid duplicate Titiler args.
         for key in ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula"):
+            if mode == "mosaic" and key in mosaic_style_keys_skip:
+                continue
             if key in request_keys:
                 continue
             value = style_spec.get(key)

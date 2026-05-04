@@ -24,6 +24,7 @@
   </style>
 {% endblock %}
 {% block content %}
+  {% set ct = collection_type|default('vector') %}
   <header class="page-header">
     <h1>Feature <code>{{ feature.id }}</code></h1>
     <p class="breadcrumb"><a href="{{ base }}/collections?f=html">Collections</a> › <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> › <a href="{{ base }}/collections/{{ collection_id }}/items?f=html">Items</a> › {{ feature.id }}</p>
@@ -39,7 +40,9 @@
         {% endif %}
         {% if username %}
         <a href="{{ base }}/processes?f=html&amp;mode=feature&amp;feature_collection_id={{ collection_id | urlencode }}&amp;feature_id={{ feature.id | urlencode }}" class="btn">Process feature (intersection / erase)</a>
+        {% if ct != 'raster' %}
         <button type="button" class="btn" id="btn-add-to-map">Add to map</button>
+        {% endif %}
         {% endif %}
       </div>
     </div>
@@ -51,7 +54,7 @@
       <div class="map-controls">
         {% include '_basemap_selector.html' %}
         <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
-        {% if has_static_tiles %}
+        {% if has_static_tiles and ct != 'raster' %}
         <label><input type="checkbox" id="show-collection-tiles" title="Show full layer (static tiles)"> Show collection tiles</label>
         {% endif %}
       </div>
@@ -61,6 +64,12 @@
   <div class="card">
     <h2 class="card-title">Properties</h2>
     <p class="meta">Item attributes.</p>
+    {% if ct == 'raster' %}
+    <div class="form-row" style="margin-bottom: 10px;">
+      <label for="props-filter">Filter</label>
+      <input type="search" id="props-filter" placeholder="Narrow rows by key or value…" style="max-width: 28rem; width: 100%;">
+    </div>
+    {% endif %}
     <table class="props-view-table">
       <thead>
         <tr><th>Property</th><th>Value</th></tr>
@@ -70,6 +79,7 @@
     </table>
   </div>
 
+  {% if ct != 'raster' %}
   <div id="add-to-map-modal" class="modal" role="dialog" aria-hidden="true">
     <div class="modal-backdrop" id="add-to-map-backdrop"></div>
     <div class="modal-content">
@@ -101,6 +111,7 @@
       </div>
     </div>
   </div>
+  {% endif %}
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
@@ -112,6 +123,8 @@
     const tileLayerId = {{ tile_layer_id | tojson }};
     const featureId = {{ feature.id | tojson }};
     const featureGeojson = {{ feature_geojson | tojson }};
+    const collectionType = {{ (collection_type or 'vector') | tojson }};
+    const isRaster = collectionType === 'raster';
     (function() {
       var p = featureGeojson.properties || {};
       featureGeojson.properties = {};
@@ -141,12 +154,17 @@
       var rootPath = i >= 0 ? path.substring(0, i) : '';
       return window.location.origin + rootPath;
     }
+    function overlayBeforeLayerIdItem() {
+      if (map.getLayer('feature-fill')) return 'feature-fill';
+      if (map.getLayer('feature-raster-fill')) return 'feature-raster-fill';
+      return undefined;
+    }
     function addCollectionTilesLayer() {
       if (!hasStaticTiles || map.getSource('tiles-collection')) return;
       var tileUrl = apiBaseUrlItem() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf';
       map.addSource('tiles-collection', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
       var s = GeofastmapUtils.specToPaint(defaultStyle && defaultStyle.style_spec);
-      var beforeId = map.getLayer('feature-fill') ? 'feature-fill' : undefined;
+      var beforeId = overlayBeforeLayerIdItem();
       map.addLayer({ id: 'tiles-fill', type: 'fill', source: 'tiles-collection', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } }, beforeId);
       map.addLayer({ id: 'tiles-line', type: 'line', source: 'tiles-collection', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity } }, beforeId);
       map.addLayer({ id: 'tiles-circle', type: 'circle', source: 'tiles-collection', 'source-layer': tileLayerId, filter: pointFilter, paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity } }, beforeId);
@@ -172,8 +190,57 @@
       if (!s.lineEnabled) map.setLayoutProperty('feature-line', 'visibility', 'none');
       if (!s.pointEnabled) map.setLayoutProperty('feature-circle', 'visibility', 'none');
     }
+    function rasterItemFootprintGeometry() {
+      var g = featureGeojson && featureGeojson.geometry;
+      if (g) return g;
+      try {
+        var b = featureGeojson.properties && featureGeojson.properties.raster && featureGeojson.properties.raster.meta && featureGeojson.properties.raster.meta.bounds;
+        if (b && b.length >= 4) {
+          return { type: 'Polygon', coordinates: [[[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]], [b[0], b[1]]]] };
+        }
+      } catch (e) {}
+      return null;
+    }
+    function addRasterFootprintLayers() {
+      var geom = rasterItemFootprintGeometry();
+      if (!geom || map.getSource('feature-footprint')) return;
+      var oneFeat = { type: 'Feature', geometry: geom, properties: featureGeojson.properties || {} };
+      map.addSource('feature-footprint', { type: 'geojson', data: { type: 'FeatureCollection', features: [oneFeat] } });
+      var s = GeofastmapUtils.specToPaint(defaultStyle && defaultStyle.style_spec);
+      map.addLayer({
+        id: 'feature-raster-fill',
+        type: 'fill',
+        source: 'feature-footprint',
+        filter: ['match', ['geometry-type'], 'Polygon', true, 'MultiPolygon', true, false],
+        paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity != null ? Math.min(0.5, s.fillOpacity * 0.7) : 0.35 }
+      });
+      map.addLayer({
+        id: 'feature-raster-line',
+        type: 'line',
+        source: 'feature-footprint',
+        filter: ['match', ['geometry-type'], 'Polygon', true, 'MultiPolygon', true, 'LineString', true, 'MultiLineString', true, false],
+        paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth != null ? s.lineWidth : 2, 'line-opacity': s.lineOpacity != null ? s.lineOpacity : 1 }
+      });
+      map.addLayer({
+        id: 'feature-raster-circle',
+        type: 'circle',
+        source: 'feature-footprint',
+        filter: ['==', ['geometry-type'], 'Point'],
+        paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius != null ? s.pointRadius : 8, 'circle-opacity': s.pointOpacity != null ? s.pointOpacity : 0.9 }
+      });
+      if (!s.fillEnabled) map.setLayoutProperty('feature-raster-fill', 'visibility', 'none');
+      if (!s.lineEnabled) map.setLayoutProperty('feature-raster-line', 'visibility', 'none');
+      if (!s.pointEnabled) map.setLayoutProperty('feature-raster-circle', 'visibility', 'none');
+      var bbox = bboxFromGeom(geom);
+      if (bbox) map.fitBounds(bbox, { padding: 60 });
+    }
     function addOverlayLayers() {
-      if (featureGeojson && featureGeojson.geometry) {
+      if (!featureGeojson) return;
+      if (isRaster) {
+        addRasterFootprintLayers();
+        return;
+      }
+      if (featureGeojson.geometry) {
         addFeatureTileLayer();
         var bbox = bboxFromGeom(featureGeojson.geometry);
         if (bbox) map.fitBounds(bbox, { padding: 60 });
@@ -185,7 +252,7 @@
       var v = sel.value;
       var cfg = BASEMAPS[v];
       if (!cfg) return;
-      GeofastmapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: map.getLayer('feature-fill') ? 'feature-fill' : undefined });
+      GeofastmapUtils.applyBasemapToMap(map, cfg, { beforeLayerId: overlayBeforeLayerIdItem() });
     }
 
     function initMapItem() {
@@ -222,7 +289,7 @@
           if (!err && img) { try { map.addImage('geofastmap-pin', img); } catch (e) {} }
         });
         function itemPopupLayerIds() {
-          return ['feature-fill', 'feature-line', 'feature-circle', 'tiles-fill', 'tiles-line', 'tiles-circle'].filter(function(id) { try { return map.getLayer(id); } catch (e) { return false; } });
+          return ['feature-fill', 'feature-line', 'feature-circle', 'feature-raster-fill', 'feature-raster-line', 'feature-raster-circle', 'tiles-fill', 'tiles-line', 'tiles-circle'].filter(function(id) { try { return map.getLayer(id); } catch (e) { return false; } });
         }
         GeofastmapInlineFeatureEdit.setPageOptions({
           map: map,
@@ -230,7 +297,7 @@
           getHideLayerIds: function() { return itemPopupLayerIds(); },
           getDefaultStyleSpecForCollection: function() { return (defaultStyle && defaultStyle.style_spec) ? defaultStyle.style_spec : {}; }
         });
-        if (map.getLayer('feature-fill') || map.getLayer('feature-line') || map.getLayer('feature-circle')) {
+        if (map.getLayer('feature-fill') || map.getLayer('feature-line') || map.getLayer('feature-circle') || map.getLayer('feature-raster-fill') || map.getLayer('feature-raster-line') || map.getLayer('feature-raster-circle')) {
           var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
           map.getCanvas().style.cursor = '';
           var hoverIds = itemPopupLayerIds();
@@ -267,8 +334,21 @@
       tr.innerHTML = '<td class="prop-key">' + k.replace(/</g, '&lt;') + '</td><td class="prop-value">' + valStr.replace(/</g, '&lt;') + '</td>';
       tbody.appendChild(tr);
     });
+    (function() {
+      var inp = document.getElementById('props-filter');
+      if (!inp) return;
+      function apply() {
+        var q = (inp.value || '').trim().toLowerCase();
+        document.querySelectorAll('#props-tbody tr').forEach(function(tr) {
+          var t = (tr.textContent || '').toLowerCase();
+          tr.style.display = (!q || t.indexOf(q) !== -1) ? '' : 'none';
+        });
+      }
+      inp.addEventListener('input', apply);
+    })();
 
     (function() {
+      if (isRaster) return;
       var addModal = document.getElementById('add-to-map-modal');
       var addBackdrop = document.getElementById('add-to-map-backdrop');
       var addClose = document.getElementById('add-to-map-close');
