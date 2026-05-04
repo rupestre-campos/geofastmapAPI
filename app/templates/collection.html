@@ -122,7 +122,7 @@
           .then(function(info) {
             if (!info) return;
             var rasterUrl = null;
-            if (info.default_mode === 'mosaic' && info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
+            if (info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
             else if (info.items && info.items.length === 1 && info.items[0].tiles_url) rasterUrl = info.items[0].tiles_url;
             if (!rasterUrl) return;
             if (!map.getSource('raster-layer')) {

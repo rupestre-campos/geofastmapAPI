@@ -13,7 +13,7 @@ from app.crud import features as features_crud
 
 
 def mosaic_version_id(collection_id: str, item_ids: list[str]) -> str | None:
-    if len(item_ids) <= 1:
+    if not item_ids:
         return None
     raw = f"{collection_id}:{','.join(item_ids)}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]

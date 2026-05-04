@@ -50,7 +50,7 @@ async def _raster_collection_item_ids(db: AsyncSession, collection_id: str) -> l
 
 
 def _mosaic_version_id(collection_id: str, item_ids: list[str]) -> str | None:
-    if len(item_ids) <= 1:
+    if not item_ids:
         return None
     raw = f"{collection_id}:{','.join(item_ids)}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
@@ -222,7 +222,7 @@ async def list_raster_items(
             }
         )
     mosaic_url = None
-    if len(item_ids) > 1:
+    if item_ids and mosaic_vid:
         mosaic_url = (
             f"{base}/collections/{collection_id}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
             f"?mode=mosaic&mv={mosaic_vid}"
@@ -232,7 +232,7 @@ async def list_raster_items(
             "collection_id": collection_id,
             "item_count": len(item_ids),
             "mosaic_version_id": mosaic_vid,
-            "default_mode": "mosaic" if len(item_ids) > 1 else ("item" if len(item_ids) == 1 else None),
+            "default_mode": "mosaic" if item_ids else None,
             "mosaic_tiles_url": mosaic_url,
             "terrain_tilejson_url": f"{base}/collections/{collection_id}/rasters/terrain/tilejson.json",
             "collection_is_dem": collection_is_dem,
@@ -380,7 +380,8 @@ async def get_raster_collection_tile(
         raise HTTPException(status_code=503, detail="Titiler internal fetch is not configured")
 
     item_ids = await _raster_collection_item_ids(db, collection_id)
-    mode = (mode or ("item" if len(item_ids) == 1 else "mosaic")).lower()
+    # Prefer mosaic for collection previews (single- or multi-item); explicit mode=item still supported.
+    mode = (mode or ("mosaic" if item_ids else "item")).lower()
     params: list[tuple[str, str]] = []
     dem_algorithm: str | None = None
     if mode == "item":
@@ -417,6 +418,7 @@ async def get_raster_collection_tile(
         mv = request.query_params.get("mv")
         if mv:
             params.append(("mv", mv))
+    request_keys = frozenset(request.query_params.keys())
     for k, v in request.query_params.multi_items():
         if k not in ("mode", "feature_id", "style_id", "dem_encoding"):
             params.append((k, v))
@@ -428,14 +430,13 @@ async def get_raster_collection_tile(
     else:
         # Mosaic always had default; item (single-feature collections) did not — tiles stayed raw RGB.
         style = await raster_styles_crud.get_default_raster_style(db, collection_id)
-    if style and isinstance(style.style_spec, dict):
-        spec = style.style_spec
+    style_spec: dict = (style.style_spec if style and isinstance(style.style_spec, dict) else {}) or {}
+    if style_spec:
         # Query params from the style editor / clients win over preset keys to avoid duplicate Titiler args.
-        request_keys = frozenset(request.query_params.keys())
         for key in ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula"):
             if key in request_keys:
                 continue
-            value = spec.get(key)
+            value = style_spec.get(key)
             if value is None:
                 continue
             if isinstance(value, list):
@@ -449,14 +450,30 @@ async def get_raster_collection_tile(
     # DEM terrain RGB conflicts with analytic viz (single band / colormap / expr). Multi-bidx RGB keeps terrain.
     bidx_vals = request.query_params.getlist("bidx")
     assets_vals = request.query_params.getlist("assets")
+
+    def _style_supplies(key: str) -> bool:
+        v = style_spec.get(key)
+        if v is None or v == "" or v == []:
+            return False
+        return key not in request_keys
+
     force_analytic = bool(
         request.query_params.get("expression")
         or request.query_params.get("colormap_name")
         or request.query_params.get("color_formula")
         or len(assets_vals) >= 2
+        or _style_supplies("expression")
+        or _style_supplies("colormap_name")
+        or _style_supplies("color_formula")
     )
     if len(bidx_vals) == 1:
         force_analytic = True
+    if _style_supplies("bidx"):
+        bx = style_spec.get("bidx")
+        if isinstance(bx, list) and len(bx) == 1:
+            force_analytic = True
+        elif isinstance(bx, str) and bx.strip() and "," not in bx.strip():
+            force_analytic = True
     if force_analytic:
         dem_algorithm = None
     if dem_algorithm:
@@ -498,7 +515,7 @@ async def get_raster_collection_terrain_tilejson(
     collection_is_dem, collection_dem_encoding = _collection_dem_settings(collection)
     if not item_ids:
         raise HTTPException(status_code=404, detail="No raster items found for this collection")
-    selected_mode = (mode or ("item" if len(item_ids) == 1 else "mosaic")).lower()
+    selected_mode = (mode or "mosaic").lower()
     selected_feature_id = feature_id
     algorithm = _normalize_dem_encoding(dem_encoding) if dem_encoding is not None else collection_dem_encoding
     if selected_mode == "item":
