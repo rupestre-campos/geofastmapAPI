@@ -143,6 +143,8 @@ async def create_raster_feature_from_source(
     settings = get_settings()
     dst = cog_path_for(settings.raster_storage_path, collection_id, feature_id)
     conv = convert_geotiff_to_cog_4326(source_path, dst, source_crs=source_crs)
+    if not dst.is_file():
+        raise RuntimeError(f"COG conversion did not produce output file at {dst}")
 
     footprint = conv["footprint_geojson"]
     meta = conv["meta"]

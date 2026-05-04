@@ -399,6 +399,19 @@ async def get_raster_collection_tile(
                     dem_algorithm = dem_enc if is_dem else collection_dem_encoding
         if not cog_url:
             cog_url = str(cog_path_for(settings.raster_storage_path, collection_id, feature_id))
+        # Fail fast with a clear client error instead of Titiler/GDAL 500 when the COG is missing
+        # (orphan row, different storage root on worker, or manual delete).
+        _cu = str(cog_url).strip()
+        if _cu and not _cu.startswith(("http://", "https://", "/vsicurl/", "/vsi")):
+            if not Path(_cu).is_file():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=(
+                        "Raster GeoTIFF file for this item is not present on server storage. "
+                        "The catalog row may be orphaned—delete the item and upload again, "
+                        "or fix shared volume alignment for the raster worker and API."
+                    ),
+                )
         params.append(("url", cog_url))
     else:
         mosaic_url = (
