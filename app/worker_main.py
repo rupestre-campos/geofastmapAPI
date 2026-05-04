@@ -10,8 +10,10 @@ running more worker containers.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
+from pathlib import Path
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
 from app.core.config import get_settings
@@ -39,6 +41,18 @@ def main() -> None:
         sys.exit(1)
 
     cleanup_orphan_bulk_uploads()
+
+    _raster_root = Path(settings.raster_storage_path)
+    try:
+        _raster_root.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(f"WARNING: cannot create RASTER_STORAGE_PATH {_raster_root}: {e}", file=sys.stderr, flush=True)
+    _w = os.access(_raster_root, os.W_OK) if _raster_root.exists() else False
+    print(
+        f"RASTER_STORAGE_PATH={_raster_root} resolved={_raster_root.resolve()} "
+        f"exists={_raster_root.exists()} writable={_w}",
+        flush=True,
+    )
 
     import redis
 

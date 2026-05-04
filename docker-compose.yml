@@ -108,9 +108,12 @@ services:
       REDIS_URL: redis://redis:6379/0
       BULK_QUEUE_TYPE: redis
       BULK_STORAGE_PATH: /data/bulk-uploads
+      # Must match api/titiler — raster_batch writes COGs here (was missing → files only inside worker container).
+      RASTER_STORAGE_PATH: /data/rasters
     volumes:
       - .:/app
       - geofastmap_bulk_uploads:/data/bulk-uploads
+      - geofastmap_rasters:/data/rasters
     command: python -m app.worker_main
 
   tile_worker:
@@ -202,5 +205,5 @@ volumes:
   geofastmap_pgdata:
   geofastmap_bulk_uploads:  # Shared between api and worker for bulk uploads
   geofastmap_tiles:         # Static MBTiles (api + tile_worker)
-  geofastmap_rasters:       # COGs + MosaicJSON views (api + titiler)
+  geofastmap_rasters:       # COGs (api + worker raster_batch + titiler)
 

@@ -9,6 +9,8 @@ services:
   worker:
     volumes:
       - /data/bulk-uploads:/data/bulk-uploads
+      # Raster imports write COGs here — must match API/Titiler host path for RASTER_STORAGE_PATH
+      - /data/rasters:/data/rasters
 
   tile_worker:
     volumes:

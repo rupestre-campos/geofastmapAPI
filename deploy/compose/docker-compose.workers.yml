@@ -13,6 +13,8 @@ services:
       - ../env/.env.workers
     volumes:
       - geofastmap_bulk_uploads:/data/bulk-uploads
+      # Required for raster imports: same path as API/Titiler RASTER_STORAGE_PATH
+      - geofastmap_rasters:/data/rasters
     command: python -m app.worker_main
 
   tile_worker:
@@ -52,3 +54,4 @@ services:
 volumes:
   geofastmap_bulk_uploads:
   geofastmap_tiles:
+  geofastmap_rasters:

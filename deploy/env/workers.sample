@@ -89,6 +89,9 @@ STAC_SEARCH_HTTP_MAX_PAGES=2
 STAC_SEARCH_HTTP_PAGE_DELAY_SECONDS=0.25
 
 BULK_STORAGE_PATH=/data/bulk-uploads
+# GeoTIFF → COG output for raster collection jobs (app.worker_main). MUST match API and TiTiler
+# RASTER_STORAGE_PATH and be the same shared directory (NFS/bind mount) on every host.
+RASTER_STORAGE_PATH=/data/rasters
 TILES_STORAGE_PATH=/data/tiles
 
 # --- Optional: dedicated roles (advanced production split) ---
