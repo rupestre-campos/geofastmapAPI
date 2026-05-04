@@ -433,14 +433,9 @@ async def get_raster_collection_tile(
         if mv:
             params.append(("mv", mv))
     request_keys = frozenset(request.query_params.keys())
-    # One Titiler stack for the whole mosaic: global rescale/colormap/expression apply to every COG and
-    # often blank tiles where value ranges or band semantics differ (e.g. second DEM vs first).
-    mosaic_multi_forward_skip = frozenset({"rescale", "colormap_name", "color_formula", "expression"})
     # Avoid forwarding duplicate keys Titiler may reject (mv is set above for mosaic).
     for k, v in request.query_params.multi_items():
         if k in ("mode", "feature_id", "style_id", "dem_encoding", "mv"):
-            continue
-        if mode == "mosaic" and len(item_ids) > 1 and k in mosaic_multi_forward_skip:
             continue
         params.append((k, v))
     style = None
@@ -452,20 +447,9 @@ async def get_raster_collection_tile(
         # Mosaic always had default; item (single-feature collections) did not — tiles stayed raw RGB.
         style = await raster_styles_crud.get_default_raster_style(db, collection_id)
     style_spec: dict = (style.style_spec if style and isinstance(style.style_spec, dict) else {}) or {}
-    # Mosaic composites multiple COGs; per-dataset style keys (bidx, rescale, etc.) are for one reader only.
-    # Applying the collection default to the whole mosaic breaks tiles once a second image has a different band layout.
-    mosaic_style_keys_skip = frozenset(
-        ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula")
-    )
     if style_spec:
         # Query params from the style editor / clients win over preset keys to avoid duplicate Titiler args.
         for key in ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula"):
-            if mode == "mosaic" and key in mosaic_style_keys_skip:
-                # Single-item collections still use mosaic URL; allow default bidx so bare ?mode=mosaic&mv= works.
-                if key == "bidx" and len(item_ids) == 1:
-                    pass
-                else:
-                    continue
             if key in request_keys:
                 continue
             value = style_spec.get(key)
@@ -484,9 +468,6 @@ async def get_raster_collection_tile(
     assets_vals = request.query_params.getlist("assets")
 
     def _style_supplies(key: str) -> bool:
-        # Keys skipped for mosaic are not merged into Titiler params; do not treat them as forcing analytic mode.
-        if mode == "mosaic" and key in mosaic_style_keys_skip:
-            return False
         v = style_spec.get(key)
         if v is None or v == "" or v == []:
             return False
@@ -511,12 +492,15 @@ async def get_raster_collection_tile(
             force_analytic = True
     if force_analytic:
         dem_algorithm = None
-    # Mosaic path never sets dem_algorithm from a single item; apply collection DEM when not doing analytic viz.
+    # Mosaic: apply terrain RGB only when no explicit bands/colormap/expression (those conflict with algorithm=).
+    _mosaic_viz_keys = frozenset({"bidx", "colormap_name", "expression", "color_formula", "assets", "rescale"})
+    has_mosaic_viz = mode == "mosaic" and any(k in _mosaic_viz_keys for k, _ in params)
     if (
         mode == "mosaic"
         and dem_algorithm is None
         and not force_analytic
         and collection_is_dem
+        and not has_mosaic_viz
     ):
         dem_algorithm = collection_dem_encoding
     if dem_algorithm:

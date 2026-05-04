@@ -145,17 +145,6 @@
     );
   }
 
-  /** MosaicJSON applies one Titiler reader stack to every COG; global rescale/colormap breaks other items. */
-  function mosaicItemCountLive() {
-    var n = _cfg && _cfg.rasterItemCount;
-    if (typeof n === 'number' && isFinite(n) && n >= 0) return n;
-    return Math.max(0, ((_cfg && _cfg.tileAssetsLen) || 0) - 1);
-  }
-
-  function skipMosaicGlobalStyleParams(assetKey) {
-    return assetKey === '__mosaic__' && mosaicItemCountLive() > 1;
-  }
-
   function buildCollectionTileUrl(assetKey) {
     var path = collectionTileTemplate();
     var qs = [];
@@ -167,16 +156,12 @@
       qs.push('feature_id=' + encodeURIComponent(assetKey));
     }
 
-    var skipGlobal = skipMosaicGlobalStyleParams(assetKey);
-
     var rescaleEl = el('stac-rescale');
     var rescaleVal = rescaleEl && rescaleEl.value.trim() ? rescaleEl.value.trim() : '';
     function pushRescaleOnce() {
-      if (skipGlobal) return;
       if (rescaleVal) qs.push('rescale=' + encodeURIComponent(rescaleVal));
     }
     function pushRescaleRgb() {
-      if (skipGlobal) return;
       if (!rescaleVal) return;
       var enc = encodeURIComponent(rescaleVal);
       qs.push('rescale=' + enc);
@@ -185,10 +170,9 @@
     }
 
     var cf = el('stac-color-formula');
-    if (!skipGlobal && cf && cf.value.trim()) qs.push('color_formula=' + encodeURIComponent(cf.value.trim()));
+    if (cf && cf.value.trim()) qs.push('color_formula=' + encodeURIComponent(cf.value.trim()));
 
     function appendColormapName(qsArr) {
-      if (skipGlobal) return;
       var cm = el('stac-colormap');
       if (cm && cm.value) qsArr.push('colormap_name=' + encodeURIComponent(cm.value));
     }
@@ -198,7 +182,7 @@
 
     if (mode === 'expression') {
       var ex = el('stac-expression');
-      if (!skipGlobal && ex && ex.value.trim()) {
+      if (ex && ex.value.trim()) {
         var rawEx = ex.value.trim();
         var n = normalizeExpressionForTitiler(rawEx, assetKey);
         if (n.unsupportedMultiItem) {
