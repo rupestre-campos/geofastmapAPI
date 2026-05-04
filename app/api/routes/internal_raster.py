@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
 
 from app.api.deps import require_admin
 from app.core.config import get_settings
@@ -20,6 +18,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.services.coverages import cog_path_for
 from app.services.mosaic_plan import build_mosaicjson_from_footprints
+from app.services.raster_collection_mosaic import collect_raster_collection_mosaic_pairs
 
 router = APIRouter()
 
@@ -139,9 +138,6 @@ async def internal_fetch_collection_mosaic_json(
     token: str = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
-    from shapely.geometry import box, shape
-    from app.utils.geo import geometry_to_geojson
-
     settings = get_settings()
     secret = settings.titiler_internal_secret
     if not secret or token != secret:
@@ -149,50 +145,7 @@ async def internal_fetch_collection_mosaic_json(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    ids_r = await db.execute(
-        text("SELECT DISTINCT id FROM features WHERE collection_id = :cid ORDER BY id"),
-        {"cid": collection_id},
-    )
-    ids = [r.id for r in ids_r.fetchall()]
-    pairs: list[tuple[str, object]] = []
-    for fid in ids:
-        feature = await features_crud.get_feature(db, collection_id, fid)
-        if not feature:
-            continue
-        props = feature.properties or {}
-        raster = props.get("raster") if isinstance(props, dict) else None
-        cog_path = raster.get("cog_path") if isinstance(raster, dict) else None
-        # Prefer canonical storage path so MosaicJSON matches Titiler's volume layout. DB cog_path
-        # may point at an API-only absolute path that exists on the API host but not inside Titiler.
-        det = cog_path_for(settings.raster_storage_path, collection_id, fid)
-        href: str | None = None
-        if det.exists():
-            href = os.fspath(det)
-        elif isinstance(cog_path, str) and cog_path and Path(cog_path).exists():
-            href = cog_path
-        if not href:
-            continue
-        gj = geometry_to_geojson(feature.geometry) if feature.geometry is not None else None
-        geom_shp = None
-        if gj:
-            try:
-                geom_shp = shape(gj)
-            except Exception:
-                geom_shp = None
-        if geom_shp is None or getattr(geom_shp, "is_empty", True):
-            meta = (raster or {}).get("meta") if isinstance(raster, dict) else None
-            b = meta.get("bounds") if isinstance(meta, dict) else None
-            if isinstance(b, (list, tuple)) and len(b) >= 4:
-                try:
-                    geom_shp = box(float(b[0]), float(b[1]), float(b[2]), float(b[3]))
-                except (TypeError, ValueError):
-                    geom_shp = None
-        if geom_shp is None or getattr(geom_shp, "is_empty", True):
-            continue
-        try:
-            pairs.append((href, geom_shp))
-        except Exception:
-            continue
+    pairs = await collect_raster_collection_mosaic_pairs(db, collection_id, settings)
     if not pairs:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     mosaic = build_mosaicjson_from_footprints(pairs)

@@ -26,6 +26,7 @@ from app.services.bulk_storage import get_bulk_storage
 from app.services.collection_type_guard import ensure_raster_collection
 from app.services.job_store import create_job, update_job
 from app.services.mosaic_plan import build_mosaicjson_from_footprints
+from app.services.raster_collection_mosaic import collect_raster_collection_mosaic_pairs
 from app.services.raster_batch import (
     RasterBatchUploadTooLargeError,
     write_raster_batch_archive,
@@ -71,36 +72,6 @@ def _collection_dem_settings(collection) -> tuple[bool, str]:
     if not isinstance(rs, dict):
         return (False, "terrainrgb")
     return (bool(rs.get("is_dem", False)), _normalize_dem_encoding(rs.get("dem_encoding")))
-
-
-def _extract_raster_footprint_and_href(feature: object) -> tuple[str, object] | None:
-    from shapely.geometry import box, shape
-    from app.utils.geo import geometry_to_geojson
-
-    props = getattr(feature, "properties", None) or {}
-    raster = props.get("raster") if isinstance(props, dict) else None
-    cog_path = raster.get("cog_path") if isinstance(raster, dict) else None
-    if not isinstance(cog_path, str) or not cog_path:
-        return None
-    geom = getattr(feature, "geometry", None)
-    gj = geometry_to_geojson(geom) if geom is not None else None
-    geom_shp = None
-    if gj:
-        try:
-            geom_shp = shape(gj)
-        except Exception:
-            geom_shp = None
-    if geom_shp is None or getattr(geom_shp, "is_empty", True):
-        meta = (raster or {}).get("meta") if isinstance(raster, dict) else None
-        b = meta.get("bounds") if isinstance(meta, dict) else None
-        if isinstance(b, (list, tuple)) and len(b) >= 4:
-            try:
-                geom_shp = box(float(b[0]), float(b[1]), float(b[2]), float(b[3]))
-            except (TypeError, ValueError):
-                geom_shp = None
-    if geom_shp is None or getattr(geom_shp, "is_empty", True):
-        return None
-    return cog_path, geom_shp
 
 
 async def _queue_raster_upload_job(
@@ -619,17 +590,11 @@ async def get_raster_collection_mosaic_json(
     collection_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    ids = await _raster_collection_item_ids(db, collection_id)
-    if not ids:
+    item_ids = await _raster_collection_item_ids(db, collection_id)
+    if not item_ids:
         raise HTTPException(status_code=404, detail="No raster items found for this collection")
-    pairs = []
-    for fid in ids:
-        f = await features_crud.get_feature(db, collection_id, fid)
-        if not f:
-            continue
-        pair = _extract_raster_footprint_and_href(f)
-        if pair is not None:
-            pairs.append(pair)
+    settings = get_settings()
+    pairs = await collect_raster_collection_mosaic_pairs(db, collection_id, settings)
     if not pairs:
         raise HTTPException(status_code=404, detail="No valid raster COG items found")
     mosaic = build_mosaicjson_from_footprints(pairs)
