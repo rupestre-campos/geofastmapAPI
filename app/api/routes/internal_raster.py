@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
@@ -154,9 +154,6 @@ async def internal_fetch_collection_mosaic_json(
         {"cid": collection_id},
     )
     ids = [r.id for r in ids_r.fetchall()]
-    fetch_base = settings.raster_internal_fetch_base_url.rstrip("/")
-    if not fetch_base:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Raster internal fetch base URL not configured")
     pairs: list[tuple[str, object]] = []
     for fid in ids:
         feature = await features_crud.get_feature(db, collection_id, fid)
@@ -169,16 +166,13 @@ async def internal_fetch_collection_mosaic_json(
         raster = props.get("raster") if isinstance(props, dict) else None
         cog_path = raster.get("cog_path") if isinstance(raster, dict) else None
         det = cog_path_for(settings.raster_storage_path, collection_id, fid)
-        has_file = det.exists() or (
-            isinstance(cog_path, str) and cog_path and Path(cog_path).exists()
-        )
-        if not has_file:
+        href: str | None = None
+        if isinstance(cog_path, str) and cog_path and Path(cog_path).exists():
+            href = cog_path
+        elif det.exists():
+            href = os.fspath(det)
+        if not href:
             continue
-        # Titiler must fetch each COG via HTTP; raw filesystem paths fail when Titiler does not share the API data volume.
-        href = (
-            f"{fetch_base}/internal/collections/{collection_id}/coverages/{fid}/cog"
-            f"?token={quote(secret, safe='')}"
-        )
         pairs.append((href, shape(gj)))
     if not pairs:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
