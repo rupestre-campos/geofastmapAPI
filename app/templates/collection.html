@@ -128,9 +128,37 @@
             if (!map.getSource('raster-layer')) {
               map.addSource('raster-layer', { type: 'raster', tiles: [rasterUrl], tileSize: 256, maxzoom: 18 });
               map.addLayer({ id: 'raster-layer', type: 'raster', source: 'raster-layer', paint: { 'raster-opacity': 1 } });
+            } else {
+              try { map.getSource('raster-layer').setTiles([rasterUrl]); } catch (e) {}
+            }
+            var fitB = null;
+            if (info.features_bbox && isUsableBbox(info.features_bbox)) fitB = info.features_bbox;
+            else if (extent && extent.bbox && isUsableBbox(extent.bbox[0])) fitB = extent.bbox[0];
+            if (fitB) {
+              var b = fitB;
+              var bboxGeojson = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[b[0],b[1]],[b[2],b[1]],[b[2],b[3]],[b[0],b[3]],[b[0],b[1]]]] } };
+              if (map.getSource('bbox')) {
+                try { map.getSource('bbox').setData(bboxGeojson); } catch (e) {}
+              } else {
+                map.addSource('bbox', { type: 'geojson', data: bboxGeojson });
+                map.addLayer({ id: 'bbox-line', type: 'line', source: 'bbox', paint: { 'line-color': '#58a6ff', 'line-width': 2 } });
+              }
+              try { map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40 }); } catch (e) {}
+              var wrap = document.getElementById('map-bbox-toggle-wrap');
+              if (wrap && map.getLayer('bbox-line')) {
+                wrap.style.display = '';
+                var chk = document.getElementById('map-toggle-bbox');
+                if (chk && !chk._geofastBboxBound) {
+                  chk._geofastBboxBound = true;
+                  chk.onchange = function() {
+                    try { map.setLayoutProperty('bbox-line', 'visibility', this.checked ? 'visible' : 'none'); } catch (e) {}
+                  };
+                }
+              }
             }
           })
           .catch(function() {});
+        return;
       } else if (tileUrlStatic) {
         var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
         var s = GeofastmapUtils.specToPaint(spec);
@@ -170,8 +198,8 @@
         map.addLayer({ id: 'bbox-line', type: 'line', source: 'bbox', paint: { 'line-color': '#58a6ff', 'line-width': 2 } });
       }
       if (extent && extent.bbox && isUsableBbox(extent.bbox[0])) {
-        var b = extent.bbox[0];
-        map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40 });
+        var b2 = extent.bbox[0];
+        map.fitBounds([[b2[0], b2[1]], [b2[2], b2[3]]], { padding: 40 });
       }
     }
 

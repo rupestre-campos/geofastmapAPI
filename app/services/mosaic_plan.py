@@ -826,6 +826,48 @@ def _footprint_for_mosaic_index(g: Polygon | MultiPolygon) -> Polygon | MultiPol
         return g
 
 
+def _merge_urls_in_mosaic_tiles(tiles: dict[str, list[str]]) -> set[str]:
+    s: set[str] = set()
+    for lst in tiles.values():
+        s.update(lst)
+    return s
+
+
+def _ensure_all_raster_assets_in_mosaic_tiles(
+    tiles: dict[str, list[str]],
+    urls: list[str],
+    geoms: list[Polygon | MultiPolygon],
+    quadkey_zoom: int,
+) -> None:
+    """Every COG URL must appear in at least one quadkey so Titiler can select it for requests."""
+    indexed = _merge_urls_in_mosaic_tiles(tiles)
+    for url, g in zip(urls, geoms):
+        if url in indexed:
+            continue
+        try:
+            w, s, e, n = g.bounds
+        except Exception:
+            w, s, e, n = -180.0, -85.0, 180.0, 85.0
+        placed = False
+        try:
+            for tile in mercantile.tiles(w, s, e, n, [quadkey_zoom]):
+                qk = mercantile.quadkey(tile)
+                if qk not in tiles:
+                    tiles[qk] = []
+                if url not in tiles[qk]:
+                    tiles[qk].append(url)
+                placed = True
+        except Exception:
+            pass
+        if not placed:
+            qk0 = mercantile.quadkey(mercantile.Tile(x=0, y=0, z=0))
+            if qk0 not in tiles:
+                tiles[qk0] = []
+            if url not in tiles[qk0]:
+                tiles[qk0].append(url)
+        indexed.add(url)
+
+
 def build_mosaicjson_from_footprints(
     items: list[tuple[str, Polygon | MultiPolygon]],
     *,
@@ -857,6 +899,7 @@ def build_mosaicjson_from_footprints(
                 continue
         if here:
             tiles[qk] = here
+    _ensure_all_raster_assets_in_mosaic_tiles(tiles, urls, geoms, quadkey_zoom)
     if not tiles:
         qk = mercantile.quadkey(mercantile.Tile(x=0, y=0, z=0))
         tiles[qk] = list(dict.fromkeys(urls))

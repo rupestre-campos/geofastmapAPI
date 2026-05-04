@@ -11,6 +11,7 @@ import zipfile
 from pathlib import Path
 
 from fastapi import UploadFile
+from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from uuid6 import uuid7
 
@@ -356,5 +357,11 @@ def run_raster_batch_job(*, job_id: str, collection_id: str, archive_path: str) 
                 items_created=created,
                 items_failed=failed,
             )
+        if created > 0:
+            sync_engine = create_engine(get_settings().database_sync_url, pool_pre_ping=True)
+            try:
+                collections_crud.recompute_and_update_collection_extent_sync(sync_engine, collection_id)
+            finally:
+                sync_engine.dispose()
     finally:
         shutil.rmtree(extract_dir, ignore_errors=True)

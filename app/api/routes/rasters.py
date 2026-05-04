@@ -241,6 +241,11 @@ async def list_raster_items(
             f"{base}/collections/{collection_id}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
             f"?mode=mosaic&mv={mosaic_vid}"
         )
+    extent_fe = await collections_crud.get_collection_bbox_from_features(db, collection_id)
+    features_bbox: list[float] | None = None
+    if extent_fe and extent_fe.bbox and extent_fe.bbox[0] and len(extent_fe.bbox[0]) >= 4:
+        fb = extent_fe.bbox[0]
+        features_bbox = [float(fb[0]), float(fb[1]), float(fb[2]), float(fb[3])]
     return JSONResponse(
         content={
             "collection_id": collection_id,
@@ -251,6 +256,7 @@ async def list_raster_items(
             "terrain_tilejson_url": f"{base}/collections/{collection_id}/rasters/terrain/tilejson.json",
             "collection_is_dem": collection_is_dem,
             "collection_dem_encoding": collection_dem_encoding,
+            "features_bbox": features_bbox,
             "items": items,
         }
     )

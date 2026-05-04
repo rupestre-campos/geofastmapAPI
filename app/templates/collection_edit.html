@@ -860,6 +860,10 @@
                   try { map.getSource('collection-raster-underlay').setTiles([rasterUrl]); } catch (e2) {}
                 }
               }
+              if (info.features_bbox && isUsableBbox(info.features_bbox)) {
+                var fb = info.features_bbox;
+                try { map.fitBounds([[fb[0], fb[1]], [fb[2], fb[3]]], { padding: 60 }); } catch (eFb) {}
+              }
             })
             .catch(function() {});
         }
