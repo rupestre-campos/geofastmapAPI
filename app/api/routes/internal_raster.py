@@ -139,7 +139,7 @@ async def internal_fetch_collection_mosaic_json(
     token: str = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
-    from shapely.geometry import shape
+    from shapely.geometry import box, shape
     from app.utils.geo import geometry_to_geojson
 
     settings = get_settings()
@@ -159,9 +159,6 @@ async def internal_fetch_collection_mosaic_json(
         feature = await features_crud.get_feature(db, collection_id, fid)
         if not feature:
             continue
-        gj = geometry_to_geojson(feature.geometry) if feature.geometry is not None else None
-        if not gj:
-            continue
         props = feature.properties or {}
         raster = props.get("raster") if isinstance(props, dict) else None
         cog_path = raster.get("cog_path") if isinstance(raster, dict) else None
@@ -175,8 +172,25 @@ async def internal_fetch_collection_mosaic_json(
             href = cog_path
         if not href:
             continue
+        gj = geometry_to_geojson(feature.geometry) if feature.geometry is not None else None
+        geom_shp = None
+        if gj:
+            try:
+                geom_shp = shape(gj)
+            except Exception:
+                geom_shp = None
+        if geom_shp is None or getattr(geom_shp, "is_empty", True):
+            meta = (raster or {}).get("meta") if isinstance(raster, dict) else None
+            b = meta.get("bounds") if isinstance(meta, dict) else None
+            if isinstance(b, (list, tuple)) and len(b) >= 4:
+                try:
+                    geom_shp = box(float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+                except (TypeError, ValueError):
+                    geom_shp = None
+        if geom_shp is None or getattr(geom_shp, "is_empty", True):
+            continue
         try:
-            pairs.append((href, shape(gj)))
+            pairs.append((href, geom_shp))
         except Exception:
             continue
     if not pairs:

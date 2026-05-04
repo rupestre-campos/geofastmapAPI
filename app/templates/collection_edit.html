@@ -836,6 +836,7 @@
                     mosaicVersionId: liveMv,
                     titilerConfigured: titilerConfiguredFlag,
                     tileAssetsLen: rasterTileAssetsLen,
+                    rasterItemCount: (info.item_count != null ? info.item_count : (info.items && info.items.length) || 0),
                     bandCounts: rasterBandCounts,
                     sourceId: 'collection-raster-underlay',
                     layerId: 'collection-raster-underlay'
@@ -844,8 +845,18 @@
                     try { GeofastmapRasterStyleEditor.applySpec(defaultRasterStyle.style_spec); } catch (eRS) {}
                   }
                   wireRasterStyleLoadSave();
+                  window.setTimeout(function() {
+                    try {
+                      if (window.GeofastmapRasterStyleEditor && typeof window.GeofastmapRasterStyleEditor.refreshLayer === 'function') {
+                        window.GeofastmapRasterStyleEditor.refreshLayer();
+                      }
+                    } catch (eRf) {}
+                  }, 0);
                 } else {
                   if (typeof GeofastmapRasterStyleEditor.setMosaicVersionId === 'function') GeofastmapRasterStyleEditor.setMosaicVersionId(liveMv);
+                  if (typeof GeofastmapRasterStyleEditor.setRasterItemCount === 'function') {
+                    GeofastmapRasterStyleEditor.setRasterItemCount((info.item_count != null ? info.item_count : (info.items && info.items.length) || 0));
+                  }
                   try { map.getSource('collection-raster-underlay').setTiles([rasterUrl]); } catch (e2) {}
                 }
               }

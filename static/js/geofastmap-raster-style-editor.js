@@ -145,6 +145,17 @@
     );
   }
 
+  /** MosaicJSON applies one Titiler reader stack to every COG; global rescale/colormap breaks other items. */
+  function mosaicItemCountLive() {
+    var n = _cfg && _cfg.rasterItemCount;
+    if (typeof n === 'number' && isFinite(n) && n >= 0) return n;
+    return Math.max(0, ((_cfg && _cfg.tileAssetsLen) || 0) - 1);
+  }
+
+  function skipMosaicGlobalStyleParams(assetKey) {
+    return assetKey === '__mosaic__' && mosaicItemCountLive() > 1;
+  }
+
   function buildCollectionTileUrl(assetKey) {
     var path = collectionTileTemplate();
     var qs = [];
@@ -156,12 +167,16 @@
       qs.push('feature_id=' + encodeURIComponent(assetKey));
     }
 
+    var skipGlobal = skipMosaicGlobalStyleParams(assetKey);
+
     var rescaleEl = el('stac-rescale');
     var rescaleVal = rescaleEl && rescaleEl.value.trim() ? rescaleEl.value.trim() : '';
     function pushRescaleOnce() {
+      if (skipGlobal) return;
       if (rescaleVal) qs.push('rescale=' + encodeURIComponent(rescaleVal));
     }
     function pushRescaleRgb() {
+      if (skipGlobal) return;
       if (!rescaleVal) return;
       var enc = encodeURIComponent(rescaleVal);
       qs.push('rescale=' + enc);
@@ -170,9 +185,10 @@
     }
 
     var cf = el('stac-color-formula');
-    if (cf && cf.value.trim()) qs.push('color_formula=' + encodeURIComponent(cf.value.trim()));
+    if (!skipGlobal && cf && cf.value.trim()) qs.push('color_formula=' + encodeURIComponent(cf.value.trim()));
 
     function appendColormapName(qsArr) {
+      if (skipGlobal) return;
       var cm = el('stac-colormap');
       if (cm && cm.value) qsArr.push('colormap_name=' + encodeURIComponent(cm.value));
     }
@@ -182,7 +198,7 @@
 
     if (mode === 'expression') {
       var ex = el('stac-expression');
-      if (ex && ex.value.trim()) {
+      if (!skipGlobal && ex && ex.value.trim()) {
         var rawEx = ex.value.trim();
         var n = normalizeExpressionForTitiler(rawEx, assetKey);
         if (n.unsupportedMultiItem) {
@@ -241,14 +257,13 @@
   }
 
   function addOrRefreshRaster() {
-    if (!_cfg || !_cfg.titilerConfigured || !_cfg.tileAssetsLen) return;
+    if (!_cfg) return;
     var map = getMap();
     if (!map || !map.loaded()) return;
     syncColorFormula();
     updateExpressionPreview();
     var sel = el('stac-asset-select');
-    if (!sel || !sel.value) return;
-    var assetKey = sel.value;
+    var assetKey = sel && sel.value ? sel.value : '__mosaic__';
     var modeEl = el('stac-render-mode');
     var mode = modeEl ? modeEl.value : 'rgb_bands';
     if (mode === 'expression') {
@@ -313,6 +328,14 @@
   function setMosaicVersionId(mv) {
     if (!_cfg) return;
     _cfg.mosaicVersionId = mv != null && mv !== undefined ? String(mv) : '';
+    maybeRefresh();
+  }
+
+  /** Live item count from GET /rasters (SSR tileAssetsLen is stale after uploads without reload). */
+  function setRasterItemCount(n) {
+    if (!_cfg) return;
+    var v = parseInt(n, 10);
+    _cfg.rasterItemCount = isFinite(v) && v >= 0 ? v : 0;
     maybeRefresh();
   }
 
@@ -635,6 +658,10 @@
       mosaicVersionId: config.mosaicVersionId || '',
       titilerConfigured: !!config.titilerConfigured,
       tileAssetsLen: config.tileAssetsLen || 0,
+      rasterItemCount:
+        config.rasterItemCount != null && isFinite(Number(config.rasterItemCount))
+          ? Math.max(0, Math.floor(Number(config.rasterItemCount)))
+          : null,
       bandCounts: config.bandCounts && typeof config.bandCounts === 'object' ? config.bandCounts : {},
       sourceId: config.sourceId || 'collection-raster-underlay',
       layerId: config.layerId || 'collection-raster-underlay',
@@ -708,6 +735,7 @@
     applySpec: applySpec,
     refreshLayer: maybeRefresh,
     setMosaicVersionId: setMosaicVersionId,
+    setRasterItemCount: setRasterItemCount,
   };
   global.__geofastExportRasterStyleSpec = function () {
     return { style_spec: exportRasterStyleSpec() };

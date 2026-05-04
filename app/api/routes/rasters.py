@@ -74,7 +74,7 @@ def _collection_dem_settings(collection) -> tuple[bool, str]:
 
 
 def _extract_raster_footprint_and_href(feature: object) -> tuple[str, object] | None:
-    from shapely.geometry import shape
+    from shapely.geometry import box, shape
     from app.utils.geo import geometry_to_geojson
 
     props = getattr(feature, "properties", None) or {}
@@ -84,9 +84,23 @@ def _extract_raster_footprint_and_href(feature: object) -> tuple[str, object] | 
         return None
     geom = getattr(feature, "geometry", None)
     gj = geometry_to_geojson(geom) if geom is not None else None
-    if not gj:
+    geom_shp = None
+    if gj:
+        try:
+            geom_shp = shape(gj)
+        except Exception:
+            geom_shp = None
+    if geom_shp is None or getattr(geom_shp, "is_empty", True):
+        meta = (raster or {}).get("meta") if isinstance(raster, dict) else None
+        b = meta.get("bounds") if isinstance(meta, dict) else None
+        if isinstance(b, (list, tuple)) and len(b) >= 4:
+            try:
+                geom_shp = box(float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+            except (TypeError, ValueError):
+                geom_shp = None
+    if geom_shp is None or getattr(geom_shp, "is_empty", True):
         return None
-    return cog_path, shape(gj)
+    return cog_path, geom_shp
 
 
 async def _queue_raster_upload_job(
@@ -419,9 +433,14 @@ async def get_raster_collection_tile(
         if mv:
             params.append(("mv", mv))
     request_keys = frozenset(request.query_params.keys())
+    # One Titiler stack for the whole mosaic: global rescale/colormap/expression apply to every COG and
+    # often blank tiles where value ranges or band semantics differ (e.g. second DEM vs first).
+    mosaic_multi_forward_skip = frozenset({"rescale", "colormap_name", "color_formula", "expression"})
     # Avoid forwarding duplicate keys Titiler may reject (mv is set above for mosaic).
     for k, v in request.query_params.multi_items():
         if k in ("mode", "feature_id", "style_id", "dem_encoding", "mv"):
+            continue
+        if mode == "mosaic" and len(item_ids) > 1 and k in mosaic_multi_forward_skip:
             continue
         params.append((k, v))
     style = None
