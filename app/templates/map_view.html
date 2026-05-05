@@ -331,6 +331,8 @@
           maxPitch: 85,
           renderWorldCopies: false
         });
+        // Built-in compass: shows north and resets bearing to north on click.
+        map.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: false }), 'top-right');
         GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
         if (mapBasemap && BASEMAPS[mapBasemap]) sel.value = mapBasemap; else sel.value = initialId;
         function applyBasemap(key) {
