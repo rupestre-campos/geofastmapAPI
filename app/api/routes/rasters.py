@@ -463,18 +463,19 @@ async def get_raster_collection_tile(
             continue
         params.append((k, v))
     dem_encoding_q = request.query_params.get("dem_encoding")
+    dem_request = bool(dem_encoding_q)
     style = None
-    if style_id:
+    if style_id and not dem_request:
         style = await raster_styles_crud.get_raster_style(db, collection_id, style_id)
         if style is None:
             style = await raster_styles_crud.get_public_raster_style(db, style_id)
-    else:
+    elif not dem_request:
         # Mosaic always had default; item (single-feature collections) did not — tiles stayed raw RGB.
         style = await raster_styles_crud.get_default_raster_style(db, collection_id)
     style_spec: dict = (style.style_spec if style and isinstance(style.style_spec, dict) else {}) or {}
     # DEM terrain requests must bypass visualization style params (bidx/expression/colormap),
     # otherwise raster-dem decoding receives rendered imagery instead of elevation encoding.
-    if style_spec and not dem_encoding_q:
+    if style_spec and not dem_request:
         # Query params from the style editor / clients win over preset keys to avoid duplicate Titiler args.
         for key in ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula"):
             if key in request_keys:
@@ -487,13 +488,15 @@ async def get_raster_collection_tile(
             else:
                 params.append((key, str(value)))
     # Allow explicit DEM encoding override for terrain clients.
-    if dem_encoding_q:
+    if dem_request:
         dem_algorithm = _normalize_dem_encoding(dem_encoding_q)
     # DEM terrain RGB conflicts with analytic viz (single band / colormap / expr). Multi-bidx RGB keeps terrain.
     bidx_vals = request.query_params.getlist("bidx")
     assets_vals = request.query_params.getlist("assets")
 
     def _style_supplies(key: str) -> bool:
+        if dem_request:
+            return False
         v = style_spec.get(key)
         if v is None or v == "" or v == []:
             return False
@@ -516,7 +519,7 @@ async def get_raster_collection_tile(
             force_analytic = True
         elif isinstance(bx, str) and bx.strip() and "," not in bx.strip():
             force_analytic = True
-    if force_analytic:
+    if force_analytic and not dem_request:
         dem_algorithm = None
     # Mosaic: apply terrain RGB only when no explicit bands/colormap/expression (those conflict with algorithm=).
     _mosaic_viz_keys = frozenset({"bidx", "colormap_name", "expression", "color_formula", "assets", "rescale"})
