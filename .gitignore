@@ -15,6 +15,7 @@ ENV/
 .env.*.local
 *.env
 *.env.*
+!scripts/.env.example
 deploy/env/.env.api
 deploy/env/.env.workers
 

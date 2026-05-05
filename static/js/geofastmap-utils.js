@@ -110,6 +110,9 @@
     // tiles, mosaic/STAC/COG proxy URLs on the same origin would be mis-clamped (z lowered
     // without fixing x/y), breaking tiles and stressing Titiler. Never rewrite our tile proxies.
     if (url.indexOf('/titiler/tiles/') !== -1) return url;
+    // Same-origin raster / vector tile URLs must never be clamped (collection maps zoom past basemap max).
+    if (url.indexOf('/rasters/tiles/') !== -1) return url;
+    if (url.indexOf('/tiles/dynamic/') !== -1 || url.indexOf('/tiles/static/') !== -1) return url;
     var isBasemap = false;
     for (var p = 0; p < urlPrefixes.length; p++) {
       if (url.indexOf(urlPrefixes[p]) === 0) { isBasemap = true; break; }
