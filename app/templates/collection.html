@@ -115,49 +115,85 @@
 
     var pointFilter = GeofastmapUtils.pointFilter;
     var notPointFilter = GeofastmapUtils.notPointFilter;
+    var __rasterPollTimer = null;
+    var __rasterListSig = null;
+    function rasterListSignature(info) {
+      if (!info) return '';
+      var ic = info.item_count != null ? info.item_count : ((info.items || []).length || 0);
+      var mv = info.mosaic_version_id != null ? String(info.mosaic_version_id) : '';
+      var u = info.mosaic_tiles_url;
+      if (!u && info.items && info.items.length === 1 && info.items[0].tiles_url) u = info.items[0].tiles_url;
+      return mv + '\t' + ic + '\t' + (u || '');
+    }
+    function fetchRastersListJson() {
+      return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters', {
+        headers: { 'Accept': 'application/json' },
+        cache: 'no-store'
+      }).then(function(r) { return r.ok ? r.json() : null; });
+    }
+    function applyRasterCollectionOverlay(info) {
+      if (!info) return;
+      var rasterUrl = null;
+      if (info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
+      else if (info.items && info.items.length === 1 && info.items[0].tiles_url) rasterUrl = info.items[0].tiles_url;
+      if (!rasterUrl) return;
+      if (!map.getSource('raster-layer')) {
+        map.addSource('raster-layer', { type: 'raster', tiles: [rasterUrl], tileSize: 256, maxzoom: 18 });
+        map.addLayer({ id: 'raster-layer', type: 'raster', source: 'raster-layer', paint: { 'raster-opacity': 1 } });
+      } else {
+        try { map.getSource('raster-layer').setTiles([rasterUrl]); } catch (e) {}
+      }
+      try { if (typeof map.triggerRepaint === 'function') map.triggerRepaint(); } catch (eR) {}
+      var fitB = null;
+      if (info.features_bbox && isUsableBbox(info.features_bbox)) fitB = info.features_bbox;
+      else if (extent && extent.bbox && isUsableBbox(extent.bbox[0])) fitB = extent.bbox[0];
+      if (fitB) {
+        var b = fitB;
+        var bboxGeojson = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[b[0],b[1]],[b[2],b[1]],[b[2],b[3]],[b[0],b[3]],[b[0],b[1]]]] } };
+        if (map.getSource('bbox')) {
+          try { map.getSource('bbox').setData(bboxGeojson); } catch (e) {}
+        } else {
+          map.addSource('bbox', { type: 'geojson', data: bboxGeojson });
+          map.addLayer({ id: 'bbox-line', type: 'line', source: 'bbox', paint: { 'line-color': '#58a6ff', 'line-width': 2 } });
+        }
+        try { map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40 }); } catch (e) {}
+        var wrap = document.getElementById('map-bbox-toggle-wrap');
+        if (wrap && map.getLayer('bbox-line')) {
+          wrap.style.display = '';
+          var chk = document.getElementById('map-toggle-bbox');
+          if (chk && !chk._geofastBboxBound) {
+            chk._geofastBboxBound = true;
+            chk.onchange = function() {
+              try { map.setLayoutProperty('bbox-line', 'visibility', this.checked ? 'visible' : 'none'); } catch (e) {}
+            };
+          }
+        }
+      }
+    }
+    function startRasterIngestPolling() {
+      if (__rasterPollTimer) clearInterval(__rasterPollTimer);
+      var n = 0;
+      var maxPolls = 60;
+      __rasterPollTimer = setInterval(function() {
+        n++;
+        if (n > maxPolls) { clearInterval(__rasterPollTimer); __rasterPollTimer = null; return; }
+        fetchRastersListJson().then(function(info) {
+          if (!info) return;
+          var sig = rasterListSignature(info);
+          if (sig === __rasterListSig) return;
+          __rasterListSig = sig;
+          applyRasterCollectionOverlay(info);
+        }).catch(function() {});
+      }, 2000);
+    }
     function addOverlayLayers() {
       if (collectionType === 'raster') {
-        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters', { headers: { 'Accept': 'application/json' } })
-          .then(function(r) { return r.ok ? r.json() : null; })
-          .then(function(info) {
-            if (!info) return;
-            var rasterUrl = null;
-            if (info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
-            else if (info.items && info.items.length === 1 && info.items[0].tiles_url) rasterUrl = info.items[0].tiles_url;
-            if (!rasterUrl) return;
-            if (!map.getSource('raster-layer')) {
-              map.addSource('raster-layer', { type: 'raster', tiles: [rasterUrl], tileSize: 256, maxzoom: 18 });
-              map.addLayer({ id: 'raster-layer', type: 'raster', source: 'raster-layer', paint: { 'raster-opacity': 1 } });
-            } else {
-              try { map.getSource('raster-layer').setTiles([rasterUrl]); } catch (e) {}
-            }
-            var fitB = null;
-            if (info.features_bbox && isUsableBbox(info.features_bbox)) fitB = info.features_bbox;
-            else if (extent && extent.bbox && isUsableBbox(extent.bbox[0])) fitB = extent.bbox[0];
-            if (fitB) {
-              var b = fitB;
-              var bboxGeojson = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[b[0],b[1]],[b[2],b[1]],[b[2],b[3]],[b[0],b[3]],[b[0],b[1]]]] } };
-              if (map.getSource('bbox')) {
-                try { map.getSource('bbox').setData(bboxGeojson); } catch (e) {}
-              } else {
-                map.addSource('bbox', { type: 'geojson', data: bboxGeojson });
-                map.addLayer({ id: 'bbox-line', type: 'line', source: 'bbox', paint: { 'line-color': '#58a6ff', 'line-width': 2 } });
-              }
-              try { map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40 }); } catch (e) {}
-              var wrap = document.getElementById('map-bbox-toggle-wrap');
-              if (wrap && map.getLayer('bbox-line')) {
-                wrap.style.display = '';
-                var chk = document.getElementById('map-toggle-bbox');
-                if (chk && !chk._geofastBboxBound) {
-                  chk._geofastBboxBound = true;
-                  chk.onchange = function() {
-                    try { map.setLayoutProperty('bbox-line', 'visibility', this.checked ? 'visible' : 'none'); } catch (e) {}
-                  };
-                }
-              }
-            }
-          })
-          .catch(function() {});
+        fetchRastersListJson().then(function(info) {
+          if (!info) return;
+          applyRasterCollectionOverlay(info);
+          __rasterListSig = rasterListSignature(info);
+          startRasterIngestPolling();
+        }).catch(function() {});
         return;
       } else if (tileUrlStatic) {
         var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
@@ -237,6 +273,18 @@
         map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
         applyBasemapFromSelect();
         addOverlayLayers();
+        if (collectionType === 'raster') {
+          document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState !== 'visible' || !map) return;
+            fetchRastersListJson().then(function(info) {
+              if (!info) return;
+              var sig = rasterListSignature(info);
+              if (sig === __rasterListSig) return;
+              __rasterListSig = sig;
+              applyRasterCollectionOverlay(info);
+            }).catch(function() {});
+          });
+        }
         if (map.getLayer('bbox-line')) {
           document.getElementById('map-bbox-toggle-wrap').style.display = '';
           document.getElementById('map-toggle-bbox').onchange = function() {

@@ -529,6 +529,96 @@
         applyBasemapFromSelect();
         sel.onchange = function() { try { localStorage.setItem('geofastmap-basemap', this.value); } catch(e) {} applyBasemapFromSelect(); };
         if (collectionType === 'raster') {
+          var __rasterEditPollTimer = null;
+          var __rasterEditListSig = null;
+          function rasterListSignature(info) {
+            if (!info) return '';
+            var ic = info.item_count != null ? info.item_count : ((info.items || []).length || 0);
+            var mv = info.mosaic_version_id != null ? String(info.mosaic_version_id) : '';
+            var u = info.mosaic_tiles_url;
+            if (!u && info.items && info.items.length === 1 && info.items[0].tiles_url) u = info.items[0].tiles_url;
+            return mv + '\t' + ic + '\t' + (u || '');
+          }
+          function fetchRastersListJson() {
+            return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters', {
+              headers: { 'Accept': 'application/json' },
+              cache: 'no-store'
+            }).then(function(r) { return r.ok ? r.json() : null; });
+          }
+          function applyCollectionRasterUnderlay(info) {
+            if (!info) return;
+            var rasterUrl = null;
+            if (info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
+            else if (info.items && info.items.length === 1 && info.items[0].tiles_url) rasterUrl = info.items[0].tiles_url;
+            if (!rasterUrl) return;
+            var liveMv = info.mosaic_version_id || '';
+            if (!map.getSource('collection-raster-underlay')) {
+              map.addSource('collection-raster-underlay', { type: 'raster', tiles: [rasterUrl], tileSize: 256, maxzoom: 18 });
+              map.addLayer({ id: 'collection-raster-underlay', type: 'raster', source: 'collection-raster-underlay', paint: { 'raster-opacity': 0.9 } });
+            } else {
+              try { map.getSource('collection-raster-underlay').setTiles([rasterUrl]); } catch (eT) {}
+            }
+            try { if (typeof map.triggerRepaint === 'function') map.triggerRepaint(); } catch (eR) {}
+            if (typeof GeofastmapRasterStyleEditor !== 'undefined') {
+              if (!window.__geofastRasterStyleEditorReady) {
+                window.__geofastRasterStyleEditorReady = true;
+                GeofastmapRasterStyleEditor.init({
+                  map: map,
+                  base: base,
+                  collectionId: collectionId,
+                  mosaicVersionId: liveMv,
+                  titilerConfigured: titilerConfiguredFlag,
+                  tileAssetsLen: rasterTileAssetsLen,
+                  rasterItemCount: (info.item_count != null ? info.item_count : (info.items && info.items.length) || 0),
+                  bandCounts: rasterBandCounts,
+                  sourceId: 'collection-raster-underlay',
+                  layerId: 'collection-raster-underlay'
+                });
+                if (defaultRasterStyle && defaultRasterStyle.style_spec && typeof GeofastmapRasterStyleEditor.applySpec === 'function') {
+                  try { GeofastmapRasterStyleEditor.applySpec(defaultRasterStyle.style_spec); } catch (eRS) {}
+                }
+                wireRasterStyleLoadSave();
+                window.setTimeout(function() {
+                  try {
+                    if (window.GeofastmapRasterStyleEditor && typeof window.GeofastmapRasterStyleEditor.refreshLayer === 'function') {
+                      window.GeofastmapRasterStyleEditor.refreshLayer();
+                    }
+                  } catch (eRf) {}
+                }, 0);
+              } else {
+                if (typeof GeofastmapRasterStyleEditor.setMosaicVersionId === 'function') GeofastmapRasterStyleEditor.setMosaicVersionId(liveMv);
+                if (typeof GeofastmapRasterStyleEditor.setRasterItemCount === 'function') {
+                  GeofastmapRasterStyleEditor.setRasterItemCount((info.item_count != null ? info.item_count : (info.items && info.items.length) || 0));
+                }
+                try { map.getSource('collection-raster-underlay').setTiles([rasterUrl]); } catch (e2) {}
+                try {
+                  if (window.GeofastmapRasterStyleEditor && typeof window.GeofastmapRasterStyleEditor.refreshLayer === 'function') {
+                    window.GeofastmapRasterStyleEditor.refreshLayer();
+                  }
+                } catch (eRf2) {}
+              }
+            }
+            if (info.features_bbox && isUsableBbox(info.features_bbox)) {
+              var fb = info.features_bbox;
+              try { map.fitBounds([[fb[0], fb[1]], [fb[2], fb[3]]], { padding: 60 }); } catch (eFb) {}
+            }
+          }
+          function startRasterEditPolling() {
+            if (__rasterEditPollTimer) clearInterval(__rasterEditPollTimer);
+            var n = 0;
+            var maxPolls = 60;
+            __rasterEditPollTimer = setInterval(function() {
+              n++;
+              if (n > maxPolls) { clearInterval(__rasterEditPollTimer); __rasterEditPollTimer = null; return; }
+              fetchRastersListJson().then(function(info) {
+                if (!info) return;
+                var sig = rasterListSignature(info);
+                if (sig === __rasterEditListSig) return;
+                __rasterEditListSig = sig;
+                applyCollectionRasterUnderlay(info);
+              }).catch(function() {});
+            }, 2000);
+          }
           function wireRasterStyleLoadSave() {
               var styleListCacheRaster = { '': null };
               function safeJsonResponse(r) {
@@ -811,61 +901,24 @@
               }).catch(function() {});
           }
 
-          fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters', { headers: { 'Accept': 'application/json' } })
-            .then(function(r) { return r.ok ? r.json() : null; })
+          fetchRastersListJson()
             .then(function(info) {
               if (!info) return;
-              var rasterUrl = null;
-              if (info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
-              else if (info.items && info.items.length === 1 && info.items[0].tiles_url) rasterUrl = info.items[0].tiles_url;
-              if (!rasterUrl) return;
-              var liveMv = info.mosaic_version_id || '';
-              if (!map.getSource('collection-raster-underlay')) {
-                map.addSource('collection-raster-underlay', { type: 'raster', tiles: [rasterUrl], tileSize: 256, maxzoom: 18 });
-                map.addLayer({ id: 'collection-raster-underlay', type: 'raster', source: 'collection-raster-underlay', paint: { 'raster-opacity': 0.9 } });
-              } else {
-                try { map.getSource('collection-raster-underlay').setTiles([rasterUrl]); } catch (eT) {}
-              }
-              if (typeof GeofastmapRasterStyleEditor !== 'undefined') {
-                if (!window.__geofastRasterStyleEditorReady) {
-                  window.__geofastRasterStyleEditorReady = true;
-                  GeofastmapRasterStyleEditor.init({
-                    map: map,
-                    base: base,
-                    collectionId: collectionId,
-                    mosaicVersionId: liveMv,
-                    titilerConfigured: titilerConfiguredFlag,
-                    tileAssetsLen: rasterTileAssetsLen,
-                    rasterItemCount: (info.item_count != null ? info.item_count : (info.items && info.items.length) || 0),
-                    bandCounts: rasterBandCounts,
-                    sourceId: 'collection-raster-underlay',
-                    layerId: 'collection-raster-underlay'
-                  });
-                  if (defaultRasterStyle && defaultRasterStyle.style_spec && typeof GeofastmapRasterStyleEditor.applySpec === 'function') {
-                    try { GeofastmapRasterStyleEditor.applySpec(defaultRasterStyle.style_spec); } catch (eRS) {}
-                  }
-                  wireRasterStyleLoadSave();
-                  window.setTimeout(function() {
-                    try {
-                      if (window.GeofastmapRasterStyleEditor && typeof window.GeofastmapRasterStyleEditor.refreshLayer === 'function') {
-                        window.GeofastmapRasterStyleEditor.refreshLayer();
-                      }
-                    } catch (eRf) {}
-                  }, 0);
-                } else {
-                  if (typeof GeofastmapRasterStyleEditor.setMosaicVersionId === 'function') GeofastmapRasterStyleEditor.setMosaicVersionId(liveMv);
-                  if (typeof GeofastmapRasterStyleEditor.setRasterItemCount === 'function') {
-                    GeofastmapRasterStyleEditor.setRasterItemCount((info.item_count != null ? info.item_count : (info.items && info.items.length) || 0));
-                  }
-                  try { map.getSource('collection-raster-underlay').setTiles([rasterUrl]); } catch (e2) {}
-                }
-              }
-              if (info.features_bbox && isUsableBbox(info.features_bbox)) {
-                var fb = info.features_bbox;
-                try { map.fitBounds([[fb[0], fb[1]], [fb[2], fb[3]]], { padding: 60 }); } catch (eFb) {}
-              }
+              applyCollectionRasterUnderlay(info);
+              __rasterEditListSig = rasterListSignature(info);
+              startRasterEditPolling();
             })
             .catch(function() {});
+          document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState !== 'visible' || !map) return;
+            fetchRastersListJson().then(function(info) {
+              if (!info) return;
+              var sig = rasterListSignature(info);
+              if (sig === __rasterEditListSig) return;
+              __rasterEditListSig = sig;
+              applyCollectionRasterUnderlay(info);
+            }).catch(function() {});
+          });
         }
         if (tileUrlStatic) {
         var tileSpec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};

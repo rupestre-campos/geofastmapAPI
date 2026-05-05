@@ -230,7 +230,11 @@ async def list_raster_items(
             "collection_dem_encoding": collection_dem_encoding,
             "features_bbox": features_bbox,
             "items": items,
-        }
+        },
+        headers={
+            # Maps poll this after ingest; avoid stale JSON behind proxies or the browser cache.
+            "Cache-Control": "no-store, max-age=0",
+        },
     )
 
 
