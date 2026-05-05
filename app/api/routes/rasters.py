@@ -459,7 +459,7 @@ async def get_raster_collection_tile(
     request_keys = frozenset(request.query_params.keys())
     # Avoid forwarding duplicate keys Titiler may reject (mv is set above for mosaic).
     for k, v in request.query_params.multi_items():
-        if k in ("mode", "feature_id", "style_id", "dem_encoding", "mv", "sv"):
+        if k in ("mode", "feature_id", "style_id", "dem_encoding", "mv", "sv", "demv"):
             continue
         params.append((k, v))
     dem_encoding_q = request.query_params.get("dem_encoding")
@@ -624,7 +624,7 @@ async def get_raster_collection_terrain_tilejson(
             raise HTTPException(status_code=400, detail="No DEM-marked raster items found in collection")
         if merged[0] <= merged[2] and merged[1] <= merged[3]:
             bounds = merged
-    params = [("mode", selected_mode), ("dem_encoding", algorithm)]
+    params = [("mode", selected_mode), ("dem_encoding", algorithm), ("demv", "2")]
     if selected_feature_id:
         params.append(("feature_id", selected_feature_id))
     tile_url = (
