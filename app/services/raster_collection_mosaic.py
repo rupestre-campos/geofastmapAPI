@@ -25,6 +25,7 @@ from typing import Any
 from urllib.parse import quote
 
 import redis
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import features as features_crud
