@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from pathlib import Path
 from urllib.parse import quote
@@ -32,6 +31,12 @@ from app.services.raster_batch import (
     RasterBatchUploadTooLargeError,
     write_raster_batch_archive,
 )
+from app.services.raster_mosaic_version import (
+    MOSAIC_TILE_CACHE_CONTROL,
+    MOSAIC_TILE_CACHE_CONTROL_LEGACY,
+    compute_mosaic_version_id,
+    mosaic_mv_matches_request,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -49,13 +54,6 @@ async def _raster_collection_item_ids(db: AsyncSession, collection_id: str) -> l
         {"cid": collection_id},
     )
     return [r.id for r in q.fetchall()]
-
-
-def _mosaic_version_id(collection_id: str, item_ids: list[str]) -> str | None:
-    if not item_ids:
-        return None
-    raw = f"{collection_id}:{','.join(item_ids)}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def _normalize_dem_encoding(value: str | None) -> str:
@@ -172,7 +170,7 @@ async def list_raster_items(
     ensure_raster_collection(collection)
     base = _base_url(request)
     item_ids = await _raster_collection_item_ids(db, collection_id)
-    mosaic_vid = _mosaic_version_id(collection_id, item_ids)
+    mosaic_vid = compute_mosaic_version_id(collection_id, item_ids)
     collection_is_dem, collection_dem_encoding = _collection_dem_settings(collection)
     items = []
     for fid in item_ids:
@@ -376,6 +374,7 @@ async def get_raster_collection_tile(
         raise HTTPException(status_code=503, detail="Titiler internal fetch is not configured")
 
     item_ids = await _raster_collection_item_ids(db, collection_id)
+    response_headers: dict[str, str] = {}
     # Prefer mosaic for collection previews (single- or multi-item); explicit mode=item still supported.
     mode = (mode or ("mosaic" if item_ids else "item")).lower()
     params: list[tuple[str, str]] = []
@@ -418,15 +417,30 @@ async def get_raster_collection_tile(
                 )
         params.append(("url", cog_url))
     else:
+        if not item_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No raster items in this collection for mosaic mode.",
+            )
+        expected_mv = compute_mosaic_version_id(collection_id, item_ids)
+        mv_client_raw = request.query_params.get("mv")
+        mv_client = (mv_client_raw or "").strip() or None
+        if mv_client is not None and not mosaic_mv_matches_request(mv_client, expected_mv):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Mosaic version mismatch; reload collection metadata or open a fresh map layer.",
+            )
         mosaic_url = (
             f"{fetch_base}/internal/collections/{collection_id}/rasters/mosaic.json"
             f"?token={quote(secret, safe='')}"
         )
         upstream = f"{titiler}/mosaicjson/tiles/{tile_matrix_set_id}/{z}/{x}/{y}.{ext}"
         params.append(("url", mosaic_url))
-        mv = request.query_params.get("mv")
-        if mv:
-            params.append(("mv", mv))
+        params.append(("mv", expected_mv))
+        if mv_client and mosaic_mv_matches_request(mv_client, expected_mv):
+            response_headers["Cache-Control"] = MOSAIC_TILE_CACHE_CONTROL
+        else:
+            response_headers["Cache-Control"] = MOSAIC_TILE_CACHE_CONTROL_LEGACY
     request_keys = frozenset(request.query_params.keys())
     # Avoid forwarding duplicate keys Titiler may reject (mv is set above for mosaic).
     for k, v in request.query_params.multi_items():
@@ -520,7 +534,11 @@ async def get_raster_collection_tile(
                 max_len=1000,
             ),
         )
-    return Response(content=resp.content, media_type=resp.headers.get("content-type", "image/png"))
+    return Response(
+        content=resp.content,
+        media_type=resp.headers.get("content-type", "image/png"),
+        headers=response_headers,
+    )
 
 
 @router.get(

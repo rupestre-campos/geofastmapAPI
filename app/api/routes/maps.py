@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 import uuid
-import hashlib
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
@@ -32,6 +31,7 @@ from app.models.collection import VISIBILITY_PUBLIC
 from app.models.resource_share import RESOURCE_TYPE_MAP
 from app.schemas.map import MapCreate, MapUpdate
 from app.schemas.resource_share import ShareAdd, ShareRead
+from app.services.raster_mosaic_version import compute_mosaic_version_id
 from app.utils.thumbnail import image_to_thumbnail
 
 router = APIRouter()
@@ -105,8 +105,7 @@ async def _definition_with_mosaic_tile_revision_urls(
                             {"cid": cid},
                         )
                         ids = [r.id for r in q.fetchall()]
-                        if len(ids) > 1:
-                            mv = hashlib.sha256(f"{cid}:{','.join(ids)}".encode()).hexdigest()[:16]
+                        mv = compute_mosaic_version_id(cid, ids)
                     tile_url = (
                         f"{base}/collections/{cid}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
                         f"?mode={mode}"

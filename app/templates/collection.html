@@ -115,7 +115,6 @@
 
     var pointFilter = GeofastmapUtils.pointFilter;
     var notPointFilter = GeofastmapUtils.notPointFilter;
-    var __rasterPollTimer = null;
     var __rasterListSig = null;
     function rasterListSignature(info) {
       if (!info) return '';
@@ -170,29 +169,12 @@
         }
       }
     }
-    function startRasterIngestPolling() {
-      if (__rasterPollTimer) clearInterval(__rasterPollTimer);
-      var n = 0;
-      var maxPolls = 60;
-      __rasterPollTimer = setInterval(function() {
-        n++;
-        if (n > maxPolls) { clearInterval(__rasterPollTimer); __rasterPollTimer = null; return; }
-        fetchRastersListJson().then(function(info) {
-          if (!info) return;
-          var sig = rasterListSignature(info);
-          if (sig === __rasterListSig) return;
-          __rasterListSig = sig;
-          applyRasterCollectionOverlay(info);
-        }).catch(function() {});
-      }, 2000);
-    }
     function addOverlayLayers() {
       if (collectionType === 'raster') {
         fetchRastersListJson().then(function(info) {
           if (!info) return;
           applyRasterCollectionOverlay(info);
           __rasterListSig = rasterListSignature(info);
-          startRasterIngestPolling();
         }).catch(function() {});
         return;
       } else if (tileUrlStatic) {

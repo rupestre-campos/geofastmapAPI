@@ -529,7 +529,6 @@
         applyBasemapFromSelect();
         sel.onchange = function() { try { localStorage.setItem('geofastmap-basemap', this.value); } catch(e) {} applyBasemapFromSelect(); };
         if (collectionType === 'raster') {
-          var __rasterEditPollTimer = null;
           var __rasterEditListSig = null;
           function rasterListSignature(info) {
             if (!info) return '';
@@ -602,22 +601,6 @@
               var fb = info.features_bbox;
               try { map.fitBounds([[fb[0], fb[1]], [fb[2], fb[3]]], { padding: 60 }); } catch (eFb) {}
             }
-          }
-          function startRasterEditPolling() {
-            if (__rasterEditPollTimer) clearInterval(__rasterEditPollTimer);
-            var n = 0;
-            var maxPolls = 60;
-            __rasterEditPollTimer = setInterval(function() {
-              n++;
-              if (n > maxPolls) { clearInterval(__rasterEditPollTimer); __rasterEditPollTimer = null; return; }
-              fetchRastersListJson().then(function(info) {
-                if (!info) return;
-                var sig = rasterListSignature(info);
-                if (sig === __rasterEditListSig) return;
-                __rasterEditListSig = sig;
-                applyCollectionRasterUnderlay(info);
-              }).catch(function() {});
-            }, 2000);
           }
           function wireRasterStyleLoadSave() {
               var styleListCacheRaster = { '': null };
@@ -906,7 +889,6 @@
               if (!info) return;
               applyCollectionRasterUnderlay(info);
               __rasterEditListSig = rasterListSignature(info);
-              startRasterEditPolling();
             })
             .catch(function() {});
           document.addEventListener('visibilitychange', function() {

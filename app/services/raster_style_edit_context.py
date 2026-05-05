@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from sqlalchemy import text
@@ -10,13 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.crud import features as features_crud
-
-
-def mosaic_version_id(collection_id: str, item_ids: list[str]) -> str | None:
-    if not item_ids:
-        return None
-    raw = f"{collection_id}:{','.join(item_ids)}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+from app.services.raster_mosaic_version import compute_mosaic_version_id
 
 
 def _band_count_from_feature(f) -> int:
@@ -38,7 +31,7 @@ async def get_raster_style_edit_context(db: AsyncSession, collection_id: str) ->
         {"cid": collection_id},
     )
     item_ids = [r.id for r in q.fetchall()]
-    mv = mosaic_version_id(collection_id, item_ids)
+    mv = compute_mosaic_version_id(collection_id, item_ids)
     band_counts: dict[str, int] = {}
     per_item_counts: list[int] = []
     tile_assets: list[dict[str, str]] = []
