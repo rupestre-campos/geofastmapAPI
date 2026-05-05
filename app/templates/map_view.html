@@ -311,7 +311,10 @@
         var sel = document.getElementById('map-basemap');
         GeofastmapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
         var initialId = (mapBasemap && BASEMAPS[mapBasemap]) ? mapBasemap : null;
-        try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch(e) {}
+        // Saved map basemap must win. localStorage is only a fallback when map has no saved basemap.
+        if (!initialId) {
+          try { var s = localStorage.getItem('geofastmap-basemap'); if (s && BASEMAPS[s]) initialId = s; } catch(e) {}
+        }
         if (!initialId && basemapList.length) initialId = basemapList[0].id;
         if (!initialId && BASEMAPS.osm) initialId = 'osm';
         var initial = (initialId && BASEMAPS[initialId]) ? BASEMAPS[initialId] : (BASEMAPS.osm || (basemapList[0] && BASEMAPS[basemapList[0].id]));
