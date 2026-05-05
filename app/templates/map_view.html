@@ -345,6 +345,7 @@
         var btn = document.getElementById('btn-terrain-toggle');
         var ctrls = document.getElementById('terrain-controls');
         var val = document.getElementById('terrain-exaggeration-value');
+        var slider = document.getElementById('terrain-exaggeration');
         if (!btn || !ctrls || !val) return;
         if (!terrainSourceId) {
           btn.style.display = 'none';
@@ -354,6 +355,7 @@
         btn.style.display = '';
         btn.textContent = '3D: ' + (terrainEnabled ? 'On' : 'Off');
         ctrls.classList.toggle('active', terrainEnabled);
+        if (slider) slider.value = String(clampTerrainExaggeration(terrainExaggeration));
         val.textContent = terrainExaggeration.toFixed(1) + 'x';
       }
       function applyTerrain() {
