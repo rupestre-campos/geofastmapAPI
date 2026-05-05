@@ -24,8 +24,7 @@ from app.services.bulk_queue import BulkJobPayload, enqueue, register_bulk_impor
 from app.services.bulk_storage import get_bulk_storage
 from app.services.collection_type_guard import ensure_raster_collection
 from app.services.job_store import create_job, update_job
-from app.services.mosaic_plan import build_mosaicjson_from_footprints
-from app.services.raster_collection_mosaic import collect_raster_collection_mosaic_pairs
+from app.services.raster_collection_mosaic import get_or_build_collection_mosaic
 from app.services.titiler_error_sanitize import sanitize_titiler_upstream_error_text
 from app.services.raster_batch import (
     RasterBatchUploadTooLargeError,
@@ -637,8 +636,10 @@ async def get_raster_collection_mosaic_json(
     if not item_ids:
         raise HTTPException(status_code=404, detail="No raster items found for this collection")
     settings = get_settings()
-    pairs = await collect_raster_collection_mosaic_pairs(db, collection_id, settings)
-    if not pairs:
+    try:
+        mosaic, mv = await get_or_build_collection_mosaic(
+            db, collection_id, settings, item_ids=item_ids
+        )
+    except ValueError:
         raise HTTPException(status_code=404, detail="No valid raster COG items found")
-    mosaic = build_mosaicjson_from_footprints(pairs)
-    return JSONResponse(content=mosaic)
+    return JSONResponse(content=mosaic, headers={"ETag": mv})

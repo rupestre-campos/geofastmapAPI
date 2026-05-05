@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -25,6 +27,8 @@ from app.services.mosaic_plan_jobs import (
     enqueue_mosaic_plan_subtask,
     set_mosaic_plan_job_progress,
 )
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -119,6 +123,7 @@ async def plan_mosaic_with_void_fill_distributed(
     swap_options_limit: int = 5,
     swap_options_offset: dict[str, int] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]], list[dict[str, Any]]]:
+    t_all = time.perf_counter()
     settings = get_settings()
     timeout_sec = max(10, int(settings.mosaic_subjob_round_timeout_seconds or 180))
     max_rounds = max(1, int(settings.mosaic_void_fill_max_rounds or 6))
@@ -133,6 +138,7 @@ async def plan_mosaic_with_void_fill_distributed(
     locked_date_window: tuple[date, date] | None = None
 
     for round_idx in range(max_rounds):
+        t_round = time.perf_counter()
         if round_idx == 0:
             q_bboxes = split_initial_search_bboxes([float(x) for x in search_bbox])
         else:
@@ -187,27 +193,40 @@ async def plan_mosaic_with_void_fill_distributed(
         )
         results: list[dict[str, Any]] = []
         done_count = 0
-        for i in range(0, len(shard_rows), shard_wave):
-            wave = shard_rows[i : i + shard_wave]
-            expected = 0
-            for shard_key, payload in wave:
+        next_idx = 0
+        in_flight = 0
+        ttl_seconds = max(600, int(settings.mosaic_subjob_result_ttl_seconds or 3600))
+        # Slot-based dispatch: enqueue new shard work as soon as one result arrives.
+        queue_wait_ms = 0
+        while done_count < children_total:
+            while in_flight < shard_wave and next_idx < children_total:
+                shard_key, payload = shard_rows[next_idx]
                 enqueue_mosaic_plan_subtask(
                     job_id=job_id,
                     owner_id=owner_id,
                     round_idx=round_idx,
                     shard_key=shard_key,
                     payload=payload,
-                    ttl_seconds=max(600, int(settings.mosaic_subjob_result_ttl_seconds or 3600)),
+                    ttl_seconds=ttl_seconds,
                 )
-                expected += 1
-            wave_results = await await_mosaic_plan_subtask_results(
+                in_flight += 1
+                next_idx += 1
+            if in_flight <= 0:
+                break
+            t_wait = time.perf_counter()
+            got = await await_mosaic_plan_subtask_results(
                 job_id=job_id,
                 round_idx=round_idx,
-                expected_count=expected,
+                expected_count=1,
                 timeout_seconds=timeout_sec,
             )
-            results.extend(wave_results)
-            done_count += len(wave_results)
+            queue_wait_ms += int((time.perf_counter() - t_wait) * 1000)
+            if not got:
+                break
+            results.extend(got)
+            step = len(got)
+            done_count += step
+            in_flight = max(0, in_flight - step)
             set_mosaic_plan_job_progress(
                 job_id,
                 phase="collecting_subjobs",
@@ -248,6 +267,16 @@ async def plan_mosaic_with_void_fill_distributed(
             children_done=ok + fail,
             children_failed=fail,
             features_seen=len(merged),
+        )
+        log.info(
+            "mosaic distributed round done job_id=%s round=%d children_total=%d children_done=%d children_failed=%d queue_wait_ms=%d elapsed_ms=%d",
+            job_id,
+            round_idx + 1,
+            children_total,
+            ok + fail,
+            fail,
+            queue_wait_ms,
+            int((time.perf_counter() - t_round) * 1000),
         )
 
         lock_for_plan = locked_date_window if round_idx == 0 else None
@@ -303,4 +332,12 @@ async def plan_mosaic_with_void_fill_distributed(
         if cid:
             err_map[cid] = str(e.get("detail") or "")
     errors_out = [{"catalog_id": k, "detail": v} for k, v in err_map.items()]
+    log.info(
+        "mosaic distributed plan done job_id=%s rounds=%s features=%d errors=%d elapsed_ms=%d",
+        job_id,
+        last_result.get("void_fill_rounds"),
+        len(merged),
+        len(errors_out),
+        int((time.perf_counter() - t_all) * 1000),
+    )
     return last_result, errors_out, list(merged.values())

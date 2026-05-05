@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 import uuid
 from datetime import datetime
 from typing import Any
@@ -20,6 +21,7 @@ MOSAIC_PLAN_SUBTASK_RESULT_KEY = "geofastmap:mosaic_plan_subtask_result:"
 MOSAIC_PLAN_FOOTPRINT_SUBTASK_QUEUE_KEY = "geofastmap:mosaic_footprint_subtask_queue"
 MOSAIC_PLAN_FOOTPRINT_SUBTASK_KEY_PREFIX = "geofastmap:mosaic_footprint_subtask:"
 MOSAIC_PLAN_FOOTPRINT_SUBTASK_RESULT_KEY = "geofastmap:mosaic_footprint_subtask_result:"
+_LAST_PROGRESS_WRITE_TS: dict[str, float] = {}
 
 
 def _redis():
@@ -92,6 +94,12 @@ def set_mosaic_plan_job_status(job_id: str, status: str, *, message: str | None 
 
 def set_mosaic_plan_job_progress(job_id: str, **fields: Any) -> None:
     """Update heartbeat/progress fields without forcing terminal status."""
+    now_mono = time.monotonic()
+    min_interval = max(0.5, float(get_settings().mosaic_job_heartbeat_seconds or 10) / 4.0)
+    has_important = any(k in fields for k in ("phase", "round", "children_done", "children_failed"))
+    last = _LAST_PROGRESS_WRITE_TS.get(job_id, 0.0)
+    if not has_important and (now_mono - last) < min_interval:
+        return
     mapping: dict[str, str] = {
         "updated_at": _to_iso_now(),
     }
@@ -103,6 +111,7 @@ def set_mosaic_plan_job_progress(job_id: str, **fields: Any) -> None:
         else:
             mapping[str(k)] = str(v)
     _redis().hset(_job_key(job_id), mapping=mapping)
+    _LAST_PROGRESS_WRITE_TS[job_id] = now_mono
 
 
 def set_mosaic_plan_job_result(

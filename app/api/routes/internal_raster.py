@@ -17,8 +17,7 @@ from app.crud import raster_views as raster_views_crud
 from app.db.session import get_db
 from app.models.user import User
 from app.services.coverages import cog_path_for
-from app.services.mosaic_plan import build_mosaicjson_from_footprints
-from app.services.raster_collection_mosaic import collect_raster_collection_mosaic_pairs
+from app.services.raster_collection_mosaic import get_or_build_collection_mosaic
 
 router = APIRouter()
 
@@ -145,8 +144,12 @@ async def internal_fetch_collection_mosaic_json(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    pairs = await collect_raster_collection_mosaic_pairs(db, collection_id, settings)
-    if not pairs:
+    try:
+        mosaic, mv = await get_or_build_collection_mosaic(db, collection_id, settings)
+    except ValueError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    mosaic = build_mosaicjson_from_footprints(pairs)
-    return Response(content=json.dumps(mosaic, separators=(",", ":")), media_type="application/json")
+    return Response(
+        content=json.dumps(mosaic, separators=(",", ":")),
+        media_type="application/json",
+        headers={"Cache-Control": "private, max-age=0, must-revalidate", "ETag": mv},
+    )

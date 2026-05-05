@@ -222,6 +222,34 @@ The greedy **`plan_mosaic_from_features`** step (Shapely, selection) is **CPU-he
 - For **local-only** footprint attach, raise **`MOSAIC_FOOTPRINT_CPU_MAX_CONCURRENT`** (and **`MOSAIC_FOOTPRINT_FETCH_MAX_CONCURRENT`**) so thumbnail decode/geometry uses more `asyncio.to_thread` capacity. With **distributed footprints**, that load moves to workers that dequeue the footprint queue.
 - Optionally set **`MOSAIC_WORKER_MAX_CONCURRENT` > `1`** in one process to overlap **multiple** parent jobs (each greedy phase still ~one thread at a time per job).
 
+**500-raster baseline profile (single 8-core host)**
+
+- API: set **`API_UVICORN_WORKERS=8`** (or lower if workers share the same CPU budget tightly).
+- Keep these values aligned on API + mosaic workers:
+  - **`MOSAIC_QUEUE_TYPE=redis`**
+  - **`MOSAIC_SUBJOB_QUEUE_ENABLED=true`**
+  - **`MOSAIC_SUBJOB_WORKER_CONCURRENCY=4`**
+  - **`MOSAIC_SUBJOB_BBOX_DATETIME_PARALLELISM=8`**
+  - **`MOSAIC_SUBJOB_CATALOG_PARALLELISM=8`**
+  - **`MOSAIC_SUBJOB_ROUND_TIMEOUT_SECONDS=300`**
+- Throughput defaults for large collections:
+  - **`MOSAIC_STAC_BBOX_PARALLELISM=12`**
+  - **`MOSAIC_STAC_DATETIME_PARALLELISM=8`**
+  - **`MOSAIC_STAC_CATALOG_PARALLELISM=8`**
+  - **`MOSAIC_STAC_TOTAL_INFLIGHT_MAX=24`**
+  - **`MOSAIC_FOOTPRINT_FETCH_MAX_CONCURRENT=12`**
+  - **`MOSAIC_FOOTPRINT_CPU_MAX_CONCURRENT=6`**
+
+**Performance acceptance metrics**
+
+For a synthetic run of one ~500-raster collection (fixed AOI/date), compare before/after:
+
+- Planner wall time (**p50 / p95**) from job enqueue to completed result.
+- Queue stall ratio: `collecting_subjobs` queue-wait time divided by round elapsed time.
+- DB pressure during collection mosaic build: query count and cumulative DB time.
+- Worker utilization: parent/subtask slots active vs configured concurrency.
+- Time until first collection mosaic.json is ready (pre-TiTiler), then first tile request latency.
+
 **Other useful flags**
 
 | Variable | Purpose |

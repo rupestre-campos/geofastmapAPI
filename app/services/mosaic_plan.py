@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -872,6 +873,7 @@ def build_mosaicjson_from_footprints(
     maxzoom: int = 18,
 ) -> dict[str, Any]:
     """Build MosaicJSON 0.0.3 with `tiles` quadkey index (Titiler / rio-tiler)."""
+    t0 = time.perf_counter()
     if not items:
         raise ValueError("No raster assets for mosaic")
     urls = [x[0] for x in items]
@@ -881,17 +883,33 @@ def build_mosaicjson_from_footprints(
     # Finer index than z=7 helps Titiler pick the right COGs near footprint boundaries (neighbors).
     quadkey_zoom = min(14, max(minzoom, 9))
     tiles: dict[str, list[str]] = {}
+    tree = STRtree(geoms) if geoms else None
+    geom_url_map: dict[bytes, list[str]] = defaultdict(list)
+    for i, g in enumerate(geoms):
+        try:
+            geom_url_map[g.wkb].append(urls[i])
+        except Exception:
+            continue
     for tile in mercantile.tiles(west, south, east, north, [quadkey_zoom]):
         qk = mercantile.quadkey(tile)
         b = mercantile.bounds(tile)
         tb = box(b.west, b.south, b.east, b.north)
         here: list[str] = []
         seen: set[str] = set()
-        for url, g in zip(urls, geoms):
+        candidates = geoms
+        if tree is not None:
             try:
-                if tb.intersects(g) and url not in seen:
-                    seen.add(url)
-                    here.append(url)
+                candidates = list(tree.query(tb))
+            except Exception:
+                candidates = geoms
+        for g in candidates:
+            try:
+                if not tb.intersects(g):
+                    continue
+                for url in geom_url_map.get(g.wkb, []):
+                    if url not in seen:
+                        seen.add(url)
+                        here.append(url)
             except Exception:
                 continue
         if here:
@@ -900,7 +918,7 @@ def build_mosaicjson_from_footprints(
     if not tiles:
         qk = mercantile.quadkey(mercantile.Tile(x=0, y=0, z=0))
         tiles[qk] = list(dict.fromkeys(urls))
-    return {
+    out = {
         "mosaicjson": "0.0.3",
         "version": "1.0.0",
         "minzoom": minzoom,
@@ -910,6 +928,14 @@ def build_mosaicjson_from_footprints(
         "center": [(west + east) / 2, (south + north) / 2, minzoom],
         "tiles": tiles,
     }
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    out["build_stats"] = {
+        "asset_count": len(urls),
+        "quadkey_count": len(tiles),
+        "quadkey_zoom": quadkey_zoom,
+        "elapsed_ms": elapsed_ms,
+    }
+    return out
 
 
 def bbox_union_from_geoms(geoms: list[Polygon]) -> list[float]:

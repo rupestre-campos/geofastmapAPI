@@ -18,15 +18,19 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+import json
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from sqlalchemy import text
+import redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import features as features_crud
+from app.services.mosaic_plan import build_mosaicjson_from_footprints
 from app.services.coverages import cog_path_for
+from app.services.raster_mosaic_version import compute_mosaic_version_id
 
 log = logging.getLogger(__name__)
 
@@ -89,19 +93,13 @@ async def collect_raster_collection_mosaic_pairs(
     for :func:`app.services.mosaic_plan.build_mosaicjson_from_footprints`.
     """
     from shapely.geometry import box, shape
-    from app.utils.geo import geometry_to_geojson
-
-    ids_r = await db.execute(
-        text("SELECT DISTINCT id FROM features WHERE collection_id = :cid ORDER BY id"),
-        {"cid": collection_id},
-    )
-    ids = [r.id for r in ids_r.fetchall()]
+    t0 = time.perf_counter()
+    rows = await features_crud.list_raster_feature_rows_for_collection(db, collection_id)
     pairs: list[tuple[str, Any]] = []
-
-    for fid in ids:
-        feature = await features_crud.get_feature(db, collection_id, fid)
-        if not feature:
-            continue
+    skipped_missing_cog = 0
+    skipped_missing_geom = 0
+    for feature in rows:
+        fid = str(feature.id)
         props = feature.properties or {}
         raster = props.get("raster") if isinstance(props, dict) else None
         cog_path = raster.get("cog_path") if isinstance(raster, dict) else None
@@ -114,6 +112,7 @@ async def collect_raster_collection_mosaic_pairs(
             db_cog_path=cog_path if isinstance(cog_path, str) else None,
         )
         if not href:
+            skipped_missing_cog += 1
             log.warning(
                 "raster mosaic skip: no COG file on API host collection_id=%s feature_id=%s",
                 collection_id,
@@ -121,7 +120,7 @@ async def collect_raster_collection_mosaic_pairs(
             )
             continue
 
-        gj = geometry_to_geojson(feature.geometry) if feature.geometry is not None else None
+        gj = feature.geometry_geojson if isinstance(feature.geometry_geojson, dict) else None
         geom_shp = None
         if gj:
             try:
@@ -137,6 +136,7 @@ async def collect_raster_collection_mosaic_pairs(
                 except (TypeError, ValueError):
                     geom_shp = None
         if geom_shp is None or getattr(geom_shp, "is_empty", True):
+            skipped_missing_geom += 1
             log.warning(
                 "raster mosaic skip: no footprint geometry collection_id=%s feature_id=%s",
                 collection_id,
@@ -147,5 +147,83 @@ async def collect_raster_collection_mosaic_pairs(
             pairs.append((href, geom_shp))
         except Exception:
             continue
-
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    log.info(
+        "raster mosaic pairs built collection_id=%s total=%d pairs=%d skipped_cog=%d skipped_geom=%d elapsed_ms=%d",
+        collection_id,
+        len(rows),
+        len(pairs),
+        skipped_missing_cog,
+        skipped_missing_geom,
+        elapsed_ms,
+    )
     return pairs
+
+
+def _mosaic_cache_key(collection_id: str, mosaic_version_id: str) -> str:
+    return f"geofastmap:raster_collection_mosaic:{collection_id}:{mosaic_version_id}"
+
+
+def _mosaic_cache_ttl_seconds(settings: Any) -> int:
+    try:
+        ttl = int(getattr(settings, "titiler_mosaic_tile_cache_ttl_seconds", 0) or 0)
+    except Exception:
+        ttl = 0
+    if ttl <= 0:
+        try:
+            ttl = int(getattr(settings, "titiler_tile_cache_ttl_seconds", 3600) or 3600)
+        except Exception:
+            ttl = 3600
+    return max(120, ttl)
+
+
+def _redis_client(settings: Any):
+    url = getattr(settings, "redis_url", None)
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        return redis.from_url(url.strip(), decode_responses=True)
+    except Exception:
+        return None
+
+
+async def get_or_build_collection_mosaic(
+    db: AsyncSession,
+    collection_id: str,
+    settings: Any,
+    *,
+    item_ids: list[str] | None = None,
+) -> tuple[dict[str, Any], str]:
+    ids = list(item_ids or [])
+    if not ids:
+        rows = await db.execute(
+            text("SELECT DISTINCT id FROM features WHERE collection_id = :cid ORDER BY id"),
+            {"cid": collection_id},
+        )
+        ids = [str(r.id) for r in rows.fetchall()]
+    mv = compute_mosaic_version_id(collection_id, ids)
+    key = _mosaic_cache_key(collection_id, mv)
+    r = _redis_client(settings)
+    if r is not None:
+        try:
+            raw = r.get(key)
+            if raw:
+                payload = json.loads(raw)
+                if isinstance(payload, dict):
+                    payload.setdefault("mosaic_version_id", mv)
+                    payload.setdefault("collection_id", collection_id)
+                    return payload, mv
+        except Exception:
+            pass
+    pairs = await collect_raster_collection_mosaic_pairs(db, collection_id, settings)
+    if not pairs:
+        raise ValueError("No valid raster COG items found")
+    mosaic = build_mosaicjson_from_footprints(pairs)
+    mosaic["mosaic_version_id"] = mv
+    mosaic["collection_id"] = collection_id
+    if r is not None:
+        try:
+            r.setex(key, _mosaic_cache_ttl_seconds(settings), json.dumps(mosaic, separators=(",", ":")))
+        except Exception:
+            pass
+    return mosaic, mv

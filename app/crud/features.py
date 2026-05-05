@@ -167,6 +167,43 @@ async def list_features_for_collection(
     return [_row_to_logical_feature(row) for row in r.fetchall()]
 
 
+async def list_raster_feature_rows_for_collection(
+    db: AsyncSession, collection_id: str
+) -> Sequence[SimpleNamespace]:
+    """Return one logical row per raster id with lightweight geometry/properties for mosaic assembly.
+
+    Uses grouped SQL with ST_Envelope instead of ST_Union to avoid expensive per-id union work
+    when collections have many subdivided parts.
+    """
+    r = await db.execute(
+        text("""
+            SELECT id, collection_id,
+                   (array_agg(properties ORDER BY part_index))[1] AS properties,
+                   CAST(ST_AsGeoJSON(ST_Envelope(ST_Extent(geometry))) AS jsonb) AS geometry_geojson,
+                   min(created_at) AS created_at,
+                   max(updated_at) AS updated_at
+            FROM features
+            WHERE collection_id = :cid
+            GROUP BY id, collection_id
+            ORDER BY id
+        """),
+        {"cid": collection_id},
+    )
+    rows = []
+    for row in r.fetchall():
+        rows.append(
+            SimpleNamespace(
+                id=row.id,
+                collection_id=row.collection_id,
+                properties=row.properties,
+                geometry_geojson=row.geometry_geojson,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
+        )
+    return rows
+
+
 def _geojsonl_export_base_stmt(
     collection_id: str,
     *,
