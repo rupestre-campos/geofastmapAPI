@@ -23,6 +23,7 @@ from app.core.permissions import (
 )
 from app.crud import collections as collections_crud
 from app.crud import maps as maps_crud
+from app.crud import raster_styles as raster_styles_crud
 from app.crud import raster_views as raster_views_crud
 from app.crud import resource_share as resource_share_crud
 from app.crud import user as user_crud
@@ -38,6 +39,19 @@ router = APIRouter()
 
 ALLOWED_IMAGE_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB
+
+
+def _style_version_token(style) -> str:
+    if not style:
+        return "none"
+    ts = getattr(style, "updated_at", None)
+    sid = str(getattr(style, "id", "") or "")
+    if ts is None:
+        return sid or "default"
+    try:
+        return f"{sid}:{int(ts.timestamp())}" if sid else str(int(ts.timestamp()))
+    except Exception:
+        return sid or "default"
 
 # Saved map layers sometimes omit mosaic_view_id; titiler URL still contains the view UUID.
 _MOSAIC_VIEW_ID_IN_TILES_URL = re.compile(
@@ -84,6 +98,7 @@ async def _definition_with_mosaic_tile_revision_urls(
     if not isinstance(layers_in, list):
         return d
     new_layers: list = []
+    default_style_version_by_collection: dict[str, str] = {}
     for layer in layers_in:
         if not isinstance(layer, dict):
             new_layers.append(layer)
@@ -106,6 +121,11 @@ async def _definition_with_mosaic_tile_revision_urls(
                         )
                         ids = [r.id for r in q.fetchall()]
                         mv = compute_mosaic_version_id(cid, ids)
+                    sv = default_style_version_by_collection.get(cid)
+                    if sv is None:
+                        st = await raster_styles_crud.get_default_raster_style(db, cid)
+                        sv = _style_version_token(st)
+                        default_style_version_by_collection[cid] = sv
                     tile_url = (
                         f"{base}/collections/{cid}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
                         f"?mode={mode}"
@@ -116,6 +136,8 @@ async def _definition_with_mosaic_tile_revision_urls(
                         tile_url += f"&style_id={sid}"
                     if mv:
                         tile_url += f"&mv={mv}"
+                    if sv:
+                        tile_url += f"&sv={sv}"
                     lyr["tiles_url"] = tile_url
             new_layers.append(lyr)
             continue

@@ -65,6 +65,20 @@ def _maplibre_dem_encoding(algorithm: str) -> str:
     return "mapbox" if algorithm == "terrainrgb" else "terrarium"
 
 
+def _style_version_token(style) -> str:
+    if not style:
+        return "none"
+    ts = getattr(style, "updated_at", None)
+    sid = str(getattr(style, "id", "") or "")
+    if ts is None:
+        return sid or "default"
+    try:
+        # Second-level granularity is enough for cache-busting URL params.
+        return f"{sid}:{int(ts.timestamp())}" if sid else str(int(ts.timestamp()))
+    except Exception:
+        return sid or "default"
+
+
 def _collection_dem_settings(collection) -> tuple[bool, str]:
     rs = getattr(collection, "raster_settings", None)
     if not isinstance(rs, dict):
@@ -171,6 +185,8 @@ async def list_raster_items(
     item_ids = await _raster_collection_item_ids(db, collection_id)
     mosaic_vid = compute_mosaic_version_id(collection_id, item_ids)
     collection_is_dem, collection_dem_encoding = _collection_dem_settings(collection)
+    default_style = await raster_styles_crud.get_default_raster_style(db, collection_id)
+    style_version = _style_version_token(default_style)
     items = []
     for fid in item_ids:
         f = await features_crud.get_feature(db, collection_id, fid)
@@ -187,7 +203,7 @@ async def list_raster_items(
                 "dem_encoding": dem_encoding,
                 "tiles_url": (
                     f"{base}/collections/{collection_id}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
-                    f"?mode=item&feature_id={fid}"
+                    f"?mode=item&feature_id={fid}&sv={quote(style_version, safe='')}"
                 ),
                 "delete_url": f"{base}/collections/{collection_id}/items/{fid}",
                 "map_layer": {
@@ -197,7 +213,7 @@ async def list_raster_items(
                     "raster_feature_id": fid,
                     "tiles_url": (
                         f"{base}/collections/{collection_id}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
-                        f"?mode=item&feature_id={fid}"
+                        f"?mode=item&feature_id={fid}&sv={quote(style_version, safe='')}"
                     ),
                     "terrain_enabled": bool(is_dem or collection_is_dem),
                     "terrain_encoding": _maplibre_dem_encoding(dem_encoding if is_dem else collection_dem_encoding),
@@ -208,7 +224,7 @@ async def list_raster_items(
     if item_ids and mosaic_vid:
         mosaic_url = (
             f"{base}/collections/{collection_id}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
-            f"?mode=mosaic&mv={mosaic_vid}"
+            f"?mode=mosaic&mv={mosaic_vid}&sv={quote(style_version, safe='')}"
         )
     extent_fe = await collections_crud.get_collection_bbox_from_features(db, collection_id)
     features_bbox: list[float] | None = None
@@ -443,7 +459,7 @@ async def get_raster_collection_tile(
     request_keys = frozenset(request.query_params.keys())
     # Avoid forwarding duplicate keys Titiler may reject (mv is set above for mosaic).
     for k, v in request.query_params.multi_items():
-        if k in ("mode", "feature_id", "style_id", "dem_encoding", "mv"):
+        if k in ("mode", "feature_id", "style_id", "dem_encoding", "mv", "sv"):
             continue
         params.append((k, v))
     style = None
