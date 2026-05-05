@@ -462,6 +462,7 @@ async def get_raster_collection_tile(
         if k in ("mode", "feature_id", "style_id", "dem_encoding", "mv", "sv"):
             continue
         params.append((k, v))
+    dem_encoding_q = request.query_params.get("dem_encoding")
     style = None
     if style_id:
         style = await raster_styles_crud.get_raster_style(db, collection_id, style_id)
@@ -471,7 +472,9 @@ async def get_raster_collection_tile(
         # Mosaic always had default; item (single-feature collections) did not — tiles stayed raw RGB.
         style = await raster_styles_crud.get_default_raster_style(db, collection_id)
     style_spec: dict = (style.style_spec if style and isinstance(style.style_spec, dict) else {}) or {}
-    if style_spec:
+    # DEM terrain requests must bypass visualization style params (bidx/expression/colormap),
+    # otherwise raster-dem decoding receives rendered imagery instead of elevation encoding.
+    if style_spec and not dem_encoding_q:
         # Query params from the style editor / clients win over preset keys to avoid duplicate Titiler args.
         for key in ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula"):
             if key in request_keys:
@@ -484,7 +487,6 @@ async def get_raster_collection_tile(
             else:
                 params.append((key, str(value)))
     # Allow explicit DEM encoding override for terrain clients.
-    dem_encoding_q = request.query_params.get("dem_encoding")
     if dem_encoding_q:
         dem_algorithm = _normalize_dem_encoding(dem_encoding_q)
     # DEM terrain RGB conflicts with analytic viz (single band / colormap / expr). Multi-bidx RGB keeps terrain.

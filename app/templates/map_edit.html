@@ -256,7 +256,7 @@
         </div>
         <div class="form-row" style="align-items:center;gap:12px;" id="map-edit-raster-terrain-exag-wrap">
           <label for="map-edit-raster-terrain-exag" class="label-text">3D exaggeration</label>
-          <input type="range" id="map-edit-raster-terrain-exag" min="0" max="8" step="0.1" value="1" style="width:160px;">
+          <input type="range" id="map-edit-raster-terrain-exag" min="0" max="3" step="0.1" value="1" style="width:160px;">
           <span id="map-edit-raster-terrain-exag-val" class="meta">1.0x</span>
         </div>
         <p class="meta" style="margin:8px 0 0;">Tip: tilt the map with right-drag or touch; saved pitch is under Map details.</p>
@@ -424,6 +424,13 @@
       var basemapList;
       var terrainSourceId = null;
       var terrainExaggeration = 1.0;
+      function clampTerrainExaggeration(v) {
+        var n = Number(v);
+        if (!isFinite(n)) return 1.0;
+        if (n < 0) return 0;
+        if (n > 3) return 3;
+        return n;
+      }
       var terrainExagMapApplyTimer = null;
       function scheduleTerrainExaggerationMapApply() {
         if (terrainExagMapApplyTimer) clearTimeout(terrainExagMapApplyTimer);
@@ -672,7 +679,7 @@
               }
               if (!terrainSourceId) terrainSourceId = demSid;
               if (layer.terrain_exaggeration != null && isFinite(Number(layer.terrain_exaggeration))) {
-                terrainExaggeration = Number(layer.terrain_exaggeration);
+                terrainExaggeration = clampTerrainExaggeration(layer.terrain_exaggeration);
               }
               applyTerrainInEditor();
             }
@@ -1070,10 +1077,11 @@
             var terrainOn = lyr.terrain_enabled === true;
             if (te) te.checked = terrainOn;
             var exag = (lyr.terrain_exaggeration != null && isFinite(Number(lyr.terrain_exaggeration))) ? Number(lyr.terrain_exaggeration) : 1.0;
+            exag = clampTerrainExaggeration(exag);
             if (tx) tx.value = String(exag);
             if (txv) txv.textContent = exag.toFixed(1) + 'x';
             if (terrainOn && lyr.terrain_exaggeration != null && isFinite(Number(lyr.terrain_exaggeration))) {
-              terrainExaggeration = Number(lyr.terrain_exaggeration);
+              terrainExaggeration = clampTerrainExaggeration(lyr.terrain_exaggeration);
               try { applyTerrainInEditor(); } catch (eT) {}
             }
           }
@@ -1132,8 +1140,8 @@
           terrainExag.addEventListener('input', function() {
             var i = state.selectedLayerIndex;
             var v = document.getElementById('map-edit-raster-terrain-exag-val');
-            var ex = Number(terrainExag.value || 1);
-            if (!isFinite(ex)) ex = 1;
+            var ex = clampTerrainExaggeration(terrainExag.value || 1);
+            terrainExag.value = String(ex);
             if (v) v.textContent = ex.toFixed(1) + 'x';
             if (i == null || !state.layers[i] || !state.layers[i].raster_tiles) return;
             state.layers[i].terrain_exaggeration = ex;

@@ -216,7 +216,7 @@
     <p class="map-view-meta">Layers: {{ (map_definition.layers | length) if map_definition and map_definition.layers else 0 }}</p>
     <div class="terrain-controls" id="terrain-controls">
       <label for="terrain-exaggeration">Terrain exaggeration</label>
-      <input type="range" id="terrain-exaggeration" min="0" max="8" step="0.1" value="1">
+      <input type="range" id="terrain-exaggeration" min="0" max="3" step="0.1" value="1">
       <span id="terrain-exaggeration-value" class="meta">1.0x</span>
     </div>
   </div>
@@ -299,6 +299,13 @@
       var terrainSourceId = null;
       var terrainEnabled = false;
       var terrainExaggeration = 1.0;
+      function clampTerrainExaggeration(v) {
+        var n = Number(v);
+        if (!isFinite(n)) return 1.0;
+        if (n < 0) return 0;
+        if (n > 3) return 3;
+        return n;
+      }
 
       function initMapView() {
         var sel = document.getElementById('map-basemap');
@@ -878,7 +885,7 @@
               }
               if (!terrainSourceId) terrainSourceId = demSid;
               if (layer.terrain_exaggeration != null && isFinite(Number(layer.terrain_exaggeration))) {
-                terrainExaggeration = Number(layer.terrain_exaggeration);
+                terrainExaggeration = clampTerrainExaggeration(layer.terrain_exaggeration);
               }
             }
             resolve(sid + '-raster');
@@ -992,9 +999,11 @@
           };
         }
         if (terrainSlider) {
+          terrainExaggeration = clampTerrainExaggeration(terrainExaggeration);
           terrainSlider.value = String(terrainExaggeration);
           terrainSlider.oninput = function() {
-            terrainExaggeration = Number(terrainSlider.value || 1);
+            terrainExaggeration = clampTerrainExaggeration(terrainSlider.value || 1);
+            terrainSlider.value = String(terrainExaggeration);
             var valEl = document.getElementById('terrain-exaggeration-value');
             if (valEl) valEl.textContent = terrainExaggeration.toFixed(1) + 'x';
             if (!terrainEnabled) {
