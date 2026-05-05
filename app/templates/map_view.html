@@ -406,6 +406,14 @@
       }
       var layerStyleVisibility = {};
       var layerVisibleState = {};
+      // Initialize per-layer default visibility from saved map definition.
+      try {
+        layers.forEach(function(l) {
+          var lk = layerKey(l);
+          if (!lk) return;
+          if (l && l.visible === false) layerVisibleState[lk] = false;
+        });
+      } catch (eInitVis) {}
       function setLayerVisibility(layerKeyVal, visible) {
         layerVisibleState[layerKeyVal] = !!visible;
         var sid = sourceId(layerKeyVal);
@@ -877,6 +885,9 @@
             if (layer.stac_viewer_path || layer.stacViewerPath) rsrc.attribution = 'STAC / Titiler';
             map.addSource(sid, rsrc);
             map.addLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
+            if (layer.visible === false) {
+              try { map.setLayoutProperty(sid + '-raster', 'visibility', 'none'); } catch (eVisR) {}
+            }
             if (layer.terrain_enabled === true) {
               var demSid = sid + '-dem';
               var demEncoding = layer.terrain_encoding || ((String(layer.dem_encoding || 'terrainrgb') === 'terrarium') ? 'terrarium' : 'mapbox');
@@ -928,6 +939,9 @@
               map.addLayer({ id: sid + '-line', type: 'line', source: sid, filter: notPointFilter, layout: lineLayout, paint: linePaint }, beforeId);
             }
             addPointLayers(sid, vlId, style);
+            if (layer.visible === false) {
+              try { setLayerVisibility(lk, false); } catch (eVisV) {}
+            }
             var sel = lk.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
             var cb = document.getElementById('map-legend-list') && document.querySelector('.map-legend-row[data-collection-id="' + sel + '"] input[type="checkbox"]');
             if (cb && !cb.checked) setLayerVisibility(lk, false);

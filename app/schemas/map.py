@@ -63,6 +63,10 @@ class MapLayer(BaseModel):
         None,
         description="Optional DEM encoding hint: mapbox (terrainrgb) or terrarium.",
     )
+    visible: bool = Field(
+        True,
+        description="Whether this layer is enabled by default when the map loads. Users can toggle in the legend.",
+    )
 
 
 class MapDefinition(BaseModel):

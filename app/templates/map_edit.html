@@ -208,6 +208,7 @@
           <tr>
             <th>Order</th>
             <th>Collection</th>
+            <th>On</th>
             <th>Popup</th>
             <th>Popup ID column</th>
             <th></th>
@@ -415,7 +416,8 @@
           mosaic_view_id: l.mosaic_view_id || l.mosaicViewId || null,
           terrain_enabled: l.terrain_enabled === true,
           terrain_exaggeration: (typeof l.terrain_exaggeration === 'number' && isFinite(l.terrain_exaggeration)) ? l.terrain_exaggeration : null,
-          terrain_encoding: l.terrain_encoding || null
+          terrain_encoding: l.terrain_encoding || null,
+          visible: l.visible !== false
         });
       });
 
@@ -669,6 +671,9 @@
             if (layer.stac_viewer_path || layer.stacViewerPath) rs.attribution = 'STAC / Titiler';
             map.addSource(sid, rs);
             safeAddLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
+            if (layer.visible === false) {
+              try { map.setLayoutProperty(sid + '-raster', 'visibility', 'none'); } catch (eVisR) {}
+            }
             if (layer.terrain_enabled === true && rasterTU) {
               var demSid = sid + '-dem';
               var demEncoding = layer.terrain_encoding || ((String(layer.dem_encoding || 'terrainrgb') === 'terrarium') ? 'terrarium' : 'mapbox');
@@ -710,11 +715,25 @@
               var maxz = tj.maxzoom != null ? tj.maxzoom : 14;
               if (!map.getSource(sid)) map.addSource(sid, { type: 'vector', tiles: [layer.tiles_url], minzoom: minz, maxzoom: maxz });
               addLayers(cid);
+              if (layer.visible === false) {
+                try {
+                  ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {
+                    if (map.getLayer(sid + suf)) map.setLayoutProperty(sid + suf, 'visibility', 'none');
+                  });
+                } catch (eVisV) {}
+              }
               return sid + '-fill';
             })
             .catch(function() {
               if (!map.getSource(sid)) map.addSource(sid, { type: 'vector', tiles: [layer.tiles_url], minzoom: 0, maxzoom: 14 });
               addLayers(cid);
+              if (layer.visible === false) {
+                try {
+                  ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {
+                    if (map.getLayer(sid + suf)) map.setLayoutProperty(sid + suf, 'visibility', 'none');
+                  });
+                } catch (eVisV2) {}
+              }
               return sid + '-fill';
             });
         }
@@ -839,6 +858,7 @@
       function getMapEditLayerVisible(layer) {
         var lk = layerKey(layer);
         if (mapEditLayerVisibleState[lk] !== undefined) return !!mapEditLayerVisibleState[lk];
+        if (layer && layer.visible === false) return false;
         var sid = sourceId(lk);
         try {
           if (layerRasterTrue(layer) && layer.tiles_url && map.getLayer(sid + '-raster')) {
@@ -1245,6 +1265,7 @@
           } else {
             nameCell = '<code>' + escapeHtml(label) + '</code>';
           }
+          var visibleCell = '<td><label><input type="checkbox" data-index="' + idx + '" data-prop="visible"' + (layer.visible !== false ? ' checked' : '') + ' title="Layer is enabled when map loads"> On</label></td>';
           var popupCells = layer.raster_tiles
             ? '<td colspan="2" class="meta" title="Popups apply to vector layers only">—</td>'
             : '<td><label><input type="checkbox" data-index="' + idx + '" data-prop="popup"' + (layer.popup ? ' checked' : '') + ' title="Show popup on click"> Popup</label></td>' +
@@ -1256,6 +1277,7 @@
             '<button type="button" class="btn btn-sm layer-order-btn" data-layer-order="down" data-index="' + idx + '" title="Down"' + (idx === lastIdx ? ' disabled' : '') + '>↓</button>' +
             '<button type="button" class="btn btn-sm layer-order-btn" data-layer-order="bottom" data-index="' + idx + '" title="To bottom"' + (idx === lastIdx ? ' disabled' : '') + '>⇊</button></td>' +
             '<td>' + nameCell + '</td>' +
+            visibleCell +
             popupCells +
             '<td><button type="button" class="btn btn-danger btn-sm btn-remove-layer" data-index="' + idx + '">Remove</button></td>';
           tbody.appendChild(tr);
@@ -2022,6 +2044,7 @@
                 collection_id: l.collection_id,
                 order: i,
                 style_spec: spec,
+                visible: l.visible !== false,
                 popup: l.popup === true,
                 popup_id_property: l.popup_id_property || null,
                 tiles_url: l.tiles_url || null,
@@ -2417,6 +2440,17 @@
           styleToolboxApplySpec(state.layers[state.selectedLayerIndex].style_spec || DEFAULT_SPEC);
           refreshMapEditRuleFields();
         }
+      });
+      tbody.querySelectorAll('input[type="checkbox"][data-prop="visible"]').forEach(function(cb) {
+        cb.onclick = function(e) { e.stopPropagation(); };
+        cb.onchange = function() {
+          var i = parseInt(this.dataset.index, 10);
+          state.layers[i].visible = this.checked === true;
+          // Re-sync map so visibility matches default state preview.
+          removeAllLayerSourcesFromMap();
+          syncMapFromState();
+          renderLayers();
+        };
       });
       }
 
