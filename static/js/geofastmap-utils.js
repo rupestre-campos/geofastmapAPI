@@ -158,10 +158,8 @@
 
   /**
    * Build MapLibre style object with a single raster basemap source and layer.
-   * Both source and layer use the same maxzoom so that:
-   * 1. The layer is not drawn above that zoom (stops tile requests above max native zoom).
-   * 2. MapLibre's RasterTileSource does not apply source maxzoom to tile URLs, so capping
-   *    the layer's maxzoom is what actually prevents requests for z > maxzoom.
+   * Source maxzoom reflects native tile availability. The basemap layer is allowed to render beyond
+   * native max (overzoom) while transformRequest clamps requested tile URL z to maxZoom.
    * basemapConfig: { tiles, minZoom?, maxZoom? } (from getBasemaps or fetchBasemaps byId[id]).
    */
   function buildMapStyleWithBasemap(basemapConfig) {
@@ -181,7 +179,7 @@
       sources: {
         basemap: basemapSrc
       },
-      layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: minZ, maxzoom: maxZ }]
+      layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: minZ, maxzoom: 24 }]
     };
   }
 
@@ -239,7 +237,8 @@
   function configureTerrainCameraClamp(map, terrain3dActive) {
     if (!map || typeof map.setCenterClampedToGround !== 'function') return;
     try {
-      map.setCenterClampedToGround(!terrain3dActive);
+      // Keep default clamp behavior; disabling can feel odd on some datasets/devices.
+      map.setCenterClampedToGround(true);
     } catch (e) {}
   }
 
@@ -272,9 +271,8 @@
 
   /**
    * Apply a basemap to an existing map with correct minzoom/maxzoom (max native zoom).
-   * Layer maxzoom is set to the basemap max so the layer is not drawn above that zoom; that
-   * is what prevents MapLibre from requesting tiles above the configured max (RasterTileSource
-   * does not apply source maxzoom to tile request zoom in current MapLibre).
+   * Source maxzoom reflects native tile availability, but the layer is allowed to render beyond
+   * that zoom (overzoom) while transformRequest clamps requested tile URL z to maxZoom.
    * Replaces the 'basemap' (and optional 'basemap-labels') source and layer.
    * Basemap layers are always inserted at the bottom (behind all other layers).
    * @param {object} map - MapLibre map instance
@@ -312,13 +310,13 @@
     };
     if (attr) basemapSrc.attribution = attr;
     map.addSource('basemap', basemapSrc);
-    map.addLayer({ id: 'basemap', type: 'raster', source: 'basemap', minzoom: minZ, maxzoom: maxZ }, beforeLayerId);
+    map.addLayer({ id: 'basemap', type: 'raster', source: 'basemap', minzoom: minZ, maxzoom: 24 }, beforeLayerId);
 
     if (labelsTiles && labelsTiles.length) {
       var labelsSrc = { type: 'raster', tiles: labelsTiles, tileSize: 256, minzoom: minZ, maxzoom: maxZ };
       if (attr) labelsSrc.attribution = attr;
       map.addSource('basemap-labels', labelsSrc);
-      map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: minZ, maxzoom: maxZ }, beforeLayerId);
+      map.addLayer({ id: 'basemap-labels', type: 'raster', source: 'basemap-labels', minzoom: minZ, maxzoom: 24 }, beforeLayerId);
     }
 
     setBasemapTransformRequest(map, maxZ, basemapConfig.tiles);
