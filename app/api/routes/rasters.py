@@ -195,6 +195,21 @@ async def list_raster_items(
         props = f.properties or {}
         title = props.get("title") if isinstance(props, dict) else None
         is_dem, dem_encoding = _feature_dem_settings(f)
+        terrain_on = bool(is_dem or collection_is_dem)
+        map_layer: dict = {
+            "collection_id": collection_id,
+            "raster_tiles": True,
+            "raster_collection_mode": "item",
+            "raster_feature_id": fid,
+            "tiles_url": (
+                f"{base}/collections/{collection_id}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
+                f"?mode=item&feature_id={fid}&sv={quote(style_version, safe='')}"
+            ),
+            "terrain_enabled": terrain_on,
+            "terrain_encoding": _maplibre_dem_encoding(dem_encoding if is_dem else collection_dem_encoding),
+        }
+        if terrain_on:
+            map_layer["terrain_raster_overlay"] = True
         items.append(
             {
                 "id": fid,
@@ -206,18 +221,7 @@ async def list_raster_items(
                     f"?mode=item&feature_id={fid}&sv={quote(style_version, safe='')}"
                 ),
                 "delete_url": f"{base}/collections/{collection_id}/items/{fid}",
-                "map_layer": {
-                    "collection_id": collection_id,
-                    "raster_tiles": True,
-                    "raster_collection_mode": "item",
-                    "raster_feature_id": fid,
-                    "tiles_url": (
-                        f"{base}/collections/{collection_id}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
-                        f"?mode=item&feature_id={fid}&sv={quote(style_version, safe='')}"
-                    ),
-                    "terrain_enabled": bool(is_dem or collection_is_dem),
-                    "terrain_encoding": _maplibre_dem_encoding(dem_encoding if is_dem else collection_dem_encoding),
-                },
+                "map_layer": map_layer,
             }
         )
     mosaic_url = None

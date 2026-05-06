@@ -249,6 +249,13 @@
       function layerRasterTrue(l) {
         return !!(l && (l.raster_tiles === true || l.rasterTiles === true));
       }
+      function terrainRasterOverlayWanted(layer) {
+        if (!layer) return true;
+        if (layer.terrain_raster_overlay === false) return false;
+        if (layer.terrain_raster_overlay === true) return true;
+        if (layer.terrain_enabled === true) return false;
+        return true;
+      }
       function mosaicRasterTilesUrlTemplateWithV(baseUrl, viewId, revision) {
         var u = baseUrl + '/raster-views/' + encodeURIComponent(String(viewId)) + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png';
         if (revision) u += '?v=' + encodeURIComponent(revision);
@@ -464,6 +471,7 @@
           toggleAll.onchange = function() {
             var on = !!toggleAll.checked;
             layers.forEach(function(layer) {
+              if (layer.raster_tiles && (layer.tiles_url || layer.mosaic_view_id || layer.mosaicViewId) && !terrainRasterOverlayWanted(layer)) return;
               var lk = layerKey(layer);
               setLayerVisibility(lk, on);
             });
@@ -478,6 +486,7 @@
           return na.localeCompare(nb, undefined, { sensitivity: 'base' });
         });
         sortedForLegend.forEach(function(layer) {
+          if (layer.raster_tiles && (layer.tiles_url || layer.mosaic_view_id || layer.mosaicViewId) && !terrainRasterOverlayWanted(layer)) return;
           var lk = layerKey(layer);
           var cid = layer.collection_id || layer.collectionId;
           var style = specFromLayer(layer);
@@ -873,22 +882,31 @@
           var lk = layerKey(layer);
           var sid = sourceId(lk);
           if (layerRasterTrue(layer) && (layer.tiles_url || layer.mosaic_view_id || layer.mosaicViewId)) {
-            if (map.getSource(sid)) { resolve(sid + '-raster'); return; }
-            var ro = (style && style.rasterOpacity != null) ? Number(style.rasterOpacity) : ((layer.style_spec && layer.style_spec.rasterOpacity != null) ? Number(layer.style_spec.rasterOpacity) : 1);
-            if (!isFinite(ro) || ro < 0) ro = 1;
-            if (layer.terrain_enabled === true) ro = 0;
+            var overlay = terrainRasterOverlayWanted(layer);
+            var elev = layer.terrain_enabled === true;
             var rasterTU = layer.tiles_url;
             if (!rasterTU && (layer.mosaic_view_id || layer.mosaicViewId)) {
               rasterTU = mosaicRasterTilesUrlTemplateWithV(base, layer.mosaic_view_id || layer.mosaicViewId, '');
             }
-            var rsrc = { type: 'raster', tiles: [rasterTU], tileSize: 256, maxzoom: 18 };
-            if (layer.stac_viewer_path || layer.stacViewerPath) rsrc.attribution = 'STAC / Titiler';
-            map.addSource(sid, rsrc);
-            map.addLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
-            if (layer.visible === false) {
-              try { map.setLayoutProperty(sid + '-raster', 'visibility', 'none'); } catch (eVisR) {}
+            if (!rasterTU) { resolve(beforeId); return; }
+            if (!overlay && !elev) overlay = true;
+            if (overlay && map.getSource(sid)) { resolve(sid + '-raster'); return; }
+            if (!overlay && elev && map.getSource(sid + '-dem') && !map.getSource(sid)) {
+              resolve(beforeId);
+              return;
             }
-            if (layer.terrain_enabled === true) {
+            var ro = (style && style.rasterOpacity != null) ? Number(style.rasterOpacity) : ((layer.style_spec && layer.style_spec.rasterOpacity != null) ? Number(layer.style_spec.rasterOpacity) : 1);
+            if (!isFinite(ro) || ro < 0) ro = 1;
+            if (overlay) {
+              var rsrc = { type: 'raster', tiles: [rasterTU], tileSize: 256, maxzoom: 18 };
+              if (layer.stac_viewer_path || layer.stacViewerPath) rsrc.attribution = 'STAC / Titiler';
+              map.addSource(sid, rsrc);
+              map.addLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
+              if (layer.visible === false) {
+                try { map.setLayoutProperty(sid + '-raster', 'visibility', 'none'); } catch (eVisR) {}
+              }
+            }
+            if (elev) {
               var demSid = sid + '-dem';
               var demEncoding = layer.terrain_encoding || ((String(layer.dem_encoding || 'terrainrgb') === 'terrarium') ? 'terrarium' : 'mapbox');
               var demAlg = demEncoding === 'terrarium' ? 'terrarium' : 'terrainrgb';
@@ -906,7 +924,7 @@
                 terrainExaggeration = clampTerrainExaggeration(layer.terrain_exaggeration);
               }
             }
-            resolve(sid + '-raster');
+            resolve(overlay ? (sid + '-raster') : beforeId);
             return;
           }
           if (map.getSource(sid)) { resolve(sid + '-line'); return; }

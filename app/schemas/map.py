@@ -63,6 +63,14 @@ class MapLayer(BaseModel):
         None,
         description="Optional DEM encoding hint: mapbox (terrainrgb) or terrarium.",
     )
+    terrain_raster_overlay: bool | None = Field(
+        None,
+        description=(
+            "When true, show this raster as a normal 2D layer (collection default style). "
+            "When false with terrain_enabled, use tiles only as raster-dem for 3D. "
+            "None means legacy: same as false if terrain_enabled else true."
+        ),
+    )
     visible: bool = Field(
         True,
         description="Whether this layer is enabled by default when the map loads. Users can toggle in the legend.",
