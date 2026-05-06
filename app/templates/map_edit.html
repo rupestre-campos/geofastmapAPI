@@ -260,7 +260,7 @@
         </div>
         <div class="form-row" style="align-items:center;gap:12px;" id="map-edit-raster-terrain-exag-wrap">
           <label for="map-edit-raster-terrain-exag" class="label-text">3D exaggeration</label>
-          <input type="range" id="map-edit-raster-terrain-exag" min="0" max="3" step="0.1" value="1" style="width:160px;">
+          <input type="range" id="map-edit-raster-terrain-exag" min="0" max="5" step="0.5" value="1" style="width:160px;">
           <span id="map-edit-raster-terrain-exag-val" class="meta">1.0x</span>
         </div>
         <p class="meta" style="margin:8px 0 0;">Tip: tilt the map with right-drag or touch; saved pitch is under Map details.</p>
@@ -434,8 +434,9 @@
         var n = Number(v);
         if (!isFinite(n)) return 1.0;
         if (n < 0) return 0;
-        if (n > 3) return 3;
-        return n;
+        if (n > 5) n = 5;
+        // Snap to 0.5 increments to match slider behavior.
+        return Math.round(n * 2) / 2;
       }
       var terrainExagMapApplyTimer = null;
       function scheduleTerrainExaggerationMapApply() {
