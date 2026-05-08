@@ -103,11 +103,12 @@ def _tile_url_with_revision(base_url: str, collection_id: str, revision: str | N
 
 def _dynamic_tile_cache_headers_for_zoom(z: int) -> dict[str, str]:
     """
-    Browser cache for dynamic tiles: short TTL (1 minute) so edits show up without long stale tiles.
+    Browser cache for dynamic tiles: small TTL to reduce request floods while panning/zooming.
     Server-side Redis cache is invalidated on feature writes; clients may also bust cache via ?_gt= on sources.
     """
     _ = z  # kept for API stability; all zooms use the same short browser cache
-    return {"Cache-Control": "public, max-age=60"}
+    cc = "public, max-age=600"
+    return {"Cache-Control": cc, "CDN-Cache-Control": cc, "Surrogate-Control": cc}
 
 
 @router.get(

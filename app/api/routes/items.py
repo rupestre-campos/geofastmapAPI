@@ -114,6 +114,8 @@ async def list_items(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
+    # Server-side cache for repeated identical GeoJSON queries (bbox, q, filters, etc.).
+    # Only applies to JSON (not HTML) and non-bbox_only responses.
     settings = get_settings()
     # HTML view: default to 10 items when limit not specified (single-line search)
     if wants_html(request) and "limit" not in request.query_params:
@@ -145,6 +147,29 @@ async def list_items(
                 detail=f"Full-text search (q) requires at least {FULLTEXT_MIN_LENGTH} characters.",
             )
     fulltext_q = q.strip() if q and q.strip() else None
+
+    # Cache lookup (after permission check, before DB query).
+    if not wants_html(request) and not bbox_only:
+        try:
+            from app.services.dynamic_tile_cache import _params_key_from_query, get_items_list
+
+            params_key = _params_key_from_query(
+                limit=limit,
+                offset=offset,
+                sortby=sortby,
+                sortdesc=sortdesc,
+                bbox=bbox,
+                datetime_param=datetime_param,
+                filter_param=filter_param,
+                q=q,
+                ids=None,
+                properties=properties_include,
+            )
+            cached = get_items_list(collection_id, params_key)
+            if cached:
+                return Response(content=cached, media_type="application/geo+json")
+        except Exception:
+            pass
 
     # Legacy attribute filters: any query param not reserved (name=value, * for partial)
     property_filters: dict[str, str] = {}
@@ -318,7 +343,28 @@ async def list_items(
         numberReturned=len(features),
         links=links + [Link(href=f"{base_path}?f=html", rel="alternate", type="text/html")],
     )
-    return GeoJSONResponse(content=fc.model_dump(mode="json"))
+    payload = fc.model_dump(mode="json")
+    # Cache store best-effort (JSON only).
+    if not wants_html(request):
+        try:
+            from app.services.dynamic_tile_cache import _params_key_from_query, set_items_list
+
+            params_key = _params_key_from_query(
+                limit=limit,
+                offset=offset,
+                sortby=sortby,
+                sortdesc=sortdesc,
+                bbox=bbox,
+                datetime_param=datetime_param,
+                filter_param=filter_param,
+                q=q,
+                ids=None,
+                properties=properties_include,
+            )
+            set_items_list(collection_id, params_key, orjson.dumps(payload))
+        except Exception:
+            pass
+    return GeoJSONResponse(content=payload)
 
 
 @router.get(

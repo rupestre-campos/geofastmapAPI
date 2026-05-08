@@ -55,6 +55,25 @@
     .map-view-meta { margin-top: var(--space); font-size: 0.9rem; color: var(--text-secondary); }
     .terrain-controls { margin-top: 8px; display: none; align-items: center; gap: 10px; flex-wrap: wrap; }
     .terrain-controls.active { display: flex; }
+    /* View-only style toolbox (same CSS as editor, trimmed) */
+    .style-toolbox { margin-top: 0; padding: var(--space); display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--space); }
+    .style-toolbox-section { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space); }
+    .style-toolbox-section h3 { margin: 0 0 10px; font-size: 0.9rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+    .style-toolbox-section .form-row { margin-bottom: 10px; }
+    .style-toolbox-section label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.85rem; }
+    .style-toolbox-section .label-text { min-width: 5em; }
+    .style-toolbox-section input[type="color"], .style-toolbox-section input[type="number"], .style-toolbox-section input[type="range"] { padding: 4px 6px; }
+    .style-toolbox-section input[type="range"] { width: 120px; }
+    .style-toolbox-zoom { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 0.8rem; color: var(--text-secondary); }
+    .style-toolbox-zoom .zoom-stops-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+    .style-toolbox-zoom .zoom-stop-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .style-toolbox-zoom .zoom-stop-row .zoom-input { width: 4.5em; }
+    .style-toolbox-zoom .zoom-stop-row .value-input { width: 5em; }
+    .style-toolbox-zoom .btn-remove-stop { padding: 2px 8px; font-size: 1rem; cursor: pointer; }
+    /* View mode: no style saving (ephemeral only) */
+    #map-view-style-vector #btn-save-style,
+    #map-view-style-vector #save-style-form,
+    #map-view-style-vector .style-toolbox-section:last-child { display: none; }
     #map-search-results-card .table-scroll-wrap { overflow: auto; max-height: 50vh; margin-top: 8px; }
     #map-search-results-card .collections-table { width: 100%; }
     #map-search-results-details summary { display: flex; align-items: center; gap: 6px; }
@@ -220,11 +239,42 @@
       <span id="terrain-exaggeration-value" class="meta">1.0x</span>
     </div>
   </div>
+
+  <div class="card" id="map-view-style-card" style="display:none;">
+    <div class="card-header">
+      <h2 class="card-title">Layer style (temporary)</h2>
+      <div class="card-actions"></div>
+    </div>
+    <p class="meta" style="margin-top:0;">Changes here are <strong>not saved</strong>. Reload the page to reset.</p>
+    <div class="form-row">
+      <label for="map-style-layer-select">Select layer</label>
+      <select id="map-style-layer-select"></select>
+    </div>
+    <div id="map-view-style-vector" style="display:none;">
+      {% include "_style_toolbox.html" %}
+    </div>
+    <div id="map-view-style-raster" style="display:none;">
+      <div class="form-row" style="display:flex; align-items:center; gap: 10px; flex-wrap: wrap;">
+        <label for="map-view-raster-opacity" class="label-text">Opacity</label>
+        <input type="range" id="map-view-raster-opacity" min="0" max="100" value="100" style="width:200px;">
+        <span id="map-view-raster-opacity-val" class="meta">100%</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="map-view-layer-info-card" style="display:none;">
+    <div class="card-header">
+      <h2 class="card-title">Layer info</h2>
+      <div class="card-actions"></div>
+    </div>
+    <div id="map-view-layer-info" class="meta"></div>
+  </div>
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofastmap-utils.js?v=5"></script>
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
+  {% include "_style_editor_toolbox_script.html" %}
   <script>
     (function() {
       var base = {{ base | tojson }};
@@ -249,6 +299,7 @@
       function layerRasterTrue(l) {
         return !!(l && (l.raster_tiles === true || l.rasterTiles === true));
       }
+      function escapeHtml(s) { return GeofastmapUtils.escapeHtml(s); }
       function terrainRasterOverlayWanted(layer) {
         if (!layer) return true;
         if (layer.terrain_raster_overlay === false) return false;
@@ -576,6 +627,204 @@
         if (layer && layer.style_spec && typeof layer.style_spec === 'object') return GeofastmapUtils.specToPaint(layer.style_spec);
         var c = (layer && layer.color) || defaultColor;
         return { fillColor: c, lineColor: c, fillOpacity: 0.6, lineOpacity: 1, lineWidth: 1.5, lineDash: GeofastmapUtils.LINE_DASH.solid, fillVisible: true, pointColor: c, pointRadius: 8, pointOpacity: 0.9, pointIcon: 'circle' };
+      }
+
+      // --- View mode: ephemeral style controls (never persisted) ---
+      var _viewStyleSelectedKey = null;
+      function selectableLayerForStyle(layer) {
+        if (!layer) return false;
+        var lk = layerKey(layer);
+        if (!lk) return false;
+        // Terrain-only rasters have no visible overlay; allow selection for info, but no style controls.
+        return true;
+      }
+      function getSelectedLayer() {
+        if (!_viewStyleSelectedKey) return null;
+        for (var i = 0; i < layers.length; i++) {
+          if (layerKey(layers[i]) === _viewStyleSelectedKey) return layers[i];
+        }
+        return null;
+      }
+      function getLayerIdsForSelected() {
+        var layer = getSelectedLayer();
+        if (!layer) return {};
+        var sid = sourceId(layerKey(layer));
+        return {
+          fill: sid + '-fill',
+          line: sid + '-line',
+          circle: (map && map.getLayer && map.getLayer(sid + '-circle')) ? sid + '-circle' : null,
+          symbol: (map && map.getLayer && map.getLayer(sid + '-symbol')) ? sid + '-symbol' : null
+        };
+      }
+      function applyRasterOpacityForLayer(layer, opacity01) {
+        if (!layer || !layerRasterTrue(layer)) return;
+        var sid = sourceId(layerKey(layer));
+        var v = Number(opacity01);
+        if (!isFinite(v)) v = 1;
+        if (v < 0) v = 0;
+        if (v > 1) v = 1;
+        layer.style_spec = layer.style_spec && typeof layer.style_spec === 'object' ? layer.style_spec : {};
+        layer.style_spec.rasterOpacity = v;
+        try { if (map.getLayer(sid + '-raster')) map.setPaintProperty(sid + '-raster', 'raster-opacity', v); } catch (e) {}
+      }
+      function setupViewStyleUi() {
+        var styleCard = document.getElementById('map-view-style-card');
+        var infoCard = document.getElementById('map-view-layer-info-card');
+        var sel = document.getElementById('map-style-layer-select');
+        if (!styleCard || !sel) return;
+
+        // Populate options.
+        sel.innerHTML = '';
+        var any = false;
+        layers.forEach(function(layer) {
+          if (!selectableLayerForStyle(layer)) return;
+          var lk = layerKey(layer);
+          if (!lk) return;
+          var cid = layer.collection_id || layer.collectionId || '';
+          var opt = document.createElement('option');
+          opt.value = lk;
+          opt.textContent = layerDisplayNameForLegend(cid) || lk;
+          sel.appendChild(opt);
+          any = true;
+        });
+        if (!any) return;
+        styleCard.style.display = '';
+        if (infoCard) infoCard.style.display = '';
+
+        // Default selection: first option.
+        _viewStyleSelectedKey = sel.value;
+
+        // Init vector toolbox once; it will reference current selection via getLayerIdsForSelected().
+        try {
+          if (window.GeofastmapStyleEditor && window.GeofastmapStyleEditor.initToolbox) {
+            window.GeofastmapStyleEditor.initToolbox({
+              map: map,
+              getLayerIds: getLayerIdsForSelected,
+              defaultSpec: (function() {
+                var l0 = getSelectedLayer();
+                return (l0 && l0.style_spec && typeof l0.style_spec === 'object')
+                  ? Object.assign({}, window.GeofastmapStyleEditor.defaultSpec || {}, l0.style_spec)
+                  : (window.GeofastmapStyleEditor.defaultSpec || {});
+              })(),
+              legendElId: 'layer-style-legend',
+              onAfterApply: function(spec) {
+                var layer = getSelectedLayer();
+                if (!layer) return;
+                // Store on the in-memory layer object only (not persisted).
+                layer.style_spec = spec;
+                try { renderLegend(); } catch (e) {}
+              }
+            });
+          }
+        } catch (eInitTb) {}
+
+        function syncPanels() {
+          var layer = getSelectedLayer();
+          var vWrap = document.getElementById('map-view-style-vector');
+          var rWrap = document.getElementById('map-view-style-raster');
+          var ro = document.getElementById('map-view-raster-opacity');
+          var rov = document.getElementById('map-view-raster-opacity-val');
+          if (!layer) { if (vWrap) vWrap.style.display = 'none'; if (rWrap) rWrap.style.display = 'none'; return; }
+
+          var isRaster = layerRasterTrue(layer);
+          var overlay = isRaster ? terrainRasterOverlayWanted(layer) : true;
+          if (isRaster) {
+            if (vWrap) vWrap.style.display = 'none';
+            if (rWrap) rWrap.style.display = overlay ? '' : 'none';
+            if (overlay && ro) {
+              var cur = (layer.style_spec && layer.style_spec.rasterOpacity != null) ? Number(layer.style_spec.rasterOpacity) : 1;
+              if (!isFinite(cur) || cur < 0) cur = 1;
+              if (cur > 1) cur = 1;
+              var pct = Math.round(cur * 100);
+              ro.value = String(pct);
+              if (rov) rov.textContent = pct + '%';
+            }
+          } else {
+            if (rWrap) rWrap.style.display = 'none';
+            if (vWrap) vWrap.style.display = '';
+            // Load selected layer's spec into the toolbox.
+            try {
+              if (window.GeofastmapStyleEditor && window.GeofastmapStyleEditor.applySpecToForm) {
+                var spec = (layer.style_spec && typeof layer.style_spec === 'object') ? layer.style_spec : null;
+                window.GeofastmapStyleEditor.applySpecToForm(spec || {});
+              }
+            } catch (eApply) {}
+          }
+        }
+
+        sel.onchange = function() {
+          _viewStyleSelectedKey = sel.value || null;
+          syncPanels();
+          try { updateLayerInfoPanel(); } catch (eI) {}
+        };
+
+        var roEl = document.getElementById('map-view-raster-opacity');
+        if (roEl && !roEl.dataset.bound) {
+          roEl.dataset.bound = '1';
+          roEl.addEventListener('input', function() {
+            var pct = parseInt(roEl.value, 10);
+            if (!isFinite(pct)) pct = 100;
+            if (pct < 0) pct = 0;
+            if (pct > 100) pct = 100;
+            var v = pct / 100;
+            var rov = document.getElementById('map-view-raster-opacity-val');
+            if (rov) rov.textContent = pct + '%';
+            applyRasterOpacityForLayer(getSelectedLayer(), v);
+          });
+        }
+
+        syncPanels();
+      }
+
+      // --- View mode: layer info (collection updated_at) ---
+      var _collectionMetaCache = {};
+      function _fmtIso(ts) {
+        if (!ts) return '—';
+        var s = String(ts);
+        // Simple readable format: "YYYY-MM-DD HH:MM:SS"
+        return s.replace('Z', '').replace('T', ' ').substring(0, 19);
+      }
+      function loadCollectionMeta(collectionId) {
+        var cid = String(collectionId || '').trim();
+        if (!cid) return Promise.resolve(null);
+        if (_collectionMetaCache[cid]) return Promise.resolve(_collectionMetaCache[cid]);
+        return fetch(base + '/collections/' + encodeURIComponent(cid), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(j) {
+            _collectionMetaCache[cid] = j;
+            return j;
+          })
+          .catch(function() { return null; });
+      }
+      function updateLayerInfoPanel() {
+        var infoCard = document.getElementById('map-view-layer-info-card');
+        var infoEl = document.getElementById('map-view-layer-info');
+        if (!infoEl) return;
+        if (infoCard) infoCard.style.display = '';
+        var layer = getSelectedLayer ? getSelectedLayer() : null;
+        if (!layer) {
+          infoEl.textContent = '—';
+          return;
+        }
+        var cid = layer.collection_id || layer.collectionId || '';
+        var lk = layerKey(layer);
+        var title = layerDisplayNameForLegend(cid) || cid || lk;
+        // Non-collection layers
+        if (!cid || cid === '_stac' || cid === '_mosaic') {
+          infoEl.innerHTML = '<div><strong>Layer</strong>: ' + escapeHtml(title) + '</div>' +
+            '<div><strong>Type</strong>: ' + (layerRasterTrue(layer) ? 'raster' : 'vector') + '</div>';
+          return;
+        }
+        infoEl.innerHTML =
+          '<div><strong>Layer</strong>: ' + escapeHtml(title) + '</div>' +
+          '<div><strong>Collection</strong>: <code>' + escapeHtml(cid) + '</code></div>' +
+          '<div><strong>Last updated</strong>: <span id=\"map-view-layer-updated-at\">Loading…</span></div>';
+        loadCollectionMeta(cid).then(function(meta) {
+          var up = document.getElementById('map-view-layer-updated-at');
+          if (!up) return;
+          var ts = meta && (meta.updated_at || meta.updatedAt);
+          up.textContent = _fmtIso(ts);
+        });
       }
       function collectionIdFromLayerId(mapLayerId) {
         if (mapLayerId === 'map-search-fill' || mapLayerId === 'map-search-line' || mapLayerId === 'map-search-circle') return currentSearchCollectionId;
@@ -1152,6 +1401,8 @@
               syncMosaicRasterSourcesTiles();
               terrainEnabled = !!terrainSourceId;
               applyTerrain();
+              try { setupViewStyleUi(); } catch (eStyleUi) {}
+              try { if (typeof updateLayerInfoPanel === 'function') updateLayerInfoPanel(); } catch (eInfoUi) {}
               return;
             }
             var layer = layers[i++];

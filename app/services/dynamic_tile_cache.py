@@ -10,6 +10,7 @@ from app.core.config import get_settings
 DYNAMIC_TILE_CACHE_PREFIX = "geofastmap:dynamic_tile:"
 DYNAMIC_TILE_CACHE_PARAMS_PREFIX = "geofastmap:dynamic_tile_p:"
 SEARCH_RESULT_PREFIX = "geofastmap:search_result:"
+ITEMS_LIST_PREFIX = "geofastmap:items_list:"
 TILE_JOBS_QUEUE_KEY = "geofastmap:tile_jobs"
 
 
@@ -124,6 +125,39 @@ def set_tile_with_params(
 
 def _search_result_key(collection_id: str, params_key: str) -> str:
     return f"{SEARCH_RESULT_PREFIX}{collection_id}:{params_key}"
+
+
+def _items_list_key(collection_id: str, params_key: str) -> str:
+    return f"{ITEMS_LIST_PREFIX}{collection_id}:{params_key}"
+
+
+def get_items_list(collection_id: str, params_key: str) -> bytes | None:
+    """Return cached GeoJSON FeatureCollection bytes for GET /collections/{id}/items."""
+    settings = get_settings()
+    ttl = int(getattr(settings, "collections_items_cache_ttl_seconds", 0) or 0)
+    if ttl <= 0:
+        return None
+    try:
+        r = _redis_bytes()
+        key = _items_list_key(collection_id, params_key)
+        raw = r.get(key)
+        return raw  # bytes or None
+    except Exception:
+        return None
+
+
+def set_items_list(collection_id: str, params_key: str, payload: bytes) -> None:
+    """Store GeoJSON FeatureCollection bytes for GET /collections/{id}/items."""
+    settings = get_settings()
+    ttl = int(getattr(settings, "collections_items_cache_ttl_seconds", 0) or 0)
+    if ttl <= 0:
+        return
+    try:
+        r = _redis_bytes()
+        key = _items_list_key(collection_id, params_key)
+        r.set(key, payload, ex=ttl)
+    except Exception:
+        pass
 
 
 def get_search_result(collection_id: str, params_key: str) -> bytes | None:

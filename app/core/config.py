@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     tiles_dynamic_use_queue: bool = False
     # TTL for cached search result GeoJSON (seconds). Workers read from this; no DB in workers. Max 60 to limit staleness.
     tiles_search_result_cache_ttl_seconds: int = 60
+    # GET /collections/{collection_id}/items server-side cache (seconds). 0 = disabled.
+    # This caches the full GeoJSON response for repeated identical queries (bbox, q, filters, etc.).
+    collections_items_cache_ttl_seconds: int = 600
     tippecanoe_path: str = "tippecanoe"  # PATH or full path to tippecanoe binary
     tippecanoe_minzoom: int = 0
     tippecanoe_maxzoom: int = 16
