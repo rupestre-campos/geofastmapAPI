@@ -82,6 +82,13 @@
     .map-legend-row.map-legend-search { border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 4px; }
     .map-legend-search .map-legend-icon { box-shadow: 0 0 0 2px rgba(0,0,0,0.35); }
     #map-search-form .search-bar-msg { margin-top: 6px; font-size: 0.9rem; color: var(--text-secondary); }
+    /* Single panel: info → selector → style */
+    .map-view-layer-panel-body { padding: 0 var(--space) var(--space); }
+    .map-view-layer-panel-section { padding-top: var(--space); padding-bottom: var(--space); border-top: 1px solid var(--border); }
+    .map-view-layer-panel-section:first-child { border-top: none; padding-top: 0; }
+    .map-view-layer-panel-subtitle { margin: 0 0 10px; font-size: 0.95rem; font-weight: 600; color: var(--text); }
+    .map-view-layer-panel-info .meta { font-size: 0.9rem; line-height: 1.5; }
+    .map-view-layer-panel-info .meta strong { color: var(--text); font-weight: 600; }
   </style>
 {% endblock %}
 {% block content %}
@@ -240,34 +247,37 @@
     </div>
   </div>
 
-  <div class="card" id="map-view-style-card" style="display:none;">
+  <div class="card map-view-layer-panel" id="map-view-layer-panel" style="display:none;">
     <div class="card-header">
-      <h2 class="card-title">Layer style (temporary)</h2>
+      <h2 class="card-title">Layer information &amp; style</h2>
       <div class="card-actions"></div>
     </div>
-    <p class="meta" style="margin-top:0;">Changes here are <strong>not saved</strong>. Reload the page to reset.</p>
-    <div class="form-row">
-      <label for="map-style-layer-select">Select layer</label>
-      <select id="map-style-layer-select"></select>
+    <div class="map-view-layer-panel-body">
+      <section class="map-view-layer-panel-section map-view-layer-panel-info" aria-labelledby="map-view-panel-info-heading">
+        <h3 class="map-view-layer-panel-subtitle" id="map-view-panel-info-heading">Layer information</h3>
+        <div id="map-view-layer-info" class="meta"></div>
+      </section>
+      <section class="map-view-layer-panel-section map-view-layer-panel-select" aria-labelledby="map-view-panel-select-heading">
+        <h3 class="map-view-layer-panel-subtitle" id="map-view-panel-select-heading">Select layer</h3>
+        <div class="form-row">
+          <label for="map-style-layer-select">Layer</label>
+          <select id="map-style-layer-select"></select>
+        </div>
+      </section>
+      <section class="map-view-layer-panel-section map-view-layer-panel-style" aria-labelledby="map-view-panel-style-heading">
+        <h3 class="map-view-layer-panel-subtitle" id="map-view-panel-style-heading">Style <span class="meta">(temporary — not saved; reload to reset)</span></h3>
+        <div id="map-view-style-vector" style="display:none;">
+          {% include "_style_toolbox.html" %}
+        </div>
+        <div id="map-view-style-raster" style="display:none;">
+          <div class="form-row" style="display:flex; align-items:center; gap: 10px; flex-wrap: wrap;">
+            <label for="map-view-raster-opacity" class="label-text">Opacity</label>
+            <input type="range" id="map-view-raster-opacity" min="0" max="100" value="100" style="width:200px;">
+            <span id="map-view-raster-opacity-val" class="meta">100%</span>
+          </div>
+        </div>
+      </section>
     </div>
-    <div id="map-view-style-vector" style="display:none;">
-      {% include "_style_toolbox.html" %}
-    </div>
-    <div id="map-view-style-raster" style="display:none;">
-      <div class="form-row" style="display:flex; align-items:center; gap: 10px; flex-wrap: wrap;">
-        <label for="map-view-raster-opacity" class="label-text">Opacity</label>
-        <input type="range" id="map-view-raster-opacity" min="0" max="100" value="100" style="width:200px;">
-        <span id="map-view-raster-opacity-val" class="meta">100%</span>
-      </div>
-    </div>
-  </div>
-
-  <div class="card" id="map-view-layer-info-card" style="display:none;">
-    <div class="card-header">
-      <h2 class="card-title">Layer info</h2>
-      <div class="card-actions"></div>
-    </div>
-    <div id="map-view-layer-info" class="meta"></div>
   </div>
 {% endblock %}
 {% block script %}
@@ -668,10 +678,9 @@
         try { if (map.getLayer(sid + '-raster')) map.setPaintProperty(sid + '-raster', 'raster-opacity', v); } catch (e) {}
       }
       function setupViewStyleUi() {
-        var styleCard = document.getElementById('map-view-style-card');
-        var infoCard = document.getElementById('map-view-layer-info-card');
+        var panel = document.getElementById('map-view-layer-panel');
         var sel = document.getElementById('map-style-layer-select');
-        if (!styleCard || !sel) return;
+        if (!panel || !sel) return;
 
         // Populate options.
         sel.innerHTML = '';
@@ -688,8 +697,7 @@
           any = true;
         });
         if (!any) return;
-        styleCard.style.display = '';
-        if (infoCard) infoCard.style.display = '';
+        panel.style.display = '';
 
         // Default selection: first option.
         _viewStyleSelectedKey = sel.value;
@@ -706,7 +714,7 @@
                   ? Object.assign({}, window.GeofastmapStyleEditor.defaultSpec || {}, l0.style_spec)
                   : (window.GeofastmapStyleEditor.defaultSpec || {});
               })(),
-              legendElId: 'layer-style-legend',
+              legendElId: 'vector-style-load-legend',
               onAfterApply: function(spec) {
                 var layer = getSelectedLayer();
                 if (!layer) return;
@@ -797,10 +805,8 @@
           .catch(function() { return null; });
       }
       function updateLayerInfoPanel() {
-        var infoCard = document.getElementById('map-view-layer-info-card');
         var infoEl = document.getElementById('map-view-layer-info');
         if (!infoEl) return;
-        if (infoCard) infoCard.style.display = '';
         var layer = getSelectedLayer ? getSelectedLayer() : null;
         if (!layer) {
           infoEl.textContent = '—';
