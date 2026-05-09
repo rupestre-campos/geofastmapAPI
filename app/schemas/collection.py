@@ -112,8 +112,8 @@ class CollectionRead(CollectionBase):
     )
     features_last_updated_at: datetime | None = Field(
         default=None,
-        description="Latest feature row update in this collection (max of features.updated_at: geometries and attributes). "
-        "Distinct from updated_at, which reflects collection metadata (title, description, extent, etc.).",
+        description="Latest feature row update in this collection (geometries and attributes). "
+        "Stored on the collection row and kept in sync by database triggers; distinct from updated_at (metadata only).",
     )
     links: list[Link] | None = Field(default=None, description="OGC links (self, items).")
 

@@ -32,9 +32,13 @@ async def get_collection_tiles(db: AsyncSession, collection_id: str) -> Collecti
 
 
 async def get_max_feature_updated_at(db: AsyncSession, collection_id: str) -> datetime | None:
-    """Max updated_at of features in this collection. None if no features."""
+    """Latest feature activity time for this collection (denormalized on collections row).
+
+    Reads ``collections.features_last_updated_at`` (O(1)); kept in sync by triggers on ``features``.
+    None when the collection has no features.
+    """
     result = await db.execute(
-        text("SELECT MAX(updated_at) AS m FROM features WHERE collection_id = :cid"),
+        text("SELECT features_last_updated_at AS m FROM collections WHERE id = :cid"),
         {"cid": collection_id},
     )
     row = result.first()

@@ -43,4 +43,6 @@ class Collection(Base):
         onupdate=datetime.utcnow,
         nullable=False,
     )
+    # Denormalized MAX(features.updated_at); maintained by DB triggers (see migration 0033).
+    features_last_updated_at: datetime | None = Column(DateTime(timezone=True), nullable=True)
 

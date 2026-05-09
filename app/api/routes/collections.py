@@ -59,13 +59,6 @@ def _collection_links(base: str, collection_id: str, default_style_id: str | Non
     return links
 
 
-async def _collection_read_with_features_last_updated(
-    db: AsyncSession, collection_id: str, out: CollectionRead
-) -> CollectionRead:
-    ts = await tiles_crud.get_max_feature_updated_at(db, collection_id)
-    return out.model_copy(update={"features_last_updated_at": ts})
-
-
 @router.get(
     "",
     summary="List collections",
@@ -316,9 +309,7 @@ async def get_collection(
     base = _base_url(request)
     default_style = await styles_crud.get_default_style(db, collection_id)
     default_style_id = default_style.id if default_style else None
-    out = await _collection_read_with_features_last_updated(
-        db, collection_id, CollectionRead.model_validate(collection)
-    )
+    out = CollectionRead.model_validate(collection)
     if wants_html(request):
         rec = await tiles_crud.get_collection_tiles(db, collection_id)
         has_static_tiles = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
@@ -388,9 +379,7 @@ async def replace_collection(
             detail="Collection not found",
         )
     base = _base_url(request)
-    out = await _collection_read_with_features_last_updated(
-        db, collection_id, CollectionRead.model_validate(collection)
-    )
+    out = CollectionRead.model_validate(collection)
     return out.model_copy(update={"links": _collection_links(base, collection_id)})
 
 
@@ -418,9 +407,7 @@ async def patch_collection(
             detail="Collection not found",
         )
     base = _base_url(request)
-    out = await _collection_read_with_features_last_updated(
-        db, collection_id, CollectionRead.model_validate(collection)
-    )
+    out = CollectionRead.model_validate(collection)
     return out.model_copy(update={"links": _collection_links(base, collection_id)})
 
 
@@ -514,9 +501,7 @@ async def create_collection(
     collection = await collections_crud.create_collection(
         db, payload, owner_id=current_user.id, visibility="private"
     )
-    return await _collection_read_with_features_last_updated(
-        db, collection.id, CollectionRead.model_validate(collection)
-    )
+    return CollectionRead.model_validate(collection)
 
 
 @router.post(

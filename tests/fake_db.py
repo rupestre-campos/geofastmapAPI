@@ -48,6 +48,22 @@ class Store:
             crs="http://www.opengis.net/def/crs/OGC/1.3/CRS84",
         )
 
+    def _sync_collection_features_last_updated(self, collection_id: str) -> None:
+        """Mirror DB triggers: set Collection.features_last_updated_at from in-memory features."""
+        c = self.collections.get(collection_id)
+        if c is None:
+            return
+        mx: datetime | None = None
+        for (cid, _), f in self.features.items():
+            if cid != collection_id:
+                continue
+            t = f.updated_at
+            if t is None:
+                continue
+            if mx is None or t > mx:
+                mx = t
+        c.features_last_updated_at = mx
+
     @staticmethod
     def _collect_coords(value: Any, out: list[tuple[float, float]]) -> None:
         if isinstance(value, (int, float)):
@@ -346,6 +362,7 @@ class FakeFeaturesCrud:
             updated_at=now,
         )
         self._store.features[(data.collection_id, feature_id)] = feature
+        self._store._sync_collection_features_last_updated(data.collection_id)
         return feature
 
     async def replace_feature(
@@ -359,6 +376,7 @@ class FakeFeaturesCrud:
         )
         f.properties = data.properties
         f.updated_at = _now()
+        self._store._sync_collection_features_last_updated(collection_id)
         return True
 
     async def update_feature(
@@ -377,6 +395,7 @@ class FakeFeaturesCrud:
             existing = f.properties or {}
             f.properties = {**existing, **(data.properties or {})}
         f.updated_at = _now()
+        self._store._sync_collection_features_last_updated(collection_id)
         return f
 
     async def delete_feature(
@@ -386,4 +405,5 @@ class FakeFeaturesCrud:
         if key not in self._store.features:
             return False
         del self._store.features[key]
+        self._store._sync_collection_features_last_updated(collection_id)
         return True

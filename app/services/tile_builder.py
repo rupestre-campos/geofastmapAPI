@@ -110,7 +110,7 @@ def build_pmtiles_sync(
 
     with SessionLocal() as session:
         row = session.execute(
-            text("SELECT MAX(updated_at) AS m FROM features WHERE collection_id = :cid"),
+            text("SELECT features_last_updated_at AS m FROM collections WHERE id = :cid"),
             {"cid": collection_id},
         ).first()
         max_updated = row.m if row and row.m else None
