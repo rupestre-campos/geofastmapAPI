@@ -110,6 +110,11 @@ class CollectionRead(CollectionBase):
         default=None,
         description="Total number of features in this collection (cached).",
     )
+    features_last_updated_at: datetime | None = Field(
+        default=None,
+        description="Latest feature row update in this collection (max of features.updated_at: geometries and attributes). "
+        "Distinct from updated_at, which reflects collection metadata (title, description, extent, etc.).",
+    )
     links: list[Link] | None = Field(default=None, description="OGC links (self, items).")
 
     model_config = ConfigDict(from_attributes=True)

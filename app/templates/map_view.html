@@ -837,7 +837,8 @@
           '<div><strong>Description</strong>: <span id=\"map-view-layer-description\">Loading…</span></div>' +
           '<div><strong>Bbox</strong>: <span id=\"map-view-layer-bbox\">Loading…</span></div>' +
           '<div><strong>Created</strong>: <span id=\"map-view-layer-created-at\">Loading…</span></div>' +
-          '<div><strong>Last updated</strong>: <span id=\"map-view-layer-updated-at\">Loading…</span></div>';
+          '<div><strong>Metadata last updated</strong>: <span id=\"map-view-layer-updated-at\">Loading…</span> <span class=\"meta\">(title, description, bbox, settings)</span></div>' +
+          '<div><strong>Features last updated</strong>: <span id=\"map-view-layer-features-updated-at\">Loading…</span> <span class=\"meta\">(geometries &amp; attributes)</span></div>';
         loadCollectionMeta(cid).then(function(meta) {
           var de = document.getElementById('map-view-layer-description');
           if (de) {
@@ -848,6 +849,7 @@
           if (bx) bx.textContent = _fmtBboxFromMeta(meta);
           var cr = document.getElementById('map-view-layer-created-at');
           var up = document.getElementById('map-view-layer-updated-at');
+          var fu = document.getElementById('map-view-layer-features-updated-at');
           if (cr) {
             var cts = meta && (meta.created_at || meta.createdAt);
             cr.textContent = _fmtIso(cts);
@@ -855,6 +857,10 @@
           if (up) {
             var uts = meta && (meta.updated_at || meta.updatedAt);
             up.textContent = _fmtIso(uts);
+          }
+          if (fu) {
+            var fts = meta && (meta.features_last_updated_at || meta.featuresLastUpdatedAt);
+            fu.textContent = _fmtIso(fts);
           }
         });
       }

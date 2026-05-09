@@ -53,8 +53,10 @@
     </div>
     <div class="collection-info-label">Created</div>
     <div class="collection-info-value">{% if collection.created_at %}{{ collection.created_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC{% else %}—{% endif %}</div>
-    <div class="collection-info-label">Last updated</div>
-    <div class="collection-info-value">{% if collection.updated_at %}{{ collection.updated_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC{% else %}—{% endif %}</div>
+    <div class="collection-info-label">Metadata last updated</div>
+    <div class="collection-info-value">{% if collection.updated_at %}{{ collection.updated_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC{% else %}—{% endif %} <span class="meta">(title, description, bbox, settings)</span></div>
+    <div class="collection-info-label">Features last updated</div>
+    <div class="collection-info-value">{% if collection.features_last_updated_at %}{{ collection.features_last_updated_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC{% else %}—{% endif %} <span class="meta">(geometries &amp; attributes on the map)</span></div>
   </div>
 
   <div class="card">
