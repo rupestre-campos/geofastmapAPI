@@ -89,6 +89,7 @@
     .map-view-layer-panel-subtitle { margin: 0 0 10px; font-size: 0.95rem; font-weight: 600; color: var(--text); }
     .map-view-layer-panel-info .meta { font-size: 0.9rem; line-height: 1.5; }
     .map-view-layer-panel-info .meta strong { color: var(--text); font-weight: 600; }
+    #map-view-layer-description { white-space: pre-wrap; word-break: break-word; }
   </style>
 {% endblock %}
 {% block content %}
@@ -792,6 +793,15 @@
         // Simple readable format: "YYYY-MM-DD HH:MM:SS"
         return s.replace('Z', '').replace('T', ' ').substring(0, 19);
       }
+      function _fmtBboxFromMeta(meta) {
+        if (!meta || !meta.extent || !meta.extent.bbox) return '—';
+        var bbox = meta.extent.bbox;
+        if (!bbox.length || !bbox[0] || bbox[0].length < 4) return '—';
+        var b = bbox[0];
+        var minx = Number(b[0]), miny = Number(b[1]), maxx = Number(b[2]), maxy = Number(b[3]);
+        if (![minx, miny, maxx, maxy].every(function(v) { return isFinite(v); })) return '—';
+        return minx.toFixed(6) + ', ' + miny.toFixed(6) + ', ' + maxx.toFixed(6) + ', ' + maxy.toFixed(6) + ' (minx, miny, maxx, maxy, WGS84)';
+      }
       function loadCollectionMeta(collectionId) {
         var cid = String(collectionId || '').trim();
         if (!cid) return Promise.resolve(null);
@@ -824,12 +834,28 @@
         infoEl.innerHTML =
           '<div><strong>Layer</strong>: ' + escapeHtml(title) + '</div>' +
           '<div><strong>Collection</strong>: <code>' + escapeHtml(cid) + '</code></div>' +
+          '<div><strong>Description</strong>: <span id=\"map-view-layer-description\">Loading…</span></div>' +
+          '<div><strong>Bbox</strong>: <span id=\"map-view-layer-bbox\">Loading…</span></div>' +
+          '<div><strong>Created</strong>: <span id=\"map-view-layer-created-at\">Loading…</span></div>' +
           '<div><strong>Last updated</strong>: <span id=\"map-view-layer-updated-at\">Loading…</span></div>';
         loadCollectionMeta(cid).then(function(meta) {
+          var de = document.getElementById('map-view-layer-description');
+          if (de) {
+            var dtxt = meta && meta.description != null ? String(meta.description) : '';
+            de.textContent = dtxt.trim() ? dtxt : '—';
+          }
+          var bx = document.getElementById('map-view-layer-bbox');
+          if (bx) bx.textContent = _fmtBboxFromMeta(meta);
+          var cr = document.getElementById('map-view-layer-created-at');
           var up = document.getElementById('map-view-layer-updated-at');
-          if (!up) return;
-          var ts = meta && (meta.updated_at || meta.updatedAt);
-          up.textContent = _fmtIso(ts);
+          if (cr) {
+            var cts = meta && (meta.created_at || meta.createdAt);
+            cr.textContent = _fmtIso(cts);
+          }
+          if (up) {
+            var uts = meta && (meta.updated_at || meta.updatedAt);
+            up.textContent = _fmtIso(uts);
+          }
         });
       }
       function collectionIdFromLayerId(mapLayerId) {

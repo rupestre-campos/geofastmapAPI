@@ -51,6 +51,10 @@
       <span class="meta">No extent. Use <em>Recompute extent</em> below or add features with geometry.</span>
       {% endif %}
     </div>
+    <div class="collection-info-label">Created</div>
+    <div class="collection-info-value">{% if collection.created_at %}{{ collection.created_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC{% else %}—{% endif %}</div>
+    <div class="collection-info-label">Last updated</div>
+    <div class="collection-info-value">{% if collection.updated_at %}{{ collection.updated_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC{% else %}—{% endif %}</div>
   </div>
 
   <div class="card">

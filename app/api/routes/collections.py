@@ -331,6 +331,8 @@ async def get_collection(
                 "description": out.description,
                 "collection_type": getattr(collection, "collection_type", "vector"),
                 "raster_settings": getattr(collection, "raster_settings", None),
+                "created_at": out.created_at,
+                "updated_at": out.updated_at,
             },
             owner_username=owner_username,
             extent_geojson=out.extent.model_dump() if out.extent else None,
