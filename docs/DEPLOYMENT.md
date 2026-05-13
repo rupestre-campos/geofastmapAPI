@@ -113,18 +113,14 @@ Recommended first step for new deployments: use in-app admin pages at:
 
 - `/admin/observability?f=html` (live request logs + filters)
 - `/admin/observability/performance?f=html` (mean/p50/p90 by endpoint)
-- `/admin/observability/servers?f=html` (local + configured server load snapshots)
+- `/admin/observability/servers?f=html` (local procfs snapshot by default; optional remote metrics)
 
 Tune defaults in the admin page itself (`/admin/observability?f=html` -> Settings).  
 Those values are persisted in database runtime settings, so they are not required in `.env`.
 
-For host metrics on the same machine, Netdata is integrated directly in:
+**Server load:** the app exposes a cheap **local** snapshot (load average and memory from `/proc` inside the API process). To also poll **Netdata** (or any service exposing Netdata-compatible `/api/v1/data` for `system.cpu` and `system.ram`), run Netdata **outside** this stack (or on another host) and set **Settings → servers JSON** to a JSON array like `[{"name":"api-host","base_url":"http://host:19999"}]` with a URL reachable from the API process.
 
-- [`deploy/compose/docker-compose.api.yml`](../deploy/compose/docker-compose.api.yml)
-
-When you start the API split stack, Netdata starts too:
-
-`docker compose -f deploy/compose/docker-compose.api.yml up -d --build`
+[`deploy/compose/docker-compose.api.yml`](../deploy/compose/docker-compose.api.yml) does **not** bundle Netdata (avoids constant agent CPU). If you previously stored a Netdata URL in DB settings and no longer run that endpoint, clear **servers JSON** to `[]` to avoid failed HTTP fetches on the Servers page.
 
 ### Optional advanced observability stack (Grafana/Loki/Tempo)
 

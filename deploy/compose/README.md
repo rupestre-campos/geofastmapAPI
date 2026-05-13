@@ -9,7 +9,7 @@ If you need a different project name on one host, run with `-p <project_name>` (
 |------|---------|
 | `docker-compose.db.yml` | PostGIS only |
 | `docker-compose.redis.yml` | Redis only |
-| `docker-compose.api.yml` | API + integrated Netdata (named volumes for `/data/*`) |
+| `docker-compose.api.yml` | API only (named volumes for `/data/*`) |
 | `docker-compose.api.nfs.yml` | **Override:** bind-mount host `/data/bulk-uploads`, `/data/tiles`, `/data/rasters` (use with `docker-compose.api.yml`) |
 | `docker-compose.workers.yml` | Bulk, tile, and process workers |
 | `docker-compose.workers.nfs.yml` | **Override:** bind-mount host `/data/bulk-uploads` and `/data/tiles` (use with `docker-compose.workers.yml`) |

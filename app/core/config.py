@@ -135,9 +135,10 @@ class Settings(BaseSettings):
     observability_log_retention_days: int = 7
     observability_metrics_retention_days: int = 30
     observability_cleanup_interval_seconds: int = 3600
-    # Optional server list for load dashboard. JSON array with items:
-    # [{"name":"api","base_url":"http://netdata-api:19999"}]
-    observability_servers_json: str = '[{"name":"api-host","base_url":"http://netdata:19999"}]'
+    # Optional server list for admin load dashboard (Netdata or compatible /api/v1/data).
+    # Default empty: only local procfs snapshot (no extra agent). Example:
+    # [{"name":"api-host","base_url":"http://netdata:19999"}]
+    observability_servers_json: str = "[]"
     # Redis cache for proxied Titiler raster tiles (STAC + COG). 0 = disabled.
     # Cold tiles still cost GDAL+network; repeats hit Redis ~1–5 ms.
     titiler_tile_cache_ttl_seconds: int = 3600
