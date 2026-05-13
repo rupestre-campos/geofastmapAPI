@@ -40,7 +40,8 @@ services:
 
   # Multiplex many app connections onto a small number of Postgres connections (see docker/pgbouncer/README.md).
   pgbouncer:
-    image: edoburu/pgbouncer:1.24.1
+    # Tags like 1.24.x are not published; use a real tag from https://hub.docker.com/r/edoburu/pgbouncer/tags
+    image: edoburu/pgbouncer:v1.23.1-p0
     container_name: geofastmap_pgbouncer
     depends_on:
       db:
