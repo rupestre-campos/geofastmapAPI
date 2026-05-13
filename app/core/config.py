@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,10 +11,21 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://postgres:postgres@localhost:5432/geofastmap"
     )
-    # Connection pool: increase for heavy concurrent load (e.g. dynamic tiles). Default 5+10 is too low for maps.
-    database_pool_size: int = 20
-    database_pool_max_overflow: int = 20
+    # When set, Alembic uses this URL (Postgres direct). Use when DATABASE_URL points at PgBouncer (transaction pool).
+    database_url_direct: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DATABASE_URL_DIRECT", "ALEMBIC_DATABASE_URL"),
+    )
+    # Set true when DATABASE_URL targets PgBouncer in transaction pooling (asyncpg must disable statement cache).
+    database_use_pgbouncer: bool = False
+    # Per-process SQLAlchemy pool (each uvicorn worker / each worker process has its own pool).
+    # Total server load: sum over all processes of (database_pool_size + database_pool_max_overflow), or use PgBouncer.
+    database_pool_size: int = 5
+    database_pool_max_overflow: int = 5
     database_pool_timeout: float = 30.0  # seconds to wait for a connection from the pool
+    # Ephemeral engine in raster_batch (per asyncio.run job); keep small to avoid doubling many full pools.
+    raster_batch_db_pool_size: int = 1
+    raster_batch_db_max_overflow: int = 2
 
     # OGC API Features items: pagination limits
     items_default_limit: int = 100

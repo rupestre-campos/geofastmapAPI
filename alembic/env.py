@@ -25,9 +25,10 @@ settings = get_settings()
 # within the .ini file in use.
 config = context.config
 
-# Override sqlalchemy.url from our application settings, if available.
+# Override sqlalchemy.url from application settings (prefer direct Postgres for migrations when set).
 if config.get_main_option("sqlalchemy.url") is not None:
-    config.set_main_option("sqlalchemy.url", settings.database_url)
+    migrations_url = settings.database_url_direct or settings.database_url
+    config.set_main_option("sqlalchemy.url", migrations_url)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

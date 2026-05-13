@@ -1,4 +1,7 @@
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@YOUR_DB_HOST:5432/geofastmap
+# DATABASE_USE_PGBOUNCER=false  # true when DATABASE_URL targets PgBouncer (transaction pool)
+DATABASE_POOL_SIZE=5
+DATABASE_POOL_MAX_OVERFLOW=5
 REDIS_URL=redis://YOUR_REDIS_HOST:6379/0
 BULK_QUEUE_TYPE=redis
 PROCESS_QUEUE_TYPE=redis

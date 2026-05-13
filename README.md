@@ -137,13 +137,14 @@ For `GET /collections/{id}/items` (and the same filters apply to the GeoJSONL ex
 
 Key settings (env vars or `.env`; see `app/core/config.py`):
 
-- **DATABASE_URL** — PostgreSQL + PostGIS (e.g. `postgresql+asyncpg://user:pass@host:5432/geofastmap`).
+- **DATABASE_URL** — PostgreSQL + PostGIS (e.g. `postgresql+asyncpg://user:pass@host:5432/geofastmap`). With PgBouncer, point this at the pooler and set **DATABASE_USE_PGBOUNCER=true**.
+- **DATABASE_URL_DIRECT** (or **ALEMBIC_DATABASE_URL**) — Direct Postgres URL for **Alembic** when `DATABASE_URL` goes through PgBouncer transaction pooling.
 - **REDIS_URL** — For bulk queue, tile build queue, process queue, and tile cache (default `redis://localhost:6379/0`).
 - **BULK_QUEUE_TYPE** — `redis` (separate worker) or `memory` (in-process consumer).
 - **PROCESS_QUEUE_TYPE** — `redis` or `memory` for intersection/erase jobs.
 - **TILES_STORAGE_PATH** — Where static MBTiles/PMTiles are stored (default `/data/tiles`).
 - **BULK_STORAGE_PATH** — Where uploaded files go (default `/data/bulk-uploads`).
-- **database_pool_size** / **database_pool_max_overflow** — Tune for concurrent tile/export load.
+- **DATABASE_POOL_SIZE** / **DATABASE_POOL_MAX_OVERFLOW** — Per **process** (each uvicorn worker has its own pool). Total load must fit PostgreSQL `max_connections` unless you use PgBouncer (see `docs/DEPLOYMENT.md`).
 
 **Auth (users, roles, visibility):**
 

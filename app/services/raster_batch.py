@@ -12,12 +12,13 @@ from pathlib import Path
 
 from fastapi import UploadFile
 from sqlalchemy import create_engine
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from uuid6 import uuid7
 
 from app.core.config import get_settings
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
+from app.db.session import create_app_async_engine
 from app.schemas.feature import FeatureCreate, Geometry
 from app.services.coverages import cog_path_for, convert_geotiff_to_cog_4326
 from app.services.job_store import update_job
@@ -209,14 +210,9 @@ async def _process_raster_batch_async(
     last_err: str | None = None
 
     settings = get_settings()
-    engine = create_async_engine(
-        settings.database_url,
-        echo=False,
-        future=True,
-        pool_size=settings.database_pool_size,
-        max_overflow=settings.database_pool_max_overflow,
-        pool_timeout=settings.database_pool_timeout,
-        pool_pre_ping=True,
+    engine = create_app_async_engine(
+        pool_size=settings.raster_batch_db_pool_size,
+        max_overflow=settings.raster_batch_db_max_overflow,
     )
     SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
     try:

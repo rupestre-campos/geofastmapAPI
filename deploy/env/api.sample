@@ -11,7 +11,15 @@ STAC_CATALOG_ROOT_URL_REQUIRE_HTTPS=false
 # Set false in production to disable /docs, /redoc, /openapi.json
 EXPOSE_OPENAPI_DOCS=true
 API_UVICORN_WORKERS=8
+# Runtime app traffic: point at PgBouncer (or Postgres if no pooler). Root docker-compose uses pgbouncer:5432.
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@YOUR_DB_HOST:5432/geofastmap
+# Alembic / DDL: direct Postgres only (required when DATABASE_URL goes through PgBouncer transaction pool).
+# DATABASE_URL_DIRECT=postgresql+asyncpg://postgres:postgres@YOUR_DB_HOST:5432/geofastmap
+# Set true when DATABASE_URL uses PgBouncer transaction pooling (asyncpg statement cache disabled).
+# DATABASE_USE_PGBOUNCER=false
+# Per uvicorn worker process (not across workers): keep sum over all processes < Postgres max_connections.
+DATABASE_POOL_SIZE=5
+DATABASE_POOL_MAX_OVERFLOW=5
 REDIS_URL=redis://YOUR_REDIS_HOST:6379/0
 BULK_QUEUE_TYPE=redis
 BULK_STORAGE_PATH=/data/bulk-uploads

@@ -18,7 +18,7 @@ docker compose up --build
 
 - **API / UI:** http://localhost:8000  
 - **Postgres** is on host port **5434** (see [`docker-compose.yml`](../docker-compose.yml)).  
-- Starts Postgres, Redis, API (runs migrations), bulk worker, tile worker, process worker, and Titiler.
+- Starts Postgres, **PgBouncer** (connection pooler), Redis, API (runs migrations), bulk worker, tile worker, process worker, and Titiler.
 
 Stop: `docker compose down`. Add `-v` only if you want to **delete** Docker volumes and local data.
 
@@ -78,6 +78,20 @@ The [`Dockerfile`](../Dockerfile) includes `static/` so the web UI works without
 **Titiler:** set `TITILER_INTERNAL_URL` on the API to your Titiler container or an **nginx** upstream ([`deploy/nginx/titiler-upstream.conf`](../deploy/nginx/titiler-upstream.conf)). On a **worker** with NFS-mounted **`/data/rasters`**, stack [`docker-compose.titiler.yml`](../deploy/compose/docker-compose.titiler.yml) with [`docker-compose.titiler.nfs.yml`](../deploy/compose/docker-compose.titiler.nfs.yml) so rasters are not read from an empty named volume.
 
 **Postgres on bare metal:** install PostGIS + `pg_trgm`, then point `DATABASE_URL` at it; run `alembic upgrade head` once when upgrading.
+
+### Postgres connections (pools and `max_connections`)
+
+Each **Python process** (each uvicorn worker, each bulk/tile/process/mosaic worker) opens its own SQLAlchemy pool. Worst-case client connections to Postgres are approximately:
+
+`sum_over_processes(database_pool_size + database_pool_max_overflow)`
+
+That sum must stay **below** PostgreSQL `max_connections` (minus superuser / monitoring reserve). Example: **8** API workers with pool **5+5** ⇒ up to **80** connections from the API container alone.
+
+**Recommended:** put **[PgBouncer](https://www.pgbouncer.org/)** in *transaction* pooling mode between the app and Postgres, point **`DATABASE_URL`** at PgBouncer, set **`DATABASE_USE_PGBOUNCER=true`**, and cap real server connections with PgBouncer’s `default_pool_size`. The root [`docker-compose.yml`](../docker-compose.yml) includes a `pgbouncer` service and wires the API/workers to it (see [`docker/pgbouncer/README.md`](../docker/pgbouncer/README.md)).
+
+**Migrations:** when `DATABASE_URL` goes through PgBouncer, set **`DATABASE_URL_DIRECT`** (or **`ALEMBIC_DATABASE_URL`**) to the **direct** `postgresql+asyncpg://…@postgres-host:5432/…` URL so `alembic upgrade head` uses Postgres for DDL. The API container’s Compose env sets both.
+
+**Without PgBouncer:** lower **`DATABASE_POOL_SIZE`** / **`DATABASE_POOL_MAX_OVERFLOW`** and/or **`API_UVICORN_WORKERS`** so the inequality above holds; tune **`RASTER_BATCH_DB_POOL_SIZE`** / **`RASTER_BATCH_DB_MAX_OVERFLOW`** for the ephemeral raster batch engine (defaults are small).
 
 **Safety:** do not expose Postgres or Redis to the public internet; use strong passwords on the LAN.
 

@@ -1,10 +1,16 @@
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.core.config import Settings
 from app.db import session as db_session
+
+
+def test_database_url_direct_from_alembic_env(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+    monkeypatch.setenv("ALEMBIC_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db_direct")
+    settings = Settings()
+    assert "db_direct" in (settings.database_url_direct or "")
 
 
 def test_settings_can_read_env(monkeypatch):

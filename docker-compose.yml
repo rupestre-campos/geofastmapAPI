@@ -38,6 +38,25 @@ services:
       # Ensure pg_trgm is available for migration 0002 (properties full-text index)
       - ./docker/init-pg_trgm.sql:/docker-entrypoint-initdb.d/02-pg_trgm.sql
 
+  # Multiplex many app connections onto a small number of Postgres connections (see docker/pgbouncer/README.md).
+  pgbouncer:
+    image: edoburu/pgbouncer:1.24.1
+    container_name: geofastmap_pgbouncer
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Backend: real Postgres (asyncpg URL not used here; libpq postgres:// form).
+      DATABASE_URL: postgres://postgres:postgres@db:5432/geofastmap
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "1000"
+      DEFAULT_POOL_SIZE: "25"
+      RESERVE_POOL_SIZE: "5"
+      LISTEN_ADDR: "0.0.0.0"
+      LISTEN_PORT: "5432"
+    expose:
+      - "5432"
+
   redis:
     image: redis:7-alpine
     container_name: geofastmap_redis
@@ -50,6 +69,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
       redis:
         condition: service_started
     healthcheck:
@@ -63,7 +84,9 @@ services:
       # generates a random key each boot and every Set-Cookie becomes invalid → always "Login",
       # and anonymous collection rules apply (often zero rows for private data).
       AUTH_SECRET_KEY: dev-docker-auth-secret-change-for-production
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofastmap
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@pgbouncer:5432/geofastmap
+      DATABASE_URL_DIRECT: postgresql+asyncpg://postgres:postgres@db:5432/geofastmap
+      DATABASE_USE_PGBOUNCER: "true"
       REDIS_URL: redis://redis:6379/0
       BULK_QUEUE_TYPE: redis
       BULK_STORAGE_PATH: /data/bulk-uploads
@@ -101,10 +124,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
       redis:
         condition: service_started
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofastmap
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@pgbouncer:5432/geofastmap
+      DATABASE_USE_PGBOUNCER: "true"
       REDIS_URL: redis://redis:6379/0
       BULK_QUEUE_TYPE: redis
       BULK_STORAGE_PATH: /data/bulk-uploads
@@ -122,10 +148,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
       redis:
         condition: service_started
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofastmap
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@pgbouncer:5432/geofastmap
+      DATABASE_USE_PGBOUNCER: "true"
       REDIS_URL: redis://redis:6379/0
       BULK_QUEUE_TYPE: redis
       TILES_STORAGE_PATH: /data/tiles
@@ -152,10 +181,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
       redis:
         condition: service_started
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofastmap
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@pgbouncer:5432/geofastmap
+      DATABASE_USE_PGBOUNCER: "true"
       REDIS_URL: redis://redis:6379/0
       PROCESS_QUEUE_TYPE: redis
     volumes:
@@ -168,10 +200,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
       redis:
         condition: service_started
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/geofastmap
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@pgbouncer:5432/geofastmap
+      DATABASE_USE_PGBOUNCER: "true"
       REDIS_URL: redis://redis:6379/0
       MOSAIC_QUEUE_TYPE: redis
       MOSAIC_SUBJOB_QUEUE_ENABLED: "true"

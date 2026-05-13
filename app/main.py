@@ -61,11 +61,21 @@ async def lifespan(app: FastAPI):
     from app.models.user import User
     from sqlalchemy import select
 
+    settings = get_settings()
+    cap = settings.database_pool_size + settings.database_pool_max_overflow
+    logger.info(
+        "Database pool (per process): pool_size=%s max_overflow=%s (max %s concurrent checkouts); "
+        "database_use_pgbouncer=%s",
+        settings.database_pool_size,
+        settings.database_pool_max_overflow,
+        cap,
+        settings.database_use_pgbouncer,
+    )
+
     # Seed default admin user if no users exist
     async with AsyncSessionLocal() as session:
         r = await session.execute(select(User).limit(1))
         if r.scalar_one_or_none() is None:
-            settings = get_settings()
             await user_crud.create_user(
                 session,
                 settings.auth_default_admin_username,
@@ -125,6 +135,29 @@ def create_app() -> FastAPI:
         )
 
     app.add_exception_handler(GeometryTooLargeError, geometry_too_large_handler)
+
+    from sqlalchemy.exc import OperationalError
+
+    async def db_operational_handler(request: Request, exc: OperationalError):
+        parts = [str(exc)]
+        if getattr(exc, "orig", None) is not None:
+            parts.append(str(exc.orig))
+        msg = " ".join(parts).lower()
+        if "too many clients" in msg:
+            logger.warning("PostgreSQL connection limit exceeded: %s", exc)
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "Database connection limit reached; retry shortly. "
+                    "If this persists, use PgBouncer (see docs/DEPLOYMENT.md) or reduce "
+                    "API_UVICORN_WORKERS / DATABASE_POOL_SIZE / DATABASE_POOL_MAX_OVERFLOW.",
+                },
+            )
+        logger.exception("Unhandled database operational error")
+        return JSONResponse(status_code=500, content={"detail": "Database error"})
+
+    app.add_exception_handler(OperationalError, db_operational_handler)
+
     session_secret = settings.auth_secret_key
     if not session_secret:
         session_secret = secrets.token_hex(32)
