@@ -18,6 +18,7 @@ ENV/
 !scripts/.env.example
 deploy/env/.env.api
 deploy/env/.env.workers
+deploy/env/.env.pgbouncer
 
 # IDE and editors
 .idea/

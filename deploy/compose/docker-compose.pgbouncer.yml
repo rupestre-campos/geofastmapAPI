@@ -1,0 +1,37 @@
+# PgBouncer only — no Postgres container (avoids name clash with existing geofastmap_db).
+# From repo root:
+#   cp deploy/env/pgbouncer.sample deploy/env/.env.pgbouncer
+#   # edit PGBOUNCER_BACKEND_DATABASE_URL
+#   docker compose --env-file deploy/env/.env.pgbouncer -f deploy/compose/docker-compose.pgbouncer.yml up -d
+#
+# App/workers then use: postgresql+asyncpg://USER:PASS@<this-host>:6432/DB  (default publish port)
+# and DATABASE_USE_PGBOUNCER=true. Alembic: DATABASE_URL_DIRECT to real Postgres (same host:5434 or @db:5432).
+name: geofastmap_pooler
+
+services:
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.23.1-p0
+    container_name: geofastmap_pgbouncer
+    restart: unless-stopped
+    # Reach Postgres published on the host (e.g. 5434) from Linux containers.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # libpq URL to **real** Postgres (not asyncpg). Examples in deploy/env/pgbouncer.sample
+      DATABASE_URL: ${PGBOUNCER_BACKEND_DATABASE_URL:?Set PGBOUNCER_BACKEND_DATABASE_URL in deploy/env/.env.pgbouncer — see pgbouncer.sample}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-1000}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-25}
+      RESERVE_POOL_SIZE: ${PGBOUNCER_RESERVE_POOL_SIZE:-5}
+      LISTEN_ADDR: "0.0.0.0"
+      LISTEN_PORT: "5432"
+    ports:
+      - "${PGBOUNCER_PUBLISH:-6432}:5432"
+    # Optional: join the same Docker network as your DB container, then use @geofastmap_db:5432 in DATABASE_URL.
+    # networks:
+    #   - dbnet
+
+# networks:
+#   dbnet:
+#     external: true
+#     name: geofastmap_api_default

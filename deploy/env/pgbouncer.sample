@@ -1,0 +1,21 @@
+# Copy to deploy/env/.env.pgbouncer and use with:
+#   docker compose --env-file deploy/env/.env.pgbouncer -f deploy/compose/docker-compose.pgbouncer.yml up -d
+#
+# edoburu/pgbouncer expects DATABASE_URL in **libpq** form (postgres://...), not postgresql+asyncpg://
+
+# --- Backend: your real Postgres (must be reachable from inside the pgbouncer container) ---
+
+# Postgres on the Docker host, published as host:5434 (typical root compose mapping):
+PGBOUNCER_BACKEND_DATABASE_URL=postgres://postgres:YOUR_PASSWORD@host.docker.internal:5434/geofastmap
+
+# If Postgres runs in another compose stack on the **same** Docker network, uncomment networks in
+# docker-compose.pgbouncer.yml and use the DB container hostname instead, e.g.:
+# PGBOUNCER_BACKEND_DATABASE_URL=postgres://postgres:YOUR_PASSWORD@geofastmap_db:5432/geofastmap
+
+# --- Listen on host (clients connect here) ---
+PGBOUNCER_PUBLISH=6432
+
+# Optional tuning:
+# PGBOUNCER_MAX_CLIENT_CONN=1000
+# PGBOUNCER_DEFAULT_POOL_SIZE=25
+# PGBOUNCER_RESERVE_POOL_SIZE=5
