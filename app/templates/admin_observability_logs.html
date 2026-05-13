@@ -71,6 +71,7 @@
     </div>
     <p class="meta">These are runtime defaults stored in database, not required in env files.</p>
     <form method="post" action="{{ base }}/admin/observability/settings">
+      <input type="hidden" name="csrf_token" value="{{ admin_obs_csrf }}">
       <div class="grid-2">
         <label class="checkbox-inline" style="margin-top:1.8rem;">
           <input type="checkbox" name="logging_enabled" {% if runtime_settings.logging_enabled %}checked{% endif %}>
@@ -108,6 +109,9 @@
     {% endif %}
     {% if settings_error_json %}
     <p class="meta" style="color: var(--danger);">Servers JSON is invalid. Use a JSON array.</p>
+    {% endif %}
+    {% if settings_error_url %}
+    <p class="meta" style="color: var(--danger);">A server base_url is not allowed (private hosts, non-http(s), or localhost).</p>
     {% endif %}
   </div>
 
@@ -149,6 +153,7 @@
     </div>
     <p class="meta">Type <code>DELETE</code> and submit to purge log history.</p>
     <form method="post" action="{{ base }}/admin/observability/logs/purge">
+      <input type="hidden" name="csrf_token" value="{{ admin_obs_csrf }}">
       <div class="grid-2">
         <div class="form-row">
           <label>Delete only older than N days (optional)</label>

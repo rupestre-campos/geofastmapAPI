@@ -3,7 +3,7 @@
 {% block content %}
   <header class="page-header">
     <h1>Observability: endpoint performance</h1>
-    <p class="meta">Mean, p50 (median), and p90 response time by endpoint.</p>
+    <p class="meta">Mean, p50, and p90 latency (ms) per minute. When <strong>All endpoints</strong> is selected, values are weighted by request count per route within each minute.</p>
   </header>
 
   <div class="card">
@@ -37,9 +37,16 @@
 
   <div class="card">
     <div class="card-header">
-      <h2 class="card-title">Latency chart (ms)</h2>
+      <h2 class="card-title">Latency over time (ms)</h2>
     </div>
-    <canvas id="latencyCanvas" width="1000" height="320" style="width:100%;border:1px solid var(--border);border-radius:8px;"></canvas>
+    <div class="perf-chart-wrap" style="width:100%;min-height:280px;">
+      <canvas id="latencyCanvas" aria-label="Latency time series chart" role="img" style="display:block;width:100%;height:320px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card);"></canvas>
+    </div>
+    <p class="meta" style="margin-top:0.75rem;display:flex;flex-wrap:wrap;gap:1rem;align-items:center;">
+      <span><span style="display:inline-block;width:12px;height:3px;background:#2f81f7;vertical-align:middle;margin-right:0.35rem;"></span>Mean</span>
+      <span><span style="display:inline-block;width:12px;height:3px;background:#3fb950;vertical-align:middle;margin-right:0.35rem;"></span>p50 (median)</span>
+      <span><span style="display:inline-block;width:12px;height:3px;background:#f85149;vertical-align:middle;margin-right:0.35rem;"></span>p90</span>
+    </p>
     <p class="meta" id="perfMeta"></p>
   </div>
 {% endblock %}
@@ -53,42 +60,199 @@
   const canvas = document.getElementById('latencyCanvas');
   const ctx = canvas.getContext('2d');
 
+  const COLORS = { mean_ms: '#2f81f7', p50_ms: '#3fb950', p90_ms: '#f85149' };
+
+  function cssVar(name, fallback) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  }
+
+  /** One row per minute: weighted merge when multiple routes share the same bucket. */
+  function aggregateByBucketMinute(raw) {
+    const m = new Map();
+    for (const p of raw) {
+      const k = p.bucket_minute;
+      if (!k) continue;
+      let g = m.get(k);
+      if (!g) {
+        g = { bucket_minute: k, _wMean: 0, _wP50: 0, _wP90: 0, request_count: 0 };
+        m.set(k, g);
+      }
+      const w = Math.max(0, Number(p.request_count) || 0);
+      const weight = w > 0 ? w : 1;
+      g._wMean += (Number(p.mean_ms) || 0) * weight;
+      g._wP50 += (Number(p.p50_ms) || 0) * weight;
+      g._wP90 += (Number(p.p90_ms) || 0) * weight;
+      g.request_count += weight;
+    }
+    const out = [...m.values()]
+      .map((g) => {
+        const w = g.request_count || 1;
+        return {
+          bucket_minute: g.bucket_minute,
+          request_count: Math.round(g.request_count),
+          mean_ms: Math.round(g._wMean / w),
+          p50_ms: Math.round(g._wP50 / w),
+          p90_ms: Math.round(g._wP90 / w),
+        };
+      })
+      .sort((a, b) => String(a.bucket_minute).localeCompare(String(b.bucket_minute)));
+    return out;
+  }
+
+  function niceCeil(v) {
+    if (!Number.isFinite(v) || v <= 0) return 1;
+    const exp = Math.floor(Math.log10(v));
+    const f = v / Math.pow(10, exp);
+    const nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
+    return nf * Math.pow(10, exp);
+  }
+
+  function formatTickTime(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleString(undefined, {
+      timeZone: 'UTC',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  }
+
+  function fitCanvasToCss() {
+    const wrap = canvas.parentElement;
+    const rect = wrap.getBoundingClientRect();
+    const cssW = Math.max(280, Math.floor(rect.width));
+    const cssH = 320;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { cssW, cssH };
+  }
+
   function drawSeries(points) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const { cssW, cssH } = fitCanvasToCss();
+    const border = cssVar('--border', '#888');
+    const textSec = cssVar('--text-secondary', '#656d76');
+    const text = cssVar('--text', '#222');
+
+    ctx.clearRect(0, 0, cssW, cssH);
     if (!points.length) {
-      ctx.fillStyle = '#888';
-      ctx.fillText('No data in selected window.', 20, 30);
+      ctx.fillStyle = textSec;
+      ctx.font = '14px system-ui, sans-serif';
+      ctx.fillText('No data in selected window.', 16, 28);
       return;
     }
-    const pad = 40;
-    const w = canvas.width - pad * 2;
-    const h = canvas.height - pad * 2;
-    const maxY = Math.max(...points.map(p => Math.max(p.mean_ms, p.p50_ms, p.p90_ms)), 1);
-    const stepX = points.length > 1 ? (w / (points.length - 1)) : 0;
 
-    function plot(key, color) {
+    const padL = 52;
+    const padR = 14;
+    const padT = 28;
+    const padB = 56;
+    const chartW = cssW - padL - padR;
+    const chartH = cssH - padT - padB;
+    const rawMax = Math.max(...points.map((p) => Math.max(p.mean_ms, p.p50_ms, p.p90_ms)), 1);
+    const maxY = niceCeil(rawMax);
+
+    const n = points.length;
+    function xAt(i) {
+      if (n <= 1) return padL + chartW / 2;
+      return padL + (i / (n - 1)) * chartW;
+    }
+    function yAt(ms) {
+      return padT + chartH - (Math.min(ms, maxY) / maxY) * chartH;
+    }
+
+    // Grid + Y axis
+    const yTicks = 5;
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let t = 0; t <= yTicks; t++) {
+      const ms = (maxY * t) / yTicks;
+      const y = yAt(ms);
+      ctx.strokeStyle = border;
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = t === 0 ? 0.35 : 0.2;
       ctx.beginPath();
-      ctx.strokeStyle = color;
+      ctx.moveTo(padL, y);
+      ctx.lineTo(padL + chartW, y);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = textSec;
+      ctx.fillText(ms === 0 ? '0' : String(Math.round(ms)), padL - 8, y);
+    }
+
+    // Plot border
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(padL, padT, chartW, chartH);
+
+    // Y label
+    ctx.save();
+    ctx.fillStyle = textSec;
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('Latency (ms)', padL + chartW / 2, 16);
+    ctx.restore();
+
+    function plotLine(key) {
+      ctx.beginPath();
+      ctx.strokeStyle = COLORS[key];
       ctx.lineWidth = 2;
       points.forEach((p, i) => {
-        const x = pad + i * stepX;
-        const y = pad + h - ((p[key] || 0) / maxY) * h;
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        const x = xAt(i);
+        const y = yAt(p[key] || 0);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       });
       ctx.stroke();
     }
+    plotLine('mean_ms');
+    plotLine('p50_ms');
+    plotLine('p90_ms');
 
-    ctx.strokeStyle = '#666';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(pad, pad, w, h);
-    plot('mean_ms', '#2f81f7');
-    plot('p50_ms', '#3fb950');
-    plot('p90_ms', '#f85149');
-    ctx.fillStyle = '#999';
-    ctx.fillText('mean', pad + 6, pad + 14);
-    ctx.fillText('p50', pad + 70, pad + 14);
-    ctx.fillText('p90', pad + 120, pad + 14);
+    // Single point: draw markers so series are visible
+    if (n === 1) {
+      const p = points[0];
+      [['mean_ms', 0], ['p50_ms', 1], ['p90_ms', 2]].forEach(([key, off]) => {
+        const x = xAt(0) + (off - 1) * 6;
+        ctx.beginPath();
+        ctx.fillStyle = COLORS[key];
+        ctx.arc(x, yAt(p[key] || 0), 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    // X axis tick labels (subset)
+    const maxTicks = Math.min(8, n);
+    ctx.fillStyle = textSec;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (let k = 0; k < maxTicks; k++) {
+      const i = maxTicks <= 1 ? 0 : Math.round((k * (n - 1)) / (maxTicks - 1));
+      const x = xAt(i);
+      const label = formatTickTime(points[i].bucket_minute);
+      ctx.save();
+      ctx.translate(x, padT + chartH + 6);
+      ctx.rotate(-0.35);
+      ctx.fillText(label, 0, 0);
+      ctx.restore();
+    }
+
+    ctx.fillStyle = text;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.fillText('Time (minute bucket start, UTC)', padL + chartW / 2, padT + chartH + 36);
   }
+
+  let lastChartPoints = [];
 
   async function refreshPerformance() {
     const p = new URLSearchParams();
@@ -104,12 +268,28 @@
       `<option value="${e.route_template}">${e.route_template} (${e.count})</option>`
     ).join('');
     if (current) endpointSelect.value = current;
-    const points = Array.isArray(data.points) ? data.points : [];
+    const raw = Array.isArray(data.points) ? data.points : [];
+    const points = aggregateByBucketMinute(raw);
+    lastChartPoints = points;
     drawSeries(points);
-    perfMeta.textContent = `Points: ${points.length} | Updated ${new Date().toLocaleTimeString()}`;
+    const t0 = points.length ? points[0].bucket_minute : '';
+    const t1 = points.length ? points[points.length - 1].bucket_minute : '';
+    perfMeta.textContent =
+      `${points.length} minute bucket(s)` +
+      (raw.length !== points.length ? ` (merged from ${raw.length} metric rows)` : '') +
+      (t0 && t1 ? ` · ${formatTickTime(t0)} → ${formatTickTime(t1)} UTC` : '') +
+      ` · Updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  function redrawChartOnly() {
+    drawSeries(lastChartPoints);
   }
 
   document.getElementById('refreshPerf').addEventListener('click', refreshPerformance);
+  window.addEventListener('resize', () => {
+    if (window._perfResize) clearTimeout(window._perfResize);
+    window._perfResize = setTimeout(redrawChartOnly, 150);
+  });
   refreshPerformance();
 </script>
 {% endblock %}

@@ -27,6 +27,7 @@ from app.services.titiler_tile_cache import (
     get_cached_tile,
     set_cached_tile,
 )
+from app.services.coverages import CogPathOutsideStorageError, resolve_stored_cog_path
 
 router = APIRouter()
 
@@ -78,7 +79,10 @@ async def titiler_proxy_tile(
     if not cog_path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item is not a coverage")
 
-    p = Path(cog_path)
+    try:
+        p = resolve_stored_cog_path(cog_path, settings.raster_storage_path)
+    except CogPathOutsideStorageError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item is not a coverage") from None
     if not p.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="COG file missing on disk")
 

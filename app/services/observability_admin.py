@@ -19,6 +19,7 @@ from starlette.responses import Response
 
 from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
+from app.utils.outbound_url import UnsafeOutboundUrlError, validate_public_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -503,6 +504,18 @@ async def fetch_server_snapshots() -> list[dict[str, Any]]:
         for srv in servers:
             name = srv["name"]
             base_url = srv["base_url"]
+            try:
+                validate_public_http_url(base_url)
+            except UnsafeOutboundUrlError as e:
+                snapshots.append(
+                    {
+                        "name": name,
+                        "source": "netdata",
+                        "healthy": False,
+                        "error": _safe_text(str(e), 240),
+                    }
+                )
+                continue
             try:
                 # Netdata generic CPU chart endpoint.
                 cpu = await client.get(

@@ -103,11 +103,15 @@ def create_app() -> FastAPI:
     from fastapi import HTTPException
 
     settings = get_settings()
+    doc_kw: dict = {}
+    if not getattr(settings, "expose_openapi_docs", True):
+        doc_kw = {"docs_url": None, "redoc_url": None, "openapi_url": None}
     app = FastAPI(
         title=settings.app_name,
         version="0.1.0",
         description="GeoFastMap API — OGC API - Features style service built with FastAPI and PostgreSQL.",
         lifespan=lifespan,
+        **doc_kw,
     )
     init_observability(settings)
     app.add_exception_handler(HTTPException, http_exception_redirect_to_login)
@@ -128,10 +132,23 @@ def create_app() -> FastAPI:
             "AUTH_SECRET_KEY not set; using an auto-generated session key. "
             "Sessions will be invalidated on restart. Set AUTH_SECRET_KEY for production."
         )
-    # Trust X-Forwarded-Proto / X-Forwarded-For from nginx or Docker reverse proxy so
-    # request.base_url uses https and public host (avoids mixed-content links in HTML).
-    app.add_middleware(SessionMiddleware, secret_key=session_secret)
-    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+    # Trust X-Forwarded-Proto / Host only from listed reverse-proxy hosts (see docs/SECURITY.md).
+    th_raw = (getattr(settings, "proxy_headers_trusted_hosts", None) or "*").strip()
+    proxy_trusted: list[str] | str = "*" if th_raw == "*" else [h.strip() for h in th_raw.split(",") if h.strip()]
+    if isinstance(proxy_trusted, list) and not proxy_trusted:
+        proxy_trusted = "*"
+
+    same_site = (getattr(settings, "session_cookie_same_site", None) or "lax").lower()
+    if same_site not in ("lax", "strict", "none"):
+        same_site = "lax"
+
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=session_secret,
+        same_site=same_site,
+        https_only=bool(getattr(settings, "session_cookie_https_only", False)),
+    )
+    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=proxy_trusted)
     app.add_middleware(ObservabilityRequestLogMiddleware)
     # HTML pages include session-dependent nav; must not be cached at CDN edge (e.g. Cloudflare).
     app.add_middleware(PrivateHtmlCacheMiddleware)

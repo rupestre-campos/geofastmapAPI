@@ -1,4 +1,15 @@
 AUTH_SECRET_KEY=change-me
+# Security / reverse proxy: comma-separated hosts trusted for X-Forwarded-Proto/Host (Starlette). Use * only in dev.
+PROXY_HEADERS_TRUSTED_HOSTS=your-nginx-or-ingress-hostname
+# When true, login rate limits use first X-Forwarded-For hop (set only behind a proxy that strips/forges XFF correctly).
+TRUST_X_FORWARDED_FOR_CLIENT_IP=false
+# Session cookie: lax|strict|none; set HTTPS_ONLY true when the site is served only over HTTPS.
+SESSION_COOKIE_SAME_SITE=lax
+SESSION_COOKIE_HTTPS_ONLY=false
+# When true, admin-registered STAC catalog roots must be https://
+STAC_CATALOG_ROOT_URL_REQUIRE_HTTPS=false
+# Set false in production to disable /docs, /redoc, /openapi.json
+EXPOSE_OPENAPI_DOCS=true
 API_UVICORN_WORKERS=8
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@YOUR_DB_HOST:5432/geofastmap
 REDIS_URL=redis://YOUR_REDIS_HOST:6379/0

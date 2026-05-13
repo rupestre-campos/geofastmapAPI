@@ -25,6 +25,27 @@ def cog_path_for(storage_root: str, collection_id: str, feature_id: str) -> Path
     return root / collection_id / f"{feature_id}.tif"
 
 
+class CogPathOutsideStorageError(ValueError):
+    """``properties.raster.cog_path`` must resolve under ``raster_storage_path``."""
+
+
+def resolve_stored_cog_path(cog_path_str: str, storage_root: str) -> Path:
+    """
+    Resolve a stored COG filesystem path and ensure it stays under ``storage_root``
+    (prevents arbitrary file read via ``raster.cog_path``).
+    """
+    if not cog_path_str or not isinstance(cog_path_str, str) or not cog_path_str.strip():
+        raise CogPathOutsideStorageError("cog_path is empty")
+    root = Path(storage_root).resolve()
+    raw = Path(cog_path_str).expanduser()
+    candidate = raw.resolve() if raw.is_absolute() else (root / raw).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as e:
+        raise CogPathOutsideStorageError("cog_path must be under raster storage root") from e
+    return candidate
+
+
 def parse_source_crs(override: str | None) -> CRS | None:
     """Parse optional EPSG code, proj4, or WKT from client. Empty / None -> None."""
     if override is None:

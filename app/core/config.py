@@ -139,6 +139,17 @@ class Settings(BaseSettings):
     # Default empty: only local procfs snapshot (no extra agent). Example:
     # [{"name":"api-host","base_url":"http://netdata:19999"}]
     observability_servers_json: str = "[]"
+    # Comma-separated hostnames trusted for X-Forwarded-* (Starlette ProxyHeadersMiddleware). Use "*" for dev only.
+    proxy_headers_trusted_hosts: str = "*"
+    # When False, login rate limiting uses the TCP peer IP only (ignore X-Forwarded-For). Set True behind a correct reverse proxy.
+    trust_x_forwarded_for_client_ip: bool = False
+    # Session cookie: same_site lax|strict|none; https_only true when the site is HTTPS-only.
+    session_cookie_same_site: str = "lax"
+    session_cookie_https_only: bool = False
+    # When True, STAC catalog root URLs must be https (admin catalog registration).
+    stac_catalog_root_url_require_https: bool = False
+    # When False, /docs, /redoc, and /openapi.json are disabled (recommended in production).
+    expose_openapi_docs: bool = True
     # Redis cache for proxied Titiler raster tiles (STAC + COG). 0 = disabled.
     # Cold tiles still cost GDAL+network; repeats hit Redis ~1–5 ms.
     titiler_tile_cache_ttl_seconds: int = 3600

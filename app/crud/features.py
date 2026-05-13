@@ -31,6 +31,7 @@ from app.utils.feature_subdivide import (
 )
 from app.utils.property_filter import property_value_to_like_pattern
 from app.utils.property_filters import PropertyFilter, PropertyOp, safe_json_key
+from app.services.coverages import CogPathOutsideStorageError, resolve_stored_cog_path
 from app.services.dynamic_tile_cache import invalidate_collection_cache
 
 # Properties key that must not be writable via API (feature id is from the resource)
@@ -51,6 +52,18 @@ def _properties_without_readonly(props: dict | None) -> dict | None:
     if props is None:
         return None
     return {k: v for k, v in props.items() if k not in PROPERTIES_READONLY_KEYS}
+
+
+def _validate_raster_cog_path_in_properties(props: dict | None, storage_root: str) -> None:
+    """Reject ``raster.cog_path`` values that escape ``raster_storage_path``."""
+    if not props:
+        return
+    raster = props.get("raster")
+    if not isinstance(raster, dict):
+        return
+    cp = raster.get("cog_path")
+    if isinstance(cp, str) and cp.strip():
+        resolve_stored_cog_path(cp, storage_root)
 
 
 def _parts_to_logical_feature(parts: list[Any]) -> Feature:
@@ -770,6 +783,7 @@ async def create_feature(db: AsyncSession, data: FeatureCreate) -> Feature:
     if geom is not None:
         check_geometry_size_limit(geom)
     props = _properties_without_readonly(data.properties)
+    _validate_raster_cog_path_in_properties(props, get_settings().raster_storage_path)
     fid = str(uuid7())
     max_vertices = get_settings().features_subdivide_max_vertices
     now = datetime.now(timezone.utc)
@@ -810,6 +824,7 @@ async def create_feature_with_id(db: AsyncSession, data: FeatureCreate, feature_
     if geom is not None:
         check_geometry_size_limit(geom)
     props = _properties_without_readonly(data.properties)
+    _validate_raster_cog_path_in_properties(props, get_settings().raster_storage_path)
     fid = feature_id
     max_vertices = get_settings().features_subdivide_max_vertices
     now = datetime.now(timezone.utc)
@@ -856,6 +871,7 @@ async def replace_feature(
     if geom is not None:
         check_geometry_size_limit(geom)
     props = _properties_without_readonly(data.properties)
+    _validate_raster_cog_path_in_properties(props, get_settings().raster_storage_path)
     max_vertices = get_settings().features_subdivide_max_vertices
     now = datetime.now(timezone.utc)
     if geom is not None and _coord_count(geom) > MAX_COORDS_FOR_DB_SUBDIVIDE:
@@ -892,6 +908,7 @@ async def update_feature(
     existing = feature.properties or {}
     incoming = _properties_without_readonly(data.properties) if "properties" in patch_keys else None
     props = {**existing, **(incoming or {})}
+    _validate_raster_cog_path_in_properties(props, get_settings().raster_storage_path)
     from shapely.geometry import shape
     from shapely.validation import make_valid
 

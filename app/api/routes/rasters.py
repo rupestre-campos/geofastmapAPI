@@ -19,7 +19,7 @@ from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.crud import raster_styles as raster_styles_crud
 from app.db.session import get_db
-from app.services.coverages import cog_path_for
+from app.services.coverages import CogPathOutsideStorageError, cog_path_for, resolve_stored_cog_path
 from app.services.bulk_queue import BulkJobPayload, enqueue, register_bulk_import_job
 from app.services.bulk_storage import get_bulk_storage
 from app.services.collection_type_guard import ensure_raster_collection
@@ -425,7 +425,14 @@ async def get_raster_collection_tile(
         # (orphan row, different storage root on worker, or manual delete).
         _cu = str(cog_url).strip()
         if _cu and not _cu.startswith(("http://", "https://", "/vsicurl/", "/vsi")):
-            if not Path(_cu).is_file():
+            try:
+                p_check = resolve_stored_cog_path(_cu, settings.raster_storage_path)
+            except CogPathOutsideStorageError:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Raster file path is not under server storage.",
+                ) from None
+            if not p_check.is_file():
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=(

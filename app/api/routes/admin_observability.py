@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import secrets
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import text
@@ -19,6 +21,7 @@ from app.services.observability_admin import (
     purge_observability_history,
     set_observability_runtime_settings,
 )
+from app.utils.outbound_url import UnsafeOutboundUrlError, validate_public_http_url
 
 router = APIRouter()
 
@@ -48,7 +51,10 @@ async def observability_logs_page(
     purge_error = request.query_params.get("purge_error") == "confirm"
     settings_ok = request.query_params.get("settings") == "ok"
     settings_error_json = request.query_params.get("settings_error") == "json"
+    settings_error_url = request.query_params.get("settings_error") == "url"
     runtime_settings = await get_observability_runtime_settings()
+    if "admin_obs_csrf" not in request.session:
+        request.session["admin_obs_csrf"] = secrets.token_urlsafe(32)
     return html_response(
         "admin_observability_logs.html",
         **_ctx(
@@ -58,7 +64,9 @@ async def observability_logs_page(
             purge_error=purge_error,
             settings_ok=settings_ok,
             settings_error_json=settings_error_json,
+            settings_error_url=settings_error_url,
             runtime_settings=runtime_settings,
+            admin_obs_csrf=request.session["admin_obs_csrf"],
         ),
     )
 
@@ -242,6 +250,8 @@ async def observability_purge_logs(
     _current_user: User = Depends(require_admin),
 ):
     form = await request.form()
+    if (form.get("csrf_token") or "").strip() != (request.session.get("admin_obs_csrf") or ""):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing CSRF token")
     confirm = (form.get("confirm") or "").strip().upper()
     days_raw = (form.get("older_than_days") or "").strip()
     older_than_days = int(days_raw) if days_raw else None
@@ -263,6 +273,8 @@ async def observability_update_settings(
     _current_user: User = Depends(require_admin),
 ):
     form = await request.form()
+    if (form.get("csrf_token") or "").strip() != (request.session.get("admin_obs_csrf") or ""):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing CSRF token")
     logging_enabled = "logging_enabled" in form
     log_debug_mode = "log_debug_mode" in form
     log_debug_max_body_bytes = int((form.get("log_debug_max_body_bytes") or "4096").strip())
@@ -279,6 +291,17 @@ async def observability_update_settings(
             parsed = json.loads(servers_json)
             if not isinstance(parsed, list):
                 raise ValueError("servers_json must be a JSON array")
+            for item in parsed:
+                if not isinstance(item, dict):
+                    raise ValueError("each server entry must be an object")
+                bu = str(item.get("base_url") or "").strip()
+                if bu:
+                    validate_public_http_url(bu.rstrip("/"))
+        except UnsafeOutboundUrlError:
+            return RedirectResponse(
+                url=f"{_base_url(request)}/admin/observability?f=html&settings_error=url",
+                status_code=status.HTTP_302_FOUND,
+            )
         except Exception:
             return RedirectResponse(
                 url=f"{_base_url(request)}/admin/observability?f=html&settings_error=json",

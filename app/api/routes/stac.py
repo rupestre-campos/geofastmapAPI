@@ -23,12 +23,21 @@ from app.schemas.stac_catalog import StacCatalogCreate, StacCatalogRead, StacCat
 from app.services.stac_collections_list import fetch_collections_grouped
 from app.services.stac_federation import federated_search
 from app.services.stac_search_cache import cache_key, get_cached, set_cached
+from app.utils.outbound_url import UnsafeOutboundUrlError, validate_public_http_url
 
 router = APIRouter()
 
 
 def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
+
+
+def _validate_catalog_root_url(url: str) -> None:
+    settings = get_settings()
+    validate_public_http_url(
+        url.strip(),
+        require_https=bool(getattr(settings, "stac_catalog_root_url_require_https", False)),
+    )
 
 
 async def execute_stac_search_for_catalogs(
@@ -486,6 +495,10 @@ async def create_stac_catalog(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
 ):
+    try:
+        _validate_catalog_root_url(body.stac_api_root_url)
+    except UnsafeOutboundUrlError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     row = await stac_catalogs_crud.create_catalog(
         db,
         title=body.title,
@@ -505,6 +518,11 @@ async def update_stac_catalog(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
 ):
+    if body.stac_api_root_url is not None:
+        try:
+            _validate_catalog_root_url(body.stac_api_root_url)
+        except UnsafeOutboundUrlError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     row = await stac_catalogs_crud.update_catalog(
         db,
         catalog_id,

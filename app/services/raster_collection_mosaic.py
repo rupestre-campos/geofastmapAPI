@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import features as features_crud
 from app.services.mosaic_plan import build_mosaicjson_from_footprints
-from app.services.coverages import cog_path_for
+from app.services.coverages import CogPathOutsideStorageError, cog_path_for, resolve_stored_cog_path
 from app.services.raster_mosaic_version import compute_mosaic_version_id
 
 log = logging.getLogger(__name__)
@@ -46,6 +46,20 @@ def internal_cog_http_url(settings: Any, collection_id: str, feature_id: str) ->
         f"{base}/internal/collections/{collection_id}/coverages/{feature_id}/cog"
         f"?token={quote(secret, safe='')}"
     )
+
+
+def _db_cog_resolved_path(settings: Any, db_cog_path: str | None) -> Path | None:
+    """Return resolved Path under ``raster_storage_path`` if file exists; else None."""
+    if not isinstance(db_cog_path, str) or not db_cog_path.strip():
+        return None
+    root = str(getattr(settings, "raster_storage_path", "") or "")
+    if not root:
+        return None
+    try:
+        p = resolve_stored_cog_path(db_cog_path, root)
+    except CogPathOutsideStorageError:
+        return None
+    return p if p.exists() else None
 
 
 def resolve_mosaic_asset_href(
@@ -69,7 +83,7 @@ def resolve_mosaic_asset_href(
     viable = False
     if deterministic_path.exists():
         viable = True
-    elif isinstance(db_cog_path, str) and db_cog_path and Path(db_cog_path).exists():
+    elif _db_cog_resolved_path(settings, db_cog_path) is not None:
         viable = True
     if not viable:
         return None
@@ -79,8 +93,9 @@ def resolve_mosaic_asset_href(
         return http_u
     if deterministic_path.exists():
         return os.fspath(deterministic_path)
-    if isinstance(db_cog_path, str) and db_cog_path and Path(db_cog_path).exists():
-        return db_cog_path
+    db_p = _db_cog_resolved_path(settings, db_cog_path)
+    if db_p is not None:
+        return os.fspath(db_p)
     return None
 
 

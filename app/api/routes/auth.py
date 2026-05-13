@@ -37,12 +37,17 @@ router = APIRouter()
 _LOGIN_ATTEMPTS_LOCK = threading.Lock()
 _LOGIN_ATTEMPTS_MEM: dict[str, list[float]] = {}
 
+_PW_CHANGE_LOCK = threading.Lock()
+_PW_CHANGE_ATTEMPTS: dict[str, list[float]] = {}
+_PW_CHANGE_BLOCKED_UNTIL: dict[str, float] = {}
+
 
 def _client_ip(request: Request) -> str:
-    # Prefer X-Forwarded-For when behind a proxy (first IP).
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
+    settings = get_settings()
+    if getattr(settings, "trust_x_forwarded_for_client_ip", False):
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
     host = getattr(getattr(request, "client", None), "host", None)
     return host or "unknown"
 
@@ -134,6 +139,34 @@ def _clear_failures(request: Request) -> None:
             pass
     with _LOGIN_ATTEMPTS_LOCK:
         _LOGIN_ATTEMPTS_MEM.pop(ip, None)
+
+
+def _password_change_rate_blocked(request: Request, *, register_failure: bool, clear: bool = False) -> tuple[bool, int]:
+    """Limit wrong-current-password attempts per IP (in-process; complements login Redis limiter)."""
+    ip = _client_ip(request)
+    now = time.time()
+    window_s = 900
+    max_failures = 12
+    block_s = 1800
+    with _PW_CHANGE_LOCK:
+        if clear:
+            _PW_CHANGE_ATTEMPTS.pop(ip, None)
+            _PW_CHANGE_BLOCKED_UNTIL.pop(ip, None)
+            return False, 0
+        blocked_until = _PW_CHANGE_BLOCKED_UNTIL.get(ip, 0.0)
+        if blocked_until > now:
+            return True, int(blocked_until - now)
+        ts = _PW_CHANGE_ATTEMPTS.get(ip, [])
+        ts = [t for t in ts if t >= now - window_s]
+        if register_failure:
+            ts.append(now)
+            _PW_CHANGE_ATTEMPTS[ip] = ts
+            if len(ts) >= max_failures:
+                _PW_CHANGE_BLOCKED_UNTIL[ip] = now + block_s
+                return True, block_s
+        else:
+            _PW_CHANGE_ATTEMPTS[ip] = ts
+        return False, 0
 
 
 def _base_url(request: Request) -> str:
@@ -575,15 +608,24 @@ async def change_password_post(
         next_url=next_url,
         must_change_password=current_user.must_change_password,
     )
+    blocked, retry_s = _password_change_rate_blocked(request, register_failure=False)
+    if blocked:
+        return html_response(
+            "change_password.html",
+            error=f"Too many attempts. Try again in {retry_s} seconds.",
+            **ctx,
+        )
     if not current_user.must_change_password:
         from app.core.auth import verify_password
         if not verify_password(current_password, current_user.password_hash):
+            _password_change_rate_blocked(request, register_failure=True)
             return html_response("change_password.html", error="Current password is incorrect", **ctx)
     if not new_password or len(new_password) < 1:
         return html_response("change_password.html", error="New password is required", **ctx)
     if new_password != new_password_confirm:
         return html_response("change_password.html", error="New password and confirmation do not match", **ctx)
     await user_crud.set_password(db, current_user.id, new_password, must_change_password=False)
+    _password_change_rate_blocked(request, register_failure=False, clear=True)
     session = request.scope.get("session")
     if session is not None:
         session["username"] = current_user.username

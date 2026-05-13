@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +16,7 @@ from app.crud import features as features_crud
 from app.crud import raster_views as raster_views_crud
 from app.db.session import get_db
 from app.models.user import User
-from app.services.coverages import cog_path_for
+from app.services.coverages import CogPathOutsideStorageError, cog_path_for, resolve_stored_cog_path
 from app.services.raster_collection_mosaic import get_or_build_collection_mosaic
 
 router = APIRouter()
@@ -54,12 +54,14 @@ def _cog_path_from_feature(feature) -> str | None:
 async def internal_fetch_cog(
     collection_id: str,
     feature_id: str,
-    token: str = Query(..., description="Must match TITILER_INTERNAL_SECRET"),
+    token: str | None = Query(None, description="Must match TITILER_INTERNAL_SECRET (prefer header X-GeoFast-Internal-Token to avoid query logs)."),
+    x_internal_token: str | None = Header(None, alias="X-GeoFast-Internal-Token"),
     db: AsyncSession = Depends(get_db),
 ):
     settings = get_settings()
     secret = settings.titiler_internal_secret
-    if not secret or token != secret:
+    effective = (x_internal_token or token or "").strip()
+    if not secret or effective != secret:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
     # Hot path: COG location is deterministic (storage_root/collection_id/feature_id.tif).
@@ -85,7 +87,10 @@ async def internal_fetch_cog(
     if not cog_path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
-    p = Path(cog_path)
+    try:
+        p = resolve_stored_cog_path(cog_path, settings.raster_storage_path)
+    except CogPathOutsideStorageError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found") from None
     if not p.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
@@ -104,19 +109,29 @@ async def internal_fetch_cog(
 )
 async def internal_fetch_mosaic_json(
     view_id: str,
-    token: str = Query(...),
+    token: str | None = Query(None),
+    x_internal_token: str | None = Header(None, alias="X-GeoFast-Internal-Token"),
     db: AsyncSession = Depends(get_db),
 ):
     settings = get_settings()
     secret = settings.titiler_internal_secret
-    if not secret or token != secret:
+    effective = (x_internal_token or token or "").strip()
+    if not secret or effective != secret:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
     row = await raster_views_crud.get_view(db, view_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
-    path = Path(settings.raster_storage_path) / row.json_relative_path
+    root = Path(settings.raster_storage_path).resolve()
+    rel = Path(row.json_relative_path)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    path = (root / rel).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found") from None
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
@@ -134,12 +149,14 @@ async def internal_fetch_mosaic_json(
 )
 async def internal_fetch_collection_mosaic_json(
     collection_id: str,
-    token: str = Query(...),
+    token: str | None = Query(None),
+    x_internal_token: str | None = Header(None, alias="X-GeoFast-Internal-Token"),
     db: AsyncSession = Depends(get_db),
 ):
     settings = get_settings()
     secret = settings.titiler_internal_secret
-    if not secret or token != secret:
+    effective = (x_internal_token or token or "").strip()
+    if not secret or effective != secret:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:

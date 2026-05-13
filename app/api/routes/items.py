@@ -19,6 +19,7 @@ from app.crud import features as features_crud
 from app.crud import styles as styles_crud
 from app.db.session import get_db, AsyncSessionLocal
 from app.models.feature import Feature
+from app.services.coverages import CogPathOutsideStorageError
 from app.services.bulk_import import list_shp_in_zip
 from app.services.bulk_queue import BulkJobPayload, enqueue, register_bulk_import_job
 from app.services.bulk_storage import get_bulk_storage
@@ -980,7 +981,10 @@ async def replace_item(
     ensure_vector_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
-    updated = await features_crud.replace_feature(db, collection_id, feature_id, payload)
+    try:
+        updated = await features_crud.replace_feature(db, collection_id, feature_id, payload)
+    except CogPathOutsideStorageError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     if not updated:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1009,7 +1013,10 @@ async def patch_item(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
-    feature = await features_crud.update_feature(db, collection_id, feature_id, payload)
+    try:
+        feature = await features_crud.update_feature(db, collection_id, feature_id, payload)
+    except CogPathOutsideStorageError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     if not feature:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1059,7 +1066,10 @@ async def create_item(
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
 
-    feature = await features_crud.create_feature(db, payload)
+    try:
+        feature = await features_crud.create_feature(db, payload)
+    except CogPathOutsideStorageError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     return _feature_to_read(feature)
 
 

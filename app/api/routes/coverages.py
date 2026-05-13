@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +11,7 @@ from app.core.permissions import can_see_collection
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.db.session import get_db
+from app.services.coverages import CogPathOutsideStorageError, resolve_stored_cog_path
 
 router = APIRouter()
 
@@ -55,7 +54,13 @@ async def get_coverage_geotiff(
     if not cog_path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item is not a coverage")
 
-    p = Path(cog_path)
+    try:
+        p = resolve_stored_cog_path(cog_path, get_settings().raster_storage_path)
+    except CogPathOutsideStorageError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Item is not a coverage",
+        ) from None
     if not p.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="COG file missing on disk")
     return FileResponse(
@@ -99,12 +104,12 @@ async def get_coverage_tile_png(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item is not a coverage")
 
     try:
-        import numpy as np
-        from rio_tiler.io import COGReader
-    except Exception as e:  # pragma: no cover
-        raise HTTPException(status_code=500, detail=f"Raster tile dependencies not available: {e}")
-
-    p = Path(cog_path)
+        p = resolve_stored_cog_path(cog_path, get_settings().raster_storage_path)
+    except CogPathOutsideStorageError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Item is not a coverage",
+        ) from None
     if not p.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="COG file missing on disk")
 
@@ -123,6 +128,12 @@ async def get_coverage_tile_png(
         return out
 
     rgb_idx = _parse_rgb(rgb)
+
+    try:
+        import numpy as np
+        from rio_tiler.io import COGReader
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Raster tile dependencies not available: {e}")
 
     try:
         with COGReader(p) as cog:
