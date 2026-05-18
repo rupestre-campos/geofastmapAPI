@@ -6,9 +6,13 @@ from app.core.config import get_settings
 
 
 def _asyncpg_connect_args() -> dict:
+    """PgBouncer transaction pool: disable asyncpg + SQLAlchemy prepared-statement caches."""
     s = get_settings()
     if s.database_use_pgbouncer and "asyncpg" in (s.database_url or ""):
-        return {"statement_cache_size": 0}
+        return {
+            "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+        }
     return {}
 
 

@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.db import session as db_session
 
 
@@ -34,6 +34,23 @@ def test_database_sync_url_plain_postgresql(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@localhost/db")
     settings = Settings()
     assert settings.database_sync_url == "postgresql://u:p@localhost/db"
+
+
+def test_asyncpg_connect_args_disable_caches_for_pgbouncer(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@pool:6432/db")
+    monkeypatch.setenv("DATABASE_USE_PGBOUNCER", "true")
+    get_settings.cache_clear()
+    assert db_session._asyncpg_connect_args() == {
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+    }
+
+
+def test_asyncpg_connect_args_empty_without_pgbouncer(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+    monkeypatch.setenv("DATABASE_USE_PGBOUNCER", "false")
+    get_settings.cache_clear()
+    assert db_session._asyncpg_connect_args() == {}
 
 
 def test_database_sync_url_fallback(monkeypatch):

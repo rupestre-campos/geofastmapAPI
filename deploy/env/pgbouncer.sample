@@ -9,7 +9,8 @@
 #     -f deploy/compose/docker-compose.pgbouncer.db-network.yml \
 #     up -d
 #
-# edoburu/pgbouncer expects DATABASE_URL in **libpq** form (postgres://...), not postgresql+asyncpg://
+# edoburu/pgbouncer expects **libpq** form (postgres:// preferred; postgresql:// usually works).
+# Do not use postgresql+asyncpg:// here.
 
 # --- Backend: real Postgres (reachable from inside the pgbouncer container) ---
 
