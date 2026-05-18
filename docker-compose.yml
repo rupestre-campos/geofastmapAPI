@@ -52,6 +52,7 @@ services:
       # asyncpg uses SCRAM; edoburu/pgbouncer defaults to md5 → "wrong password type" without this.
       AUTH_TYPE: scram-sha-256
       POOL_MODE: transaction
+      SERVER_RESET_QUERY: DISCARD ALL
       MAX_CLIENT_CONN: "1000"
       DEFAULT_POOL_SIZE: "25"
       RESERVE_POOL_SIZE: "5"

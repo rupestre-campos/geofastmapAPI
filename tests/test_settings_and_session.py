@@ -36,21 +36,25 @@ def test_database_sync_url_plain_postgresql(monkeypatch):
     assert settings.database_sync_url == "postgresql://u:p@localhost/db"
 
 
-def test_asyncpg_connect_args_disable_caches_for_pgbouncer(monkeypatch):
+def test_pgbouncer_engine_uses_null_pool_and_query_param(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@pool:6432/db")
     monkeypatch.setenv("DATABASE_USE_PGBOUNCER", "true")
     get_settings.cache_clear()
-    assert db_session._asyncpg_connect_args() == {
-        "statement_cache_size": 0,
-        "prepared_statement_cache_size": 0,
-    }
+    eng = db_session.create_app_async_engine()
+    assert eng.pool.__class__.__name__ == "NullPool"
+    assert eng.url.query.get("prepared_statement_cache_size") == "0"
+    ca = db_session._pgbouncer_asyncpg_connect_args()
+    assert ca["statement_cache_size"] == 0
+    assert ca["prepared_statement_cache_size"] == 0
+    assert "prepared_statement_name_func" in ca
 
 
-def test_asyncpg_connect_args_empty_without_pgbouncer(monkeypatch):
+def test_direct_postgres_engine_uses_queue_pool(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
     monkeypatch.setenv("DATABASE_USE_PGBOUNCER", "false")
     get_settings.cache_clear()
-    assert db_session._asyncpg_connect_args() == {}
+    eng = db_session.create_app_async_engine()
+    assert "NullPool" not in eng.pool.__class__.__name__
 
 
 def test_database_sync_url_fallback(monkeypatch):

@@ -62,15 +62,20 @@ async def lifespan(app: FastAPI):
     from sqlalchemy import select
 
     settings = get_settings()
-    cap = settings.database_pool_size + settings.database_pool_max_overflow
-    logger.info(
-        "Database pool (per process): pool_size=%s max_overflow=%s (max %s concurrent checkouts); "
-        "database_use_pgbouncer=%s",
-        settings.database_pool_size,
-        settings.database_pool_max_overflow,
-        cap,
-        settings.database_use_pgbouncer,
-    )
+    if settings.database_use_pgbouncer:
+        logger.info(
+            "Database: PgBouncer mode (NullPool per process; pool at PgBouncer); "
+            "database_use_pgbouncer=true",
+        )
+    else:
+        cap = settings.database_pool_size + settings.database_pool_max_overflow
+        logger.info(
+            "Database pool (per process): pool_size=%s max_overflow=%s (max %s concurrent checkouts); "
+            "database_use_pgbouncer=false",
+            settings.database_pool_size,
+            settings.database_pool_max_overflow,
+            cap,
+        )
 
     # Seed default admin user if no users exist
     async with AsyncSessionLocal() as session:
