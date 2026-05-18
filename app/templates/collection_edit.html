@@ -1728,7 +1728,7 @@
       if (collectionType === 'raster') {
         var crsEl = document.getElementById('bulk-raster-source-crs');
         var sourceCrs = (crsEl && crsEl.value && String(crsEl.value).trim()) ? String(crsEl.value).trim() : null;
-        var rasterChunkSize = 100 * 1024 * 1024;
+        var rasterChunkSize = 32 * 1024 * 1024;
         var rasterMaxParallelParts = 4;
         var rasterMaxPartRetries = 3;
         function formatBytes(bytes) {
