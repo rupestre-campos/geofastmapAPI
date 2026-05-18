@@ -6,7 +6,9 @@ from app.schemas.ogc import Link
 
 
 def default_raster_style_spec() -> dict:
+    """Continuous / analytic raster style (Titiler bidx, rescale, colormap_name, expression)."""
     return {
+        "style_type": "continuous",
         "asset": None,
         "assets": None,
         "bidx": None,
@@ -14,6 +16,18 @@ def default_raster_style_spec() -> dict:
         "colormap_name": None,
         "expression": None,
     }
+
+
+# Classification example (style_type=classification):
+# {
+#   "style_type": "classification",
+#   "asset": "<feature_id>",
+#   "bidx": ["1"],
+#   "colormap": {"0": "#000000", "1": "#228822"},
+#   "colormap_type": "explicit",
+#   "classes": [{"value": "0", "name": "nodata", "color": "#000000"}, ...],
+#   "nodata": 0,  # optional Titiler nodata override (query param)
+# }
 
 
 class RasterStyleCreate(BaseModel):

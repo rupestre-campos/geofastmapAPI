@@ -19,6 +19,7 @@ from app.schemas.raster_style import (
 )
 from app.schemas.resource_share import ShareAdd, ShareRead
 from app.services.collection_type_guard import ensure_raster_collection
+from app.services.raster_style_spec import normalize_raster_style_spec_http
 
 router = APIRouter()
 
@@ -99,12 +100,13 @@ async def create_raster_style(
     ensure_raster_collection(c)
     if not await can_edit_collection(db, c, current_user):
         raise HTTPException(status_code=403, detail="Permission denied")
+    spec = normalize_raster_style_spec_http(payload.style_spec)
     s = await raster_styles_crud.upsert_raster_style(
         db,
         collection_id=collection_id,
         style_id=payload.id,
         title=payload.title,
-        style_spec=payload.style_spec,
+        style_spec=spec,
         owner_id=current_user.id if current_user else None,
         set_default=payload.set_default,
         visibility=payload.visibility,
@@ -131,12 +133,14 @@ async def patch_raster_style(
     if not cur:
         raise HTTPException(status_code=404, detail="Style not found")
     set_default = bool(payload.set_default) if payload.set_default is not None else False
+    raw_spec = payload.style_spec if payload.style_spec is not None else cur.style_spec
+    spec = normalize_raster_style_spec_http(raw_spec)
     s = await raster_styles_crud.upsert_raster_style(
         db,
         collection_id=collection_id,
         style_id=style_id,
         title=payload.title if payload.title is not None else cur.title,
-        style_spec=payload.style_spec if payload.style_spec is not None else cur.style_spec,
+        style_spec=spec,
         owner_id=cur.owner_id,
         set_default=set_default,
         visibility=payload.visibility,

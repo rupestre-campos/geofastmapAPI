@@ -21,6 +21,11 @@
     <label for="stac-rescale">Rescale</label>
     <input type="text" id="stac-rescale" value="" placeholder="min,max" autocomplete="off" title="Mode defaults: RGB bands = empty; expression = -1,1; single / RGB assets = 0,4000. Min,max for all modes (RGB repeats per band in the tile request).">
   </div>
+  <div class="form-row" style="max-width: 22rem;">
+    <label for="stac-raster-nodata">No-data value</label>
+    <input type="text" id="stac-raster-nodata" value="" placeholder="e.g. 0 or -9999" autocomplete="off" title="Titiler nodata override — masks this pixel value (stored in the saved raster style).">
+    <p class="stac-inline-hint" style="margin-top:0.25rem;">Sent to Titiler as <code>nodata</code>. For classification, exclude this value from the colormap or give it a dedicated color. Overrides nodata at render time (COG may already define one).</p>
+  </div>
   {% if not raster_style_embed | default(false) %}
   <div class="form-row">
     <label for="stac-raster-opacity">Opacity</label>
@@ -76,6 +81,25 @@
     <input type="text" id="stac-expression" placeholder="e.g. b8-b4 or nir-red" autocomplete="off">
     <p class="stac-inline-hint">Use <code>b1</code>…<code>bn</code> for bands of the <strong>Asset</strong> above, or band names from metadata (<code>red</code>, <code>nir</code>, …). To mix <strong>different assets</strong> from this item, type their asset keys as identifiers (e.g. <code>nir-red</code> or <code>b1-b2</code> after keys are resolved) — each asset becomes one layer (<code>b1</code>, <code>b2</code>, …) via Titiler. <code>visual</code> is often 3 bands only; pick analytic / reflectance products for multi-band math.</p>
     <p class="stac-inline-hint" id="stac-expression-preview" style="margin-top:0.35rem;"></p>
+  </div>
+</div>
+
+<div id="stac-classification-block" class="stac-advanced-block">
+  <div class="form-row" style="align-items:center;">
+    <label><input type="checkbox" id="stac-classification-enabled"> Classification style</label>
+    <span class="meta">Discrete pixel values → colors (single band)</span>
+  </div>
+  <div id="stac-classification-fields" style="display:none;">
+    <div class="form-row" style="flex-direction:column;align-items:stretch;max-width:44rem;">
+      <label for="stac-classification-colormap-json">Colormap JSON <span class="meta">(pixel value → hex color)</span></label>
+      <textarea id="stac-classification-colormap-json" rows="5" class="stac-json-textarea" placeholder='{"0": "#000000", "1": "#228822", "2": "#ff0000"}' spellcheck="false"></textarea>
+    </div>
+    <div class="form-row" style="flex-direction:column;align-items:stretch;max-width:44rem;margin-top:0.5rem;">
+      <label for="stac-classification-classes-json">Classes JSON <span class="meta">(names + colors)</span></label>
+      <textarea id="stac-classification-classes-json" rows="6" class="stac-json-textarea" placeholder='[{"value": 1, "name": "building", "color": "#ff0000"}] or {"1": {"name": "building", "color": "#ff0000"}}' spellcheck="false"></textarea>
+    </div>
+    <p class="stac-inline-hint">Use <strong>Single band</strong> for <code>bidx</code> and set <strong>No-data value</strong> above when needed. At least one JSON field is required. Saved styles use Titiler <code>colormap</code> + <code>colormap_type=explicit</code> and optional <code>nodata</code>.</p>
+    <div id="stac-classification-legend" class="stac-classification-legend" aria-live="polite"></div>
   </div>
 </div>
 

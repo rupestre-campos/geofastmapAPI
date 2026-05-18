@@ -9,6 +9,162 @@
     return document.getElementById(id);
   }
 
+  function isClassificationEnabled() {
+    var cb = el('stac-classification-enabled');
+    return !!(cb && cb.checked);
+  }
+
+  function readNodataInput() {
+    var inp = el('stac-raster-nodata');
+    if (!inp) return null;
+    var s = (inp.value || '').trim();
+    if (!s) return null;
+    if (/^-?\d+$/.test(s)) return parseInt(s, 10);
+    if (/^-?\d*\.?\d+([eE][+-]?\d+)?$/.test(s)) return parseFloat(s);
+    return s;
+  }
+
+  function writeNodataInput(nodata) {
+    var inp = el('stac-raster-nodata');
+    if (!inp) return;
+    if (nodata === null || nodata === undefined || nodata === '') {
+      inp.value = '';
+      return;
+    }
+    inp.value = String(nodata);
+  }
+
+  function appendNodataQuery(qs) {
+    var nd = readNodataInput();
+    if (nd !== null && nd !== undefined && nd !== '') {
+      qs.push('nodata=' + encodeURIComponent(String(nd)));
+    }
+  }
+
+  function applyNodataToSpec(spec) {
+    var nd = readNodataInput();
+    if (nd !== null && nd !== undefined && nd !== '') {
+      spec.nodata = nd;
+    }
+    return spec;
+  }
+
+  function parseJsonTextarea(id, label) {
+    var ta = el(id);
+    if (!ta) return null;
+    var s = (ta.value || '').trim();
+    if (!s) return null;
+    try {
+      return JSON.parse(s);
+    } catch (e) {
+      throw new Error(label + ' JSON: ' + (e.message || 'invalid'));
+    }
+  }
+
+  function updateClassificationLegend(classes) {
+    var leg = el('stac-classification-legend');
+    if (!leg) return;
+    leg.innerHTML = '';
+    if (!classes || !classes.length) return;
+    classes.forEach(function (c) {
+      var row = document.createElement('div');
+      row.className = 'stac-classification-legend-row';
+      var sw = document.createElement('span');
+      sw.className = 'stac-classification-legend-swatch';
+      sw.style.background = c.color || '#888';
+      var lab = document.createElement('span');
+      lab.textContent = (c.name || c.value) + ' (' + c.value + ')';
+      row.appendChild(sw);
+      row.appendChild(lab);
+      leg.appendChild(row);
+    });
+  }
+
+  function setClassificationUi(enabled) {
+    var fields = el('stac-classification-fields');
+    if (fields) fields.style.display = enabled ? 'block' : 'none';
+    var modeEl = el('stac-render-mode');
+    var rgbBands = el('stac-rgb-bands-block');
+    var rgbAssets = el('stac-rgb-assets-block');
+    var single = el('stac-single-block');
+    var expr = el('stac-expr-block');
+    var cmapBlock = el('stac-colormap-block');
+    var cfDetails = el('stac-cf-details');
+    var rescaleRow = el('stac-rescale') && el('stac-rescale').closest('.form-row');
+    if (enabled) {
+      if (modeEl) modeEl.value = 'single';
+      setMode('single', { skipRescaleDefault: true, classificationLock: true });
+    }
+    function hideBlock(block, on) {
+      if (!block) return;
+      if (enabled) {
+        block.style.display = on ? '' : 'none';
+      } else {
+        block.style.display = '';
+      }
+    }
+    hideBlock(rgbBands, false);
+    hideBlock(rgbAssets, false);
+    hideBlock(expr, false);
+    hideBlock(cmapBlock, false);
+    hideBlock(cfDetails, false);
+    hideBlock(single, true);
+    if (rescaleRow) rescaleRow.style.display = enabled ? 'none' : '';
+    var modeRow = modeEl && modeEl.closest('.stac-mode-row');
+    if (modeRow) modeRow.style.display = enabled ? 'none' : '';
+  }
+
+  function exportClassificationStyleSpec() {
+    var spec = { style_type: 'classification' };
+    var mainSel = el('stac-asset-select');
+    if (mainSel && mainSel.value) spec.asset = mainSel.value;
+    var band = el('stac-band-single');
+    spec.bidx = band && band.value ? [String(band.value)] : ['1'];
+    var colormap = parseJsonTextarea('stac-classification-colormap-json', 'Colormap');
+    var classes = parseJsonTextarea('stac-classification-classes-json', 'Classes');
+    if (colormap !== null) spec.colormap = colormap;
+    if (classes !== null) spec.classes = classes;
+    if (!spec.colormap && !spec.classes) {
+      throw new Error('Classification style requires colormap and/or classes JSON');
+    }
+    return applyNodataToSpec(spec);
+  }
+
+  function applyClassificationSpec(spec) {
+    var cb = el('stac-classification-enabled');
+    if (cb) cb.checked = true;
+    setClassificationUi(true);
+    var cmapTa = el('stac-classification-colormap-json');
+    var classesTa = el('stac-classification-classes-json');
+    if (cmapTa && spec.colormap && typeof spec.colormap === 'object') {
+      cmapTa.value = JSON.stringify(spec.colormap, null, 2);
+    }
+    if (classesTa && spec.classes) {
+      classesTa.value = JSON.stringify(spec.classes, null, 2);
+    }
+    updateClassificationLegend(spec.classes || []);
+    writeNodataInput(spec.nodata);
+    if (spec.asset) {
+      var aSel = el('stac-asset-select');
+      if (aSel) {
+        for (var ai = 0; ai < aSel.options.length; ai++) {
+          if (aSel.options[ai].value === spec.asset) {
+            aSel.value = spec.asset;
+            break;
+          }
+        }
+      }
+    }
+    if (spec.bidx && Array.isArray(spec.bidx) && spec.bidx.length) {
+      var modeEl = el('stac-render-mode');
+      if (modeEl) modeEl.value = 'single';
+      setMode('single', { skipRescaleDefault: true, classificationLock: true });
+      refreshBandSelectors();
+      var bs = el('stac-band-single');
+      if (bs) bs.value = String(spec.bidx[0]);
+    }
+  }
+
   function getMap() {
     return _cfg && _cfg.map;
   }
@@ -156,6 +312,24 @@
       qs.push('feature_id=' + encodeURIComponent(assetKey));
     }
 
+    if (isClassificationEnabled()) {
+      try {
+        var cspec = exportClassificationStyleSpec();
+        if (cspec.bidx && cspec.bidx.length) {
+          qs.push('bidx=' + encodeURIComponent(String(cspec.bidx[0])));
+        }
+        if (cspec.colormap && typeof cspec.colormap === 'object') {
+          qs.push('colormap=' + encodeURIComponent(JSON.stringify(cspec.colormap)));
+          qs.push('colormap_type=explicit');
+        }
+        appendNodataQuery(qs);
+        return qs.length ? path + '?' + qs.join('&') : path;
+      } catch (err) {
+        console.warn('Classification tile URL:', err);
+        return path + '?' + qs.join('&');
+      }
+    }
+
     var rescaleEl = el('stac-rescale');
     var rescaleVal = rescaleEl && rescaleEl.value.trim() ? rescaleEl.value.trim() : '';
     function pushRescaleOnce() {
@@ -220,6 +394,7 @@
       if (bb && bb.value) qs.push('bidx=' + encodeURIComponent(String(bb.value)));
       pushRescaleRgb();
     }
+    appendNodataQuery(qs);
     return qs.length ? path + '?' + qs.join('&') : path;
   }
 
@@ -465,21 +640,25 @@
 
   function setMode(mode, opts) {
     opts = opts || {};
+    if (isClassificationEnabled() && !opts.classificationLock) {
+      mode = 'single';
+    }
     var rgbBands = el('stac-rgb-bands-block');
     var rgbAssets = el('stac-rgb-assets-block');
     var single = el('stac-single-block');
     var expr = el('stac-expr-block');
     var cmapBlock = el('stac-colormap-block');
+    var classOn = isClassificationEnabled();
     function show(elx, on) {
       if (!elx) return;
       elx.classList.toggle('is-open', !!on);
     }
-    show(rgbBands, mode === 'rgb_bands');
-    show(rgbAssets, mode === 'rgb_assets');
-    show(single, mode === 'single');
-    show(expr, mode === 'expression');
-    show(cmapBlock, mode === 'single' || mode === 'expression');
-    if (!opts.skipRescaleDefault) applyRescaleDefaultForMode(mode);
+    show(rgbBands, !classOn && mode === 'rgb_bands');
+    show(rgbAssets, !classOn && mode === 'rgb_assets');
+    show(single, classOn || mode === 'single');
+    show(expr, !classOn && mode === 'expression');
+    show(cmapBlock, !classOn && (mode === 'single' || mode === 'expression'));
+    if (!opts.skipRescaleDefault && !classOn) applyRescaleDefaultForMode(mode);
     updateExpressionPreview();
   }
 
@@ -536,7 +715,10 @@
   }
 
   function exportRasterStyleSpec() {
-    var spec = {};
+    if (isClassificationEnabled()) {
+      return exportClassificationStyleSpec();
+    }
+    var spec = { style_type: 'continuous' };
     var mode = el('stac-render-mode').value;
     var mainSel = el('stac-asset-select');
     var mainKey = mainSel && mainSel.value;
@@ -576,11 +758,21 @@
       if (bb && bb.value) parts.push(String(bb.value));
       if (parts.length) spec.bidx = parts;
     }
-    return spec;
+    return applyNodataToSpec(spec);
   }
 
   function applySpec(spec) {
     if (!spec || typeof spec !== 'object') return;
+    var cb = el('stac-classification-enabled');
+    if ((spec.style_type || '').toLowerCase() === 'classification') {
+      applyClassificationSpec(spec);
+      syncColorFormula();
+      maybeRefresh();
+      return;
+    }
+    if (cb) cb.checked = false;
+    setClassificationUi(false);
+    writeNodataInput(spec.nodata);
     var aSel = el('stac-asset-select');
     if (spec.asset && aSel) {
       for (var ai = 0; ai < aSel.options.length; ai++) {
@@ -655,11 +847,62 @@
     populateRgbAssetSelects();
     refreshBandSelectors();
 
+    var classCb = el('stac-classification-enabled');
+    if (classCb) {
+      classCb.addEventListener('change', function () {
+        setClassificationUi(this.checked);
+        if (!this.checked) {
+          var modeEl = el('stac-render-mode');
+          setMode(modeEl ? modeEl.value : 'rgb_bands', {});
+        }
+        maybeRefresh();
+      });
+    }
+    ['stac-classification-colormap-json', 'stac-classification-classes-json'].forEach(function (id) {
+      var ta = el(id);
+      if (!ta) return;
+      ta.addEventListener('input', function () {
+        try {
+          var cmap = parseJsonTextarea('stac-classification-colormap-json', 'Colormap');
+          var classes = parseJsonTextarea('stac-classification-classes-json', 'Classes');
+          if (classes && Array.isArray(classes)) updateClassificationLegend(classes);
+          else if (classes && typeof classes === 'object') {
+            var arr = Object.keys(classes).map(function (k) {
+              var item = classes[k];
+              return { value: String(k), name: item.name, color: item.color };
+            });
+            updateClassificationLegend(arr);
+          } else if (cmap) {
+            updateClassificationLegend(
+              Object.keys(cmap).map(function (k) {
+                return { value: k, name: k, color: cmap[k] };
+              })
+            );
+          }
+        } catch (e) {
+          /* ignore while typing */
+        }
+      });
+      ta.addEventListener('change', function () {
+        maybeRefresh();
+      });
+    });
+
     var modeEl0 = el('stac-render-mode');
     if (modeEl0) {
       setMode(modeEl0.value, {});
       modeEl0.addEventListener('change', function () {
         setMode(this.value, {});
+        maybeRefresh();
+      });
+    }
+
+    var nodataInp = el('stac-raster-nodata');
+    if (nodataInp) {
+      nodataInp.addEventListener('change', function () {
+        maybeRefresh();
+      });
+      nodataInp.addEventListener('input', function () {
         maybeRefresh();
       });
     }
@@ -714,7 +957,13 @@
   global.GeofastmapRasterStyleEditor = {
     init: init,
     getSpec: function () {
-      return { style_spec: exportRasterStyleSpec() };
+      try {
+        return { style_spec: exportRasterStyleSpec() };
+      } catch (err) {
+        var msg = err && err.message ? err.message : String(err);
+        if (typeof global.alert === 'function') global.alert(msg);
+        throw err;
+      }
     },
     applySpec: applySpec,
     refreshLayer: maybeRefresh,

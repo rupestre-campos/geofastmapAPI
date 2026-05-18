@@ -765,6 +765,58 @@
       syncColorFormula();
     }
 
+    function stacClassificationEnabled() {
+      var cb = document.getElementById('stac-classification-enabled');
+      return !!(cb && cb.checked);
+    }
+
+    function stacParseJsonTextarea(id, label) {
+      var ta = document.getElementById(id);
+      if (!ta) return null;
+      var s = (ta.value || '').trim();
+      if (!s) return null;
+      try { return JSON.parse(s); } catch (e) {
+        throw new Error(label + ' JSON: ' + (e.message || 'invalid'));
+      }
+    }
+
+    function stacReadNodataInput() {
+      var inp = document.getElementById('stac-raster-nodata');
+      if (!inp) return null;
+      var s = (inp.value || '').trim();
+      return s || null;
+    }
+
+    function stacAppendNodataQuery(qs) {
+      var nd = stacReadNodataInput();
+      if (nd) qs.push('nodata=' + encodeURIComponent(nd));
+    }
+
+    function stacAppendClassificationParams(qs, assetKey) {
+      qs.push('asset=' + encodeURIComponent(assetKey));
+      var band = document.getElementById('stac-band-single');
+      qs.push('bidx=' + encodeURIComponent(band && band.value ? String(band.value) : '1'));
+      var colormap = stacParseJsonTextarea('stac-classification-colormap-json', 'Colormap');
+      var classes = stacParseJsonTextarea('stac-classification-classes-json', 'Classes');
+      if (!colormap && !classes) return;
+      var cmap = colormap && typeof colormap === 'object' ? Object.assign({}, colormap) : {};
+      if (classes && Array.isArray(classes)) {
+        classes.forEach(function(c) {
+          if (c && c.value != null && c.color) cmap[String(c.value)] = c.color;
+        });
+      } else if (classes && typeof classes === 'object') {
+        Object.keys(classes).forEach(function(k) {
+          var item = classes[k];
+          if (item && item.color) cmap[String(k)] = item.color;
+        });
+      }
+      if (Object.keys(cmap).length) {
+        qs.push('colormap=' + encodeURIComponent(JSON.stringify(cmap)));
+        qs.push('colormap_type=explicit');
+      }
+      stacAppendNodataQuery(qs);
+    }
+
     function buildTileUrl(assetKey) {
       var basePath = base + '/stac/catalogs/' + encodeURIComponent(catalogId)
         + '/collections/' + encodeURIComponent(collectionId)
@@ -772,6 +824,14 @@
         + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png';
       var path = basePath;
       var qs = [];
+      if (stacClassificationEnabled()) {
+        try {
+          stacAppendClassificationParams(qs, assetKey);
+          return qs.length ? path + '?' + qs.join('&') : path;
+        } catch (e) {
+          console.warn('Classification tile URL:', e);
+        }
+      }
       var rescaleEl = document.getElementById('stac-rescale');
       var rescaleVal = rescaleEl && rescaleEl.value.trim() ? rescaleEl.value.trim() : '';
       function pushRescaleOnce() {
@@ -842,6 +902,7 @@
         if (bb && bb.value) qs.push('bidx=' + encodeURIComponent(String(bb.value)));
         pushRescaleRgb();
       }
+      stacAppendNodataQuery(qs);
       return qs.length ? path + '?' + qs.join('&') : path;
     }
 
@@ -1378,21 +1439,49 @@
 
     function setMode(mode, opts) {
       opts = opts || {};
+      if (stacClassificationEnabled() && !opts.classificationLock) mode = 'single';
+      var classOn = stacClassificationEnabled();
       var rgbBands = document.getElementById('stac-rgb-bands-block');
       var rgbAssets = document.getElementById('stac-rgb-assets-block');
       var single = document.getElementById('stac-single-block');
       var expr = document.getElementById('stac-expr-block');
       var cmapBlock = document.getElementById('stac-colormap-block');
       function show(el, on) { if (!el) return; el.classList.toggle('is-open', !!on); }
-      show(rgbBands, mode === 'rgb_bands');
-      show(rgbAssets, mode === 'rgb_assets');
-      show(single, mode === 'single');
-      show(expr, mode === 'expression');
-      show(cmapBlock, mode === 'single' || mode === 'expression');
-      if (!opts.skipRescaleDefault) applyRescaleDefaultForMode(mode);
+      show(rgbBands, !classOn && mode === 'rgb_bands');
+      show(rgbAssets, !classOn && mode === 'rgb_assets');
+      show(single, classOn || mode === 'single');
+      show(expr, !classOn && mode === 'expression');
+      show(cmapBlock, !classOn && (mode === 'single' || mode === 'expression'));
+      if (!opts.skipRescaleDefault && !classOn) applyRescaleDefaultForMode(mode);
       if (mode === 'expression' && !opts.skipExpressionAssetDefault) applyExpressionModeAssetDefault();
       updateExpressionPreview();
     }
+
+    var classCb = document.getElementById('stac-classification-enabled');
+    if (classCb) {
+      classCb.addEventListener('change', function() {
+        var fields = document.getElementById('stac-classification-fields');
+        if (fields) fields.style.display = this.checked ? 'block' : 'none';
+        if (this.checked) {
+          var modeEl0 = document.getElementById('stac-render-mode');
+          if (modeEl0) modeEl0.value = 'single';
+          setMode('single', { skipRescaleDefault: true, classificationLock: true });
+        } else {
+          var modeEl1 = document.getElementById('stac-render-mode');
+          setMode(modeEl1 ? modeEl1.value : 'rgb_bands', {});
+        }
+        if (map && map.loaded()) addOrRefreshRaster();
+        scheduleStacViewerUrlPush();
+      });
+    }
+    ['stac-classification-colormap-json', 'stac-classification-classes-json'].forEach(function(id) {
+      var ta = document.getElementById(id);
+      if (!ta) return;
+      ta.addEventListener('change', function() {
+        if (map && map.loaded()) addOrRefreshRaster();
+        scheduleStacViewerUrlPush();
+      });
+    });
 
     var modeEl = document.getElementById('stac-render-mode');
     if (modeEl) {

@@ -32,6 +32,11 @@ from app.services.bulk_upload_sessions import (
     delete_upload_session,
     get_upload_session,
 )
+from app.services.raster_style_spec import (
+    is_classification_style,
+    titiler_nodata_param,
+    titiler_params_from_classification_style,
+)
 from app.services.raster_batch import (
     RasterBatchUploadTooLargeError,
     enqueue_raster_batch_job,
@@ -673,17 +678,27 @@ async def get_raster_collection_tile(
     # DEM terrain requests must bypass visualization style params (bidx/expression/colormap),
     # otherwise raster-dem decoding receives rendered imagery instead of elevation encoding.
     if style_spec and not dem_request:
-        # Query params from the style editor / clients win over preset keys to avoid duplicate Titiler args.
-        for key in ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula"):
-            if key in request_keys:
-                continue
-            value = style_spec.get(key)
-            if value is None:
-                continue
-            if isinstance(value, list):
-                params.append((key, ",".join(str(x) for x in value)))
-            else:
-                params.append((key, str(value)))
+        if is_classification_style(style_spec):
+            if "asset" not in request_keys:
+                asset_val = style_spec.get("asset")
+                if asset_val is not None and str(asset_val).strip():
+                    params.append(("asset", str(asset_val).strip()))
+            for pk, pv in titiler_params_from_classification_style(style_spec):
+                if pk in request_keys:
+                    continue
+                params.append((pk, pv))
+        else:
+            # Query params from the style editor / clients win over preset keys to avoid duplicate Titiler args.
+            for key in ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula", "nodata"):
+                if key in request_keys:
+                    continue
+                value = style_spec.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, list):
+                    params.append((key, ",".join(str(x) for x in value)))
+                else:
+                    params.append((key, str(value)))
     # Allow explicit DEM encoding override for terrain clients.
     if dem_request:
         dem_algorithm = _normalize_dem_encoding(dem_encoding_q)
@@ -702,10 +717,12 @@ async def get_raster_collection_tile(
     force_analytic = bool(
         request.query_params.get("expression")
         or request.query_params.get("colormap_name")
+        or request.query_params.get("colormap")
         or request.query_params.get("color_formula")
         or len(assets_vals) >= 2
         or _style_supplies("expression")
         or _style_supplies("colormap_name")
+        or _style_supplies("colormap")
         or _style_supplies("color_formula")
     )
     if len(bidx_vals) == 1:
@@ -719,7 +736,9 @@ async def get_raster_collection_tile(
     if force_analytic and not dem_request:
         dem_algorithm = None
     # Mosaic: apply terrain RGB only when no explicit bands/colormap/expression (those conflict with algorithm=).
-    _mosaic_viz_keys = frozenset({"bidx", "colormap_name", "expression", "color_formula", "assets", "rescale"})
+    _mosaic_viz_keys = frozenset(
+        {"bidx", "colormap_name", "colormap", "colormap_type", "expression", "color_formula", "assets", "rescale"}
+    )
     has_mosaic_viz = mode == "mosaic" and any(k in _mosaic_viz_keys for k, _ in params)
     if (
         mode == "mosaic"

@@ -20,6 +20,7 @@ from app.schemas.raster_style import (
     RasterStyleRead,
     RasterStyleReplace,
 )
+from app.services.raster_style_spec import normalize_raster_style_spec_http
 
 router = APIRouter()
 
@@ -135,12 +136,13 @@ async def create_public_raster_style_api(
             detail="A public raster style with this id already exists",
         )
     vis = payload.visibility or "public"
+    spec = normalize_raster_style_spec_http(payload.style_spec)
     s = await raster_styles_crud.upsert_raster_style(
         db,
         collection_id=raster_styles_crud.PUBLIC_COLLECTION_ID,
         style_id=payload.id,
         title=payload.title,
-        style_spec=payload.style_spec,
+        style_spec=spec,
         owner_id=current_user.id,
         set_default=False,
         visibility=vis,
@@ -165,12 +167,13 @@ async def replace_public_raster_style_api(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Style not found")
     if (cur.owner_id or 0) != current_user.id and not current_user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    spec = normalize_raster_style_spec_http(payload.style_spec)
     s = await raster_styles_crud.upsert_raster_style(
         db,
         collection_id=raster_styles_crud.PUBLIC_COLLECTION_ID,
         style_id=style_id,
         title=payload.title,
-        style_spec=payload.style_spec,
+        style_spec=spec,
         owner_id=cur.owner_id,
         set_default=False,
     )
@@ -194,12 +197,14 @@ async def patch_public_raster_style_api(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Style not found")
     if (cur.owner_id or 0) != current_user.id and not current_user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    raw_spec = payload.style_spec if payload.style_spec is not None else cur.style_spec
+    spec = normalize_raster_style_spec_http(raw_spec)
     s = await raster_styles_crud.upsert_raster_style(
         db,
         collection_id=raster_styles_crud.PUBLIC_COLLECTION_ID,
         style_id=style_id,
         title=payload.title if payload.title is not None else cur.title,
-        style_spec=payload.style_spec if payload.style_spec is not None else cur.style_spec,
+        style_spec=spec,
         owner_id=cur.owner_id,
         set_default=False,
         visibility=payload.visibility if payload.visibility is not None else None,
