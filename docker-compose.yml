@@ -49,6 +49,8 @@ services:
     environment:
       # Backend: real Postgres (asyncpg URL not used here; libpq postgres:// form).
       DATABASE_URL: postgres://postgres:postgres@db:5432/geofastmap
+      # asyncpg uses SCRAM; edoburu/pgbouncer defaults to md5 → "wrong password type" without this.
+      AUTH_TYPE: scram-sha-256
       POOL_MODE: transaction
       MAX_CLIENT_CONN: "1000"
       DEFAULT_POOL_SIZE: "25"

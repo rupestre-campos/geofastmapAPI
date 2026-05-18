@@ -25,6 +25,9 @@ PGBOUNCER_BACKEND_DATABASE_URL=postgres://postgres:YOUR_PASSWORD@geofastmap_db:5
 # --- Listen on host (API on host / workers elsewhere connect here) ---
 PGBOUNCER_PUBLISH=6432
 
+# Must match asyncpg / Postgres 14+ (default). Do not set to md5 unless you know you need it.
+# PGBOUNCER_AUTH_TYPE=scram-sha-256
+
 # Optional tuning:
 # PGBOUNCER_MAX_CLIENT_CONN=1000
 # PGBOUNCER_DEFAULT_POOL_SIZE=25

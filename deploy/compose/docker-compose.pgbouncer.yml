@@ -22,6 +22,8 @@ services:
     environment:
       # libpq URL to **real** Postgres (not asyncpg). Examples in deploy/env/pgbouncer.sample
       DATABASE_URL: ${PGBOUNCER_BACKEND_DATABASE_URL:?Set PGBOUNCER_BACKEND_DATABASE_URL in deploy/env/.env.pgbouncer — see pgbouncer.sample}
+      # asyncpg uses SCRAM; edoburu/pgbouncer defaults to md5 → "wrong password type" without this.
+      AUTH_TYPE: ${PGBOUNCER_AUTH_TYPE:-scram-sha-256}
       POOL_MODE: transaction
       MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-1000}
       DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-25}
