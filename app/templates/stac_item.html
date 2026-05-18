@@ -28,6 +28,19 @@
     .stac-actions-row .btn { min-width: 10rem; }
     .stac-advanced-block { display: none; margin-top: var(--space); }
     .stac-advanced-block.is-open { display: block; }
+    .stac-classification-panel {
+      display: block;
+      margin-top: var(--space);
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--border);
+    }
+    .stac-classification-panel .stac-json-textarea {
+      width: 100%;
+      font-family: ui-monospace, monospace;
+      font-size: 0.8rem;
+      min-height: 5rem;
+      box-sizing: border-box;
+    }
     .stac-rgb-grid { display: grid; gap: 0.6rem 0.75rem; align-items: start; }
     @media (min-width: 720px) { .stac-rgb-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
     .stac-rgb-grid .form-row label { min-height: 1.15em; }
