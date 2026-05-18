@@ -32,6 +32,8 @@ def create_upload_session(
     mode: str,
     batch_size: int,
     queue_compute_tiles: bool,
+    upload_kind: str = "vector_bulk",
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     upload_id = str(uuid.uuid4())
@@ -48,7 +50,10 @@ def create_upload_session(
         "updated_at": now,
         "status": "pending_parts",
         "parts": [],
+        "upload_kind": upload_kind,
     }
+    if extra:
+        payload.update(extra)
 
     def _write() -> None:
         r = _redis()

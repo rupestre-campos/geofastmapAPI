@@ -11,6 +11,7 @@ import zipfile
 from pathlib import Path
 
 from fastapi import UploadFile
+from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from uuid6 import uuid7
@@ -127,6 +128,128 @@ async def write_raster_batch_archive(
         }
         zf.writestr("manifest.json", json.dumps(manifest, separators=(",", ":")))
     return len(entries), entries
+
+
+def build_raster_batch_zip_from_staged_path(
+    *,
+    src_path: Path,
+    original_filename: str,
+    dest_path: str,
+    is_dem: bool,
+    dem_encoding: str | None,
+    source_crs: str | None,
+) -> tuple[int, list[dict]]:
+    """Build raster_batch.zip at dest_path from one assembled upload file (.tif or .zip)."""
+    entries: list[dict] = []
+    staged = _safe_staged_name(original_filename, 0)
+    suffix = Path(staged).suffix.lower()
+    with zipfile.ZipFile(dest_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        arcname = f"files/{staged}"
+        if suffix == ".zip":
+            zf.write(src_path, arcname=arcname)
+            entries.append({"kind": "zip", "name": arcname})
+        elif suffix in _ALLOWED_SUFFIX:
+            zf.write(src_path, arcname=arcname)
+            entries.append({"kind": "geotiff", "name": arcname, "title": Path(staged).stem})
+        else:
+            raise ValueError(
+                f"Unsupported raster upload {suffix!r}; expected .tif, .tiff, .geotiff, or .zip."
+            )
+        manifest = {
+            "version": MANIFEST_VERSION,
+            "is_dem": bool(is_dem),
+            "dem_encoding": _normalize_dem_encoding(dem_encoding),
+            "source_crs": source_crs,
+            "entries": entries,
+        }
+        zf.writestr("manifest.json", json.dumps(manifest, separators=(",", ":")))
+    return len(entries), entries
+
+
+def enqueue_raster_batch_job(
+    *,
+    request,
+    collection_id: str,
+    current_user,
+    job_id: str,
+    storage_key: str,
+    entry_count: int,
+) -> JSONResponse:
+    from app.services.bulk_queue import BulkJobPayload, enqueue, register_bulk_import_job
+
+    register_bulk_import_job(job_id, storage_key)
+    update_job(
+        job_id,
+        message="Raster upload received; queued for COG conversion.",
+        items_in=entry_count,
+    )
+    enqueue(
+        BulkJobPayload(
+            job_id=job_id,
+            collection_id=collection_id,
+            storage_key=storage_key,
+            mode="append",
+            batch_size=1000,
+            owner_id=current_user.id,
+            queue_compute_tiles=False,
+            job_kind="raster_batch",
+        )
+    )
+    base = str(request.base_url).rstrip("/")
+    return JSONResponse(
+        status_code=202,
+        content={
+            "collection_id": collection_id,
+            "job_id": job_id,
+            "status": "pending",
+            "queued_files": entry_count,
+            "message": "Upload stored; raster processing runs in the background.",
+            "job_url": f"{base}/jobs/{job_id}",
+        },
+    )
+
+
+async def queue_raster_from_staged_file(
+    *,
+    request,
+    collection_id: str,
+    staged_path: Path,
+    original_filename: str,
+    current_user,
+    is_dem: bool,
+    dem_encoding: str | None,
+    source_crs: str | None,
+) -> JSONResponse:
+    from app.services.bulk_storage import get_bulk_storage
+    from app.services.job_store import create_job
+
+    storage = get_bulk_storage()
+    job = create_job(collection_id, owner_id=current_user.id, job_label="raster_batch")
+    storage_key = f"{job.job_id}.raster_batch.zip"
+    dest_path = storage.get_write_path(storage_key)
+    try:
+        n, _ = build_raster_batch_zip_from_staged_path(
+            src_path=staged_path,
+            original_filename=original_filename,
+            dest_path=dest_path,
+            is_dem=is_dem,
+            dem_encoding=dem_encoding,
+            source_crs=source_crs,
+        )
+    except ValueError as e:
+        try:
+            storage.delete(storage_key)
+        except Exception:
+            pass
+        raise ValueError(str(e)) from e
+    return enqueue_raster_batch_job(
+        request=request,
+        collection_id=collection_id,
+        current_user=current_user,
+        job_id=job.job_id,
+        storage_key=storage_key,
+        entry_count=n,
+    )
 
 
 async def create_raster_feature_from_source(

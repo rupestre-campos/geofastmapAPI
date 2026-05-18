@@ -34,6 +34,8 @@ BULK_DB_RETRY_BASE_SECONDS=1
 BULK_DB_RETRY_MAX_SECONDS=30
 BULK_UPLOAD_SESSION_TTL_SECONDS=86400
 BULK_UPLOAD_CHUNK_SIZE_BYTES=33554432
+# Resumable raster upload: max bytes per HTTP part (keep under Cloudflare/proxy limits).
+RASTER_UPLOAD_CHUNK_SIZE_BYTES=104857600
 BULK_SHARDED_INGEST_ENABLED=true
 BULK_SHARD_LINES_PER_PART=50000
 # Only if this host runs app.worker_main (bulk worker container).

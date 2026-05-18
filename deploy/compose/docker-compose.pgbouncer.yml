@@ -5,7 +5,10 @@
 #   docker compose --env-file deploy/env/.env.pgbouncer -f deploy/compose/docker-compose.pgbouncer.yml up -d
 #
 # App/workers then use: postgresql+asyncpg://USER:PASS@<this-host>:6432/DB  (default publish port)
-# and DATABASE_USE_PGBOUNCER=true. Alembic: DATABASE_URL_DIRECT to real Postgres (same host:5434 or @db:5432).
+# and DATABASE_USE_PGBOUNCER=true. Alembic: DATABASE_URL_DIRECT to real Postgres (e.g. @geofastmap_db:5432 from API container).
+#
+# Postgres **in Docker on this host** (same machine as API): merge
+# `docker-compose.pgbouncer.db-network.yml` and set backend URL to `@geofastmap_db:5432` — see deploy/env/pgbouncer.sample.
 name: geofastmap_pooler
 
 services:
@@ -27,11 +30,3 @@ services:
       LISTEN_PORT: "5432"
     ports:
       - "${PGBOUNCER_PUBLISH:-6432}:5432"
-    # Optional: join the same Docker network as your DB container, then use @geofastmap_db:5432 in DATABASE_URL.
-    # networks:
-    #   - dbnet
-
-# networks:
-#   dbnet:
-#     external: true
-#     name: geofastmap_api_default

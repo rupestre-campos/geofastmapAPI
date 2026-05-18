@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Path as PathParam, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -20,14 +21,21 @@ from app.crud import features as features_crud
 from app.crud import raster_styles as raster_styles_crud
 from app.db.session import get_db
 from app.services.coverages import CogPathOutsideStorageError, cog_path_for, resolve_stored_cog_path
-from app.services.bulk_queue import BulkJobPayload, enqueue, register_bulk_import_job
 from app.services.bulk_storage import get_bulk_storage
 from app.services.collection_type_guard import ensure_raster_collection
-from app.services.job_store import create_job, update_job
+from app.services.job_store import create_job
 from app.services.raster_collection_mosaic import get_or_build_collection_mosaic
 from app.services.titiler_error_sanitize import sanitize_titiler_upstream_error_text
+from app.services.bulk_upload_sessions import (
+    add_uploaded_part,
+    create_upload_session,
+    delete_upload_session,
+    get_upload_session,
+)
 from app.services.raster_batch import (
     RasterBatchUploadTooLargeError,
+    enqueue_raster_batch_job,
+    queue_raster_from_staged_file,
     write_raster_batch_archive,
 )
 from app.services.raster_mosaic_version import (
@@ -128,35 +136,13 @@ async def _queue_raster_upload_job(
         except Exception:
             pass
         raise
-    register_bulk_import_job(job.job_id, storage_key)
-    update_job(
-        job.job_id,
-        message="Raster upload received; queued for COG conversion.",
-        items_in=n,
-    )
-    enqueue(
-        BulkJobPayload(
-            job_id=job.job_id,
-            collection_id=collection_id,
-            storage_key=storage_key,
-            mode="append",
-            batch_size=1000,
-            owner_id=current_user.id,
-            queue_compute_tiles=False,
-            job_kind="raster_batch",
-        )
-    )
-    base = _base_url(request)
-    return JSONResponse(
-        status_code=status.HTTP_202_ACCEPTED,
-        content={
-            "collection_id": collection_id,
-            "job_id": job.job_id,
-            "status": "pending",
-            "queued_files": n,
-            "message": "Upload stored; raster processing runs in the background.",
-            "job_url": f"{base}/jobs/{job.job_id}",
-        },
+    return enqueue_raster_batch_job(
+        request=request,
+        collection_id=collection_id,
+        current_user=current_user,
+        job_id=job.job_id,
+        storage_key=storage_key,
+        entry_count=n,
     )
 
 
@@ -253,6 +239,206 @@ async def list_raster_items(
             "Cache-Control": "no-store, max-age=0",
         },
     )
+
+
+@router.post(
+    "/{collection_id}/rasters/upload/sessions",
+    status_code=status.HTTP_201_CREATED,
+    summary="Create resumable raster upload session (chunked parts, max 100 MiB each)",
+)
+async def create_raster_upload_session(
+    collection_id: str,
+    request: Request,
+    body: dict = Body(default={}),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_required),
+):
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    ensure_raster_collection(collection)
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
+    filename = str(body.get("filename") or "upload.tif")
+    settings = get_settings()
+    source_crs = body.get("source_crs")
+    if isinstance(source_crs, str):
+        source_crs = source_crs.strip() or None
+    else:
+        source_crs = None
+    s = create_upload_session(
+        collection_id=collection_id,
+        owner_id=current_user.id,
+        filename=filename,
+        mode="append",
+        batch_size=1000,
+        queue_compute_tiles=False,
+        upload_kind="raster_batch",
+        extra={
+            "is_dem": bool(body.get("is_dem", False)),
+            "dem_encoding": body.get("dem_encoding"),
+            "source_crs": source_crs,
+        },
+    )
+    return {
+        "upload_id": s["upload_id"],
+        "status": s["status"],
+        "chunk_size_bytes": settings.raster_upload_chunk_size_bytes,
+        "expires_in_seconds": settings.bulk_upload_session_ttl_seconds,
+        "parts_uploaded": [],
+        "complete_url": f"{_base_url(request)}/collections/{collection_id}/rasters/upload/sessions/{s['upload_id']}/complete",
+    }
+
+
+@router.put(
+    "/{collection_id}/rasters/upload/sessions/{upload_id}/parts/{part_no}",
+    summary="Upload one resumable raster chunk (max size from session chunk_size_bytes)",
+)
+async def upload_raster_session_part(
+    collection_id: str,
+    upload_id: str,
+    part_no: int = PathParam(..., ge=1),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_required),
+):
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    ensure_raster_collection(collection)
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
+    s = get_upload_session(upload_id)
+    if not s or s.get("collection_id") != collection_id or s.get("upload_kind") != "raster_batch":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload session not found")
+    if s.get("owner_id") is not None and int(s.get("owner_id")) != int(current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Upload session owner mismatch")
+    settings = get_settings()
+    max_part = int(settings.raster_upload_chunk_size_bytes)
+    storage = get_bulk_storage()
+    part_path = storage.get_chunk_part_path(upload_id, part_no)
+    try:
+        total = 0
+        with open(part_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > max_part:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"Part exceeds maximum {max_part} bytes ({max_part // (1024 * 1024)} MiB per chunk)",
+                    )
+                f.write(chunk)
+    except HTTPException:
+        try:
+            if os.path.isfile(part_path):
+                os.unlink(part_path)
+        except OSError:
+            pass
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed writing upload part: {e}") from e
+    s2 = add_uploaded_part(upload_id, part_no)
+    return {"upload_id": upload_id, "part_no": part_no, "parts_uploaded": sorted(s2.get("parts") if s2 else [part_no])}
+
+
+@router.post(
+    "/{collection_id}/rasters/upload/sessions/{upload_id}/complete",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Complete resumable raster upload and queue COG ingest",
+)
+async def complete_raster_upload_session(
+    request: Request,
+    collection_id: str,
+    upload_id: str,
+    body: dict = Body(default={}),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_required),
+):
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    ensure_raster_collection(collection)
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
+    s = get_upload_session(upload_id)
+    if not s or s.get("collection_id") != collection_id or s.get("upload_kind") != "raster_batch":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload session not found")
+    parts = [int(p) for p in (body.get("parts") or s.get("parts") or [])]
+    if not parts:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No uploaded parts")
+
+    filename = str(s.get("filename") or "upload.tif")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in (".tif", ".tiff", ".geotiff", ".zip"):
+        suffix = ".tif"
+    staging_key = f"{upload_id}.upload{suffix}"
+    storage = get_bulk_storage()
+    try:
+        staged_path = storage.assemble_chunk_parts(upload_id, parts, staging_key)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed assembling upload: {e}") from e
+    finally:
+        storage.delete_upload_parts(upload_id)
+        delete_upload_session(upload_id)
+
+    source_crs = s.get("source_crs")
+    if isinstance(source_crs, str):
+        source_crs = source_crs.strip() or None
+    else:
+        source_crs = None
+    try:
+        return await queue_raster_from_staged_file(
+            request=request,
+            collection_id=collection_id,
+            staged_path=Path(staged_path),
+            original_filename=filename,
+            current_user=current_user,
+            is_dem=bool(s.get("is_dem", False)),
+            dem_encoding=s.get("dem_encoding"),
+            source_crs=source_crs,
+        )
+    except ValueError as e:
+        try:
+            storage.delete(staging_key)
+        except Exception:
+            pass
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    except Exception:
+        try:
+            storage.delete(staging_key)
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            storage.delete(staging_key)
+        except Exception:
+            pass
+
+
+@router.delete(
+    "/{collection_id}/rasters/upload/sessions/{upload_id}",
+    summary="Abort resumable raster upload session",
+)
+async def abort_raster_upload_session(
+    collection_id: str,
+    upload_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_required),
+):
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    ensure_raster_collection(collection)
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
+    s = get_upload_session(upload_id)
+    if not s or s.get("collection_id") != collection_id or s.get("upload_kind") != "raster_batch":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload session not found")
+    storage = get_bulk_storage()
+    storage.delete_upload_parts(upload_id)
+    delete_upload_session(upload_id)
+    return {"status": "aborted", "upload_id": upload_id}
 
 
 @router.post(

@@ -1,5 +1,7 @@
 # PostGIS only. From repo root:
 #   docker compose -f deploy/compose/docker-compose.db.yml up -d
+# Same Compose project name as api/redis (`geofastmap_api`) so all services share network `geofastmap_api_default`.
+# Optional PgBouncer (pooler only, no second DB): see ../../docker/pgbouncer/README.md and docker-compose.pgbouncer*.yml
 name: geofastmap_api
 
 services:

@@ -1,0 +1,24 @@
+# Attach standalone PgBouncer to the same Docker network as your Postgres container.
+# Use with docker-compose.pgbouncer.yml when DB is e.g. geofastmap_db from deploy/compose/docker-compose.db.yml
+# (project name: geofastmap_api → default network geofastmap_api_default).
+#
+#   docker compose --env-file deploy/env/.env.pgbouncer \
+#     -f deploy/compose/docker-compose.pgbouncer.yml \
+#     -f deploy/compose/docker-compose.pgbouncer.db-network.yml \
+#     up -d
+#
+# In .env.pgbouncer set:
+#   PGBOUNCER_BACKEND_DATABASE_URL=postgres://postgres:PASSWORD@geofastmap_db:5432/geofastmap
+# Optional if your DB stack used a different compose project name:
+#   PGBOUNCER_DB_NETWORK_NAME=yourproject_default
+# (Run: docker network ls | grep geofastmap)
+
+services:
+  pgbouncer:
+    networks:
+      - pgbouncer_to_db
+
+networks:
+  pgbouncer_to_db:
+    external: true
+    name: ${PGBOUNCER_DB_NETWORK_NAME:-geofastmap_api_default}

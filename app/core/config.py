@@ -117,6 +117,8 @@ class Settings(BaseSettings):
     # Rasters: COG storage (shared with Titiler worker when using file:// URLs)
     raster_storage_path: str = "/data/rasters"
     raster_upload_max_bytes: int = 500 * 1024 * 1024  # 500 MiB
+    # Resumable raster upload: max bytes per HTTP part (stay under reverse-proxy limits, e.g. Cloudflare).
+    raster_upload_chunk_size_bytes: int = 100 * 1024 * 1024  # 100 MiB
     # Internal Titiler base URL (e.g. http://titiler:8000). Empty = proxy disabled / in-app tiles only.
     titiler_internal_url: str = ""
     # Shared secret for Titiler → API internal COG fetch (optional; avoids file:// in Titiler).

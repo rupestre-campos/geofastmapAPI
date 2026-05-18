@@ -293,7 +293,7 @@
   <div class="card">
     <h2 class="card-title">Bulk upload</h2>
     {% if (collection.collection_type or 'vector') == 'raster' %}
-    <p class="meta">Upload GeoTIFF files or a .zip containing one or more .tif/.tiff (sidecars such as .tfw are read from the zip). Each file is converted to COG and stored as a raster item. Large uploads may take a while; keep this tab open.</p>
+    <p class="meta">Upload GeoTIFF files or a .zip containing one or more .tif/.tiff (sidecars such as .tfw are read from the zip). Each file is converted to COG and stored as a raster item. Large files are uploaded in parts (up to 100&nbsp;MiB per request) so they pass through reverse proxies; keep this tab open until upload finishes.</p>
     {% else %}
     <p class="meta">Import from GeoJSON, GeoJSONSeq, KML, GPKG, or .zip (single or multiple shapefiles; all .shp inside the zip, including in subfolders, are imported into this collection). Runs in the background.</p>
     {% endif %}
@@ -1726,56 +1726,147 @@
       loadingEl.style.display = '';
       submitBtn.disabled = true;
       if (collectionType === 'raster') {
-        resultEl.textContent = 'Uploading files… COG conversion runs in the background after upload.';
-        var fd = new FormData();
-        for (var fi = 0; fi < fileList.length; fi++) {
-          fd.append('files', fileList[fi], fileList[fi].name);
-        }
         var crsEl = document.getElementById('bulk-raster-source-crs');
-        if (crsEl && crsEl.value && String(crsEl.value).trim()) {
-          fd.append('source_crs', String(crsEl.value).trim());
+        var sourceCrs = (crsEl && crsEl.value && String(crsEl.value).trim()) ? String(crsEl.value).trim() : null;
+        var rasterChunkSize = 100 * 1024 * 1024;
+        var rasterMaxParallelParts = 4;
+        var rasterMaxPartRetries = 3;
+        function formatBytes(bytes) {
+          var n = Number(bytes || 0);
+          if (!isFinite(n) || n < 0) return '0 B';
+          var units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+          var i = 0;
+          while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+          return (i === 0 ? String(Math.round(n)) : n.toFixed(1)) + ' ' + units[i];
         }
-        fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters/batch', {
-          method: 'POST',
-          body: fd,
-          credentials: 'same-origin',
-          headers: { 'Accept': 'application/json' }
-        })
-          .then(function(r) {
-            return r.text().then(function(t) {
-              var d = {};
-              if (t) { try { d = JSON.parse(t); } catch (err) { d = {}; } }
-              if (!r.ok) {
-                var msg = typeof d.detail === 'string' ? d.detail : (t || r.statusText || 'Request failed');
-                throw new Error(msg);
-              }
-              return d;
-            });
+        function uploadOneRasterFileChunked(file) {
+          return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters/upload/sessions', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ filename: file.name, source_crs: sourceCrs })
           })
-          .then(function(d) {
+            .then(function(r) { return r.text().then(function(t) {
+              var j = {}; if (t) { try { j = JSON.parse(t); } catch (e) { j = {}; } }
+              if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (t || r.statusText || 'Session failed'));
+              return j;
+            }); })
+            .then(function(sess) {
+              var uploadId = sess.upload_id;
+              var chunkSize = (sess.chunk_size_bytes && Number(sess.chunk_size_bytes) > 0)
+                ? Number(sess.chunk_size_bytes) : rasterChunkSize;
+              var totalParts = Math.max(1, Math.ceil(file.size / chunkSize));
+              var done = 0;
+              var uploadedBytes = 0;
+              var activeWorkers = 0;
+              var retries = {};
+              function sendPart(partNo) {
+                var start = (partNo - 1) * chunkSize;
+                var end = Math.min(file.size, start + chunkSize);
+                var blob = file.slice(start, end);
+                var fd = new FormData();
+                fd.append('file', blob, file.name + '.part' + partNo);
+                return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters/upload/sessions/' + encodeURIComponent(uploadId) + '/parts/' + partNo, {
+                  method: 'PUT',
+                  credentials: 'same-origin',
+                  headers: { 'Accept': 'application/json' },
+                  body: fd
+                }).then(function(r) {
+                  return r.text().then(function(t) {
+                    var j = {}; if (t) { try { j = JSON.parse(t); } catch (e) { j = {}; } }
+                    if (!r.ok) {
+                      if (r.status === 413 || (t && t.indexOf('413') !== -1)) {
+                        throw new Error('HTTP 413: chunk too large for proxy. Each part must be at most ' + formatBytes(chunkSize) + '.');
+                      }
+                      throw new Error(typeof j.detail === 'string' ? j.detail : (t || r.statusText || 'Part upload failed'));
+                    }
+                    done += 1;
+                    uploadedBytes += (end - start);
+                    return j;
+                  });
+                });
+              }
+              function uploadPartWithRetry(partNo) {
+                var attempts = retries[partNo] || 0;
+                return sendPart(partNo).catch(function(err) {
+                  attempts += 1;
+                  retries[partNo] = attempts;
+                  if (attempts >= rasterMaxPartRetries) throw err;
+                  var waitMs = Math.min(4000, 500 * Math.pow(2, attempts - 1));
+                  return new Promise(function(resolve) { setTimeout(resolve, waitMs); }).then(function() {
+                    return uploadPartWithRetry(partNo);
+                  });
+                });
+              }
+              function runParallelUploads() {
+                var queue = [];
+                for (var i = 1; i <= totalParts; i++) queue.push(i);
+                var workerCount = Math.min(rasterMaxParallelParts, totalParts);
+                function workerLoop() {
+                  if (!queue.length) return Promise.resolve();
+                  var partNo = queue.shift();
+                  activeWorkers += 1;
+                  return uploadPartWithRetry(partNo).finally(function() {
+                    activeWorkers = Math.max(0, activeWorkers - 1);
+                  }).then(workerLoop);
+                }
+                var workers = [];
+                for (var w = 0; w < workerCount; w++) workers.push(workerLoop());
+                return Promise.all(workers);
+              }
+              return runParallelUploads().then(function() {
+                var partNums = [];
+                for (var n = 1; n <= totalParts; n++) partNums.push(n);
+                return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/rasters/upload/sessions/' + encodeURIComponent(uploadId) + '/complete', {
+                  method: 'POST',
+                  credentials: 'same-origin',
+                  headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                  body: JSON.stringify({ parts: partNums })
+                }).then(function(r) {
+                  return r.text().then(function(t) {
+                    var j = {}; if (t) { try { j = JSON.parse(t); } catch (e) { j = {}; } }
+                    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (t || r.statusText || 'Complete failed'));
+                    return j;
+                  });
+                });
+              });
+            });
+        }
+        var fileIndex = 0;
+        var jobLinks = [];
+        function uploadNextRasterFile() {
+          if (fileIndex >= fileList.length) {
             resultEl.textContent = '';
-            var jobId = d && d.job_id ? d.job_id : '';
-            var q = (d && d.queued_files != null) ? d.queued_files : 0;
-            var jobLink = jobId
-              ? (' <a href="' + base + '/jobs/' + encodeURIComponent(jobId) + '?f=html">Job status →</a>')
+            var linksHtml = jobLinks.length
+              ? (' ' + jobLinks.map(function(h) { return h; }).join(' '))
               : '';
-            successEl.innerHTML = 'Upload complete. Queued ' + q + ' file(s) for raster import.' + jobLink
+            successEl.innerHTML = 'Upload complete. Queued ' + fileList.length + ' file(s) for raster import.' + linksHtml
               + ' You can close this page; processing continues on the server.';
             successEl.style.display = 'block';
-            if (typeof window.refreshCollectionJobs === 'function') {
-              window.refreshCollectionJobs();
-            }
-            if (typeof refreshRasterDemPanel === 'function') {
-              refreshRasterDemPanel();
-            }
-          })
-          .catch(function(err) {
-            resultEl.textContent = 'Error: ' + (err && err.message ? err.message : String(err));
-          })
-          .finally(function() {
+            if (typeof window.refreshCollectionJobs === 'function') window.refreshCollectionJobs();
+            if (typeof refreshRasterDemPanel === 'function') refreshRasterDemPanel();
             loadingEl.style.display = 'none';
             submitBtn.disabled = false;
-          });
+            return;
+          }
+          var file = fileList[fileIndex];
+          resultEl.textContent = 'Uploading file ' + (fileIndex + 1) + '/' + fileList.length + ': ' + file.name + ' (' + formatBytes(file.size) + ')…';
+          uploadOneRasterFileChunked(file)
+            .then(function(d) {
+              var jobId = d && d.job_id ? d.job_id : '';
+              if (jobId) {
+                jobLinks.push('<a href="' + base + '/jobs/' + encodeURIComponent(jobId) + '?f=html">Job ' + (fileIndex + 1) + ' →</a>');
+              }
+              fileIndex += 1;
+              uploadNextRasterFile();
+            })
+            .catch(function(err) {
+              resultEl.textContent = 'Error on ' + file.name + ': ' + (err && err.message ? err.message : String(err));
+              loadingEl.style.display = 'none';
+              submitBtn.disabled = false;
+            });
+        }
+        uploadNextRasterFile();
         return;
       }
       var file = fileList[0];

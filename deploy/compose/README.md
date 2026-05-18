@@ -19,27 +19,50 @@ If you need a different project name on one host, run with `-p <project_name>` (
 | `docker-compose.nfs.yml` | Optional **Docker** NFS helper on primary (see limitations; prefer host NFS in [`docs/lab/nfs-host-ubuntu.md`](../../docs/lab/nfs-host-ubuntu.md)) |
 | `docker-compose.observability.yml` | Optional admin observability profile (Grafana, Loki, Promtail, Prometheus, node_exporter, Tempo, OTEL Collector) |
 | `docker-compose.pgbouncer.yml` | **PgBouncer only** (no `db` service — use when Postgres already runs elsewhere / name conflict). See [`../env/pgbouncer.sample`](../env/pgbouncer.sample) and [`../../docker/pgbouncer/README.md`](../../docker/pgbouncer/README.md). |
+| `docker-compose.pgbouncer.db-network.yml` | **Override:** attach pooler to DB stack network (e.g. `geofastmap_api_default`); use with `docker-compose.pgbouncer.yml` when Postgres is container `geofastmap_db` on the same host. |
 
 **Env files:** copy [`deploy/env/api.sample`](../env/api.sample) → `deploy/env/.env.api` and [`workers.sample`](../env/workers.sample) → `deploy/env/.env.workers`, then edit.
 
 Examples:
 
 ```bash
-docker compose -f deploy/compose/docker-compose.db.yml up -d
+docker compose -f deploy/compose/docker-compose.db.yml up -d --build
+docker compose -f deploy/compose/docker-compose.redis.yml up -d
 docker compose -f deploy/compose/docker-compose.api.yml up -d --build
 docker compose -f deploy/compose/docker-compose.workers.yml up -d --build
 docker compose -f deploy/compose/docker-compose.observability.yml --profile observability up -d
 ```
 
-PgBouncer only (existing `geofastmap_db` on host port 5434):
+PgBouncer only, Postgres **in Docker** on same host (DB container `geofastmap_db`, network `geofastmap_api_default`):
 
 ```bash
 cp deploy/env/pgbouncer.sample deploy/env/.env.pgbouncer
-# edit PGBOUNCER_BACKEND_DATABASE_URL (password, DB name)
-docker compose --env-file deploy/env/.env.pgbouncer -f deploy/compose/docker-compose.pgbouncer.yml up -d
+# set PGBOUNCER_BACKEND_DATABASE_URL=postgres://...@geofastmap_db:5432/geofastmap
+docker compose --env-file deploy/env/.env.pgbouncer \
+  -f deploy/compose/docker-compose.pgbouncer.yml \
+  -f deploy/compose/docker-compose.pgbouncer.db-network.yml \
+  up -d
 ```
 
+Then update **`deploy/env/.env.api`** and recreate the API container:
+
+- `DATABASE_URL=postgresql+asyncpg://postgres:PASSWORD@geofastmap_pgbouncer:5432/geofastmap`
+- `DATABASE_USE_PGBOUNCER=true`
+- `DATABASE_URL_DIRECT=postgresql+asyncpg://postgres:PASSWORD@geofastmap_db:5432/geofastmap`
+
 Observability security default: Grafana is published on `127.0.0.1:3000` only. Keep it behind VPN/SSH tunnel or front it with admin auth.
+
+### Split stack on one machine (db + redis + api)
+
+[`docker-compose.db.yml`](docker-compose.db.yml), [`docker-compose.redis.yml`](docker-compose.redis.yml), and [`docker-compose.api.yml`](docker-compose.api.yml) all use **`name: geofastmap_api`**, so they share the default network **`geofastmap_api_default`** (same project). Typical order:
+
+```bash
+docker compose -f deploy/compose/docker-compose.db.yml up -d --build
+docker compose -f deploy/compose/docker-compose.redis.yml up -d
+docker compose -f deploy/compose/docker-compose.api.yml up -d --build
+```
+
+Use the PgBouncer block above when you add the pooler; the API lines use container DNS **`geofastmap_pgbouncer`** and **`geofastmap_db`** on that network.
 
 Single-host full stack (dev): root [`docker-compose.yml`](../../docker-compose.yml) — `docker compose up`.
 

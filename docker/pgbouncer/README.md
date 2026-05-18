@@ -1,5 +1,20 @@
 # PgBouncer
 
+## Single machine: Postgres + Redis + API in Docker
+
+**If they are already one Compose stack** (e.g. root [`docker-compose.yml`](../../docker-compose.yml) or your own file that defines `db`, `redis`, `api` on the same network):
+
+- Prefer running **PgBouncer in that same compose file** on the **same** `default` network as `db`, with backend `postgres://...@db:5432/...` (or `@geofastmap_db:5432` if that is the container name). Then set the API **`DATABASE_URL`** to `...@pgbouncer:5432/...` and **`DATABASE_USE_PGBOUNCER=true`** — no host port required between API and pooler.
+- Do **not** run `docker compose up -d pgbouncer` from the **root** compose if that compose also defines `db` and you already have `geofastmap_db` from another project; Compose will try to create a second `db`. Either use one project for everything or use **standalone** pooler compose below.
+
+**If Postgres is already up** and you add PgBouncer **without** recreating `db`:** use [`deploy/compose/docker-compose.pgbouncer.yml`](../../deploy/compose/docker-compose.pgbouncer.yml) plus [`docker-compose.pgbouncer.db-network.yml`](../../deploy/compose/docker-compose.pgbouncer.db-network.yml) so PgBouncer joins the DB stack’s network and talks to **`geofastmap_db:5432`**. Copy [`deploy/env/pgbouncer.sample`](../../deploy/env/pgbouncer.sample) → `.env.pgbouncer` and run the two-file `docker compose` command shown in [`deploy/compose/README.md`](../../deploy/compose/README.md).
+
+**Split compose on one host** ([`docker-compose.db.yml`](../../deploy/compose/docker-compose.db.yml) + [`docker-compose.redis.yml`](../../deploy/compose/docker-compose.redis.yml) + [`docker-compose.api.yml`](../../deploy/compose/docker-compose.api.yml), all `name: geofastmap_api`): same network **`geofastmap_api_default`**. Start PgBouncer with [`docker-compose.pgbouncer.db-network.yml`](../../deploy/compose/docker-compose.pgbouncer.db-network.yml), then in **`deploy/env/.env.api`**: `DATABASE_URL=...@geofastmap_pgbouncer:5432/...`, `DATABASE_USE_PGBOUNCER=true`, `DATABASE_URL_DIRECT=...@geofastmap_db:5432/...`. Full commands: [`deploy/compose/README.md`](../../deploy/compose/README.md).
+
+**API container** (same host, other layouts): set `DATABASE_URL=postgresql+asyncpg://...@geofastmap_pgbouncer:5432/...` if API is on the **same** Docker network as the pooler. If the API only reaches the host loopback, use `...@host.docker.internal:6432/...` or the server LAN IP and published **`PGBOUNCER_PUBLISH`** (default **6432**).
+
+---
+
 ## Standalone (Postgres already running — avoids `geofastmap_db` name conflict)
 
 If **`docker compose up -d pgbouncer`** from the root [`docker-compose.yml`](../../docker-compose.yml) tries to recreate **`geofastmap_db`** because `pgbouncer` depends on `db`, use the **pooler-only** compose file instead:
