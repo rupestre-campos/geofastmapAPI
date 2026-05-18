@@ -1,0 +1,56 @@
+{# Read-only raster visualization summary. Expects raster_viz (from raster_style_viz_context). #}
+{% if raster_viz %}
+<div class="raster-viz-display">
+  {% if default_raster_style %}
+  <p class="meta" style="margin:0 0 var(--space);">
+    Default style: <strong>{{ default_raster_style.title or default_raster_style.id }}</strong>
+    <code>{{ default_raster_style.id }}</code>
+    {% if can_edit_collection %}
+    · <a href="{{ base }}/collections/{{ collection.id }}/edit?f=html#raster-style">Edit style</a>
+    {% endif %}
+  </p>
+  {% endif %}
+
+  {% if raster_viz.kind == 'classification' %}
+  <div class="collection-info-label">Style type</div>
+  <div class="collection-info-value">Classification (discrete classes)</div>
+  {% if raster_viz.bidx %}
+  <div class="collection-info-label">Band</div>
+  <div class="collection-info-value"><code>{{ raster_viz.bidx }}</code></div>
+  {% endif %}
+  {% if raster_viz.asset %}
+  <div class="collection-info-label">Asset / item</div>
+  <div class="collection-info-value"><code>{{ raster_viz.asset }}</code></div>
+  {% endif %}
+  {% if raster_viz.nodata is not none %}
+  <div class="collection-info-label">No-data value</div>
+  <div class="collection-info-value"><code>{{ raster_viz.nodata }}</code></div>
+  {% endif %}
+  <div class="collection-info-label">Classes</div>
+  <ul class="raster-viz-class-list">
+    {% for row in raster_viz.classes %}
+    <li class="raster-viz-class-row">
+      <span class="raster-viz-swatch" style="background: {{ row.color or '#888' }};" title="{{ row.color }}"></span>
+      <span class="raster-viz-class-name">{{ row.name }}</span>
+      <span class="meta raster-viz-class-value">({{ row.value }})</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="collection-info-label">Render mode</div>
+  <div class="collection-info-value">{{ raster_viz.mode_label }}</div>
+  {% if raster_viz.params %}
+  <dl class="raster-viz-params">
+    {% for p in raster_viz.params %}
+    <dt>{{ p.label }}</dt>
+    <dd>{% if p.label == 'Expression' or p.label == 'Color formula' %}<code>{{ p.value }}</code>{% else %}{{ p.value }}{% endif %}</dd>
+    {% endfor %}
+  </dl>
+  {% else %}
+  <p class="meta">No visualization parameters in this style.</p>
+  {% endif %}
+  {% endif %}
+</div>
+{% else %}
+<p class="meta">No default raster style saved. <a href="{{ base }}/collections/{{ collection.id }}/edit?f=html#raster-style">Set one on the edit page</a>.</p>
+{% endif %}

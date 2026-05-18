@@ -15,6 +15,7 @@ from app.crud import user as user_crud
 from app.services.tile_build_queue import get_latest_tile_build_job
 from app.utils.geo import mvt_layer_name
 from app.crud import collections as collections_crud
+from app.services.raster_style_display import raster_style_viz_context
 from app.services.raster_style_edit_context import get_raster_style_edit_context
 from app.crud import resource_share as resource_share_crud
 from app.crud import raster_styles as raster_styles_crud
@@ -320,6 +321,13 @@ async def get_collection(
         if getattr(collection, "owner_id", None):
             owner_username = (await user_crud.get_usernames_by_ids(db, [collection.owner_id])).get(collection.owner_id)
         can_edit = await can_edit_collection(db, collection, current_user)
+        default_raster_style = None
+        raster_viz = None
+        if getattr(collection, "collection_type", "vector") == COLLECTION_TYPE_RASTER:
+            dr = await raster_styles_crud.get_default_raster_style(db, collection_id)
+            if dr:
+                default_raster_style = {"id": dr.id, "title": dr.title}
+                raster_viz = raster_style_viz_context(dr.style_spec)
         return html_response(
             "collection.html",
             base=base,
@@ -346,6 +354,8 @@ async def get_collection(
             collection_styles_url=f"{base}/collections/{collection_id}/styles",
             can_edit_collection=can_edit,
             stac_source=getattr(collection, "stac_source", None),
+            default_raster_style=default_raster_style,
+            raster_viz=raster_viz,
         )
     return out.model_copy(
         update={
