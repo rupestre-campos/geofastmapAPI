@@ -407,7 +407,8 @@
       }
       function rasterSourceBounds(bbox) {
         if (!GeofastmapUtils.isValidMapBbox(bbox)) return undefined;
-        return [[Number(bbox[0]), Number(bbox[1])], [Number(bbox[2]), Number(bbox[3])]];
+        // MapLibre raster source bounds: [west, south, east, north]
+        return [Number(bbox[0]), Number(bbox[1]), Number(bbox[2]), Number(bbox[3])];
       }
       var styleToolboxApplySpec = null;
       var refreshMapEditRuleFields = function() {};
