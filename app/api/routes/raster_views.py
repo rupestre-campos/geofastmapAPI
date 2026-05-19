@@ -47,7 +47,7 @@ from app.schemas.resource_share import ShareAdd, ShareRead
 from app.services.mosaic_plan import build_mosaicjson_from_footprints
 from app.services.titiler_gate import titiler_upstream_gate_run
 from app.services.titiler_http import get_titiler_http_client
-from app.services.titiler_point import enrich_point_response, fetch_titiler_point_json
+from app.services.titiler_point import enrich_point_response, fetch_mosaic_point_with_fallback
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
@@ -656,7 +656,8 @@ async def titiler_mosaic_point(
     param_pairs.append(("url", mosaic_url))
 
     client = get_titiler_http_client()
-    raw = await fetch_titiler_point_json(
+    param_pairs.append(("pixel_selection", "first"))
+    raw = await fetch_mosaic_point_with_fallback(
         client,
         base,
         forward_path,

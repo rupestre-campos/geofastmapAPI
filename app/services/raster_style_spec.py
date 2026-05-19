@@ -297,7 +297,7 @@ def titiler_nodata_param(style_spec: dict) -> tuple[str, str] | None:
 
 
 def titiler_params_from_classification_style(style_spec: dict) -> list[tuple[str, str]]:
-    """Build Titiler query param pairs for a classification style_spec."""
+    """Build Titiler query param pairs for a classification style_spec (tile rendering)."""
     import json as json_mod
 
     colormap = style_spec.get("colormap")
@@ -308,6 +308,13 @@ def titiler_params_from_classification_style(style_spec: dict) -> list[tuple[str
         ("colormap", json_mod.dumps(colormap)),
         ("colormap_type", str(style_spec.get("colormap_type") or "explicit")),
     ]
+    params.extend(titiler_params_from_classification_style_for_point(style_spec))
+    return params
+
+
+def titiler_params_from_classification_style_for_point(style_spec: dict) -> list[tuple[str, str]]:
+    """Raw band read params for /point (no colormap — class lookup is done in enrich_point_response)."""
+    params: list[tuple[str, str]] = []
     bidx = style_spec.get("bidx")
     if isinstance(bidx, list) and bidx:
         params.append(("bidx", ",".join(str(x) for x in bidx)))

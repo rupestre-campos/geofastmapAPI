@@ -34,7 +34,7 @@ from app.services.bulk_upload_sessions import (
 )
 from app.services.raster_style_spec import titiler_nodata_param
 from app.services.raster_titiler_forward import prepare_raster_collection_titiler
-from app.services.titiler_point import enrich_point_response, fetch_titiler_point_json
+from app.services.titiler_point import enrich_point_response, fetch_mosaic_point_with_fallback, fetch_titiler_point_json
 from app.services.raster_batch import (
     RasterBatchUploadTooLargeError,
     enqueue_raster_batch_job,
@@ -652,13 +652,22 @@ async def get_raster_collection_point(
         style_id=style_id,
     )
     async with httpx.AsyncClient(timeout=30.0) as client:
-        raw = await fetch_titiler_point_json(
-            client,
-            titiler,
-            fwd.forward_path,
-            fwd.params,
-            shared_secret=settings.titiler_internal_secret,
-        )
+        if fwd.forward_path.startswith("/mosaicjson/point/"):
+            raw = await fetch_mosaic_point_with_fallback(
+                client,
+                titiler,
+                fwd.forward_path,
+                fwd.params,
+                shared_secret=settings.titiler_internal_secret,
+            )
+        else:
+            raw = await fetch_titiler_point_json(
+                client,
+                titiler,
+                fwd.forward_path,
+                fwd.params,
+                shared_secret=settings.titiler_internal_secret,
+            )
     return JSONResponse(content=enrich_point_response(raw, fwd.style_spec))
 
 

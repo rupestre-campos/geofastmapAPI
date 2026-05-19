@@ -287,6 +287,16 @@ def _is_nodata(value: Any, nodata: Any) -> bool:
         return str(value) == str(nodata)
 
 
+def _titiler_params_only_url(params: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return [(k, v) for k, v in params if k == "url"]
+
+
+def _titiler_read_params(params: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Params for raw value reads (bidx, nodata, pixel_selection), excluding url and viz."""
+    skip = frozenset({"url", "colormap", "colormap_type", "colormap_name", "rescale", "color_formula", "algorithm", "mv"})
+    return [(k, v) for k, v in params if k not in skip]
+
+
 async def fetch_titiler_point_json(
     client: httpx.AsyncClient,
     titiler_base: str,
@@ -297,7 +307,8 @@ async def fetch_titiler_point_json(
     timeout: float = 30.0,
 ) -> dict:
     """GET Titiler point endpoint; return parsed JSON or raise HTTPException."""
-    url = f"{titiler_base.rstrip('/')}{forward_path}"
+    base = titiler_base.rstrip("/")
+    url = f"{base}{forward_path}"
     resp = await client.get(url, params=params, headers={"Accept": "application/json"}, timeout=timeout)
     if resp.status_code >= 400:
         raise HTTPException(
@@ -315,3 +326,78 @@ async def fetch_titiler_point_json(
     if not isinstance(data, dict):
         raise HTTPException(status_code=502, detail="Unexpected Titiler point response")
     return data
+
+
+async def fetch_mosaic_point_with_fallback(
+    client: httpx.AsyncClient,
+    titiler_base: str,
+    forward_path: str,
+    params: list[tuple[str, str]],
+    *,
+    shared_secret: str | None = None,
+    timeout: float = 30.0,
+) -> dict:
+    """
+    Mosaic point read; if empty, resolve intersecting COG via /point/.../assets and read /cog/point.
+    """
+    raw = await fetch_titiler_point_json(
+        client, titiler_base, forward_path, params, shared_secret=shared_secret, timeout=timeout
+    )
+    if _values_list(raw):
+        return raw
+    if not forward_path.startswith("/mosaicjson/point/"):
+        return raw
+
+    coord = forward_path.removeprefix("/mosaicjson/point/").split("/assets")[0]
+    if not coord:
+        return raw
+
+    assets_path = f"/mosaicjson/point/{coord}/assets"
+    url_only = _titiler_params_only_url(params)
+    try:
+        resp = await client.get(
+            f"{titiler_base.rstrip('/')}{assets_path}",
+            params=url_only,
+            headers={"Accept": "application/json"},
+            timeout=timeout,
+        )
+        if resp.status_code >= 400:
+            return raw
+        assets_body = resp.json()
+    except Exception:
+        return raw
+
+    cog_urls: list[str] = []
+    if isinstance(assets_body, list):
+        for item in assets_body:
+            if isinstance(item, str) and item.strip():
+                cog_urls.append(item.strip())
+            elif isinstance(item, dict):
+                u = item.get("url") or item.get("href")
+                if u:
+                    cog_urls.append(str(u))
+    elif isinstance(assets_body, dict):
+        for item in assets_body.get("assets") or assets_body.get("urls") or []:
+            if isinstance(item, str) and item.strip():
+                cog_urls.append(item.strip())
+            elif isinstance(item, dict):
+                u = item.get("url") or item.get("href")
+                if u:
+                    cog_urls.append(str(u))
+
+    if not cog_urls:
+        return raw
+
+    read_params = _titiler_read_params(params)
+    cog_params = url_only + read_params + [("url", cog_urls[0])]
+    try:
+        return await fetch_titiler_point_json(
+            client,
+            titiler_base,
+            f"/cog/point/{coord}",
+            cog_params,
+            shared_secret=shared_secret,
+            timeout=timeout,
+        )
+    except HTTPException:
+        return raw

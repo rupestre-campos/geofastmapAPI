@@ -20,10 +20,15 @@ from app.services.raster_mosaic_version import (
 from app.services.raster_style_spec import (
     is_classification_style,
     titiler_params_from_classification_style,
+    titiler_params_from_classification_style_for_point,
 )
 
 _DEM_ENCODINGS = frozenset({"terrainrgb", "terrarium"})
 _SKIP_FORWARD_KEYS = frozenset({"mode", "feature_id", "style_id", "dem_encoding", "mv", "sv", "demv", "lon", "lat"})
+# Viz params belong on tile PNG responses, not on /point (we need raw band values).
+_POINT_STRIP_CLIENT_KEYS = frozenset(
+    {"colormap", "colormap_type", "colormap_name", "rescale", "color_formula", "algorithm"}
+)
 _MOSAIC_VIZ_KEYS = frozenset(
     {"bidx", "colormap_name", "colormap", "colormap_type", "expression", "color_formula", "assets", "rescale"}
 )
@@ -169,7 +174,11 @@ async def prepare_raster_collection_titiler(
         else:
             forward_path = f"/mosaicjson/tiles/{tile_matrix_set_id}/{z}/{x}/{y}.{ext}"
         params.append(("url", mosaic_url))
-        params.append(("mv", expected_mv))
+        # mv is client cache-bust only; Titiler does not accept it on mosaicjson endpoints.
+        if kind == "point":
+            params.append(("pixel_selection", "first"))
+        elif kind == "tiles":
+            params.append(("mv", expected_mv))
         if kind == "tiles" and mv_client and mosaic_mv_matches_request(mv_client, expected_mv):
             from app.services.raster_mosaic_version import MOSAIC_TILE_CACHE_CONTROL
 
@@ -182,6 +191,8 @@ async def prepare_raster_collection_titiler(
     request_keys = frozenset(request.query_params.keys())
     for k, v in request.query_params.multi_items():
         if k in _SKIP_FORWARD_KEYS:
+            continue
+        if kind == "point" and k in _POINT_STRIP_CLIENT_KEYS:
             continue
         params.append((k, v))
 
@@ -196,7 +207,14 @@ async def prepare_raster_collection_titiler(
         style = await raster_styles_crud.get_default_raster_style(db, collection_id)
 
     style_spec: dict = (style.style_spec if style and isinstance(style.style_spec, dict) else {}) or {}
-    _merge_style_into_params(params, style_spec, request_keys, dem_request)
+    _merge_style_into_params(
+        params,
+        style_spec,
+        request_keys,
+        dem_request,
+        kind=kind,
+        mode=mode_resolved,
+    )
 
     if dem_request:
         dem_algorithm = normalize_dem_encoding(dem_encoding_q)
@@ -249,18 +267,38 @@ def _merge_style_into_params(
     style_spec: dict,
     request_keys: frozenset[str],
     dem_request: bool,
+    *,
+    kind: str = "tiles",
+    mode: str = "mosaic",
 ) -> None:
     if not style_spec or dem_request:
         return
     if is_classification_style(style_spec):
-        if "asset" not in request_keys:
-            asset_val = style_spec.get("asset")
-            if asset_val is not None and str(asset_val).strip():
-                params.append(("asset", str(asset_val).strip()))
-        for pk, pv in titiler_params_from_classification_style(style_spec):
-            if pk in request_keys:
+        if kind == "point":
+            for pk, pv in titiler_params_from_classification_style_for_point(style_spec):
+                if pk in request_keys:
+                    continue
+                params.append((pk, pv))
+        else:
+            if mode != "mosaic" and "asset" not in request_keys:
+                asset_val = style_spec.get("asset")
+                if asset_val is not None and str(asset_val).strip():
+                    params.append(("asset", str(asset_val).strip()))
+            for pk, pv in titiler_params_from_classification_style(style_spec):
+                if pk in request_keys:
+                    continue
+                params.append((pk, pv))
+    elif kind == "point":
+        for key in ("asset", "assets", "bidx", "expression", "nodata"):
+            if key in request_keys:
                 continue
-            params.append((pk, pv))
+            value = style_spec.get(key)
+            if value is None:
+                continue
+            if isinstance(value, list):
+                params.append((key, ",".join(str(x) for x in value)))
+            else:
+                params.append((key, str(value)))
     else:
         for key in ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula", "nodata"):
             if key in request_keys:

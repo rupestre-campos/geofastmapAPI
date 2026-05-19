@@ -93,3 +93,21 @@ def test_style_spec_from_request_query_rgb():
 def test_empty_values():
     out = enrich_point_response({"values": []}, {})
     assert out["rows"][0]["display"] == "No data"
+
+
+def test_classification_point_params_exclude_colormap():
+    from app.services.raster_style_spec import (
+        titiler_params_from_classification_style,
+        titiler_params_from_classification_style_for_point,
+    )
+
+    spec = {
+        "style_type": "classification",
+        "colormap": {"1": "#ff0000"},
+        "bidx": ["1"],
+    }
+    tile_keys = {k for k, _ in titiler_params_from_classification_style(spec)}
+    point_keys = {k for k, _ in titiler_params_from_classification_style_for_point(spec)}
+    assert "colormap" in tile_keys
+    assert "colormap" not in point_keys
+    assert "bidx" in point_keys
