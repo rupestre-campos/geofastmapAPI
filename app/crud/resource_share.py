@@ -8,6 +8,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.resource_share import ResourceShare, ROLE_EDITOR, ROLE_VIEWER
 
 
+async def list_shares_for_resource_ids(
+    db: AsyncSession,
+    resource_type: str,
+    resource_ids: list[str],
+) -> dict[str, list[tuple[str, str]]]:
+    """Return resource_id -> [(username, role), ...] for many resources."""
+    ids = [rid for rid in resource_ids if rid]
+    if not ids:
+        return {}
+    result = await db.execute(
+        select(ResourceShare.resource_id, ResourceShare.username, ResourceShare.role).where(
+            ResourceShare.resource_type == resource_type,
+            ResourceShare.resource_id.in_(ids),
+        ).order_by(ResourceShare.resource_id, ResourceShare.username)
+    )
+    out: dict[str, list[tuple[str, str]]] = {rid: [] for rid in ids}
+    for row in result.all():
+        out.setdefault(row.resource_id, []).append((row.username, row.role))
+    return out
+
+
 async def list_shares(
     db: AsyncSession,
     resource_type: str,

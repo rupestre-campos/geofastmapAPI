@@ -12,6 +12,7 @@ class User(Base):
 
     id: int = Column(Integer, primary_key=True, autoincrement=True)
     username: str = Column(String(255), unique=True, nullable=False, index=True)
+    nickname: str | None = Column(String(128), nullable=True)
     password_hash: str = Column(String(255), nullable=False)
     is_admin: bool = Column(Boolean, nullable=False, default=False, server_default="false")
     must_change_password: bool = Column(

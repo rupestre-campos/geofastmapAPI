@@ -27,6 +27,25 @@
   </header>
 
   <div class="card">
+    <h2 class="card-title">Display nickname</h2>
+    <p class="meta">Shown on maps you own or share instead of your login name. Letters and numbers only (max 128 characters). Must be unique.</p>
+    {% if nickname_ok %}
+    <p class="meta" style="color: var(--success, #3fb950); margin-bottom: 1rem;">Nickname saved.</p>
+    {% endif %}
+    {% if nickname_error %}
+    <p class="meta" style="color: var(--danger); margin-bottom: 1rem;">{{ nickname_error }}</p>
+    {% endif %}
+    <form method="post" action="{{ base }}/auth/config/nickname" style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:flex-end;max-width:32rem;">
+      <label style="flex:1;min-width:12rem;">
+        <span class="meta" style="display:block;margin-bottom:0.25rem;">Nickname</span>
+        <input type="text" name="nickname" value="{{ nickname or '' }}" maxlength="128" pattern="[A-Za-z0-9]*" autocomplete="nickname" style="width:100%;">
+      </label>
+      <button type="submit" class="btn btn-primary">Save nickname</button>
+    </form>
+    <p class="meta" style="margin-top:0.75rem;margin-bottom:0;">Leave blank and save to clear your nickname.</p>
+  </div>
+
+  <div class="card">
     <div class="card-header">
       <h2 class="card-title">Summary</h2>
     </div>

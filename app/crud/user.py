@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import hash_password
@@ -36,6 +36,57 @@ async def get_usernames_by_ids(db: AsyncSession, user_ids: list[int]) -> dict[in
         select(User.id, User.username).where(User.id.in_(user_ids))
     )
     return {row.id: row.username for row in result.all()}
+
+
+async def get_nicknames_by_ids(db: AsyncSession, user_ids: list[int]) -> dict[int, str | None]:
+    """Return mapping user_id -> nickname (value may be None)."""
+    if not user_ids:
+        return {}
+    result = await db.execute(
+        select(User.id, User.nickname).where(User.id.in_(user_ids))
+    )
+    return {row.id: row.nickname for row in result.all()}
+
+
+async def get_nicknames_by_usernames(db: AsyncSession, usernames: list[str]) -> dict[str, str | None]:
+    """Return mapping username -> nickname for given usernames."""
+    names = [u.strip() for u in usernames if u and str(u).strip()]
+    if not names:
+        return {}
+    result = await db.execute(
+        select(User.username, User.nickname).where(User.username.in_(names))
+    )
+    return {row.username: row.nickname for row in result.all()}
+
+
+async def get_user_by_nickname(
+    db: AsyncSession,
+    nickname: str,
+    *,
+    exclude_user_id: int | None = None,
+) -> User | None:
+    nick = (nickname or "").strip()
+    if not nick:
+        return None
+    q = select(User).where(func.lower(User.nickname) == nick.lower())
+    if exclude_user_id is not None:
+        q = q.where(User.id != exclude_user_id)
+    result = await db.execute(q)
+    return result.scalar_one_or_none()
+
+
+async def set_nickname(
+    db: AsyncSession,
+    user_id: int,
+    nickname: str | None,
+) -> User | None:
+    user = await get_user_by_id(db, user_id)
+    if user is None:
+        return None
+    user.nickname = nickname
+    await db.commit()
+    await db.refresh(user)
+    return user
 
 
 async def create_user(

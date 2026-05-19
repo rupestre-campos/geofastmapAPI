@@ -13,6 +13,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_optional, get_current_user_required, require_admin
@@ -31,6 +32,7 @@ from app.models.map import Map
 from app.models.resource_share import RESOURCE_TYPE_COLLECTION, RESOURCE_TYPE_MAP, ROLE_EDITOR
 from app.models.user import User
 from app.schemas.user import PasswordChange, UserCreate, UserUpdate, UserRead
+from app.utils.nickname import validate_nickname
 
 router = APIRouter()
 
@@ -381,14 +383,61 @@ async def user_config_page(
         "total_tiles_size_h": _format_bytes(total_tiles_size),
     }
 
+    nickname_error = (request.query_params.get("nickname_error") or "").strip() or None
+    nickname_ok = request.query_params.get("nickname_ok") == "1"
+
     return html_response(
         "user_config.html",
         base=base,
         username=current_user.username,
         is_admin=current_user.is_admin,
+        nickname=current_user.nickname,
+        nickname_error=nickname_error,
+        nickname_ok=nickname_ok,
         summary=summary,
         collections=collections_rows,
         maps=maps_rows,
+    )
+
+
+@router.post("/config/nickname", summary="Set display nickname")
+async def user_config_set_nickname(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_required),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use ?f=html")
+    base = _base_url(request)
+    config_url = f"{base}/auth/config?f=html"
+    form = await request.form()
+    raw = form.get("nickname")
+    try:
+        nick = validate_nickname(raw if raw is not None else None)
+    except ValueError as exc:
+        return RedirectResponse(
+            url=f"{config_url}&nickname_error={quote(str(exc))}",
+            status_code=status.HTTP_302_FOUND,
+        )
+    if nick:
+        taken = await user_crud.get_user_by_nickname(
+            db, nick, exclude_user_id=current_user.id
+        )
+        if taken:
+            return RedirectResponse(
+                url=f"{config_url}&nickname_error={quote('Nickname is already taken.')}",
+                status_code=status.HTTP_302_FOUND,
+            )
+    try:
+        await user_crud.set_nickname(db, current_user.id, nick)
+    except IntegrityError:
+        return RedirectResponse(
+            url=f"{config_url}&nickname_error={quote('Nickname is already taken.')}",
+            status_code=status.HTTP_302_FOUND,
+        )
+    return RedirectResponse(
+        url=f"{config_url}&nickname_ok=1",
+        status_code=status.HTTP_302_FOUND,
     )
 
 

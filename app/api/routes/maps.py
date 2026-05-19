@@ -32,6 +32,7 @@ from app.models.collection import VISIBILITY_PUBLIC
 from app.models.resource_share import RESOURCE_TYPE_MAP
 from app.schemas.map import MapCreate, MapUpdate
 from app.schemas.resource_share import ShareAdd, ShareRead
+from app.services.map_gallery_meta import build_map_gallery_item
 from app.services.raster_mosaic_version import compute_mosaic_version_id
 from app.utils.thumbnail import image_to_thumbnail
 
@@ -343,13 +344,47 @@ async def list_maps(
     base = _base_url(request)
     if wants_html(request):
         owner_ids = [m.owner_id for m in maps_list if getattr(m, "owner_id", None) is not None]
-        owner_names = await user_crud.get_usernames_by_ids(db, owner_ids) if owner_ids else {}
-        can_edit_list = [await can_edit_map(db, m.owner_id, str(m.id), current_user) for m in maps_list]
+        nick_by_id = await user_crud.get_nicknames_by_ids(db, owner_ids) if owner_ids else {}
+        map_ids = [str(m.id) for m in maps_list]
+        shares_by_map = await resource_share_crud.list_shares_for_resource_ids(
+            db, RESOURCE_TYPE_MAP, map_ids
+        )
+        all_share_usernames: set[str] = set()
+        for pairs in shares_by_map.values():
+            for uname, _role in pairs:
+                if uname:
+                    all_share_usernames.add(uname)
+        nick_by_username = (
+            await user_crud.get_nicknames_by_usernames(db, list(all_share_usernames))
+            if all_share_usernames
+            else {}
+        )
+        current_user_id = current_user.id if current_user else None
+        current_username = current_user.username if current_user else None
         items = []
-        for i, m in enumerate(maps_list):
-            item = _map_to_read(m, base)
-            item["owner_username"] = owner_names.get(m.owner_id) if getattr(m, "owner_id", None) else None
-            item["can_edit"] = can_edit_list[i]
+        for m in maps_list:
+            can_edit = await can_edit_map(db, m.owner_id, str(m.id), current_user)
+            pairs = shares_by_map.get(str(m.id), [])
+            share_usernames = [u for u, _r in pairs]
+            shared_with_me = bool(
+                current_username and current_username in share_usernames
+            )
+            share_display: list[str] = []
+            for uname in share_usernames:
+                nick = nick_by_username.get(uname)
+                if nick:
+                    share_display.append(nick)
+            item_base = _map_to_read(m, base)
+            gallery = build_map_gallery_item(
+                m,
+                can_edit=can_edit,
+                owner_nickname=nick_by_id.get(m.owner_id) if m.owner_id else None,
+                share_count=len(share_usernames),
+                shared_with_me=shared_with_me,
+                share_display_names=share_display,
+                current_user_id=current_user_id,
+            )
+            item = {**item_base, **gallery}
             items.append(item)
         return html_response(
             "maps_gallery.html",
