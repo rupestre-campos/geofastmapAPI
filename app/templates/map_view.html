@@ -328,7 +328,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofastmap-utils.js?v=5"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=6"></script>
   <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   {% include "_style_editor_toolbox_script.html" %}
@@ -420,6 +420,21 @@
       var mapZoom = (mapDefinition && typeof mapDefinition.zoom === 'number') ? mapDefinition.zoom : null;
       var mapBearing = (mapDefinition && typeof mapDefinition.bearing === 'number') ? mapDefinition.bearing : 0;
       var mapPitch = (mapDefinition && typeof mapDefinition.pitch === 'number') ? mapDefinition.pitch : 0;
+
+      function shouldFitSavedBbox() {
+        return GeofastmapUtils.shouldFitBoundsOnLoad(mapBbox, mapCenter, mapZoom, mapBearing, mapPitch);
+      }
+      function applyInitialMapExtent(opts) {
+        if (!shouldFitSavedBbox() || !map) return false;
+        return GeofastmapUtils.fitMapToBbox(map, mapBbox, opts || { padding: 60 });
+      }
+      function isWorldScaleView() {
+        try { return map && map.getZoom() < 4; } catch (e) { return true; }
+      }
+      function rasterSourceBounds(bbox) {
+        if (!GeofastmapUtils.isValidMapBbox(bbox)) return undefined;
+        return [[Number(bbox[0]), Number(bbox[1])], [Number(bbox[2]), Number(bbox[3])]];
+      }
 
       var BASEMAPS;
       var basemapList;
@@ -520,6 +535,98 @@
         }
       }
       var canEditByCollection = {{ can_edit_by_collection | default({}) | tojson }};
+      function fetchCollectionBbox(collectionId) {
+        return fetch(base + '/collections/' + encodeURIComponent(collectionId), { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(c) {
+            if (c && c.extent && c.extent.bbox && c.extent.bbox[0] && c.extent.bbox[0].length >= 4) {
+              var b = c.extent.bbox[0];
+              return [Number(b[0]), Number(b[1]), Number(b[2]), Number(b[3])];
+            }
+            return null;
+          })
+          .catch(function() { return null; });
+      }
+      function fetchItemsBboxOnly(collectionId, queryString) {
+        var qs = (queryString && queryString.indexOf('bbox_only') === -1) ? queryString : (queryString || 'limit=500');
+        var url = base + '/collections/' + encodeURIComponent(collectionId) + '/items?' + qs + '&bbox_only=1';
+        return fetch(url, { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(o) {
+            if (o && o.bbox && o.bbox.length >= 4) {
+              return [Number(o.bbox[0]), Number(o.bbox[1]), Number(o.bbox[2]), Number(o.bbox[3])];
+            }
+            return null;
+          })
+          .catch(function() { return null; });
+      }
+      function fetchItemBboxOnly(collectionId, featureId) {
+        return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/items/' + encodeURIComponent(featureId) + '?bbox_only=1', { headers: { 'Accept': 'application/json' } })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(o) {
+            if (o && o.bbox && o.bbox.length >= 4) {
+              return [Number(o.bbox[0]), Number(o.bbox[1]), Number(o.bbox[2]), Number(o.bbox[3])];
+            }
+            return null;
+          })
+          .catch(function() { return null; });
+      }
+      function fetchMosaicViewBbox(viewId) {
+        return fetch(base + '/raster-views/' + encodeURIComponent(String(viewId)), {
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { 'Accept': 'application/json' }
+        })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(row) {
+            if (row && row.bbox && row.bbox.length >= 4) {
+              return [Number(row.bbox[0]), Number(row.bbox[1]), Number(row.bbox[2]), Number(row.bbox[3])];
+            }
+            return null;
+          })
+          .catch(function() { return null; });
+      }
+      function bboxFromTilesUrl(tilesUrl, collectionId) {
+        if (!tilesUrl || typeof tilesUrl !== 'string') return Promise.resolve(null);
+        var q = tilesUrl.indexOf('?');
+        var query = q >= 0 ? tilesUrl.substring(q + 1) : '';
+        var idsMatch = query.match(/\bids=([^&]+)/);
+        if (idsMatch) {
+          var ids = decodeURIComponent(idsMatch[1].replace(/\+/g, ' ')).split(',');
+          var firstId = ids[0] && ids[0].trim();
+          if (firstId) return fetchItemBboxOnly(collectionId, firstId);
+        }
+        var params = query ? (query.split('&').filter(function(p) { return p && p.indexOf('bbox_only') === -1; }).join('&')) : 'limit=500';
+        return fetchItemsBboxOnly(collectionId, params);
+      }
+      function trySetInitialExtentFromFirstLayer() {
+        if (GeofastmapUtils.isValidMapBbox(mapBbox)) return;
+        if (GeofastmapUtils.isExplicitSavedCamera(mapCenter, mapZoom, mapBearing, mapPitch, mapBbox)) return;
+        if (!layers.length || !map) return;
+        var layer = layers[0];
+        var cid = layer.collection_id || layer.collectionId;
+        var mid = layer.mosaic_view_id || layer.mosaicViewId;
+        var p;
+        if (mid) {
+          p = fetchMosaicViewBbox(mid);
+        } else if (layerRasterTrue(layer) && cid) {
+          p = fetchCollectionBbox(cid);
+        } else if (layer.tiles_url && cid) {
+          p = bboxFromTilesUrl(layer.tiles_url, cid);
+        } else if (cid) {
+          p = fetchCollectionBbox(cid).then(function(bbox) {
+            if (bbox) return bbox;
+            return fetchItemsBboxOnly(cid, 'limit=500');
+          });
+        } else {
+          return;
+        }
+        p.then(function(bbox) {
+          if (!GeofastmapUtils.isValidMapBbox(bbox)) return;
+          mapBbox = bbox.slice(0, 4);
+          GeofastmapUtils.fitMapToBbox(map, mapBbox, { padding: 60, duration: 400 });
+        });
+      }
       function layerKey(layer) { return (layer && (layer.layer_id || layer.collectionId)) || (layer && layer.collection_id) || ''; }
       function sourceId(collectionIdOrKey) { return 'layer-' + String(collectionIdOrKey).replace(/[^a-zA-Z0-9_-]/g, '_'); }
       function syncMosaicRasterSourcesTiles() {
@@ -1321,6 +1428,8 @@
             if (!isFinite(ro) || ro < 0) ro = 1;
             if (overlay) {
               var rsrc = { type: 'raster', tiles: [rasterTU], tileSize: 256, maxzoom: 18 };
+              var rb = rasterSourceBounds(mapBbox);
+              if (rb) rsrc.bounds = rb;
               if (layer.stac_viewer_path || layer.stacViewerPath) rsrc.attribution = 'STAC / Titiler';
               map.addSource(sid, rsrc);
               map.addLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
@@ -1442,14 +1551,8 @@
         setupLegendToggle();
         setupFullscreen();
         map.resize();
-        // Saved bbox is a rough extent; fitBounds picks its own zoom/center and clears tilt. When the map
-        // definition includes center + zoom (saved from the editor), use that camera instead.
-        if (mapBbox && mapBbox.length === 4) {
-          var hasSavedCamera = mapCenter && mapCenter.length === 2 && mapZoom != null && isFinite(Number(mapZoom));
-          if (!hasSavedCamera) {
-            map.fitBounds([[mapBbox[0], mapBbox[1]], [mapBbox[2], mapBbox[3]]], { padding: 60 });
-          }
-        }
+        // Prefer fitBounds when bbox is valid and camera is missing or a world-scale placeholder.
+        applyInitialMapExtent({ padding: 60 });
         terrainEnabled = false;
         applyTerrain();
         var terrainBtn = document.getElementById('btn-terrain-toggle');
@@ -1637,6 +1740,11 @@
               syncMosaicRasterSourcesTiles();
               terrainEnabled = !!terrainSourceId;
               applyTerrain();
+              if (shouldFitSavedBbox() && isWorldScaleView()) {
+                applyInitialMapExtent({ padding: 60, duration: 0 });
+              } else if (!GeofastmapUtils.isValidMapBbox(mapBbox)) {
+                trySetInitialExtentFromFirstLayer();
+              }
               try { setupViewStyleUi(); } catch (eStyleUi) {}
               try { setupRasterOpacityBar(); } catch (eRasterOp) {}
               try { if (typeof updateLayerInfoPanel === 'function') updateLayerInfoPanel(); } catch (eInfoUi) {}

@@ -284,7 +284,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofastmap-utils.js?v=5"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=6"></script>
   <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   {% include "_style_editor_toolbox_script.html" %}
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
@@ -398,6 +398,17 @@
         bearing: (typeof initialBearing === 'number' && isFinite(initialBearing)) ? initialBearing : null,
         pitch: (typeof initialPitch === 'number' && isFinite(initialPitch)) ? initialPitch : null
       };
+      function shouldFitStateBbox() {
+        return GeofastmapUtils.shouldFitBoundsOnLoad(state.bbox, state.center, state.zoom, state.bearing, state.pitch);
+      }
+      function applyInitialEditorExtent(opts) {
+        if (!shouldFitStateBbox() || !map) return false;
+        return GeofastmapUtils.fitMapToBbox(map, state.bbox, opts || { padding: 60 });
+      }
+      function rasterSourceBounds(bbox) {
+        if (!GeofastmapUtils.isValidMapBbox(bbox)) return undefined;
+        return [[Number(bbox[0]), Number(bbox[1])], [Number(bbox[2]), Number(bbox[3])]];
+      }
       var styleToolboxApplySpec = null;
       var refreshMapEditRuleFields = function() {};
       // Load layers from saved map definition. Each layer's style_spec is stored with the map (map-specific, not collection/public styles).
@@ -586,26 +597,46 @@
         var params = query ? (query.split('&').filter(function(p) { return p && p.indexOf('bbox_only') === -1; }).join('&')) : 'limit=500';
         return fetchItemsBboxOnly(collectionId, params);
       }
+      function fetchMosaicViewBbox(viewId) {
+        return fetch(base + '/raster-views/' + encodeURIComponent(String(viewId)), {
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { 'Accept': 'application/json' }
+        })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(row) {
+            if (row && row.bbox && row.bbox.length >= 4) {
+              return [Number(row.bbox[0]), Number(row.bbox[1]), Number(row.bbox[2]), Number(row.bbox[3])];
+            }
+            return null;
+          })
+          .catch(function() { return null; });
+      }
       function trySetInitialExtentFromFirstLayer() {
-        if (state.bbox != null || state.layers.length === 0) return;
+        if (GeofastmapUtils.isValidMapBbox(state.bbox) || state.layers.length === 0) return;
+        if (GeofastmapUtils.isExplicitSavedCamera(state.center, state.zoom, state.bearing, state.pitch, state.bbox)) return;
         var layer = state.layers[0];
-        if (layer.raster_tiles) return;
         var cid = layer.collection_id || layer.collectionId;
+        var mid = layer.mosaic_view_id || layer.mosaicViewId;
         var p;
-        if (layer.tiles_url) {
+        if (mid) {
+          p = fetchMosaicViewBbox(mid);
+        } else if (layer.raster_tiles && cid) {
+          p = fetchCollectionBbox(cid);
+        } else if (layer.tiles_url && cid) {
           p = bboxFromTilesUrl(layer.tiles_url, cid);
-        } else {
+        } else if (cid) {
           p = fetchCollectionBbox(cid).then(function(bbox) {
-            if (!bbox) return fetchItemsBboxOnly(cid, 'limit=500');
-            return Promise.resolve(bbox);
+            if (bbox) return bbox;
+            return fetchItemsBboxOnly(cid, 'limit=500');
           });
+        } else {
+          return;
         }
         p.then(function(bbox) {
-          if (!bbox || bbox.length < 4) return;
+          if (!GeofastmapUtils.isValidMapBbox(bbox)) return;
           state.bbox = bbox.slice(0, 4);
-          try {
-            map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 60, duration: 400 });
-          } catch (e) {}
+          GeofastmapUtils.fitMapToBbox(map, state.bbox, { padding: 60, duration: 400 });
         });
       }
 
@@ -705,6 +736,8 @@
             if (!isFinite(ro) || ro < 0) ro = 1;
             if (overlay) {
               var rs = { type: 'raster', tiles: [rasterTU], tileSize: 256, maxzoom: 18 };
+              var rb = rasterSourceBounds(state.bbox);
+              if (rb) rs.bounds = rb;
               if (layer.stac_viewer_path || layer.stacViewerPath) rs.attribution = 'STAC / Titiler';
               map.addSource(sid, rs);
               safeAddLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
@@ -877,7 +910,13 @@
         var beforeId;
         function addNext(i) {
           if (runId !== _syncRunId) return;
-          if (i >= state.layers.length) return;
+          if (i >= state.layers.length) {
+            try {
+              if (shouldFitStateBbox() && map.getZoom() < 4) applyInitialEditorExtent({ padding: 60, duration: 0 });
+              else if (!GeofastmapUtils.isValidMapBbox(state.bbox)) trySetInitialExtentFromFirstLayer();
+            } catch (eExt) {}
+            return;
+          }
           addLayerToMap(state.layers[i], state.layers[i].style_spec, i, beforeId).then(function(firstId) {
             if (runId !== _syncRunId) return;
             beforeId = firstId;
@@ -2147,6 +2186,17 @@
             pitch: (function() { var v = Number(document.getElementById('camera-pitch').value); return isFinite(v) ? v : state.pitch; })()
           }
         };
+        var cam = GeofastmapUtils.sanitizeMapCameraForSave(
+          payload.definition.center,
+          payload.definition.zoom,
+          payload.definition.bearing,
+          payload.definition.pitch,
+          payload.definition.bbox
+        );
+        payload.definition.center = cam.center;
+        payload.definition.zoom = cam.zoom;
+        payload.definition.bearing = cam.bearing;
+        payload.definition.pitch = cam.pitch;
         // If this map is already public (or user selected public in sharing card),
         // include visibility so the backend validates public-layer constraints and can suggest collections to publish.
         var visRadio = document.querySelector('#sharing-card input[name="sharing_visibility"]:checked');
@@ -2328,14 +2378,8 @@
         // Bind toolbox once the map is ready.
         if (window.ensureStyleToolboxBound) window.ensureStyleToolboxBound();
         setupMapEditLegendUI();
-        // bbox + fitBounds replace center/zoom and reset pitch/bearing. If the map was saved with a camera
-        // (Set extent from current view), keep that exact view instead.
-        if (state.bbox && state.bbox.length === 4) {
-          var hasSavedCamera = state.center && state.center.length === 2 && state.zoom != null && isFinite(Number(state.zoom));
-          if (!hasSavedCamera) {
-            map.fitBounds([[state.bbox[0], state.bbox[1]], [state.bbox[2], state.bbox[3]]], { padding: 60 });
-          }
-        }
+        // Prefer fitBounds when bbox is valid and camera is missing or a world-scale placeholder.
+        applyInitialEditorExtent({ padding: 60 });
         var lonEl = document.getElementById('camera-center-lon');
         var latEl = document.getElementById('camera-center-lat');
         var zoomEl = document.getElementById('camera-zoom');

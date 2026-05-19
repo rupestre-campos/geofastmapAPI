@@ -327,6 +327,81 @@
     return isNaN(n) ? null : n;
   }
 
+  /**
+   * True when bbox is finite, ordered, and not planet-spanning.
+   */
+  function isValidMapBbox(bbox) {
+    if (!bbox || bbox.length < 4) return false;
+    var minx = Number(bbox[0]);
+    var miny = Number(bbox[1]);
+    var maxx = Number(bbox[2]);
+    var maxy = Number(bbox[3]);
+    if (![minx, miny, maxx, maxy].every(function(n) { return isFinite(n); })) return false;
+    if (minx >= maxx || miny >= maxy) return false;
+    if (maxx - minx > 120 || maxy - miny > 80) return false;
+    return true;
+  }
+
+  function isPlaceholderMapCamera(center, zoom) {
+    if (!center || center.length !== 2 || zoom == null || !isFinite(Number(zoom))) return true;
+    var lon = Number(center[0]);
+    var lat = Number(center[1]);
+    var z = Number(zoom);
+    if (Math.abs(lon) < 0.01 && Math.abs(lat - 20) < 0.01 && z <= 2.5) return true;
+    return false;
+  }
+
+  /**
+   * True when saved center/zoom should override bbox fitBounds (explicit "Set extent" view).
+   */
+  function isExplicitSavedCamera(center, zoom, bearing, pitch, bbox) {
+    if (!center || center.length !== 2 || zoom == null || !isFinite(Number(zoom))) return false;
+    if (isPlaceholderMapCamera(center, zoom)) return false;
+    var z = Number(zoom);
+    var b = bearing != null && isFinite(Number(bearing)) ? Number(bearing) : 0;
+    var p = pitch != null && isFinite(Number(pitch)) ? Number(pitch) : 0;
+    if (Math.abs(b) > 0.01 || Math.abs(p) > 0.01) return true;
+    if (z >= 5) return true;
+    if (isValidMapBbox(bbox)) {
+      var width = Number(bbox[2]) - Number(bbox[0]);
+      var height = Number(bbox[3]) - Number(bbox[1]);
+      if (width <= 30 && height <= 20 && z <= 3) return false;
+    }
+    return z > 3;
+  }
+
+  function shouldFitBoundsOnLoad(bbox, center, zoom, bearing, pitch) {
+    return isValidMapBbox(bbox) && !isExplicitSavedCamera(center, zoom, bearing, pitch, bbox);
+  }
+
+  function fitMapToBbox(map, bbox, options) {
+    if (!map || !isValidMapBbox(bbox)) return false;
+    var opts = options || {};
+    try {
+      map.fitBounds(
+        [[Number(bbox[0]), Number(bbox[1])], [Number(bbox[2]), Number(bbox[3])]],
+        {
+          padding: opts.padding != null ? opts.padding : 60,
+          maxZoom: opts.maxZoom != null ? opts.maxZoom : 14,
+          duration: opts.duration != null ? opts.duration : 0
+        }
+      );
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function sanitizeMapCameraForSave(center, zoom, bearing, pitch, bbox) {
+    if (!isValidMapBbox(bbox)) {
+      return { center: center, zoom: zoom, bearing: bearing, pitch: pitch };
+    }
+    if (isExplicitSavedCamera(center, zoom, bearing, pitch, bbox)) {
+      return { center: center, zoom: zoom, bearing: bearing, pitch: pitch };
+    }
+    return { center: null, zoom: null, bearing: null, pitch: null };
+  }
+
   function _ruleCondition(rule) {
     if (!rule || !rule.when) return null;
     var field = (rule.when.field || '').trim();
@@ -870,6 +945,12 @@
     clearTerrainAtmosphere: clearTerrainAtmosphere,
     configureTerrainCameraClamp: configureTerrainCameraClamp,
     isEarthSearchStacUrl: isEarthSearchStacUrl,
-    DEFAULT_EARTH_SEARCH_COLLECTION_ID: DEFAULT_EARTH_SEARCH_COLLECTION_ID
+    DEFAULT_EARTH_SEARCH_COLLECTION_ID: DEFAULT_EARTH_SEARCH_COLLECTION_ID,
+    isValidMapBbox: isValidMapBbox,
+    isPlaceholderMapCamera: isPlaceholderMapCamera,
+    isExplicitSavedCamera: isExplicitSavedCamera,
+    shouldFitBoundsOnLoad: shouldFitBoundsOnLoad,
+    fitMapToBbox: fitMapToBbox,
+    sanitizeMapCameraForSave: sanitizeMapCameraForSave
   };
 })(typeof window !== 'undefined' ? window : this);
