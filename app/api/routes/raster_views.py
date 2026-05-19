@@ -47,6 +47,7 @@ from app.schemas.resource_share import ShareAdd, ShareRead
 from app.services.mosaic_plan import build_mosaicjson_from_footprints
 from app.services.titiler_gate import titiler_upstream_gate_run
 from app.services.titiler_http import get_titiler_http_client
+from app.services.titiler_point import enrich_point_response, fetch_titiler_point_json
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
@@ -599,6 +600,70 @@ async def titiler_mosaic_tile(
         media_type=content_type,
         headers=headers,
     )
+
+
+@router.get(
+    "/{view_id}/titiler/point",
+    summary="Sample mosaic view pixel values at lon/lat",
+)
+async def titiler_mosaic_point(
+    request: Request,
+    view_id: str,
+    lon: float = Query(..., description="Longitude WGS84"),
+    lat: float = Query(..., description="Latitude WGS84"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
+):
+    settings = get_settings()
+    base = settings.titiler_internal_url.rstrip("/")
+    if not base:
+        raise HTTPException(status_code=503, detail="Titiler not configured")
+
+    row = await raster_views_crud.get_view(db, view_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="View not found")
+
+    allow_pm = getattr(row, "allow_public_maps", False)
+    if current_user is None:
+        if not can_access_raster_view_tiles_anonymous(
+            visibility=row.visibility,
+            allow_public_maps=allow_pm,
+        ):
+            raise HTTPException(status_code=404, detail="View not found")
+    else:
+        if not await can_see_raster_view(
+            db, row.owner_id, row.visibility, view_id, current_user
+        ):
+            raise HTTPException(status_code=404, detail="View not found")
+
+    path = Path(settings.raster_storage_path) / row.json_relative_path
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Mosaic JSON missing on disk")
+
+    secret = settings.titiler_internal_secret
+    fetch_base = settings.raster_internal_fetch_base_url.rstrip("/")
+    if secret and fetch_base:
+        mosaic_url = (
+            f"{fetch_base}/internal/raster-views/{view_id}/mosaic.json"
+            f"?token={quote(secret, safe='')}"
+        )
+    else:
+        mosaic_url = f"file://{path.resolve()}"
+
+    coord = f"{lon},{lat}"
+    forward_path = f"/mosaicjson/point/{coord}"
+    param_pairs = [(k, val) for k, val in request.query_params.multi_items() if k not in ("v", "lon", "lat")]
+    param_pairs.append(("url", mosaic_url))
+
+    client = get_titiler_http_client()
+    raw = await fetch_titiler_point_json(
+        client,
+        base,
+        forward_path,
+        param_pairs,
+        shared_secret=settings.titiler_internal_secret,
+    )
+    return JSONResponse(content=enrich_point_response(raw, {}))
 
 
 @router.get(

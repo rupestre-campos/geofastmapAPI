@@ -351,6 +351,7 @@
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   {% endif %}
   <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
+  <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   <script>
     var base = {{ base | tojson }};
     var catalogId = {{ catalog_id | tojson }};
@@ -1057,6 +1058,16 @@
         if (titilerConfigured && tileAssetsLen) {
           addOrRefreshRaster();
           map.once('idle', function() { addOrRefreshRaster(); });
+        }
+        if (!rasterStyleEmbed && titilerConfigured && tileAssetsLen && typeof GeofastmapRasterIdentify !== 'undefined') {
+          GeofastmapRasterIdentify.attach(map, [{
+            title: 'Pixel values',
+            getPointUrl: function(lngLat) {
+              var sel = document.getElementById('stac-asset-select');
+              if (!sel || !sel.value) return null;
+              return GeofastmapRasterIdentify.buildPointUrl(buildTileUrl(sel.value), lngLat);
+            }
+          }]);
         }
 
         var bb = null;

@@ -106,6 +106,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofastmap-utils.js?v=3"></script>
+  <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   <script>
     (function() {
       var base = {{ base | tojson }};
@@ -173,6 +174,14 @@
             applyBasemap();
           };
           applyBasemap();
+          if (typeof GeofastmapRasterIdentify !== 'undefined' && tilesUrl) {
+            GeofastmapRasterIdentify.attach(map, [{
+              title: 'Pixel values',
+              getPointUrl: function(lngLat) {
+                return GeofastmapRasterIdentify.buildPointUrl(tilesUrl, lngLat);
+              }
+            }]);
+          }
           var mosaicVis = document.getElementById('mosaic-layer-visible');
           if (mosaicVis) {
             mosaicVis.onchange = function() {

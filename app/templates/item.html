@@ -116,6 +116,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
+  <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   <script>
     const base = {{ base | tojson }};
@@ -288,6 +289,21 @@
           };
         }
         addOverlayLayers();
+        if (isRaster && typeof GeofastmapRasterIdentify !== 'undefined') {
+          var itemRasterTileUrl = apiBaseUrlItem() + '/collections/' + encodeURIComponent(collectionId)
+            + '/rasters/tiles/WebMercatorQuad/{z}/{x}/{y}.png?mode=item&feature_id=' + encodeURIComponent(featureId);
+          GeofastmapRasterIdentify.attach(map, [{
+            title: 'Pixel values',
+            getPointUrl: function(lngLat) {
+              return GeofastmapRasterIdentify.buildPointUrl(itemRasterTileUrl, lngLat);
+            }
+          }], {
+            beforeClick: function(e, m) {
+              if (window.GeofastmapInlineFeatureEdit && GeofastmapInlineFeatureEdit.handleMapClick(e, m)) return false;
+              return true;
+            }
+          });
+        }
         var pinSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="36" viewBox="0 0 24 36"><path fill="%2358a6ff" stroke="%23111" stroke-width="1" d="M12 0C5.4 0 0 5.4 0 12c0 9 12 24 12 24s12-15 12-24C24 5.4 18.6 0 12 0z"/></svg>';
         map.loadImage('data:image/svg+xml,' + encodeURIComponent(pinSvg), function(err, img) {
           if (!err && img) { try { map.addImage('geofastmap-pin', img); } catch (e) {} }

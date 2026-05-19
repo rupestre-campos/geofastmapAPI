@@ -32,11 +32,9 @@ from app.services.bulk_upload_sessions import (
     delete_upload_session,
     get_upload_session,
 )
-from app.services.raster_style_spec import (
-    is_classification_style,
-    titiler_nodata_param,
-    titiler_params_from_classification_style,
-)
+from app.services.raster_style_spec import titiler_nodata_param
+from app.services.raster_titiler_forward import prepare_raster_collection_titiler
+from app.services.titiler_point import enrich_point_response, fetch_titiler_point_json
 from app.services.raster_batch import (
     RasterBatchUploadTooLargeError,
     enqueue_raster_batch_job,
@@ -211,14 +209,23 @@ async def list_raster_items(
                     f"{base}/collections/{collection_id}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
                     f"?mode=item&feature_id={fid}&sv={quote(style_version, safe='')}"
                 ),
+                "point_url": (
+                    f"{base}/collections/{collection_id}/rasters/point"
+                    f"?mode=item&feature_id={fid}&sv={quote(style_version, safe='')}"
+                ),
                 "delete_url": f"{base}/collections/{collection_id}/items/{fid}",
                 "map_layer": map_layer,
             }
         )
     mosaic_url = None
+    mosaic_point_url = None
     if item_ids and mosaic_vid:
         mosaic_url = (
             f"{base}/collections/{collection_id}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
+            f"?mode=mosaic&mv={mosaic_vid}&sv={quote(style_version, safe='')}"
+        )
+        mosaic_point_url = (
+            f"{base}/collections/{collection_id}/rasters/point"
             f"?mode=mosaic&mv={mosaic_vid}&sv={quote(style_version, safe='')}"
         )
     extent_fe = await collections_crud.get_collection_bbox_from_features(db, collection_id)
@@ -233,6 +240,7 @@ async def list_raster_items(
             "mosaic_version_id": mosaic_vid,
             "default_mode": "mosaic" if item_ids else None,
             "mosaic_tiles_url": mosaic_url,
+            "mosaic_point_url": mosaic_point_url,
             "terrain_tilejson_url": f"{base}/collections/{collection_id}/rasters/terrain/tilejson.json",
             "collection_is_dem": collection_is_dem,
             "collection_dem_encoding": collection_dem_encoding,
@@ -570,186 +578,25 @@ async def get_raster_collection_tile(
     db: AsyncSession = Depends(get_db),
 ):
     settings = get_settings()
-    collection = await collections_crud.get_collection(db, collection_id)
-    if not collection:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    ensure_raster_collection(collection)
-    collection_is_dem, collection_dem_encoding = _collection_dem_settings(collection)
-    titiler = settings.titiler_internal_url.rstrip("/")
-    if not titiler:
-        raise HTTPException(status_code=503, detail="Titiler not configured")
     secret = settings.titiler_internal_secret
-    fetch_base = settings.raster_internal_fetch_base_url.rstrip("/")
-    if not secret or not fetch_base:
-        raise HTTPException(status_code=503, detail="Titiler internal fetch is not configured")
-
-    item_ids = await _raster_collection_item_ids(db, collection_id)
-    response_headers: dict[str, str] = {}
-    # Prefer mosaic for collection previews (single- or multi-item); explicit mode=item still supported.
-    mode = (mode or ("mosaic" if item_ids else "item")).lower()
-    params: list[tuple[str, str]] = []
-    dem_algorithm: str | None = None
-    if mode == "item":
-        if not feature_id:
-            if len(item_ids) == 1:
-                feature_id = item_ids[0]
-            else:
-                raise HTTPException(status_code=400, detail="feature_id is required when mode=item")
-        cog_url: str | None = None
-        upstream = f"{titiler}/cog/tiles/{tile_matrix_set_id}/{z}/{x}/{y}.{ext}"
-        if feature_id:
-            f = await features_crud.get_feature(db, collection_id, feature_id)
-            if f:
-                props = f.properties or {}
-                raster = props.get("raster") if isinstance(props, dict) else None
-                cog_val = raster.get("cog_path") if isinstance(raster, dict) else None
-                if isinstance(cog_val, str) and cog_val:
-                    cog_url = cog_val
-                else:
-                    cog_url = str(cog_path_for(settings.raster_storage_path, collection_id, feature_id))
-                is_dem, dem_enc = _feature_dem_settings(f)
-                if is_dem or collection_is_dem:
-                    dem_algorithm = dem_enc if is_dem else collection_dem_encoding
-        if not cog_url:
-            cog_url = str(cog_path_for(settings.raster_storage_path, collection_id, feature_id))
-        # Fail fast with a clear client error instead of Titiler/GDAL 500 when the COG is missing
-        # (orphan row, different storage root on worker, or manual delete).
-        _cu = str(cog_url).strip()
-        if _cu and not _cu.startswith(("http://", "https://", "/vsicurl/", "/vsi")):
-            try:
-                p_check = resolve_stored_cog_path(_cu, settings.raster_storage_path)
-            except CogPathOutsideStorageError:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Raster file path is not under server storage.",
-                ) from None
-            if not p_check.is_file():
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=(
-                        "Raster GeoTIFF file for this item is not present on server storage. "
-                        "The catalog row may be orphaned—delete the item and upload again, "
-                        "or fix shared volume alignment for the raster worker and API."
-                    ),
-                )
-        params.append(("url", cog_url))
-    else:
-        if not item_ids:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No raster items in this collection for mosaic mode.",
-            )
-        expected_mv = compute_mosaic_version_id(collection_id, item_ids)
-        mv_client_raw = request.query_params.get("mv")
-        mv_client = (mv_client_raw or "").strip() or None
-        if mv_client is not None and not mosaic_mv_matches_request(mv_client, expected_mv):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Mosaic version mismatch; reload collection metadata or open a fresh map layer.",
-            )
-        mosaic_url = (
-            f"{fetch_base}/internal/collections/{collection_id}/rasters/mosaic.json"
-            f"?token={quote(secret, safe='')}"
-        )
-        upstream = f"{titiler}/mosaicjson/tiles/{tile_matrix_set_id}/{z}/{x}/{y}.{ext}"
-        params.append(("url", mosaic_url))
-        params.append(("mv", expected_mv))
-        if mv_client and mosaic_mv_matches_request(mv_client, expected_mv):
-            response_headers["Cache-Control"] = MOSAIC_TILE_CACHE_CONTROL
-        else:
-            response_headers["Cache-Control"] = MOSAIC_TILE_CACHE_CONTROL_LEGACY
-    request_keys = frozenset(request.query_params.keys())
-    # Avoid forwarding duplicate keys Titiler may reject (mv is set above for mosaic).
-    for k, v in request.query_params.multi_items():
-        if k in ("mode", "feature_id", "style_id", "dem_encoding", "mv", "sv", "demv"):
-            continue
-        params.append((k, v))
-    dem_encoding_q = request.query_params.get("dem_encoding")
-    dem_request = bool(dem_encoding_q)
-    style = None
-    if style_id and not dem_request:
-        style = await raster_styles_crud.get_raster_style(db, collection_id, style_id)
-        if style is None:
-            style = await raster_styles_crud.get_public_raster_style(db, style_id)
-    elif not dem_request:
-        # Mosaic always had default; item (single-feature collections) did not — tiles stayed raw RGB.
-        style = await raster_styles_crud.get_default_raster_style(db, collection_id)
-    style_spec: dict = (style.style_spec if style and isinstance(style.style_spec, dict) else {}) or {}
-    # DEM terrain requests must bypass visualization style params (bidx/expression/colormap),
-    # otherwise raster-dem decoding receives rendered imagery instead of elevation encoding.
-    if style_spec and not dem_request:
-        if is_classification_style(style_spec):
-            if "asset" not in request_keys:
-                asset_val = style_spec.get("asset")
-                if asset_val is not None and str(asset_val).strip():
-                    params.append(("asset", str(asset_val).strip()))
-            for pk, pv in titiler_params_from_classification_style(style_spec):
-                if pk in request_keys:
-                    continue
-                params.append((pk, pv))
-        else:
-            # Query params from the style editor / clients win over preset keys to avoid duplicate Titiler args.
-            for key in ("asset", "assets", "bidx", "rescale", "colormap_name", "expression", "color_formula", "nodata"):
-                if key in request_keys:
-                    continue
-                value = style_spec.get(key)
-                if value is None:
-                    continue
-                if isinstance(value, list):
-                    params.append((key, ",".join(str(x) for x in value)))
-                else:
-                    params.append((key, str(value)))
-    # Allow explicit DEM encoding override for terrain clients.
-    if dem_request:
-        dem_algorithm = _normalize_dem_encoding(dem_encoding_q)
-    # DEM terrain RGB conflicts with analytic viz (single band / colormap / expr). Multi-bidx RGB keeps terrain.
-    bidx_vals = request.query_params.getlist("bidx")
-    assets_vals = request.query_params.getlist("assets")
-
-    def _style_supplies(key: str) -> bool:
-        if dem_request:
-            return False
-        v = style_spec.get(key)
-        if v is None or v == "" or v == []:
-            return False
-        return key not in request_keys
-
-    force_analytic = bool(
-        request.query_params.get("expression")
-        or request.query_params.get("colormap_name")
-        or request.query_params.get("colormap")
-        or request.query_params.get("color_formula")
-        or len(assets_vals) >= 2
-        or _style_supplies("expression")
-        or _style_supplies("colormap_name")
-        or _style_supplies("colormap")
-        or _style_supplies("color_formula")
+    titiler = settings.titiler_internal_url.rstrip("/")
+    fwd = await prepare_raster_collection_titiler(
+        db,
+        request,
+        collection_id,
+        kind="tiles",
+        tile_matrix_set_id=tile_matrix_set_id,
+        z=z,
+        x=x,
+        y=y,
+        ext=ext,
+        mode=mode,
+        feature_id=feature_id,
+        style_id=style_id,
     )
-    if len(bidx_vals) == 1:
-        force_analytic = True
-    if _style_supplies("bidx"):
-        bx = style_spec.get("bidx")
-        if isinstance(bx, list) and len(bx) == 1:
-            force_analytic = True
-        elif isinstance(bx, str) and bx.strip() and "," not in bx.strip():
-            force_analytic = True
-    if force_analytic and not dem_request:
-        dem_algorithm = None
-    # Mosaic: apply terrain RGB only when no explicit bands/colormap/expression (those conflict with algorithm=).
-    _mosaic_viz_keys = frozenset(
-        {"bidx", "colormap_name", "colormap", "colormap_type", "expression", "color_formula", "assets", "rescale"}
-    )
-    has_mosaic_viz = mode == "mosaic" and any(k in _mosaic_viz_keys for k, _ in params)
-    if (
-        mode == "mosaic"
-        and dem_algorithm is None
-        and not force_analytic
-        and collection_is_dem
-        and not has_mosaic_viz
-    ):
-        dem_algorithm = collection_dem_encoding
-    if dem_algorithm:
-        params.append(("algorithm", dem_algorithm))
+    upstream = f"{titiler}{fwd.forward_path}"
+    params = fwd.params
+    response_headers = fwd.response_headers
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.get(upstream, params=params)
     if resp.status_code >= 400:
@@ -775,6 +622,44 @@ async def get_raster_collection_tile(
         media_type=resp.headers.get("content-type", "image/png"),
         headers=response_headers,
     )
+
+
+@router.get(
+    "/{collection_id}/rasters/point",
+    summary="Sample raster pixel values at lon/lat (Titiler point)",
+)
+async def get_raster_collection_point(
+    request: Request,
+    collection_id: str,
+    lon: float = Query(..., description="Longitude WGS84"),
+    lat: float = Query(..., description="Latitude WGS84"),
+    mode: str | None = Query(None, description="mosaic or item"),
+    feature_id: str | None = Query(None, description="Required when mode=item"),
+    style_id: str | None = Query(None, description="Optional raster style preset id"),
+    db: AsyncSession = Depends(get_db),
+):
+    settings = get_settings()
+    titiler = settings.titiler_internal_url.rstrip("/")
+    fwd = await prepare_raster_collection_titiler(
+        db,
+        request,
+        collection_id,
+        kind="point",
+        lon=lon,
+        lat=lat,
+        mode=mode,
+        feature_id=feature_id,
+        style_id=style_id,
+    )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        raw = await fetch_titiler_point_json(
+            client,
+            titiler,
+            fwd.forward_path,
+            fwd.params,
+            shared_secret=settings.titiler_internal_secret,
+        )
+    return JSONResponse(content=enrich_point_response(raw, fwd.style_spec))
 
 
 @router.get(

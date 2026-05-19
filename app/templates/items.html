@@ -338,6 +338,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
+  <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   <script>
     let features = {{ features_geojson | tojson }};
@@ -357,6 +358,7 @@
     const initialSortdesc = {{ sortdesc | tojson }};
     const collectionType = {{ (collection_type or 'vector') | tojson }};
     const isRaster = collectionType === 'raster';
+    var __itemsRasterTileUrl = null;
     const copyBtnSvg = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
     (function() {
       var form = document.getElementById('search-form');
@@ -561,6 +563,7 @@
             if (info && info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
             else if (info && info.items && info.items.length === 1 && info.items[0].tiles_url) rasterUrl = info.items[0].tiles_url;
             if (rasterUrl) {
+              __itemsRasterTileUrl = rasterUrl;
               map.addSource('items-raster-mosaic', { type: 'raster', tiles: [rasterUrl], tileSize: 256, maxzoom: 18 });
               map.addLayer({ id: 'items-raster-mosaic', type: 'raster', source: 'items-raster-mosaic', paint: { 'raster-opacity': 0.88 } });
             }
@@ -638,6 +641,20 @@
           return (defaultStyle && defaultStyle.style_spec) ? defaultStyle.style_spec : {};
         }
       });
+      if (isRaster && typeof GeofastmapRasterIdentify !== 'undefined') {
+        GeofastmapRasterIdentify.attach(map, [{
+          title: 'Pixel values',
+          getPointUrl: function(lngLat) {
+            if (!__itemsRasterTileUrl) return null;
+            return GeofastmapRasterIdentify.buildPointUrl(__itemsRasterTileUrl, lngLat);
+          }
+        }], {
+          beforeClick: function(e, m) {
+            if (window.GeofastmapInlineFeatureEdit && GeofastmapInlineFeatureEdit.handleMapClick(e, m)) return false;
+            return true;
+          }
+        });
+      }
       GeofastmapUtils.attachMultiLayerFeaturePopup(map, {
         base: base,
         getLayerIds: getItemsMapPopupLayerIds,

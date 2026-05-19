@@ -101,6 +101,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
+  <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   <script>
     const base = {{ base | tojson }};
@@ -136,6 +137,7 @@
     var pointFilter = GeofastmapUtils.pointFilter;
     var notPointFilter = GeofastmapUtils.notPointFilter;
     var __rasterListSig = null;
+    var __rasterTileUrl = null;
     function rasterListSignature(info) {
       if (!info) return '';
       var ic = info.item_count != null ? info.item_count : ((info.items || []).length || 0);
@@ -156,6 +158,7 @@
       if (info.mosaic_tiles_url) rasterUrl = info.mosaic_tiles_url;
       else if (info.items && info.items.length === 1 && info.items[0].tiles_url) rasterUrl = info.items[0].tiles_url;
       if (!rasterUrl) return;
+      __rasterTileUrl = rasterUrl;
       if (!map.getSource('raster-layer')) {
         map.addSource('raster-layer', { type: 'raster', tiles: [rasterUrl], tileSize: 256, maxzoom: 18 });
         map.addLayer({ id: 'raster-layer', type: 'raster', source: 'raster-layer', paint: { 'raster-opacity': 1 } });
@@ -275,6 +278,15 @@
         map.fitBounds([[-180, -90], [180, 90]], { padding: 0 });
         applyBasemapFromSelect();
         addOverlayLayers();
+        if (collectionType === 'raster' && typeof GeofastmapRasterIdentify !== 'undefined') {
+          GeofastmapRasterIdentify.attach(map, [{
+            title: collectionTitle || collectionId,
+            getPointUrl: function(lngLat) {
+              if (!__rasterTileUrl) return null;
+              return GeofastmapRasterIdentify.buildPointUrl(__rasterTileUrl, lngLat);
+            }
+          }]);
+        }
         if (collectionType === 'raster') {
           document.addEventListener('visibilitychange', function() {
             if (document.visibilityState !== 'visible' || !map) return;

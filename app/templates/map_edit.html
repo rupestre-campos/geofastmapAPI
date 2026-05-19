@@ -285,6 +285,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofastmap-utils.js?v=5"></script>
+  <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   {% include "_style_editor_toolbox_script.html" %}
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   <script>
@@ -1308,7 +1309,8 @@
           }
           var visibleCell = '<td><label><input type="checkbox" data-index="' + idx + '" data-prop="visible"' + (layer.visible !== false ? ' checked' : '') + ' title="Layer is enabled when map loads"> On</label></td>';
           var popupCells = layer.raster_tiles
-            ? '<td colspan="2" class="meta" title="Popups apply to vector layers only">—</td>'
+            ? '<td><label><input type="checkbox" data-index="' + idx + '" data-prop="popup"' + (layer.popup ? ' checked' : '') + ' title="Show pixel values on click"> Popup</label></td>' +
+              '<td class="meta">—</td>'
             : '<td><label><input type="checkbox" data-index="' + idx + '" data-prop="popup"' + (layer.popup ? ' checked' : '') + ' title="Show popup on click"> Popup</label></td>' +
               '<td><select class="popup-id-select" data-index="' + idx + '" data-collection-id="' + escapeHtml(layer.collection_id || layer.collectionId || '') + '" title="Property to show as identifier in popup"><option value="">(feature id)</option></select></td>';
           tr.innerHTML =
@@ -2405,6 +2407,42 @@
           var ids = getPopupLayerIds();
           return ids.filter(function(id) { return map.getLayer(id); });
         }
+        function getRasterPopupLayersEdit() {
+          return state.layers.filter(function(l) {
+            return layerRasterTrue(l) && l.popup && (l.tiles_url || l.mosaic_view_id || l.mosaicViewId);
+          });
+        }
+        function topRasterPopupLayerEdit() {
+          var candidates = getRasterPopupLayersEdit();
+          if (!candidates.length) return null;
+          var best = candidates[0];
+          for (var ri = 1; ri < candidates.length; ri++) {
+            if ((candidates[ri].order || 0) > (best.order || 0)) best = candidates[ri];
+          }
+          return best;
+        }
+        function getRasterPointUrlForLayerEdit(layer, lngLat) {
+          if (!layer || !layerRasterTrue(layer) || typeof GeofastmapRasterIdentify === 'undefined') return null;
+          var tu = layer.tiles_url;
+          if (!tu && (layer.mosaic_view_id || layer.mosaicViewId)) {
+            tu = mosaicRasterTilesUrlTemplateWithV(base, layer.mosaic_view_id || layer.mosaicViewId, layer.mosaic_revision || layer.mosaicRevision || '');
+          }
+          if (!tu) return null;
+          return GeofastmapRasterIdentify.buildPointUrl(tu, lngLat);
+        }
+        function showRasterOnlyPopupEdit(e, rasterLayer) {
+          var url = getRasterPointUrlForLayerEdit(rasterLayer, e.lngLat);
+          if (!url) return;
+          var title = layerDisplayNameForLegend(rasterLayer.collection_id || rasterLayer.collectionId) || 'Raster values';
+          var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
+          popup.setLngLat(e.lngLat).setHTML(GeofastmapRasterIdentify.loadingHtml(title)).addTo(map);
+          window._geofastmapPopup = popup;
+          GeofastmapRasterIdentify.fetchPoint(url).then(function(data) {
+            popup.setLngLat(e.lngLat).setHTML(GeofastmapRasterIdentify.popupHtml(data, { title: title })).addTo(map);
+          }).catch(function(err) {
+            popup.setLngLat(e.lngLat).setHTML(GeofastmapRasterIdentify.errorHtml((err && err.message) || 'Could not read pixel', title)).addTo(map);
+          });
+        }
         map.on('mousemove', function(e) {
           var layerIds = getPopupLayerIdsFiltered();
           var hit = layerIds.length > 0 && (function() { try { return map.queryRenderedFeatures(e.point, { layers: layerIds }).length > 0; } catch (err) { return false; } })();
@@ -2439,14 +2477,21 @@
         map.on('click', function(e) {
           if (window.GeofastmapInlineFeatureEdit && GeofastmapInlineFeatureEdit.handleMapClick(e, map)) return;
           var layerIds = getPopupLayerIdsFiltered();
-          if (layerIds.length === 0) return;
-          var features;
-          try { features = map.queryRenderedFeatures(e.point, { layers: layerIds }); } catch (err) { return; }
-          if (!features || features.length === 0) return;
+          var features = [];
+          if (layerIds.length) {
+            try { features = map.queryRenderedFeatures(e.point, { layers: layerIds }); } catch (err) { features = []; }
+          }
+          var rasterPopupLayer = topRasterPopupLayerEdit();
+          var hasVector = features && features.length > 0;
+          if (!hasVector && !rasterPopupLayer) return;
+          if (window._geofastmapPopup) { try { window._geofastmapPopup.remove(); } catch (err) {} }
+          if (!hasVector && rasterPopupLayer) {
+            showRasterOnlyPopupEdit(e, rasterPopupLayer);
+            return;
+          }
           var feat = features[0];
           var cid = collectionIdFromLayerId(feat.layer.id);
           if (!cid) return;
-          if (window._geofastmapPopup) { try { window._geofastmapPopup.remove(); } catch (err) {} }
           if (typeof GeofastmapUtils.groupFeaturesByCollection === 'function') {
             function getCid(f) { return collectionIdFromLayerId(f.layer.id); }
             var grouped = GeofastmapUtils.groupFeaturesByCollection(features, getCid);
@@ -2473,13 +2518,31 @@
             }
             popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
             window._geofastmapPopup = popup;
+            if (rasterPopupLayer && typeof GeofastmapRasterIdentify !== 'undefined') {
+              var baseHtml = html;
+              var rTitle = layerDisplayNameForLegend(rasterPopupLayer.collection_id || rasterPopupLayer.collectionId) || 'Raster values';
+              GeofastmapRasterIdentify.appendRasterSection(popup, e.lngLat, function(ll) {
+                return getRasterPointUrlForLayerEdit(rasterPopupLayer, ll);
+              }, rTitle).then(function(section) {
+                if (section) popup.setLngLat(e.lngLat).setHTML(baseHtml + section).addTo(map);
+              });
+            }
           } else {
             var dispId = null;
             for (var i = 0; i < state.layers.length; i++) { if ((state.layers[i].collection_id || state.layers[i].collectionId) === cid && state.layers[i].popup_id_property) { dispId = state.layers[i].popup_id_property; break; } }
             window._geofastmapPopupData = { base: base, displayIdByLayer: {}, canEditByCollection: canEditByCollection };
             var popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
-            popup.setLngLat(e.lngLat).setHTML(popupHtmlForFeature(feat, cid, dispId)).addTo(map);
+            var htmlSingle = popupHtmlForFeature(feat, cid, dispId);
+            popup.setLngLat(e.lngLat).setHTML(htmlSingle).addTo(map);
             window._geofastmapPopup = popup;
+            if (rasterPopupLayer && typeof GeofastmapRasterIdentify !== 'undefined') {
+              var rTitle2 = layerDisplayNameForLegend(rasterPopupLayer.collection_id || rasterPopupLayer.collectionId) || 'Raster values';
+              GeofastmapRasterIdentify.appendRasterSection(popup, e.lngLat, function(ll) {
+                return getRasterPointUrlForLayerEdit(rasterPopupLayer, ll);
+              }, rTitle2).then(function(section) {
+                if (section) popup.setLngLat(e.lngLat).setHTML(htmlSingle + section).addTo(map);
+              });
+            }
           }
         });
         if (window.ensureStyleToolboxBound) window.ensureStyleToolboxBound();

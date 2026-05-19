@@ -7,8 +7,8 @@ import time
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_optional, get_current_user_required
@@ -32,6 +32,11 @@ from app.services.titiler_gate import titiler_upstream_gate_run
 from app.services.titiler_http import get_titiler_http_client
 from app.services.titiler_inflight import await_tile_singleflight
 from app.services.titiler_tile_cache import cache_key_for_titiler_request, get_cached_tile, set_cached_tile
+from app.services.titiler_point import (
+    enrich_point_response,
+    fetch_titiler_point_json,
+    style_spec_from_request_query,
+)
 
 router = APIRouter()
 
@@ -363,6 +368,90 @@ async def stac_item_titiler_tile(
             "X-Titiler-Upstream-Attempts": att_header,
         },
     )
+
+@router.get(
+    "/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}/titiler/point",
+    summary="Sample STAC raster pixel values at lon/lat",
+)
+async def stac_item_titiler_point(
+    request: Request,
+    catalog_id: str,
+    collection_id: str,
+    item_id: str,
+    lon: float = Query(..., description="Longitude WGS84"),
+    lat: float = Query(..., description="Latitude WGS84"),
+    asset: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
+):
+    await _titiler_session_or_public_grant(
+        db, catalog_id, collection_id, item_id, current_user
+    )
+    settings = get_settings()
+    base_t = settings.titiler_internal_url.rstrip("/")
+    if not base_t:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Titiler not configured (set TITILER_INTERNAL_URL)",
+        )
+
+    catalog_ref = await _get_enabled_catalog_ref_for_tiles(db, catalog_id)
+    try:
+        item = await get_stac_item_cached(catalog_ref, collection_id, item_id)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown or invalid asset key")
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not load STAC item: {e!s}",
+        ) from e
+
+    coord = f"{lon},{lat}"
+    requested_assets = [v for (k, v) in request.query_params.multi_items() if k == "assets" and v]
+    if requested_assets:
+        item_url = None
+        try:
+            for L in item.get("links") or []:
+                if isinstance(L, dict) and L.get("rel") == "self" and L.get("href"):
+                    item_url = str(L["href"])
+                    break
+        except Exception:
+            item_url = None
+        if not item_url:
+            item_url = f"{catalog_ref.stac_api_root_url.rstrip('/')}/collections/{collection_id}/items/{item_id}"
+        forward_path = f"/stac/point/{coord}"
+        param_pairs: list[tuple[str, str]] = [
+            (k, v) for k, v in request.query_params.multi_items() if k not in ("asset", "lon", "lat")
+        ]
+        param_pairs.append(("url", item_url))
+    else:
+        if not asset or not str(asset).strip():
+            asset = request.query_params.get("asset")
+        if not asset or not str(asset).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Query param `asset` (or `assets`) is required",
+            )
+        cog_url = get_asset_href(item, str(asset).strip())
+        forward_path = f"/cog/point/{coord}"
+        param_pairs = [
+            (k, v) for k, v in request.query_params.multi_items() if k not in ("asset", "lon", "lat")
+        ]
+        param_pairs.append(("url", cog_url))
+
+    client = get_titiler_http_client()
+    raw = await fetch_titiler_point_json(
+        client,
+        base_t,
+        forward_path,
+        param_pairs,
+        shared_secret=settings.titiler_internal_secret,
+    )
+    pseudo_spec = style_spec_from_request_query(request)
+    return JSONResponse(content=enrich_point_response(raw, pseudo_spec))
+
 
 @router.get(
     "/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}/titiler/suggest-rescale",

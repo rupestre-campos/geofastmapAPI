@@ -406,6 +406,7 @@
   <script src="{{ base }}/static/js/geofastmap-job-times.js"></script>
   {% if (collection.collection_type or 'vector') == 'raster' %}
   <script src="{{ base }}/static/js/geofastmap-raster-style-editor.js"></script>
+  <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   {% endif %}
   {% include "_style_editor_toolbox_script.html" %}
   <script>
@@ -594,6 +595,17 @@
                   try { GeofastmapRasterStyleEditor.applySpec(defaultRasterStyle.style_spec); } catch (eRS) {}
                 }
                 wireRasterStyleLoadSave();
+                if (!window.__geofastRasterIdentifyReady && typeof GeofastmapRasterIdentify !== 'undefined') {
+                  window.__geofastRasterIdentifyReady = true;
+                  GeofastmapRasterIdentify.attach(map, [{
+                    title: 'Pixel values',
+                    getPointUrl: function(lngLat) {
+                      if (!window.GeofastmapRasterStyleEditor || typeof GeofastmapRasterStyleEditor.getTileUrl !== 'function') return null;
+                      var tu = GeofastmapRasterStyleEditor.getTileUrl();
+                      return tu ? GeofastmapRasterIdentify.buildPointUrl(tu, lngLat) : null;
+                    }
+                  }]);
+                }
                 window.setTimeout(function() {
                   try {
                     if (window.GeofastmapRasterStyleEditor && typeof window.GeofastmapRasterStyleEditor.refreshLayer === 'function') {

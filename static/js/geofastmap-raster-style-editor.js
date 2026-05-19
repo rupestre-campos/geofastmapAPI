@@ -954,8 +954,21 @@
     else _cfg.map.once('load', onMapReady);
   }
 
+  function getTileUrl() {
+    if (!_cfg) return null;
+    var sel = el('stac-asset-select');
+    var key = sel && sel.value ? sel.value : '__mosaic__';
+    try {
+      return buildCollectionTileUrl(key);
+    } catch (err) {
+      console.warn('getTileUrl:', err);
+      return null;
+    }
+  }
+
   global.GeofastmapRasterStyleEditor = {
     init: init,
+    getTileUrl: getTileUrl,
     getSpec: function () {
       try {
         return { style_spec: exportRasterStyleSpec() };
