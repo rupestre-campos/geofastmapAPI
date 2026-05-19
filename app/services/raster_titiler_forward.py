@@ -230,8 +230,14 @@ async def prepare_raster_collection_titiler(
         collection_is_dem=collection_is_dem,
         collection_dem_encoding=collection_dem_encoding,
     )
-    if dem_algorithm:
+    # Terrain RGB / terrarium algorithm is for *rendered* tiles only. Point reads need raw band
+    # samples; sending algorithm breaks mosaic/cog point for DEM collections (empty values, Titiler bugs).
+    if dem_algorithm and kind != "point":
         params.append(("algorithm", dem_algorithm))
+
+    if kind == "point" and collection_is_dem and not dem_request:
+        if not any(k == "bidx" for k, _ in params):
+            params.append(("bidx", "1"))
 
     return RasterTitilerForward(
         forward_path=forward_path,

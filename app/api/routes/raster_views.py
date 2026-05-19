@@ -47,7 +47,11 @@ from app.schemas.resource_share import ShareAdd, ShareRead
 from app.services.mosaic_plan import build_mosaicjson_from_footprints
 from app.services.titiler_gate import titiler_upstream_gate_run
 from app.services.titiler_http import get_titiler_http_client
-from app.services.titiler_point import enrich_point_response, fetch_mosaic_point_with_fallback
+from app.services.titiler_point import (
+    TITILER_POINT_DROP_KEYS,
+    enrich_point_response,
+    fetch_mosaic_point_with_fallback,
+)
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
@@ -652,7 +656,7 @@ async def titiler_mosaic_point(
 
     coord = f"{lon},{lat}"
     forward_path = f"/mosaicjson/point/{coord}"
-    param_pairs = [(k, val) for k, val in request.query_params.multi_items() if k not in ("v", "lon", "lat")]
+    param_pairs = [(k, val) for k, val in request.query_params.multi_items() if k not in TITILER_POINT_DROP_KEYS]
     param_pairs.append(("url", mosaic_url))
 
     client = get_titiler_http_client()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -598,7 +599,14 @@ async def get_raster_collection_tile(
     params = fwd.params
     response_headers = fwd.response_headers
     async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.get(upstream, params=params)
+        resp: httpx.Response | None = None
+        for attempt in range(2):
+            resp = await client.get(upstream, params=params)
+            # Transient Titiler/GDAL hiccups and occasional bug-masked 500s; one retry often succeeds.
+            if resp.status_code not in (500, 502, 503, 504) or attempt == 1:
+                break
+            await asyncio.sleep(0.08)
+    assert resp is not None
     if resp.status_code >= 400:
         logger.warning(
             "Titiler tile error status=%s upstream=%s collection=%s mode=%s feature_id=%s body=%s",

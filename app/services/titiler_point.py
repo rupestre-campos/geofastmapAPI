@@ -13,6 +13,25 @@ from app.services.raster_style_spec import is_classification_style
 from app.services.titiler_error_sanitize import sanitize_titiler_upstream_error_text
 
 
+# Query keys that must not be sent to Titiler /point (tile viz / cache / DEM encode).
+TITILER_POINT_DROP_KEYS = frozenset(
+    {
+        "v",
+        "lon",
+        "lat",
+        "algorithm",
+        "colormap",
+        "colormap_type",
+        "colormap_name",
+        "rescale",
+        "color_formula",
+        "mv",
+        "dem_encoding",
+        "demv",
+    }
+)
+
+
 def style_spec_from_request_query(request: Request) -> dict[str, Any]:
     """Build a minimal style_spec from Titiler render query params (STAC / ad-hoc clients)."""
     q = request.query_params
