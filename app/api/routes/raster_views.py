@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from pathlib import Path
@@ -47,6 +46,7 @@ from app.schemas.resource_share import ShareAdd, ShareRead
 from app.services.mosaic_plan import build_mosaicjson_from_footprints
 from app.services.titiler_gate import titiler_upstream_gate_run
 from app.services.titiler_http import get_titiler_http_client
+from app.services.titiler_retry import titiler_execute_with_retry
 from app.services.titiler_point import (
     TITILER_POINT_DROP_KEYS,
     enrich_point_response,
@@ -481,67 +481,50 @@ async def titiler_mosaic_tile(
     # -----------------------------
     async def _fetch_mosaic_tile() -> tuple[bytes, str, float, int]:
         client = get_titiler_http_client()
-        r: httpx.Response | None = None
-        titiler_upstream_ms = 0.0
-        titiler_attempts = 0
-        for attempt in range(2):
+
+        async def _before_retry(_attempt: int, _cause: BaseException | httpx.Response) -> None:
             await raise_if_disconnected(request)
-            t0 = time.perf_counter()
-            try:
-                async def _gated_titiler_get() -> httpx.Response:
-                    return await titiler_get_cancel_on_disconnect(
-                        request,
-                        client,
-                        f"{base}{forward_path}",
-                        params=param_pairs,
-                        headers={"Accept-Encoding": "identity"},
-                    )
 
-                r = await titiler_upstream_gate_run(request, _gated_titiler_get)
-            except httpx.RequestError as e:
-                titiler_attempts += 1
-                titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
-                if attempt == 0:
-                    logger.warning(
-                        "titiler mosaic tile httpx error (retrying): view_id=%s z=%s x=%s y=%s err=%r",
-                        view_id,
-                        z,
-                        x,
-                        y,
-                        e,
-                    )
-                    await asyncio.sleep(0.08)
-                    await raise_if_disconnected(request)
-                    continue
-                err_short = str(e)[:512]
-                logger.warning(
-                    "titiler mosaic tile httpx error (giving up): view_id=%s z=%s x=%s y=%s "
-                    "titiler_base=%s err=%r",
-                    view_id,
-                    z,
-                    x,
-                    y,
-                    base,
-                    e,
-                )
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Titiler request failed: {e}",
-                    headers={
-                        "X-Titiler-Upstream-Ms": str(int(round(titiler_upstream_ms))),
-                        "X-Titiler-Upstream-Attempts": str(titiler_attempts),
-                        "X-Titiler-Connect-Error": err_short,
-                    },
-                ) from e
-            titiler_attempts += 1
-            titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
-            if r.status_code in (502, 503, 504) and attempt == 0:
-                await asyncio.sleep(0.08)
-                await raise_if_disconnected(request)
-                continue
-            break
+        async def _gated_titiler_get() -> httpx.Response:
+            return await titiler_get_cancel_on_disconnect(
+                request,
+                client,
+                f"{base}{forward_path}",
+                params=param_pairs,
+                headers={"Accept-Encoding": "identity"},
+            )
 
-        assert r is not None
+        t0 = time.perf_counter()
+        try:
+            r, titiler_attempts = await titiler_execute_with_retry(
+                lambda: titiler_upstream_gate_run(request, _gated_titiler_get),
+                before_retry=_before_retry,
+            )
+        except httpx.RequestError as e:
+            titiler_upstream_ms = (time.perf_counter() - t0) * 1000.0
+            err_short = str(e)[:512]
+            logger.warning(
+                "titiler mosaic tile httpx error (giving up): view_id=%s z=%s x=%s y=%s "
+                "titiler_base=%s err=%r",
+                view_id,
+                z,
+                x,
+                y,
+                base,
+                e,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Titiler request failed: {e}",
+                headers={
+                    "X-Titiler-Upstream-Ms": str(int(round(titiler_upstream_ms))),
+                    "X-Titiler-Upstream-Attempts": str(
+                        max(1, int(get_settings().titiler_retry_max_attempts))
+                    ),
+                    "X-Titiler-Connect-Error": err_short,
+                },
+            ) from e
+        titiler_upstream_ms = (time.perf_counter() - t0) * 1000.0
         ms_header = str(int(round(titiler_upstream_ms)))
         att_header = str(titiler_attempts)
         if r.status_code >= 400:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from pathlib import Path
 
@@ -20,6 +19,7 @@ from app.db.session import get_db
 from app.services.titiler_cancel import ClientDisconnected, raise_if_disconnected, titiler_get_cancel_on_disconnect
 from app.services.titiler_gate import titiler_upstream_gate_run
 from app.services.titiler_http import get_titiler_http_client
+from app.services.titiler_retry import titiler_execute_with_retry
 from app.services.titiler_inflight import await_tile_singleflight
 from app.services.titiler_error_sanitize import sanitize_titiler_upstream_error_text
 from app.services.titiler_tile_cache import (
@@ -117,46 +117,38 @@ async def titiler_proxy_tile(
 
     async def _fetch_cog_tile() -> tuple[bytes, str, float, int]:
         client = get_titiler_http_client()
-        r: httpx.Response | None = None
-        titiler_upstream_ms = 0.0
-        titiler_attempts = 0
-        for attempt in range(2):
-            await raise_if_disconnected(request)
-            t0 = time.perf_counter()
-            try:
-                async def _gated_titiler_get() -> httpx.Response:
-                    return await titiler_get_cancel_on_disconnect(
-                        request,
-                        client,
-                        f"{base}{forward_path}",
-                        params=param_pairs,
-                        headers={"Accept-Encoding": "identity"},
-                    )
 
-                r = await titiler_upstream_gate_run(request, _gated_titiler_get)
-            except httpx.RequestError as e:
-                titiler_attempts += 1
-                titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
-                if attempt == 0:
-                    await asyncio.sleep(0.08)
-                    await raise_if_disconnected(request)
-                    continue
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Titiler request failed: {e}",
-                    headers={
-                        "X-Titiler-Upstream-Ms": str(max(0, int(round(titiler_upstream_ms)))),
-                        "X-Titiler-Upstream-Attempts": str(titiler_attempts),
-                    },
-                ) from e
-            titiler_attempts += 1
-            titiler_upstream_ms += (time.perf_counter() - t0) * 1000.0
-            if r.status_code in (502, 503, 504) and attempt == 0:
-                await asyncio.sleep(0.08)
-                await raise_if_disconnected(request)
-                continue
-            break
-        assert r is not None
+        async def _before_retry(_attempt: int, _cause: BaseException | httpx.Response) -> None:
+            await raise_if_disconnected(request)
+
+        async def _gated_titiler_get() -> httpx.Response:
+            return await titiler_get_cancel_on_disconnect(
+                request,
+                client,
+                f"{base}{forward_path}",
+                params=param_pairs,
+                headers={"Accept-Encoding": "identity"},
+            )
+
+        t0 = time.perf_counter()
+        try:
+            r, titiler_attempts = await titiler_execute_with_retry(
+                lambda: titiler_upstream_gate_run(request, _gated_titiler_get),
+                before_retry=_before_retry,
+            )
+        except httpx.RequestError as e:
+            titiler_upstream_ms = (time.perf_counter() - t0) * 1000.0
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Titiler request failed: {e}",
+                headers={
+                    "X-Titiler-Upstream-Ms": str(max(0, int(round(titiler_upstream_ms)))),
+                    "X-Titiler-Upstream-Attempts": str(
+                        max(1, int(get_settings().titiler_retry_max_attempts))
+                    ),
+                },
+            ) from e
+        titiler_upstream_ms = (time.perf_counter() - t0) * 1000.0
         ms_header = str(max(0, int(round(titiler_upstream_ms))))
         att_header = str(titiler_attempts)
         if r.status_code >= 400:

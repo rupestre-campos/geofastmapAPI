@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from pathlib import Path
@@ -27,6 +26,7 @@ from app.services.collection_type_guard import ensure_raster_collection
 from app.services.job_store import create_job
 from app.services.raster_collection_mosaic import get_or_build_collection_mosaic, internal_cog_http_url
 from app.services.titiler_error_sanitize import sanitize_titiler_upstream_error_text
+from app.services.titiler_retry import titiler_execute_with_retry
 from app.services.bulk_upload_sessions import (
     add_uploaded_part,
     create_upload_session,
@@ -607,14 +607,9 @@ async def get_raster_collection_tile(
     params = fwd.params
     response_headers = fwd.response_headers
     async with httpx.AsyncClient(timeout=60.0) as client:
-        resp: httpx.Response | None = None
-        for attempt in range(2):
-            resp = await client.get(upstream, params=params)
-            # Transient Titiler/GDAL hiccups and occasional bug-masked 500s; one retry often succeeds.
-            if resp.status_code not in (500, 502, 503, 504) or attempt == 1:
-                break
-            await asyncio.sleep(0.08)
-    assert resp is not None
+        resp, _attempts = await titiler_execute_with_retry(
+            lambda: client.get(upstream, params=params),
+        )
     if resp.status_code >= 400:
         logger.warning(
             "Titiler tile error status=%s upstream=%s collection=%s mode=%s feature_id=%s body=%s",

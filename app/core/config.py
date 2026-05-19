@@ -133,6 +133,10 @@ class Settings(BaseSettings):
     # API → Titiler httpx timeouts (mosaic tiles with many COG sources can exceed 60s cold read).
     titiler_http_connect_timeout_seconds: float = 3.0
     titiler_http_read_timeout_seconds: float = 30.0
+    # API → Titiler retries (404 during restarts, transient 5xx). Exponential backoff between attempts.
+    titiler_retry_max_attempts: int = 3
+    titiler_retry_base_seconds: float = 0.15
+    titiler_retry_max_seconds: float = 2.0
     # Max concurrent upstream Titiler HTTP calls per API worker (in-process LIFO wait queue when saturated). 0 = unlimited.
     titiler_upstream_max_concurrent: int = 8
     # OpenTelemetry tracing (export spans to OTEL Collector/Tempo when enabled).

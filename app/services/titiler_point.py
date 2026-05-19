@@ -11,6 +11,7 @@ from fastapi import HTTPException, Request
 from app.services.raster_style_display import _infer_continuous_mode
 from app.services.raster_style_spec import is_classification_style
 from app.services.titiler_error_sanitize import sanitize_titiler_upstream_error_text
+from app.services.titiler_retry import titiler_execute_with_retry
 
 
 # Query keys that must not be sent to Titiler /point (tile viz / cache / DEM encode).
@@ -393,7 +394,11 @@ async def fetch_titiler_point_json(
     """GET Titiler point endpoint; return parsed JSON or raise HTTPException."""
     base = titiler_base.rstrip("/")
     url = f"{base}{forward_path}"
-    resp = await client.get(url, params=params, headers={"Accept": "application/json"}, timeout=timeout)
+    resp, _attempts = await titiler_execute_with_retry(
+        lambda: client.get(
+            url, params=params, headers={"Accept": "application/json"}, timeout=timeout
+        ),
+    )
     if resp.status_code >= 400:
         raise HTTPException(
             status_code=resp.status_code,
