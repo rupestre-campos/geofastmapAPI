@@ -133,6 +133,13 @@
     {% if map_description %}
     <p class="meta">{{ map_description }}</p>
     {% endif %}
+    {% if owner_display_name or map_created_at_display %}
+    <p class="map-view-meta" style="margin-top:0.5rem;margin-bottom:0;">
+      {% if owner_display_name %}By {{ owner_display_name }}{% endif %}
+      {% if owner_display_name and map_created_at_display %} · {% endif %}
+      {% if map_created_at_display %}Created {{ map_created_at_display }}{% endif %}
+    </p>
+    {% endif %}
   </header>
 
   <div class="card">

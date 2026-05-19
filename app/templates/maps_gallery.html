@@ -59,8 +59,8 @@
         {% else %}
         <p class="map-card-desc meta">No description</p>
         {% endif %}
-        {% if m.owner_nickname and not m.is_owner %}
-        <p class="meta map-card-byline">By {{ m.owner_nickname }}</p>
+        {% if m.owner_display_name and not m.is_owner %}
+        <p class="meta map-card-byline">By {{ m.owner_display_name }}</p>
         {% endif %}
         {% if m.is_owner and m.share_display_names and m.share_display_names|length %}
         <p class="meta map-card-byline">Shared with {{ m.share_display_names|join(', ') }}</p>

@@ -32,7 +32,7 @@ from app.models.collection import VISIBILITY_PUBLIC
 from app.models.resource_share import RESOURCE_TYPE_MAP
 from app.schemas.map import MapCreate, MapUpdate
 from app.schemas.resource_share import ShareAdd, ShareRead
-from app.services.map_gallery_meta import build_map_gallery_item
+from app.services.map_gallery_meta import build_map_gallery_item, format_map_created_at, owner_display_name
 from app.services.raster_mosaic_version import compute_mosaic_version_id
 from app.utils.thumbnail import image_to_thumbnail
 
@@ -345,6 +345,7 @@ async def list_maps(
     if wants_html(request):
         owner_ids = [m.owner_id for m in maps_list if getattr(m, "owner_id", None) is not None]
         nick_by_id = await user_crud.get_nicknames_by_ids(db, owner_ids) if owner_ids else {}
+        owner_names = await user_crud.get_usernames_by_ids(db, owner_ids) if owner_ids else {}
         map_ids = [str(m.id) for m in maps_list]
         shares_by_map = await resource_share_crud.list_shares_for_resource_ids(
             db, RESOURCE_TYPE_MAP, map_ids
@@ -371,14 +372,15 @@ async def list_maps(
             )
             share_display: list[str] = []
             for uname in share_usernames:
-                nick = nick_by_username.get(uname)
-                if nick:
-                    share_display.append(nick)
+                display = owner_display_name(nick_by_username.get(uname), uname)
+                if display:
+                    share_display.append(display)
             item_base = _map_to_read(m, base)
             gallery = build_map_gallery_item(
                 m,
                 can_edit=can_edit,
                 owner_nickname=nick_by_id.get(m.owner_id) if m.owner_id else None,
+                owner_username=owner_names.get(m.owner_id) if m.owner_id else None,
                 share_count=len(share_usernames),
                 shared_with_me=shared_with_me,
                 share_display_names=share_display,
@@ -468,8 +470,12 @@ async def get_map(
         settings = get_settings()
         thumb_url = _thumbnail_url(base, row.id) if row.thumbnail_data else (row.thumbnail or "")
         owner_username = None
+        owner_nickname = None
         if getattr(row, "owner_id", None):
             owner_username = (await user_crud.get_usernames_by_ids(db, [row.owner_id])).get(row.owner_id)
+            owner_nickname = (await user_crud.get_nicknames_by_ids(db, [row.owner_id])).get(row.owner_id)
+        owner_display = owner_display_name(owner_nickname, owner_username)
+        map_created_at_display = format_map_created_at(row.created_at)
         can_edit = await can_edit_map(db, row.owner_id, str(row.id), current_user)
         can_edit_by_collection = await _can_edit_by_collection_for_map_layers(
             db, row.definition or {"layers": []}, current_user
@@ -491,7 +497,8 @@ async def get_map(
             map_thumbnail=thumb_url,
             map_definition=map_def_html,
             collection_titles=collection_titles,
-            owner_username=owner_username,
+            owner_display_name=owner_display,
+            map_created_at_display=map_created_at_display,
             google_maps_api_key=settings.google_maps_api_key or "",
             can_edit_map=can_edit,
             can_edit_by_collection=can_edit_by_collection,

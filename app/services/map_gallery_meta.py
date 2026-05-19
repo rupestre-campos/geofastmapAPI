@@ -7,6 +7,15 @@ from typing import Any
 from app.models.collection import VISIBILITY_LOGGED, VISIBILITY_PUBLIC
 
 
+def owner_display_name(nickname: str | None, username: str | None) -> str | None:
+    """Nickname when set, otherwise login username."""
+    nick = (nickname or "").strip()
+    if nick:
+        return nick
+    user = (username or "").strip()
+    return user or None
+
+
 def format_map_created_at(created_at) -> str | None:
     if created_at is None:
         return None
@@ -50,6 +59,7 @@ def build_map_gallery_item(
     *,
     can_edit: bool,
     owner_nickname: str | None,
+    owner_username: str | None,
     share_count: int,
     shared_with_me: bool,
     share_display_names: list[str],
@@ -70,6 +80,7 @@ def build_map_gallery_item(
     return {
         "can_edit": can_edit,
         "owner_nickname": owner_nickname,
+        "owner_display_name": owner_display_name(owner_nickname, owner_username),
         "access_label": access,
         "access_badge_class": map_access_badge_class(access),
         "share_count": share_count,

@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.services.map_gallery_meta import map_access_label, map_access_badge_class
+from app.services.map_gallery_meta import map_access_label, map_access_badge_class, owner_display_name
 from app.utils.nickname import validate_nickname
 
 
@@ -22,6 +22,18 @@ class TestValidateNickname:
     def test_rejects_too_long(self):
         with pytest.raises(ValueError, match="128"):
             validate_nickname("a" * 129)
+
+
+class TestOwnerDisplayName:
+    def test_prefers_nickname(self):
+        assert owner_display_name("Alice", "bob") == "Alice"
+
+    def test_falls_back_to_username(self):
+        assert owner_display_name(None, "bob") == "bob"
+        assert owner_display_name("", "bob") == "bob"
+
+    def test_empty_when_both_missing(self):
+        assert owner_display_name(None, None) is None
 
 
 class TestMapAccessLabel:
