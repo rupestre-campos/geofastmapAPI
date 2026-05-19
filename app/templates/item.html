@@ -40,7 +40,7 @@
         {% endif %}
         {% if username %}
         <a href="{{ base }}/processes?f=html&amp;mode=feature&amp;feature_collection_id={{ collection_id | urlencode }}&amp;feature_id={{ feature.id | urlencode }}" class="btn">Process feature (intersection / erase)</a>
-        {% if ct != 'raster' %}
+        {% if ct != 'raster' or username %}
         <button type="button" class="btn" id="btn-add-to-map">Add to map</button>
         {% endif %}
         {% endif %}
@@ -79,7 +79,11 @@
     </table>
   </div>
 
-  {% if ct != 'raster' %}
+  {% if ct == 'raster' and username %}
+  {% set atm_title = 'Add raster item to a map' %}
+  {% set atm_description = 'Adds this raster item to a new or existing map.' %}
+  {% include '_add_to_map_modal.html' %}
+  {% elif ct != 'raster' %}
   <div id="add-to-map-modal" class="modal" role="dialog" aria-hidden="true">
     <div class="modal-backdrop" id="add-to-map-backdrop"></div>
     <div class="modal-content">
@@ -118,6 +122,9 @@
   <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
   <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
+  {% if ct == 'raster' and username %}
+  <script src="{{ base }}/static/js/geofastmap-add-to-map.js"></script>
+  {% endif %}
   <script>
     const base = {{ base | tojson }};
     const collectionId = {{ collection_id | tojson }};
@@ -368,7 +375,18 @@
     })();
 
     (function() {
-      if (isRaster) return;
+      if (isRaster) {
+        if (window.GeofastmapAddToMap && document.getElementById('btn-add-to-map')) {
+          GeofastmapAddToMap.bindRasterCollection({
+            base: base,
+            collectionId: collectionId,
+            featureId: featureId,
+            openButtonId: 'btn-add-to-map',
+            defaultMapName: function() { return ('Item: ' + featureId).slice(0, 120); }
+          });
+        }
+        return;
+      }
       var addModal = document.getElementById('add-to-map-modal');
       var addBackdrop = document.getElementById('add-to-map-backdrop');
       var addClose = document.getElementById('add-to-map-close');

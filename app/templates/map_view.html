@@ -55,6 +55,40 @@
     .map-view-meta { margin-top: var(--space); font-size: 0.9rem; color: var(--text-secondary); }
     .terrain-controls { margin-top: 8px; display: none; align-items: center; gap: 10px; flex-wrap: wrap; }
     .terrain-controls.active { display: flex; }
+    .raster-opacity-controls { margin-top: 8px; display: none; }
+    .raster-opacity-controls.active { display: block; }
+    .raster-opacity-controls-title { font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); margin: 0 0 8px; }
+    .raster-opacity-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px 16px;
+    }
+    @media (max-width: 900px) {
+      .raster-opacity-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 560px) {
+      .raster-opacity-grid { grid-template-columns: 1fr; }
+    }
+    .raster-opacity-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .raster-opacity-cell label {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .raster-opacity-cell .raster-opacity-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .raster-opacity-cell input[type="range"] { flex: 1; min-width: 0; }
+    .raster-opacity-cell .meta { flex-shrink: 0; min-width: 2.5em; text-align: right; }
     /* View-only style toolbox (same CSS as editor, trimmed) */
     .style-toolbox { margin-top: 0; padding: var(--space); display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--space); }
     .style-toolbox-section { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space); }
@@ -245,6 +279,10 @@
       <label for="terrain-exaggeration">Terrain exaggeration</label>
       <input type="range" id="terrain-exaggeration" min="0" max="5" step="0.5" value="1">
       <span id="terrain-exaggeration-value" class="meta">1.0x</span>
+    </div>
+    <div class="raster-opacity-controls" id="raster-opacity-controls" aria-hidden="true">
+      <p class="raster-opacity-controls-title">Raster opacity</p>
+      <div class="raster-opacity-grid" id="raster-opacity-grid"></div>
     </div>
   </div>
 
@@ -678,6 +716,81 @@
         layer.style_spec = layer.style_spec && typeof layer.style_spec === 'object' ? layer.style_spec : {};
         layer.style_spec.rasterOpacity = v;
         try { if (map.getLayer(sid + '-raster')) map.setPaintProperty(sid + '-raster', 'raster-opacity', v); } catch (e) {}
+      }
+      function rasterLayerOpacityLabel(layer) {
+        var cid = layer.collection_id || layer.collectionId || '';
+        if (cid === '_mosaic' || cid === '_stac') {
+          var mv = layer.mosaic_view_id || layer.mosaicViewId;
+          if (mv) return 'Mosaic ' + String(mv).slice(0, 12);
+          return layer.layer_id || cid;
+        }
+        return layerDisplayNameForLegend(cid) || layer.layer_id || cid;
+      }
+      function syncPanelRasterOpacitySlider(layer) {
+        if (!layer || _viewStyleSelectedKey !== layerKey(layer)) return;
+        var ro = document.getElementById('map-view-raster-opacity');
+        var rov = document.getElementById('map-view-raster-opacity-val');
+        if (!ro) return;
+        var cur = (layer.style_spec && layer.style_spec.rasterOpacity != null) ? Number(layer.style_spec.rasterOpacity) : 1;
+        if (!isFinite(cur) || cur < 0) cur = 1;
+        if (cur > 1) cur = 1;
+        var pct = Math.round(cur * 100);
+        ro.value = String(pct);
+        if (rov) rov.textContent = pct + '%';
+      }
+      function setupRasterOpacityBar() {
+        var wrap = document.getElementById('raster-opacity-controls');
+        var grid = document.getElementById('raster-opacity-grid');
+        if (!wrap || !grid) return;
+        var targets = layers.filter(function(l) {
+          return layerRasterTrue(l) && terrainRasterOverlayWanted(l) && (l.tiles_url || l.mosaic_view_id || l.mosaicViewId);
+        });
+        grid.innerHTML = '';
+        if (!targets.length) {
+          wrap.classList.remove('active');
+          wrap.setAttribute('aria-hidden', 'true');
+          return;
+        }
+        wrap.classList.add('active');
+        wrap.setAttribute('aria-hidden', 'false');
+        targets.forEach(function(layer) {
+          var lk = layerKey(layer);
+          var cur = (layer.style_spec && layer.style_spec.rasterOpacity != null) ? Number(layer.style_spec.rasterOpacity) : 1;
+          if (!isFinite(cur) || cur < 0) cur = 1;
+          if (cur > 1) cur = 1;
+          var pct = Math.round(cur * 100);
+          var cell = document.createElement('div');
+          cell.className = 'raster-opacity-cell';
+          var lbl = document.createElement('label');
+          lbl.setAttribute('for', 'raster-opacity-' + lk);
+          lbl.textContent = rasterLayerOpacityLabel(layer);
+          lbl.title = rasterLayerOpacityLabel(layer);
+          var row = document.createElement('div');
+          row.className = 'raster-opacity-row';
+          var slider = document.createElement('input');
+          slider.type = 'range';
+          slider.min = '0';
+          slider.max = '100';
+          slider.value = String(pct);
+          slider.id = 'raster-opacity-' + lk;
+          var val = document.createElement('span');
+          val.className = 'meta';
+          val.textContent = pct + '%';
+          slider.addEventListener('input', function() {
+            var p = parseInt(slider.value, 10);
+            if (!isFinite(p)) p = 100;
+            if (p < 0) p = 0;
+            if (p > 100) p = 100;
+            val.textContent = p + '%';
+            applyRasterOpacityForLayer(layer, p / 100);
+            syncPanelRasterOpacitySlider(layer);
+          });
+          row.appendChild(slider);
+          row.appendChild(val);
+          cell.appendChild(lbl);
+          cell.appendChild(row);
+          grid.appendChild(cell);
+        });
       }
       function setupViewStyleUi() {
         var panel = document.getElementById('map-view-layer-panel');
@@ -1502,6 +1615,7 @@
               terrainEnabled = !!terrainSourceId;
               applyTerrain();
               try { setupViewStyleUi(); } catch (eStyleUi) {}
+              try { setupRasterOpacityBar(); } catch (eRasterOp) {}
               try { if (typeof updateLayerInfoPanel === 'function') updateLayerInfoPanel(); } catch (eInfoUi) {}
               return;
             }

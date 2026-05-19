@@ -1,0 +1,35 @@
+{# Reusable add-to-map modal. Set atm_prefix (default add-to-map), atm_title, atm_description. #}
+{% set atm_prefix = atm_prefix | default('add-to-map') %}
+{% set atm_title = atm_title | default('Add this layer to a map') %}
+{% set atm_description = atm_description | default('Add to a new map or an existing one.') %}
+<div id="{{ atm_prefix }}-modal" class="modal" role="dialog" aria-hidden="true">
+  <div class="modal-backdrop" id="{{ atm_prefix }}-backdrop"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 class="modal-title">{{ atm_title }}</h3>
+      <button type="button" class="modal-close" id="{{ atm_prefix }}-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="meta">{{ atm_description }}</p>
+      <div class="form-row" style="margin-top:12px;">
+        <label><input type="radio" name="{{ atm_prefix }}-choice" value="new" checked> Create new map</label>
+      </div>
+      <div class="form-row">
+        <label><input type="radio" name="{{ atm_prefix }}-choice" value="existing"> Add to existing map</label>
+      </div>
+      <div class="form-row" id="{{ atm_prefix }}-new-wrap">
+        <label>Map name</label>
+        <input type="text" id="{{ atm_prefix }}-name" placeholder="Map name" style="width:100%;max-width:320px;">
+      </div>
+      <div class="form-row" id="{{ atm_prefix }}-existing-wrap" style="display:none;">
+        <label>Existing map</label>
+        <select id="{{ atm_prefix }}-select" style="min-width:200px;"></select>
+      </div>
+      <div class="btn-group" style="margin-top:16px;">
+        <button type="button" class="btn btn-primary" id="{{ atm_prefix }}-submit">Add</button>
+        <button type="button" class="btn" id="{{ atm_prefix }}-cancel">Cancel</button>
+      </div>
+      <p id="{{ atm_prefix }}-message" class="meta" style="margin-top:8px;"></p>
+    </div>
+  </div>
+</div>
