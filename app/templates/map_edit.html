@@ -612,6 +612,19 @@
       function layerKey(layer) { return (layer && (layer.layer_id || layer.collectionId)) || (layer && layer.collection_id) || ''; }
       function sourceId(collectionIdOrKey) { return 'layer-' + String(collectionIdOrKey).replace(/[^a-zA-Z0-9_-]/g, '_'); }
       /** Effective 2D raster overlay: explicit terrain_raster_overlay, else legacy (terrain-only maps hid PNG). */
+      function demTerrainDemv(layer) {
+        if (layer && layer.dem_terrain_demv) return String(layer.dem_terrain_demv);
+        return '2';
+      }
+      function demTerrainMaxZoom(layer) {
+        if (layer && layer.dem_terrain_maxzoom != null && isFinite(Number(layer.dem_terrain_maxzoom))) {
+          return Number(layer.dem_terrain_maxzoom);
+        }
+        if (layer && layer.dem_terrain_smooth && layer.dem_terrain_smooth.maxzoom != null) {
+          return Number(layer.dem_terrain_smooth.maxzoom);
+        }
+        return 14;
+      }
       function terrainRasterOverlayWanted(layer) {
         if (!layer) return true;
         if (layer.terrain_raster_overlay === false) return false;
@@ -703,9 +716,11 @@
               var demSid = sid + '-dem';
               var demEncoding = layer.terrain_encoding || ((String(layer.dem_encoding || 'terrainrgb') === 'terrarium') ? 'terrarium' : 'mapbox');
               var demAlg = demEncoding === 'terrarium' ? 'terrarium' : 'terrainrgb';
-              var demUrl = rasterTU + (rasterTU.indexOf('?') >= 0 ? '&' : '?') + 'dem_encoding=' + encodeURIComponent(demAlg) + '&demv=2';
+              var demv = demTerrainDemv(layer);
+              var demUrl = rasterTU + (rasterTU.indexOf('?') >= 0 ? '&' : '?') + 'dem_encoding=' + encodeURIComponent(demAlg) + '&demv=' + encodeURIComponent(demv);
+              var demMaxZ = demTerrainMaxZoom(layer);
               if (!map.getSource(demSid)) {
-                map.addSource(demSid, { type: 'raster-dem', tiles: [demUrl], tileSize: 256, encoding: demEncoding });
+                map.addSource(demSid, { type: 'raster-dem', tiles: [demUrl], tileSize: 256, encoding: demEncoding, maxzoom: demMaxZ });
               }
               if (!terrainSourceId) terrainSourceId = demSid;
               if (layer.terrain_exaggeration != null && isFinite(Number(layer.terrain_exaggeration))) {
@@ -1831,7 +1846,10 @@
                           terrain_enabled: info.collection_is_dem === true,
                           terrain_encoding: info.collection_dem_encoding === 'terrarium' ? 'terrarium' : 'mapbox',
                           terrain_exaggeration: info.collection_is_dem === true ? 1.0 : null,
-                          terrain_raster_overlay: info.collection_is_dem === true ? true : undefined
+                          terrain_raster_overlay: info.collection_is_dem === true ? true : undefined,
+                          dem_terrain_smooth: info.dem_terrain_smooth || null,
+                          dem_terrain_maxzoom: (info.dem_terrain_smooth && info.dem_terrain_smooth.maxzoom != null) ? info.dem_terrain_smooth.maxzoom : 14,
+                          dem_terrain_demv: info.dem_terrain_demv || null
                         });
                         renderLayers();
                         syncMapFromState();
@@ -1923,7 +1941,10 @@
           terrain_encoding: (mapLayerHint && mapLayerHint.terrain_encoding) ? mapLayerHint.terrain_encoding : null,
           terrain_raster_overlay: (mapLayerHint && (mapLayerHint.terrain_raster_overlay === true || mapLayerHint.terrain_raster_overlay === false))
             ? mapLayerHint.terrain_raster_overlay
-            : (mapLayerHint && mapLayerHint.terrain_enabled === true ? true : undefined)
+            : (mapLayerHint && mapLayerHint.terrain_enabled === true ? true : undefined),
+          dem_terrain_smooth: mapLayerHint && mapLayerHint.dem_terrain_smooth ? mapLayerHint.dem_terrain_smooth : null,
+          dem_terrain_maxzoom: mapLayerHint && mapLayerHint.dem_terrain_maxzoom != null ? mapLayerHint.dem_terrain_maxzoom : null,
+          dem_terrain_demv: mapLayerHint && mapLayerHint.dem_terrain_demv ? mapLayerHint.dem_terrain_demv : null
         });
         var prevBefore = state.layers.length > 1 ? sourceId(layerKey(state.layers[state.layers.length - 2])) + '-fill' : undefined;
         addLayerToMap(state.layers[state.layers.length - 1], spec, state.layers.length - 1, prevBefore).then(function() {
@@ -2382,7 +2403,10 @@
                           terrain_enabled: info.collection_is_dem === true,
                           terrain_encoding: info.collection_dem_encoding === 'terrarium' ? 'terrarium' : 'mapbox',
                           terrain_exaggeration: info.collection_is_dem === true ? 1.0 : null,
-                          terrain_raster_overlay: info.collection_is_dem === true ? true : undefined
+                          terrain_raster_overlay: info.collection_is_dem === true ? true : undefined,
+                          dem_terrain_smooth: info.dem_terrain_smooth || null,
+                          dem_terrain_maxzoom: (info.dem_terrain_smooth && info.dem_terrain_smooth.maxzoom != null) ? info.dem_terrain_smooth.maxzoom : 14,
+                          dem_terrain_demv: info.dem_terrain_demv || null
                         });
                       renderLayers();
                       syncMapFromState();

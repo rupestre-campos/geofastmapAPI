@@ -17,6 +17,11 @@ from app.services.raster_mosaic_version import (
     compute_mosaic_version_id,
     mosaic_mv_matches_request,
 )
+from app.services.raster_dem_settings import (
+    append_dem_terrain_smooth_titiler_params,
+    dem_terrain_smooth_demv,
+    dem_terrain_smooth_settings,
+)
 from app.services.raster_style_spec import (
     is_classification_style,
     titiler_params_from_classification_style,
@@ -104,6 +109,7 @@ async def prepare_raster_collection_titiler(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     ensure_raster_collection(collection)
     collection_is_dem, collection_dem_encoding = collection_dem_settings(collection)
+    dem_smooth = dem_terrain_smooth_settings(collection, collection_is_dem=collection_is_dem)
 
     titiler = settings.titiler_internal_url.rstrip("/")
     if not titiler:
@@ -234,6 +240,20 @@ async def prepare_raster_collection_titiler(
     # samples; sending algorithm breaks mosaic/cog point for DEM collections (empty values, Titiler bugs).
     if dem_algorithm and kind != "point":
         params.append(("algorithm", dem_algorithm))
+
+    if dem_request and kind == "tiles":
+        append_dem_terrain_smooth_titiler_params(
+            params,
+            z=z,
+            kind=kind,
+            dem_request=True,
+            smooth=dem_smooth,
+        )
+        demv_client = (request.query_params.get("demv") or "").strip()
+        demv_expected = dem_terrain_smooth_demv(dem_smooth)
+        if not demv_client or demv_client != demv_expected:
+            params[:] = [(k, v) for k, v in params if k != "demv"]
+            params.append(("demv", demv_expected))
 
     if kind == "point" and collection_is_dem and not dem_request:
         if not any(k == "bidx" for k, _ in params):

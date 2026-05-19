@@ -150,6 +150,14 @@
             : hint && hint.terrain_enabled === true
               ? true
               : undefined,
+        dem_terrain_smooth: (hint && hint.dem_terrain_smooth) || info.dem_terrain_smooth || null,
+        dem_terrain_maxzoom:
+          hint && hint.dem_terrain_maxzoom != null
+            ? hint.dem_terrain_maxzoom
+            : info.dem_terrain_smooth && info.dem_terrain_smooth.maxzoom != null
+              ? info.dem_terrain_smooth.maxzoom
+              : 14,
+        dem_terrain_demv: (hint && hint.dem_terrain_demv) || info.dem_terrain_demv || null,
       };
     }
 
@@ -168,6 +176,11 @@
         terrain_encoding: demEnc,
         terrain_exaggeration: isDem ? 1.0 : null,
         terrain_raster_overlay: isDem ? true : undefined,
+        dem_terrain_smooth: info.dem_terrain_smooth || null,
+        dem_terrain_maxzoom: info.dem_terrain_smooth && info.dem_terrain_smooth.maxzoom != null
+          ? info.dem_terrain_smooth.maxzoom
+          : 14,
+        dem_terrain_demv: info.dem_terrain_demv || null,
       };
     }
 

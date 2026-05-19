@@ -34,6 +34,7 @@ from app.services.bulk_upload_sessions import (
     get_upload_session,
 )
 from app.services.raster_style_spec import titiler_nodata_param
+from app.services.raster_dem_settings import dem_terrain_smooth_demv, dem_terrain_smooth_settings
 from app.services.raster_titiler_forward import prepare_raster_collection_titiler
 from app.services.titiler_point import enrich_point_response, fetch_mosaic_point_with_fallback, fetch_titiler_point_json
 from app.services.raster_batch import (
@@ -175,6 +176,8 @@ async def list_raster_items(
     item_ids = await _raster_collection_item_ids(db, collection_id)
     mosaic_vid = compute_mosaic_version_id(collection_id, item_ids)
     collection_is_dem, collection_dem_encoding = _collection_dem_settings(collection)
+    dem_smooth = dem_terrain_smooth_settings(collection, collection_is_dem=collection_is_dem)
+    dem_terrain_demv = dem_terrain_smooth_demv(dem_smooth)
     default_style = await raster_styles_crud.get_default_raster_style(db, collection_id)
     style_version = _style_version_token(default_style)
     items = []
@@ -200,6 +203,9 @@ async def list_raster_items(
         }
         if terrain_on:
             map_layer["terrain_raster_overlay"] = True
+            map_layer["dem_terrain_smooth"] = dem_smooth
+            map_layer["dem_terrain_maxzoom"] = dem_smooth.get("maxzoom", 14)
+            map_layer["dem_terrain_demv"] = dem_terrain_demv
         items.append(
             {
                 "id": fid,
@@ -245,6 +251,8 @@ async def list_raster_items(
             "terrain_tilejson_url": f"{base}/collections/{collection_id}/rasters/terrain/tilejson.json",
             "collection_is_dem": collection_is_dem,
             "collection_dem_encoding": collection_dem_encoding,
+            "dem_terrain_smooth": dem_smooth,
+            "dem_terrain_demv": dem_terrain_demv,
             "features_bbox": features_bbox,
             "items": items,
         },
@@ -715,6 +723,7 @@ async def get_raster_collection_terrain_tilejson(
     selected_mode = (mode or "mosaic").lower()
     selected_feature_id = feature_id
     algorithm = _normalize_dem_encoding(dem_encoding) if dem_encoding is not None else collection_dem_encoding
+    terrain_is_dem = collection_is_dem
     if selected_mode == "item":
         if not selected_feature_id:
             if len(item_ids) == 1:
@@ -729,6 +738,7 @@ async def get_raster_collection_terrain_tilejson(
             raise HTTPException(status_code=400, detail="Selected item is not marked as DEM")
         if dem_encoding is None and is_dem:
             algorithm = item_alg
+        terrain_is_dem = collection_is_dem or is_dem
         bounds = (f.properties or {}).get("raster", {}).get("meta", {}).get("bounds")
     else:
         # For mosaic, require at least one DEM-marked item and merge item bounds.
@@ -754,21 +764,26 @@ async def get_raster_collection_terrain_tilejson(
             raise HTTPException(status_code=400, detail="No DEM-marked raster items found in collection")
         if merged[0] <= merged[2] and merged[1] <= merged[3]:
             bounds = merged
-    params = [("mode", selected_mode), ("dem_encoding", algorithm), ("demv", "2")]
+        terrain_is_dem = collection_is_dem or found_dem
+    dem_smooth = dem_terrain_smooth_settings(collection, collection_is_dem=terrain_is_dem)
+    demv = dem_terrain_smooth_demv(dem_smooth)
+    params = [("mode", selected_mode), ("dem_encoding", algorithm), ("demv", demv)]
     if selected_feature_id:
         params.append(("feature_id", selected_feature_id))
     tile_url = (
         f"{base}/collections/{collection_id}/rasters/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png?"
         + "&".join(f"{k}={v}" for k, v in params)
     )
+    terrain_maxzoom = int(dem_smooth.get("maxzoom", 14))
     payload = {
         "tilejson": "2.2.0",
         "name": f"{collection_id}-terrain",
         "scheme": "xyz",
         "tiles": [tile_url],
         "minzoom": 0,
-        "maxzoom": 14,
+        "maxzoom": terrain_maxzoom,
         "encoding": _maplibre_dem_encoding(algorithm),
+        "dem_terrain_smooth": dem_smooth,
     }
     if isinstance(bounds, list) and len(bounds) >= 4:
         payload["bounds"] = [float(bounds[0]), float(bounds[1]), float(bounds[2]), float(bounds[3])]

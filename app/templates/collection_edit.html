@@ -265,6 +265,29 @@
       <button type="button" class="btn btn-sm" id="btn-save-collection-dem">Save collection DEM</button>
       <button type="button" class="btn btn-sm btn-primary" id="btn-dem-add-to-map">Add DEM to map</button>
     </div>
+    <details class="layer-style-collapsible" style="margin-top:10px;" open>
+      <summary>Terrain smoothing (high zoom)</summary>
+      <p class="meta" style="margin:8px 0;">Uses Titiler bilinear/cubic resampling when zoom ≥ threshold (reduces blocky 30 m DEM in 3D). Not a full Gaussian blur—pre-smooth COGs for stronger effect.</p>
+      <div class="form-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <label style="margin:0;">
+          <input type="checkbox" id="dem-smooth-enabled">
+          Smooth terrain tiles at high zoom
+        </label>
+      </div>
+      <div class="form-row" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <label for="dem-smooth-min-zoom" class="label-text">From zoom</label>
+        <input type="number" id="dem-smooth-min-zoom" min="0" max="22" step="1" value="14" style="width:4rem;">
+        <label for="dem-smooth-resampling" class="label-text">Resampling</label>
+        <select id="dem-smooth-resampling">
+          <option value="bilinear">bilinear</option>
+          <option value="cubic">cubic (smoother)</option>
+          <option value="lanczos">lanczos</option>
+          <option value="nearest">nearest (sharp)</option>
+        </select>
+        <label for="dem-smooth-maxzoom" class="label-text">Terrain max zoom</label>
+        <input type="number" id="dem-smooth-maxzoom" min="0" max="22" step="1" value="14" style="width:4rem;">
+      </div>
+    </details>
     <p class="meta" id="dem-panel-status"></p>
     <p id="terrain-tilejson-url" class="meta"></p>
     <pre id="terrain-maplibre-snippet" class="meta" style="white-space:pre-wrap;"></pre>
@@ -1542,20 +1565,52 @@
       var saveCollectionDemBtn = document.getElementById('btn-save-collection-dem');
       var panelStatus = document.getElementById('dem-panel-status');
       if (!tilejsonUrlEl || !snippetEl || !collectionDemEnabled || !saveCollectionDemBtn || !panelStatus) return;
+      var smoothCfgInit = collectionRasterSettings.dem_terrain_smooth;
+      if (smoothCfgInit && typeof smoothCfgInit === 'object') {
+        var se0 = document.getElementById('dem-smooth-enabled');
+        var sm0 = document.getElementById('dem-smooth-min-zoom');
+        var sr0 = document.getElementById('dem-smooth-resampling');
+        var sz0 = document.getElementById('dem-smooth-maxzoom');
+        if (se0) se0.checked = smoothCfgInit.enabled !== false;
+        if (sm0 && smoothCfgInit.min_zoom != null) sm0.value = String(smoothCfgInit.min_zoom);
+        if (sr0 && smoothCfgInit.resampling) sr0.value = String(smoothCfgInit.resampling);
+        if (sz0 && smoothCfgInit.maxzoom != null) sz0.value = String(smoothCfgInit.maxzoom);
+      }
       if (!saveCollectionDemBtn.dataset.bound) {
         saveCollectionDemBtn.dataset.bound = '1';
         saveCollectionDemBtn.onclick = async function() {
           try {
             saveCollectionDemBtn.disabled = true;
             var isDem = !!collectionDemEnabled.checked;
+            var smoothEnabled = document.getElementById('dem-smooth-enabled');
+            var smoothMinZ = document.getElementById('dem-smooth-min-zoom');
+            var smoothRes = document.getElementById('dem-smooth-resampling');
+            var smoothMaxZ = document.getElementById('dem-smooth-maxzoom');
+            var demTerrainSmooth = {
+              enabled: !!(smoothEnabled && smoothEnabled.checked),
+              min_zoom: smoothMinZ ? parseInt(smoothMinZ.value, 10) : 14,
+              resampling: smoothRes ? smoothRes.value : 'bilinear',
+              reproject: smoothRes ? smoothRes.value : 'bilinear',
+              maxzoom: smoothMaxZ ? parseInt(smoothMaxZ.value, 10) : 14,
+              padding: 1
+            };
+            if (!isFinite(demTerrainSmooth.min_zoom)) demTerrainSmooth.min_zoom = 14;
+            if (!isFinite(demTerrainSmooth.maxzoom)) demTerrainSmooth.maxzoom = 14;
             var rr = await fetch(base + '/collections/' + encodeURIComponent(collectionId), {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-              body: JSON.stringify({ raster_settings: { is_dem: isDem, dem_encoding: 'terrainrgb' } })
+              body: JSON.stringify({
+                raster_settings: {
+                  is_dem: isDem,
+                  dem_encoding: 'terrainrgb',
+                  dem_terrain_smooth: demTerrainSmooth
+                }
+              })
             });
             if (!rr.ok) throw new Error('Failed updating collection DEM settings');
             collectionRasterSettings.is_dem = isDem;
             collectionRasterSettings.dem_encoding = 'terrainrgb';
+            collectionRasterSettings.dem_terrain_smooth = demTerrainSmooth;
             panelStatus.textContent = isDem ? 'Collection marked as DEM.' : 'Collection DEM disabled.';
             await refreshRasterDemPanel();
           } catch (e) {
@@ -1572,6 +1627,16 @@
         collectionDemEnabled.checked = !!listData.collection_is_dem;
         collectionRasterSettings.is_dem = !!listData.collection_is_dem;
         collectionRasterSettings.dem_encoding = 'terrainrgb';
+        var smoothCfg = listData.dem_terrain_smooth || collectionRasterSettings.dem_terrain_smooth || {};
+        collectionRasterSettings.dem_terrain_smooth = smoothCfg;
+        var smoothEnabledEl = document.getElementById('dem-smooth-enabled');
+        var smoothMinEl = document.getElementById('dem-smooth-min-zoom');
+        var smoothResEl = document.getElementById('dem-smooth-resampling');
+        var smoothMaxEl = document.getElementById('dem-smooth-maxzoom');
+        if (smoothEnabledEl) smoothEnabledEl.checked = smoothCfg.enabled !== false;
+        if (smoothMinEl && smoothCfg.min_zoom != null) smoothMinEl.value = String(smoothCfg.min_zoom);
+        if (smoothResEl && smoothCfg.resampling) smoothResEl.value = String(smoothCfg.resampling);
+        if (smoothMaxEl && smoothCfg.maxzoom != null) smoothMaxEl.value = String(smoothCfg.maxzoom);
         panelStatus.textContent = 'Raster items: ' + (listData.item_count || 0);
         var tjUrl = base + '/collections/' + encodeURIComponent(collectionId) + '/rasters/terrain/tilejson.json?dem_encoding=terrainrgb';
         tilejsonUrlEl.textContent = 'Terrain TileJSON: ' + tjUrl;
