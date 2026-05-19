@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any, Tuple
 
 from geoalchemy2.elements import WKTElement
-from geoalchemy2.functions import ST_Intersects, ST_MakeEnvelope
+from geoalchemy2.functions import ST_Intersects, ST_MakeEnvelope, ST_MakePoint, ST_SetSRID
 from shapely.geometry import mapping, shape
 from shapely.ops import unary_union
 from sqlalchemy import Float, and_, cast, func, literal_column, or_, select, text, update
@@ -178,6 +178,29 @@ async def list_features_for_collection(
         {"cid": collection_id},
     )
     return [_row_to_logical_feature(row) for row in r.fetchall()]
+
+
+async def find_raster_feature_id_at_point(
+    db: AsyncSession,
+    collection_id: str,
+    lon: float,
+    lat: float,
+) -> str | None:
+    """Return one raster feature id whose geometry contains (lon, lat), or None."""
+    point = ST_SetSRID(ST_MakePoint(lon, lat), 4326)
+    stmt = (
+        select(Feature.id)
+        .where(
+            Feature.collection_id == collection_id,
+            Feature.geometry.isnot(None),
+            ST_Intersects(Feature.geometry, point),
+        )
+        .distinct()
+        .limit(1)
+    )
+    r = await db.execute(stmt)
+    row = r.first()
+    return str(row[0]) if row else None
 
 
 async def list_raster_feature_rows_for_collection(

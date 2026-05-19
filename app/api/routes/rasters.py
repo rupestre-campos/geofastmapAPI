@@ -25,7 +25,7 @@ from app.services.coverages import CogPathOutsideStorageError, cog_path_for, res
 from app.services.bulk_storage import get_bulk_storage
 from app.services.collection_type_guard import ensure_raster_collection
 from app.services.job_store import create_job
-from app.services.raster_collection_mosaic import get_or_build_collection_mosaic
+from app.services.raster_collection_mosaic import get_or_build_collection_mosaic, internal_cog_http_url
 from app.services.titiler_error_sanitize import sanitize_titiler_upstream_error_text
 from app.services.bulk_upload_sessions import (
     add_uploaded_part,
@@ -659,6 +659,17 @@ async def get_raster_collection_point(
         feature_id=feature_id,
         style_id=style_id,
     )
+    extra_cog_urls: list[str] = []
+    if fwd.forward_path.startswith("/mosaicjson/point/"):
+        hit_id = await features_crud.find_raster_feature_id_at_point(db, collection_id, lon, lat)
+        if hit_id:
+            http_u = internal_cog_http_url(settings, collection_id, hit_id)
+            if http_u:
+                extra_cog_urls.append(http_u)
+            det = cog_path_for(settings.raster_storage_path, collection_id, hit_id)
+            if det.exists():
+                extra_cog_urls.append(os.fspath(det))
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         if fwd.forward_path.startswith("/mosaicjson/point/"):
             raw = await fetch_mosaic_point_with_fallback(
@@ -667,6 +678,7 @@ async def get_raster_collection_point(
                 fwd.forward_path,
                 fwd.params,
                 shared_secret=settings.titiler_internal_secret,
+                extra_cog_urls=extra_cog_urls or None,
             )
         else:
             raw = await fetch_titiler_point_json(

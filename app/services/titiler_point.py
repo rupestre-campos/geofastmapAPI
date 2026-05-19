@@ -132,6 +132,11 @@ def _values_list(titiler_body: dict) -> list[Any]:
     return []
 
 
+def _has_sample_values(titiler_body: dict) -> bool:
+    """True when Titiler returned at least one non-null sampled value."""
+    return any(v is not None for v in _values_list(titiler_body))
+
+
 def _band_names_list(titiler_body: dict) -> list[str]:
     names = titiler_body.get("band_names")
     if isinstance(names, list):
@@ -242,7 +247,7 @@ def enrich_point_response(titiler_body: dict, style_spec: dict | None) -> dict[s
                 label = str(colormap)
             else:
                 label = "Band"
-            for i, val in enumerate(values or [None]):
+            for i, val in enumerate(values):
                 bl = label if len(values) <= 1 else (band_names[i] if i < len(band_names) else f"b{i + 1}")
                 title = str(colormap) if colormap and len(values) == 1 else bl
                 rows.append(
@@ -281,7 +286,15 @@ def enrich_point_response(titiler_body: dict, style_spec: dict | None) -> dict[s
             )
 
     if not rows and not values:
-        rows.append({"role": "info", "label": "", "value": None, "display": "No data", "is_nodata": True})
+        rows.append(
+            {
+                "role": "info",
+                "label": "",
+                "value": None,
+                "display": "No raster coverage at this location",
+                "is_nodata": True,
+            }
+        )
 
     return {
         "coordinates": coords,
@@ -311,9 +324,61 @@ def _titiler_params_only_url(params: list[tuple[str, str]]) -> list[tuple[str, s
 
 
 def _titiler_read_params(params: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """Params for raw value reads (bidx, nodata, pixel_selection), excluding url and viz."""
-    skip = frozenset({"url", "colormap", "colormap_type", "colormap_name", "rescale", "color_formula", "algorithm", "mv"})
+    """Params for raw COG value reads (bidx, nodata), excluding url, viz, and mosaic-only keys."""
+    skip = frozenset(
+        {
+            "url",
+            "colormap",
+            "colormap_type",
+            "colormap_name",
+            "rescale",
+            "color_formula",
+            "algorithm",
+            "mv",
+            "pixel_selection",
+        }
+    )
     return [(k, v) for k, v in params if k not in skip]
+
+
+def _dedupe_urls(urls: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in urls:
+        u = (u or "").strip()
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        out.append(u)
+    return out
+
+
+async def _try_cog_point_reads(
+    client: httpx.AsyncClient,
+    titiler_base: str,
+    coord: str,
+    cog_urls: list[str],
+    read_params: list[tuple[str, str]],
+    *,
+    shared_secret: str | None = None,
+    timeout: float = 30.0,
+) -> dict | None:
+    for cog_url in _dedupe_urls(cog_urls):
+        cog_params = [("url", cog_url)] + read_params
+        try:
+            body = await fetch_titiler_point_json(
+                client,
+                titiler_base,
+                f"/cog/point/{coord}",
+                cog_params,
+                shared_secret=shared_secret,
+                timeout=timeout,
+            )
+        except HTTPException:
+            continue
+        if _has_sample_values(body):
+            return body
+    return None
 
 
 async def fetch_titiler_point_json(
@@ -355,14 +420,15 @@ async def fetch_mosaic_point_with_fallback(
     *,
     shared_secret: str | None = None,
     timeout: float = 30.0,
+    extra_cog_urls: list[str] | None = None,
 ) -> dict:
     """
-    Mosaic point read; if empty, resolve intersecting COG via /point/.../assets and read /cog/point.
+    Mosaic point read; if empty, try DB-resolved COG URLs, then Titiler /point/.../assets + /cog/point.
     """
     raw = await fetch_titiler_point_json(
         client, titiler_base, forward_path, params, shared_secret=shared_secret, timeout=timeout
     )
-    if _values_list(raw):
+    if _has_sample_values(raw):
         return raw
     if not forward_path.startswith("/mosaicjson/point/"):
         return raw
@@ -371,8 +437,24 @@ async def fetch_mosaic_point_with_fallback(
     if not coord:
         return raw
 
-    assets_path = f"/mosaicjson/point/{coord}/assets"
+    read_params = _titiler_read_params(params)
     url_only = _titiler_params_only_url(params)
+
+    if extra_cog_urls:
+        hit = await _try_cog_point_reads(
+            client,
+            titiler_base,
+            coord,
+            list(extra_cog_urls),
+            read_params,
+            shared_secret=shared_secret,
+            timeout=timeout,
+        )
+        if hit is not None:
+            return hit
+
+    assets_path = f"/mosaicjson/point/{coord}/assets"
+    cog_urls: list[str] = []
     try:
         resp = await client.get(
             f"{titiler_base.rstrip('/')}{assets_path}",
@@ -380,43 +462,36 @@ async def fetch_mosaic_point_with_fallback(
             headers={"Accept": "application/json"},
             timeout=timeout,
         )
-        if resp.status_code >= 400:
-            return raw
-        assets_body = resp.json()
+        if resp.status_code < 400:
+            assets_body = resp.json()
+            if isinstance(assets_body, list):
+                for item in assets_body:
+                    if isinstance(item, str) and item.strip():
+                        cog_urls.append(item.strip())
+                    elif isinstance(item, dict):
+                        u = item.get("url") or item.get("href")
+                        if u:
+                            cog_urls.append(str(u))
+            elif isinstance(assets_body, dict):
+                for item in assets_body.get("assets") or assets_body.get("urls") or []:
+                    if isinstance(item, str) and item.strip():
+                        cog_urls.append(item.strip())
+                    elif isinstance(item, dict):
+                        u = item.get("url") or item.get("href")
+                        if u:
+                            cog_urls.append(str(u))
     except Exception:
-        return raw
+        pass
 
-    cog_urls: list[str] = []
-    if isinstance(assets_body, list):
-        for item in assets_body:
-            if isinstance(item, str) and item.strip():
-                cog_urls.append(item.strip())
-            elif isinstance(item, dict):
-                u = item.get("url") or item.get("href")
-                if u:
-                    cog_urls.append(str(u))
-    elif isinstance(assets_body, dict):
-        for item in assets_body.get("assets") or assets_body.get("urls") or []:
-            if isinstance(item, str) and item.strip():
-                cog_urls.append(item.strip())
-            elif isinstance(item, dict):
-                u = item.get("url") or item.get("href")
-                if u:
-                    cog_urls.append(str(u))
-
-    if not cog_urls:
-        return raw
-
-    read_params = _titiler_read_params(params)
-    cog_params = url_only + read_params + [("url", cog_urls[0])]
-    try:
-        return await fetch_titiler_point_json(
-            client,
-            titiler_base,
-            f"/cog/point/{coord}",
-            cog_params,
-            shared_secret=shared_secret,
-            timeout=timeout,
-        )
-    except HTTPException:
-        return raw
+    hit = await _try_cog_point_reads(
+        client,
+        titiler_base,
+        coord,
+        cog_urls,
+        read_params,
+        shared_secret=shared_secret,
+        timeout=timeout,
+    )
+    if hit is not None:
+        return hit
+    return raw

@@ -1,6 +1,10 @@
 """Tests for Titiler point response enrichment."""
 
-from app.services.titiler_point import enrich_point_response, style_spec_from_request_query
+from app.services.titiler_point import (
+    _has_sample_values,
+    enrich_point_response,
+    style_spec_from_request_query,
+)
 
 
 class _FakeQuery:
@@ -92,7 +96,19 @@ def test_style_spec_from_request_query_rgb():
 
 def test_empty_values():
     out = enrich_point_response({"values": []}, {})
-    assert out["rows"][0]["display"] == "No data"
+    assert out["rows"][0]["display"] == "No raster coverage at this location"
+
+
+def test_empty_values_with_bidx_spec_no_placeholder_row():
+    out = enrich_point_response({"values": []}, {"bidx": [1]})
+    assert len(out["rows"]) == 1
+    assert out["rows"][0]["role"] == "info"
+
+
+def test_has_sample_values():
+    assert _has_sample_values({"values": [1.0]}) is True
+    assert _has_sample_values({"values": [None]}) is False
+    assert _has_sample_values({"values": []}) is False
 
 
 def test_classification_point_params_exclude_colormap():
