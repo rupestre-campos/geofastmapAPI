@@ -210,6 +210,15 @@ class Settings(BaseSettings):
     mosaic_stac_datetime_parallelism: int = 2
     # Per STAC /search request item limit in mosaic planner.
     mosaic_stac_fetch_limit: int = 500
+    # Adaptive STAC sub-bbox splitting (planner round 0): retry flaky/low-yield bboxes by subdividing.
+    # - max_split_depth: 0 disables splitting; 2 => up to 1 + 4 + 16 = 21 bboxes per seed cell (bounded by max_bbox_tasks_per_round).
+    # - min_bbox_degrees: stop splitting when both width/height are below this.
+    # - max_bbox_tasks_per_round: hard cap on total sub-bbox tasks per planner round.
+    # - large_bbox_limit: smaller per-request STAC `limit` when bbox is large, favoring spatial diversity via tiling.
+    mosaic_stac_max_split_depth: int = 2
+    mosaic_stac_min_bbox_degrees: float = 0.5
+    mosaic_stac_max_bbox_tasks_per_round: int = 64
+    mosaic_stac_large_bbox_limit: int = 250
     # Planner void-fill rounds for uncovered AOI.
     mosaic_void_fill_max_rounds: int = 6
     # Max disconnected gap parts sampled for pinpoint void fill.

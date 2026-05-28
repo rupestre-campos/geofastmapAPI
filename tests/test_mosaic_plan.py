@@ -429,6 +429,85 @@ async def test_plan_void_fill_respects_settings_rounds_and_parts(monkeypatch):
     assert merged == []
 
 
+@pytest.mark.asyncio
+async def test_plan_round0_adaptive_splits_on_error_and_improves_coverage(monkeypatch):
+    import app.core.config as core_config
+    from app.services import mosaic_plan as mp
+
+    settings = SimpleNamespace(
+        mosaic_stac_bbox_parallelism=4,
+        mosaic_stac_datetime_parallelism=2,
+        mosaic_stac_fetch_limit=500,
+        mosaic_void_fill_max_rounds=1,
+        mosaic_void_pinpoint_max_parts=16,
+        mosaic_void_fill_min_uncovered=0.001,
+        mosaic_same_pass_num_strips=8,
+        mosaic_stac_initial_split_threshold_degrees=10.0,  # keep a single seed bbox
+        mosaic_stac_initial_split_grid=0,
+        mosaic_stac_max_split_depth=1,
+        mosaic_stac_min_bbox_degrees=0.5,
+        mosaic_stac_max_bbox_tasks_per_round=32,
+        mosaic_stac_large_bbox_limit=250,
+    )
+    monkeypatch.setattr(core_config, "get_settings", lambda: settings)
+
+    called_bboxes: list[tuple[float, float, float, float]] = []
+
+    def _feat(fid: str, geom_box):
+        return {
+            "type": "Feature",
+            "id": fid,
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [
+                        [geom_box.bounds[0], geom_box.bounds[1]],
+                        [geom_box.bounds[2], geom_box.bounds[1]],
+                        [geom_box.bounds[2], geom_box.bounds[3]],
+                        [geom_box.bounds[0], geom_box.bounds[3]],
+                        [geom_box.bounds[0], geom_box.bounds[1]],
+                    ]
+                ],
+            },
+            "properties": {"geofast:sourceCatalog": "c1", "eo:cloud_cover": 10},
+            "collection": "col",
+            "assets": {"visual": {"href": f"https://example.com/{fid}.tif", "type": "image/tiff"}},
+        }
+
+    async def fake_collect(_catalogs, *, bbox, **_kwargs):
+        bb = tuple(float(x) for x in bbox[:4])
+        called_bboxes.append(bb)
+        # Fail only for the large parent bbox; succeed for its children.
+        if bb == (0.0, 0.0, 4.0, 4.0):
+            return [], [{"catalog_id": "c1", "detail": "HTTP 503 Service Unavailable"}]
+        g = box(bb[0], bb[1], bb[2], bb[3])
+        return [_feat(f"scene-{bb[0]}-{bb[1]}", g)], []
+
+    monkeypatch.setattr(mp, "collect_stac_features", fake_collect)
+
+    aoi = box(0, 0, 4, 4)
+    res, errs, merged = await plan_mosaic_with_void_fill(
+        [SimpleNamespace(id="c1")],
+        stac_collection="col",
+        aoi=aoi,
+        search_bbox=[0, 0, 4, 4],
+        datetime_slices=["2024-01-01T00:00:00Z/2024-01-31T23:59:59Z"],
+        cloud_cover_max=None,
+        sort_mode="lowest_cloud",
+        fetch_limit=500,
+        same_pass_date_strips=False,
+    )
+
+    # Parent bbox called (fails) and children bboxes called (succeed).
+    assert (0.0, 0.0, 4.0, 4.0) in called_bboxes
+    assert any(bb != (0.0, 0.0, 4.0, 4.0) for bb in called_bboxes)
+    # We should have features and better-than-empty coverage.
+    assert len(merged) >= 1
+    assert (res.get("uncovered_fraction") or 1.0) < 1.0
+    # Warning-worthy errors may still exist (parent failure), but coverage improves.
+    assert isinstance(errs, list)
+
+
 def _voidfill_feat(oid: str, ring: list) -> dict:
     return {
         "type": "Feature",

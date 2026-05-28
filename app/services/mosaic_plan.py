@@ -100,7 +100,47 @@ def _planner_knobs() -> dict[str, Any]:
             0.0, float(getattr(s, "mosaic_void_fill_min_uncovered", _VOID_FILL_MIN_UNCOVERED) or 0.0)
         ),
         "same_pass_num_strips": max(1, int(getattr(s, "mosaic_same_pass_num_strips", _SAME_PASS_NUM_STRIPS) or 1)),
+        # Adaptive STAC bbox subdivision for large AOIs / flaky upstreams.
+        "stac_max_split_depth": max(0, int(getattr(s, "mosaic_stac_max_split_depth", 2) or 0)),
+        "stac_min_bbox_degrees": max(0.05, float(getattr(s, "mosaic_stac_min_bbox_degrees", 0.5) or 0.5)),
+        "stac_max_bbox_tasks_per_round": max(
+            1, int(getattr(s, "mosaic_stac_max_bbox_tasks_per_round", 64) or 1)
+        ),
+        "stac_large_bbox_limit": max(1, int(getattr(s, "mosaic_stac_large_bbox_limit", 250) or 1)),
     }
+
+
+def _bbox_size_degrees(bb: list[float]) -> tuple[float, float]:
+    try:
+        w = float(bb[2]) - float(bb[0])
+        h = float(bb[3]) - float(bb[1])
+        return (max(0.0, w), max(0.0, h))
+    except Exception:
+        return (0.0, 0.0)
+
+
+def _is_bbox_degenerate(bb: list[float]) -> bool:
+    if not bb or len(bb) < 4:
+        return True
+    try:
+        return float(bb[0]) >= float(bb[2]) - 1e-12 or float(bb[1]) >= float(bb[3]) - 1e-12
+    except Exception:
+        return True
+
+
+def _subdivide_bbox_2x2(bb: list[float]) -> list[list[float]]:
+    if _is_bbox_degenerate(bb):
+        return []
+    minx, miny, maxx, maxy = (float(bb[i]) for i in range(4))
+    mx = (minx + maxx) / 2.0
+    my = (miny + maxy) / 2.0
+    out = [
+        [minx, miny, mx, my],
+        [mx, miny, maxx, my],
+        [minx, my, mx, maxy],
+        [mx, my, maxx, maxy],
+    ]
+    return _dedupe_bboxes(out)
 
 
 def mgrs_tile_from_stac_item_id(item_id: str | None) -> str | None:
@@ -1397,6 +1437,109 @@ async def plan_mosaic_with_void_fill(
     bbox_parallelism = max(1, int(get_settings().mosaic_stac_bbox_parallelism or 1))
     knobs = _planner_knobs()
 
+    async def _collect_with_limit(q_bbox: list[float]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        # Smaller bboxes should generally use a smaller limit to encourage spatial diversity
+        # via tiling rather than “first N items in sort order” concentrated in one sub-area.
+        w, h = _bbox_size_degrees(q_bbox)
+        big = max(w, h) >= max(2.0, float(knobs["stac_min_bbox_degrees"]) * 2.0)
+        limit_eff = min(int(fetch_limit), int(knobs["stac_large_bbox_limit"]) if big else int(fetch_limit))
+        return await collect_stac_features(
+            catalogs,
+            stac_collection=stac_collection,
+            bbox=q_bbox,
+            datetime_slices=datetime_slices,
+            cloud_cover_max=cloud_cover_max,
+            sort_mode=sort_mode,
+            fetch_limit=limit_eff,
+        )
+
+    async def _fetch_bboxes_adaptive(
+        seed_bboxes: list[list[float]],
+        *,
+        allow_splitting: bool,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        """
+        Fetch STAC features over many sub-bboxes with bounded concurrency.
+
+        If allow_splitting is True, retry failed or low-yield bboxes by splitting them (2x2)
+        up to a max depth and min bbox size. This reduces gaps for large AOIs when upstream
+        catalogs intermittently time out or rate-limit.
+        """
+        if not seed_bboxes:
+            return [], []
+
+        # Work queue: (bbox, depth)
+        queue: list[tuple[list[float], int]] = [(bb, 0) for bb in _dedupe_bboxes(seed_bboxes)]
+        # Budget total bbox tasks per round (prevents runaway splitting on bad upstreams).
+        budget = int(knobs["stac_max_bbox_tasks_per_round"])
+        max_depth = int(knobs["stac_max_split_depth"]) if allow_splitting else 0
+        min_deg = float(knobs["stac_min_bbox_degrees"])
+        sem = asyncio.Semaphore(bbox_parallelism)
+
+        merged_local: dict[str, dict[str, Any]] = {}
+        errs_local: list[dict[str, str]] = []
+
+        async def _run_one(q_bbox: list[float], depth: int) -> tuple[list[float], int, list[dict[str, Any]], list[dict[str, str]]]:
+            async with sem:
+                feats, errs = await _collect_with_limit(q_bbox)
+            return q_bbox, depth, feats, errs
+
+        # Batched worker loop (keeps concurrency while allowing enqueue of children between waves).
+        while queue and budget > 0:
+            # Limit the wave size so we don’t create too many tasks at once.
+            wave_n = min(len(queue), max(1, bbox_parallelism * 2), budget)
+            wave = [queue.pop(0) for _ in range(wave_n)]
+            budget -= wave_n
+
+            results = await asyncio.gather(*[_run_one(bb, depth) for bb, depth in wave])
+            for bb, depth, feats, errs in results:
+                # Merge successes immediately.
+                for f in feats or []:
+                    if isinstance(f, dict):
+                        merged_local[_dedupe_key(f)] = f
+                if errs:
+                    errs_local.extend(errs)
+
+                if not allow_splitting:
+                    continue
+
+                # Decide if we should split this bbox.
+                should_split = False
+                if errs:
+                    should_split = True
+                else:
+                    # Low-yield heuristic: very large bbox with almost no returned features.
+                    # This commonly indicates “limit crowding” or spatial clustering in results.
+                    w, h = _bbox_size_degrees(bb)
+                    if max(w, h) >= max(2.0, min_deg * 2.0) and len(feats or []) < 10:
+                        should_split = True
+
+                if not should_split:
+                    continue
+
+                if depth >= max_depth:
+                    continue
+                w, h = _bbox_size_degrees(bb)
+                if w <= min_deg and h <= min_deg:
+                    continue
+
+                children = _subdivide_bbox_2x2(bb)
+                # Prepend children so we fill holes sooner rather than later.
+                for ch in children:
+                    if budget <= 0:
+                        break
+                    queue.insert(0, (ch, depth + 1))
+
+        # Deduplicate catalog errors by keeping the last detail per catalog id.
+        err_map: dict[str, str] = {}
+        for e in errs_local:
+            if not isinstance(e, dict):
+                continue
+            cid = str(e.get("catalog_id") or "")
+            if cid:
+                err_map[cid] = str(e.get("detail") or "")
+        return list(merged_local.values()), [{"catalog_id": k, "detail": v} for k, v in err_map.items()]
+
     for round_idx in range(int(knobs["void_fill_max_rounds"])):
         if round_idx == 0:
             q_bboxes = split_initial_search_bboxes([float(x) for x in search_bbox])
@@ -1435,24 +1578,19 @@ async def plan_mosaic_with_void_fill(
             break
 
         n_before = len(merged)
-        sem = asyncio.Semaphore(bbox_parallelism)
-
-        async def _fetch_bbox(q_bbox: list[float]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-            async with sem:
-                return await collect_stac_features(
-                    catalogs,
-                    stac_collection=stac_collection,
-                    bbox=q_bbox,
-                    datetime_slices=datetime_slices,
-                    cloud_cover_max=cloud_cover_max,
-                    sort_mode=sort_mode,
-                    fetch_limit=fetch_limit,
-                )
-
-        batch = await asyncio.gather(*[_fetch_bbox(bb) for bb in q_bboxes])
-        for feats, errs in batch:
-            all_errors.extend(errs)
-            for f in feats:
+        if round_idx == 0:
+            # Round 0: widen the net with adaptive splitting. This is where big AOIs most often
+            # hit upstream timeouts/limits and create permanent holes if we don’t re-query.
+            feats0, errs0 = await _fetch_bboxes_adaptive(q_bboxes, allow_splitting=True)
+            all_errors.extend(errs0)
+            for f in feats0:
+                if isinstance(f, dict):
+                    merged[_dedupe_key(f)] = f
+        else:
+            # Void-fill rounds already use pinpoint bboxes; splitting them further is usually redundant.
+            featsN, errsN = await _fetch_bboxes_adaptive(q_bboxes, allow_splitting=False)
+            all_errors.extend(errsN)
+            for f in featsN:
                 if isinstance(f, dict):
                     merged[_dedupe_key(f)] = f
 
