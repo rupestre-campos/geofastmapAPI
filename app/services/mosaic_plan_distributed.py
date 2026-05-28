@@ -14,7 +14,9 @@ from shapely.geometry import shape
 from app.core.config import get_settings
 from app.models.stac_catalog import StacCatalog
 from app.services.mosaic_plan import (
+    _bbox_size_degrees,
     _dedupe_key,
+    _subdivide_bbox_2x2,
     collect_stac_features,
     pinpoint_bboxes_from_remainder,
     plan_mosaic_from_features,
@@ -27,6 +29,7 @@ from app.services.mosaic_plan_jobs import (
     enqueue_mosaic_plan_subtask,
     set_mosaic_plan_job_progress,
 )
+from app.services.mosaic_plan_jobs import _task_id as _mosaic_task_id
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +90,22 @@ def build_subtask_payload(
     }
 
 
+def _effective_fetch_limit_for_bbox(bbox: list[float], fetch_limit: int) -> int:
+    s = get_settings()
+    large_limit = max(1, int(getattr(s, "mosaic_stac_large_bbox_limit", 250) or 1))
+    min_deg = max(0.05, float(getattr(s, "mosaic_stac_min_bbox_degrees", 0.5) or 0.5))
+    w, h = _bbox_size_degrees(bbox)
+    big = max(w, h) >= max(2.0, min_deg * 2.0)
+    return min(int(fetch_limit), int(large_limit)) if big else int(fetch_limit)
+
+
+def _can_split_bbox(bbox: list[float], *, depth: int, max_depth: int, min_bbox_deg: float) -> bool:
+    if depth >= max_depth:
+        return False
+    w, h = _bbox_size_degrees(bbox)
+    return w > min_bbox_deg or h > min_bbox_deg
+
+
 async def execute_subtask_payload(payload: dict[str, Any]) -> dict[str, Any]:
     catalogs = _catalogs_from_payload(list(payload.get("catalogs") or []))
     s = get_settings()
@@ -131,6 +150,9 @@ async def plan_mosaic_with_void_fill_distributed(
     max_parts = max(1, int(settings.mosaic_void_pinpoint_max_parts or 16))
     fail_on_partial = bool(settings.mosaic_parent_fail_on_partial)
     shard_wave = max(1, int(settings.mosaic_subjob_bbox_datetime_parallelism or 1))
+    max_split_depth = max(0, int(getattr(settings, "mosaic_stac_max_split_depth", 2) or 0))
+    min_bbox_deg = max(0.05, float(getattr(settings, "mosaic_stac_min_bbox_degrees", 0.5) or 0.5))
+    bbox_budget = max(1, int(getattr(settings, "mosaic_stac_max_bbox_tasks_per_round", 64) or 1))
 
     merged: dict[str, dict[str, Any]] = {}
     all_errors: list[dict[str, str]] = []
@@ -168,20 +190,47 @@ async def plan_mosaic_with_void_fill_distributed(
         if not q_bboxes:
             break
 
-        shard_rows: list[tuple[str, dict[str, Any]]] = []
-        for bbox in q_bboxes:
+        # Build shard rows (and in round 0, adaptively expand bboxes on failures/low yield).
+        # We keep a hard cap on bbox count to stay fast.
+        bbox_depth: dict[str, int] = {}
+        bbox_key_to_bbox: dict[str, list[float]] = {}
+
+        def _bbox_key(bb: list[float]) -> str:
+            return ",".join(str(round(float(x), 8)) for x in bb[:4])
+
+        bbox_queue: list[str] = []
+        for bb in q_bboxes:
+            k = _bbox_key(bb)
+            if k in bbox_key_to_bbox:
+                continue
+            bbox_key_to_bbox[k] = [float(x) for x in bb[:4]]
+            bbox_depth[k] = 0
+            bbox_queue.append(k)
+
+        # We’ll enqueue shards for bbox keys in waves, and after each wave complete we may add children.
+        shard_rows: list[tuple[str, dict[str, Any], str]] = []  # (shard_key, payload, bbox_key)
+        # Track all shards to expect in this round.
+        while bbox_queue and len(bbox_key_to_bbox) <= bbox_budget:
+            k = bbox_queue.pop(0)
+            bb = bbox_key_to_bbox[k]
+            lim_eff = _effective_fetch_limit_for_bbox(bb, fetch_limit)
             for dt in datetime_slices:
-                shard_key = f"{round_idx}:{','.join(str(x) for x in bbox)}:{dt}"
+                shard_key = f"{round_idx}:{k}:{dt}"
                 payload = build_subtask_payload(
                     catalogs=catalogs,
                     stac_collection=stac_collection,
-                    bbox=bbox,
+                    bbox=bb,
                     datetime_slice=dt,
                     cloud_cover_max=cloud_cover_max,
                     sort_mode=sort_mode,
-                    fetch_limit=fetch_limit,
+                    fetch_limit=lim_eff,
                 )
-                shard_rows.append((shard_key, payload))
+                shard_rows.append((shard_key, payload, k))
+            # Only round 0 gets adaptive expansion; other rounds use pinpoint/void bbox already.
+            if round_idx != 0 or max_split_depth <= 0:
+                continue
+            # Expansion happens after we have results; no-op here.
+
         children_total = len(shard_rows)
         set_mosaic_plan_job_progress(
             job_id,
@@ -200,7 +249,7 @@ async def plan_mosaic_with_void_fill_distributed(
         queue_wait_ms = 0
         while done_count < children_total:
             while in_flight < shard_wave and next_idx < children_total:
-                shard_key, payload = shard_rows[next_idx]
+                shard_key, payload, _bbox_k = shard_rows[next_idx]
                 enqueue_mosaic_plan_subtask(
                     job_id=job_id,
                     owner_id=owner_id,
@@ -237,6 +286,88 @@ async def plan_mosaic_with_void_fill_distributed(
             )
         if len(results) < children_total and fail_on_partial:
             raise RuntimeError("Subjob round timed out before all shard results completed")
+
+        # Round 0 adaptive expansion: if some bboxes failed (errors) or were very low-yield, add child bboxes and run them too.
+        if round_idx == 0 and max_split_depth > 0 and len(bbox_key_to_bbox) < bbox_budget:
+            # Map task_id -> bbox_key for shards we ran.
+            task_to_bbox: dict[str, str] = {}
+            for shard_key, _payload, bbox_k in shard_rows:
+                tid = _mosaic_task_id(job_id, round_idx, shard_key)
+                task_to_bbox[tid] = bbox_k
+
+            stats: dict[str, dict[str, Any]] = {}
+            for r in results:
+                tid = str(r.get("task_id") or "")
+                bk = task_to_bbox.get(tid)
+                if not bk:
+                    continue
+                st = stats.setdefault(bk, {"features": 0, "had_errors": False})
+                res = r.get("result") if isinstance(r.get("result"), dict) else {}
+                feats = list(res.get("features") or [])
+                errs = list(res.get("errors") or [])
+                st["features"] += len(feats)
+                if errs:
+                    st["had_errors"] = True
+
+            added_bbox_keys: list[str] = []
+            for bk, st in stats.items():
+                depth = int(bbox_depth.get(bk, 0))
+                bb = bbox_key_to_bbox.get(bk)
+                if not bb:
+                    continue
+                if not _can_split_bbox(bb, depth=depth, max_depth=max_split_depth, min_bbox_deg=min_bbox_deg):
+                    continue
+                # Split when errors happened, or when large bbox produced almost nothing.
+                had_err = bool(st.get("had_errors"))
+                feat_n = int(st.get("features") or 0)
+                w, h = _bbox_size_degrees(bb)
+                low_yield = (max(w, h) >= max(2.0, min_bbox_deg * 2.0)) and feat_n < 10
+                if not (had_err or low_yield):
+                    continue
+                for ch in _subdivide_bbox_2x2(bb):
+                    if len(bbox_key_to_bbox) >= bbox_budget:
+                        break
+                    ck = _bbox_key(ch)
+                    if ck in bbox_key_to_bbox:
+                        continue
+                    bbox_key_to_bbox[ck] = [float(x) for x in ch[:4]]
+                    bbox_depth[ck] = depth + 1
+                    added_bbox_keys.append(ck)
+
+            if added_bbox_keys:
+                extra_rows: list[tuple[str, dict[str, Any], str]] = []
+                for ck in added_bbox_keys:
+                    bb = bbox_key_to_bbox[ck]
+                    lim_eff = _effective_fetch_limit_for_bbox(bb, fetch_limit)
+                    for dt in datetime_slices:
+                        shard_key = f"{round_idx}:{ck}:{dt}"
+                        payload = build_subtask_payload(
+                            catalogs=catalogs,
+                            stac_collection=stac_collection,
+                            bbox=bb,
+                            datetime_slice=dt,
+                            cloud_cover_max=cloud_cover_max,
+                            sort_mode=sort_mode,
+                            fetch_limit=lim_eff,
+                        )
+                        extra_rows.append((shard_key, payload, ck))
+                # Enqueue extras immediately and wait for them.
+                for shard_key, payload, _ck in extra_rows:
+                    enqueue_mosaic_plan_subtask(
+                        job_id=job_id,
+                        owner_id=owner_id,
+                        round_idx=round_idx,
+                        shard_key=shard_key,
+                        payload=payload,
+                        ttl_seconds=ttl_seconds,
+                    )
+                extra = await await_mosaic_plan_subtask_results(
+                    job_id=job_id,
+                    round_idx=round_idx,
+                    expected_count=len(extra_rows),
+                    timeout_seconds=timeout_sec,
+                )
+                results.extend(extra)
 
         ok = 0
         fail = 0

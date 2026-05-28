@@ -508,6 +508,99 @@ async def test_plan_round0_adaptive_splits_on_error_and_improves_coverage(monkey
     assert isinstance(errs, list)
 
 
+@pytest.mark.asyncio
+async def test_distributed_round0_adaptive_splits_on_failed_bbox(monkeypatch):
+    import app.core.config as core_config
+    from app.services import mosaic_plan_distributed as mpd
+    from app.services import mosaic_plan_jobs as jobs
+
+    settings = SimpleNamespace(
+        mosaic_void_fill_max_rounds=1,
+        mosaic_void_fill_min_uncovered=0.001,
+        mosaic_void_pinpoint_max_parts=16,
+        mosaic_subjob_round_timeout_seconds=30,
+        mosaic_subjob_bbox_datetime_parallelism=8,
+        mosaic_subjob_result_ttl_seconds=3600,
+        mosaic_stac_initial_split_threshold_degrees=10.0,
+        mosaic_stac_initial_split_grid=0,
+        mosaic_stac_max_split_depth=1,
+        mosaic_stac_min_bbox_degrees=0.5,
+        mosaic_stac_max_bbox_tasks_per_round=16,
+        mosaic_stac_large_bbox_limit=250,
+        mosaic_parent_fail_on_partial=False,
+        mosaic_stac_catalog_parallelism=1,
+        mosaic_subjob_catalog_parallelism=1,
+    )
+    monkeypatch.setattr(core_config, "get_settings", lambda: settings)
+    monkeypatch.setattr(mpd, "get_settings", lambda: settings)
+
+    # In-memory “queue”: when coordinator enqueues, immediately materialize a result into await().
+    results: list[dict] = []
+
+    def fake_enqueue(*, job_id, owner_id, round_idx, shard_key, payload, ttl_seconds=3600):
+        task_id = jobs._task_id(job_id, round_idx, shard_key)
+        bb = payload.get("bbox")
+        # Fail only for the parent bbox.
+        if [float(x) for x in bb] == [0.0, 0.0, 4.0, 4.0]:
+            result = {"features": [], "errors": [{"catalog_id": "c1", "detail": "HTTP 502"}]}
+            status = "completed_with_errors"
+        else:
+            # Child bboxes succeed with one feature each.
+            g = box(float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3]))
+            feat = {
+                "type": "Feature",
+                "id": f"scene-{bb[0]}-{bb[1]}",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [g.bounds[0], g.bounds[1]],
+                            [g.bounds[2], g.bounds[1]],
+                            [g.bounds[2], g.bounds[3]],
+                            [g.bounds[0], g.bounds[3]],
+                            [g.bounds[0], g.bounds[1]],
+                        ]
+                    ],
+                },
+                "properties": {"geofast:sourceCatalog": "c1", "eo:cloud_cover": 10},
+                "collection": "col",
+                "assets": {"visual": {"href": "https://example.com/x.tif", "type": "image/tiff"}},
+            }
+            result = {"features": [feat], "errors": []}
+            status = "completed"
+        results.append({"task_id": task_id, "status": status, "result": result})
+        return task_id
+
+    async def fake_await(*, job_id, round_idx, expected_count, timeout_seconds):
+        out = results[:expected_count]
+        del results[:expected_count]
+        return out
+
+    monkeypatch.setattr(mpd, "enqueue_mosaic_plan_subtask", fake_enqueue)
+    monkeypatch.setattr(mpd, "await_mosaic_plan_subtask_results", fake_await)
+    monkeypatch.setattr(mpd, "set_mosaic_plan_job_progress", lambda *_a, **_k: None)
+
+    aoi = box(0, 0, 4, 4)
+    res, errs, merged = await mpd.plan_mosaic_with_void_fill_distributed(
+        job_id="job1",
+        owner_id=1,
+        catalogs=[SimpleNamespace(id="c1", stac_api_root_url="https://x", default_collections=None)],
+        stac_collection="col",
+        aoi=aoi,
+        search_bbox=[0, 0, 4, 4],
+        datetime_slices=["2024-01-01T00:00:00Z/2024-01-31T23:59:59Z"],
+        cloud_cover_max=None,
+        sort_mode="lowest_cloud",
+        fetch_limit=500,
+        same_pass_date_strips=False,
+        swap_options_limit=5,
+        swap_options_offset=None,
+    )
+    assert len(merged) >= 1
+    assert (res.get("uncovered_fraction") or 1.0) < 1.0
+    assert isinstance(errs, list)
+
+
 def _voidfill_feat(oid: str, ring: list) -> dict:
     return {
         "type": "Feature",
