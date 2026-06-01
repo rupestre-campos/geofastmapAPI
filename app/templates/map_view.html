@@ -328,7 +328,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofastmap-utils.js?v=6"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=7"></script>
   <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   {% include "_style_editor_toolbox_script.html" %}
@@ -337,7 +337,9 @@
       var base = {{ base | tojson }};
       var mapDefinition = {{ map_definition | tojson }};
       var googleKey = {{ google_maps_api_key | tojson }};
-      var layers = (mapDefinition && mapDefinition.layers && Array.isArray(mapDefinition.layers)) ? mapDefinition.layers : [];
+      var layers = (mapDefinition && mapDefinition.layers && Array.isArray(mapDefinition.layers))
+        ? GeofastmapUtils.dedupeMosaicMapLayers(mapDefinition.layers)
+        : [];
       var collectionTitles = {{ collection_titles | default({}) | tojson }};
       function layerDisplayNameForLegend(cid) {
         if (!cid) return '';

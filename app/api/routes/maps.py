@@ -73,6 +73,37 @@ def _mosaic_view_id_from_map_layer(lyr: dict) -> str | None:
     return None
 
 
+def _dedupe_map_definition_mosaic_layers(definition: dict | None) -> dict:
+    """Remove duplicate saved-mosaic layers (same raster-views id) from map definition."""
+    d = dict(definition) if definition else {}
+    layers_in = d.get("layers") or []
+    if not isinstance(layers_in, list):
+        return d
+    seen: set[str] = set()
+    new_layers: list = []
+    for layer in layers_in:
+        if not isinstance(layer, dict):
+            new_layers.append(layer)
+            continue
+        lyr = dict(layer)
+        mid = _mosaic_view_id_from_map_layer(lyr)
+        if mid:
+            key = mid.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            lyr["raster_tiles"] = True
+            if lyr.get("mosaic_view_id") is None and lyr.get("mosaicViewId") is None:
+                lyr["mosaic_view_id"] = mid
+            if not lyr.get("layer_id") and not lyr.get("layerId"):
+                lyr["layer_id"] = f"mosaic-{mid}"
+            if not lyr.get("collection_id") and not lyr.get("collectionId"):
+                lyr["collection_id"] = "_mosaic"
+        new_layers.append(lyr)
+    d["layers"] = new_layers
+    return d
+
+
 def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
@@ -94,7 +125,7 @@ async def _definition_with_mosaic_tile_revision_urls(
     from app.api.routes.raster_views import compute_mosaic_tiles_revision
 
     settings = get_settings()
-    d = dict(definition) if definition else {}
+    d = _dedupe_map_definition_mosaic_layers(definition)
     layers_in = d.get("layers") or []
     if not isinstance(layers_in, list):
         return d
@@ -293,8 +324,10 @@ def _merged_map_visibility(payload: dict, row) -> str:
 
 def _merged_map_definition(payload: dict, row) -> dict:
     if payload.get("definition") is not None:
-        return payload["definition"] if isinstance(payload["definition"], dict) else {}
-    return row.definition or {}
+        d = payload["definition"] if isinstance(payload["definition"], dict) else {}
+    else:
+        d = row.definition or {}
+    return _dedupe_map_definition_mosaic_layers(d)
 
 
 async def _check_map_public_layers(
@@ -442,6 +475,10 @@ async def create_map(
 ):
     if current_user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Login required to create a map")
+    create_payload = data.model_dump()
+    if create_payload.get("definition"):
+        create_payload["definition"] = _dedupe_map_definition_mosaic_layers(create_payload["definition"])
+        data = MapCreate(**create_payload)
     row = await maps_crud.create_map(db, data, owner_id=current_user.id, visibility="private")
     return _map_to_read(row, _base_url(request))
 
@@ -611,6 +648,10 @@ async def update_map(
     payload = data.model_dump(exclude_unset=True)
     if payload.get("thumbnail") == _thumbnail_url(base, map_id):
         payload.pop("thumbnail", None)
+    if payload.get("definition") is not None:
+        payload["definition"] = _dedupe_map_definition_mosaic_layers(
+            payload["definition"] if isinstance(payload["definition"], dict) else {}
+        )
     merged_def = _merged_map_definition(payload, row)
     merged_vis = _merged_map_visibility(payload, row)
     if merged_vis == "public":
@@ -692,6 +733,10 @@ async def patch_map(
     payload = data.model_dump(exclude_unset=True)
     if payload.get("thumbnail") == _thumbnail_url(base, map_id):
         payload.pop("thumbnail", None)
+    if payload.get("definition") is not None:
+        payload["definition"] = _dedupe_map_definition_mosaic_layers(
+            payload["definition"] if isinstance(payload["definition"], dict) else {}
+        )
     merged_def = _merged_map_definition(payload, row)
     merged_vis = _merged_map_visibility(payload, row)
     if merged_vis == "public":

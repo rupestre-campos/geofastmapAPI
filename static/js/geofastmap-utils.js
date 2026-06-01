@@ -916,6 +916,52 @@
 
   var DEFAULT_EARTH_SEARCH_COLLECTION_ID = 'sentinel-2-l2a';
 
+  var _MOSAIC_VIEW_IN_TILES_URL = /\/raster-views\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/titiler\//i;
+
+  /**
+   * Saved mosaic layer id from mosaic_view_id or tiles_url (matches backend maps route).
+   */
+  function mosaicViewIdFromLayer(layer) {
+    if (!layer || typeof layer !== 'object') return '';
+    var mid = layer.mosaic_view_id || layer.mosaicViewId;
+    if (mid) return String(mid).trim();
+    var tu = layer.tiles_url;
+    if (typeof tu === 'string' && tu) {
+      var m = tu.match(_MOSAIC_VIEW_IN_TILES_URL);
+      if (m) return m[1];
+    }
+    return '';
+  }
+
+  function normalizeMosaicMapLayer(layer, viewId) {
+    var out = Object.assign({}, layer);
+    out.raster_tiles = true;
+    if (!out.collection_id && !out.collectionId) out.collection_id = '_mosaic';
+    out.mosaic_view_id = viewId;
+    if (!out.layer_id && !out.layerId) out.layer_id = 'mosaic-' + viewId;
+    return out;
+  }
+
+  /** Drop duplicate saved-mosaic layers (same view id); keep first occurrence. */
+  function dedupeMosaicMapLayers(layers) {
+    if (!Array.isArray(layers)) return [];
+    var seen = {};
+    var out = [];
+    layers.forEach(function(layer) {
+      if (!layer || typeof layer !== 'object') return;
+      var mid = mosaicViewIdFromLayer(layer);
+      if (mid) {
+        var k = mid.toLowerCase();
+        if (seen[k]) return;
+        seen[k] = true;
+        out.push(normalizeMosaicMapLayer(layer, mid));
+      } else {
+        out.push(layer);
+      }
+    });
+    return out;
+  }
+
   global.GeofastmapUtils = {
     LINE_DASH: LINE_DASH,
     DEFAULT_STYLE_SPEC: DEFAULT_STYLE_SPEC,
@@ -946,6 +992,8 @@
     configureTerrainCameraClamp: configureTerrainCameraClamp,
     isEarthSearchStacUrl: isEarthSearchStacUrl,
     DEFAULT_EARTH_SEARCH_COLLECTION_ID: DEFAULT_EARTH_SEARCH_COLLECTION_ID,
+    mosaicViewIdFromLayer: mosaicViewIdFromLayer,
+    dedupeMosaicMapLayers: dedupeMosaicMapLayers,
     isValidMapBbox: isValidMapBbox,
     isPlaceholderMapCamera: isPlaceholderMapCamera,
     isExplicitSavedCamera: isExplicitSavedCamera,

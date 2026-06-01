@@ -284,7 +284,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofastmap-utils.js?v=6"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=7"></script>
   <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   {% include "_style_editor_toolbox_script.html" %}
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
@@ -437,6 +437,7 @@
           visible: l.visible !== false
         });
       });
+      state.layers = GeofastmapUtils.dedupeMosaicMapLayers(state.layers);
 
       var map = null;
       var BASEMAPS;
@@ -1993,12 +1994,18 @@
         renderLayers();
       }
 
+      function mapHasMosaicView(viewId) {
+        var want = String(viewId || '').trim().toLowerCase();
+        if (!want) return false;
+        return state.layers.some(function(l) {
+          return GeofastmapUtils.mosaicViewIdFromLayer(l).toLowerCase() === want;
+        });
+      }
+
       function addMosaicLayer(viewId) {
         var id = String(viewId || '').trim();
         if (!id) return;
-        for (var j = 0; j < state.layers.length; j++) {
-          if (state.layers[j].mosaic_view_id && String(state.layers[j].mosaic_view_id) === id) return;
-        }
+        if (mapHasMosaicView(id)) return;
         function pushAndRender(tilesUrl) {
           var spec = Object.assign({}, DEFAULT_SPEC);
           state.layers.push({
@@ -2410,10 +2417,7 @@
           try {
             var qs = new URLSearchParams(window.location.search);
             var _mpv = qs.get('mosaic_view');
-            if (_mpv) {
-              var ex = state.layers.some(function(l) { return l.mosaic_view_id && String(l.mosaic_view_id) === String(_mpv); });
-              if (!ex) addMosaicLayer(_mpv);
-            }
+            if (_mpv && !mapHasMosaicView(_mpv)) addMosaicLayer(_mpv);
             var rcid = qs.get('raster_collection_id');
             if (rcid) {
               var rfid = qs.get('raster_feature_id');
