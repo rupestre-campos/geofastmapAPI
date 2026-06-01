@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from app.core.config import get_settings
+from app.utils.property_filters import PropertyFilter, parse_filter_param
 from app.services.redis_resilience import run_redis_retry
 
 QUEUE_KEY = "geofastmap:bulk_import_queue"
@@ -34,6 +35,10 @@ class BulkJobPayload:
     shard_index: int | None = None
     shard_total: int | None = None
     finalize_collection: bool = True
+    replace_filters: list[str] | None = None
+
+    def parsed_replace_filters(self) -> list[PropertyFilter]:
+        return parse_filter_param(self.replace_filters)
 
     def to_json(self) -> str:
         out = {
@@ -57,6 +62,8 @@ class BulkJobPayload:
             out["shard_total"] = int(self.shard_total)
         if not self.finalize_collection:
             out["finalize_collection"] = False
+        if self.replace_filters:
+            out["replace_filters"] = self.replace_filters
         return json.dumps(out)
 
     @classmethod
@@ -84,6 +91,7 @@ class BulkJobPayload:
             shard_index=int(d["shard_index"]) if d.get("shard_index") is not None else None,
             shard_total=int(d["shard_total"]) if d.get("shard_total") is not None else None,
             finalize_collection=bool(d.get("finalize_collection", True)),
+            replace_filters=d.get("replace_filters"),
         )
 
 

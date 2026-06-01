@@ -20,7 +20,7 @@
     <ul>
       <li>Bulk import runs asynchronously (job-based).</li>
       <li>Optionally you can queue a static tile build after import completes.</li>
-      <li>Import modes typically include <strong>append</strong> (add features) and <strong>replace</strong> (delete then import).</li>
+      <li>Import modes: <strong>append</strong> (add features), <strong>replace</strong> (delete entire collection then import), and <strong>replace_filtered</strong> (delete only features matching property filters, then import). Filtered replace uses the same <code>key:op:value</code> lines as item search (e.g. <code>state_id:eq:12</code>, <code>date:lt:2026-07-12</code>); multiple lines are combined with AND.</li>
     </ul>
 
     <h3>Large files, Cloudflare (~100&nbsp;MB), and chunked browser uploads</h3>

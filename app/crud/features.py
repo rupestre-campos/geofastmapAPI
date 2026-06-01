@@ -29,8 +29,8 @@ from app.utils.feature_subdivide import (
     insert_feature_subdivided_sql,
     subdivide_geometry_by_vertices,
 )
-from app.utils.property_filter import property_value_to_like_pattern
-from app.utils.property_filters import PropertyFilter, PropertyOp, safe_json_key
+from app.db.feature_property_filters import property_filter_clause, structured_filter_clause
+from app.utils.property_filters import PropertyFilter, safe_json_key
 from app.services.coverages import CogPathOutsideStorageError, resolve_stored_cog_path
 from app.services.dynamic_tile_cache import invalidate_collection_cache
 
@@ -419,51 +419,11 @@ def _order_by_clause(sortby: str | None, sortdesc: bool):
 
 
 def _property_filter_clause(key: str, value: str):
-    """Build WHERE clause for one legacy attribute filter (exact or LIKE with *)."""
-    prop_col = Feature.properties[key].astext
-    pattern, use_like = property_value_to_like_pattern(value)
-    if use_like and pattern is not None:
-        return prop_col.isnot(None) & prop_col.like(pattern, escape="\\")
-    return prop_col == value
+    return property_filter_clause(key, value)
 
 
 def _structured_filter_clause(f: PropertyFilter):
-    """Build WHERE clause for one structured filter (key:op:value)."""
-    prop_col = Feature.properties[f.key].astext
-    value = f.value
-    if f.op == PropertyOp.EQ:
-        return prop_col == value
-    if f.op == PropertyOp.NE:
-        return prop_col != value
-    if f.op == PropertyOp.LIKE:
-        return prop_col.isnot(None) & prop_col.like(value, escape="\\")
-    if f.op == PropertyOp.ILIKE:
-        return prop_col.isnot(None) & prop_col.ilike(value, escape="\\")
-    # Numeric comparison: cast both sides; non-numeric compare as text
-    try:
-        num_val = float(value)
-    except ValueError:
-        num_val = None
-    if num_val is not None and f.op in (PropertyOp.GT, PropertyOp.GTE, PropertyOp.LT, PropertyOp.LTE):
-        num_col = cast(prop_col, Float)
-        if f.op == PropertyOp.GT:
-            return num_col > num_val
-        if f.op == PropertyOp.GTE:
-            return num_col >= num_val
-        if f.op == PropertyOp.LT:
-            return num_col < num_val
-        if f.op == PropertyOp.LTE:
-            return num_col <= num_val
-    # Fallback: compare as text for gt/gte/lt/lte when value is not numeric
-    if f.op == PropertyOp.GT:
-        return prop_col > value
-    if f.op == PropertyOp.GTE:
-        return prop_col >= value
-    if f.op == PropertyOp.LT:
-        return prop_col < value
-    if f.op == PropertyOp.LTE:
-        return prop_col <= value
-    return prop_col == value
+    return structured_filter_clause(f)
 
 
 async def list_features_paginated(

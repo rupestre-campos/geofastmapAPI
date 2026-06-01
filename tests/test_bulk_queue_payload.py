@@ -20,3 +20,16 @@ def test_bulk_payload_roundtrip_parent_and_shard_fields():
     assert out.shard_index == 2
     assert out.shard_total == 5
     assert out.finalize_collection is False
+
+
+def test_bulk_payload_roundtrip_replace_filters():
+    p = BulkJobPayload(
+        job_id="j2",
+        collection_id="c1",
+        storage_key="f.geojson",
+        mode="replace_filtered",
+        batch_size=500,
+        replace_filters=["a:eq:1"],
+    )
+    out = BulkJobPayload.from_json(p.to_json())
+    assert out.replace_filters == ["a:eq:1"]

@@ -132,6 +132,7 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
                 unregister_bulk_import_job(payload.job_id)
             return
         update_job(payload.job_id, status="running")
+        replace_filters = payload.parsed_replace_filters() if payload.mode == "replace_filtered" else None
         created, failed, err = run_bulk_import_sync(
             path,
             payload.collection_id,
@@ -140,6 +141,7 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
             on_progress=on_progress,
             zip_inner_shp_paths=payload.zip_inner_shp_paths,
             bulk_import_job_id=payload.job_id,
+            replace_filters=replace_filters or None,
         )
         if err == "cancelled":
             update_job(
@@ -225,6 +227,11 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
     ext = Path(path).suffix.lower()
     if payload.mode == "replace":
         replace_collection_prestage_sync(payload.collection_id)
+    elif payload.mode == "replace_filtered":
+        replace_collection_prestage_sync(
+            payload.collection_id,
+            replace_filters=payload.parsed_replace_filters(),
+        )
 
     if ext == ".zip":
         inner = payload.zip_inner_shp_paths
@@ -277,6 +284,7 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
 
     if not shard_payloads:
         print(f"[bulk-parent] fallback single ingest parent_job_id={payload.job_id}", flush=True)
+        replace_filters = payload.parsed_replace_filters() if payload.mode == "replace_filtered" else None
         created, failed, err = run_bulk_import_sync(
             path,
             payload.collection_id,
@@ -286,6 +294,8 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
             zip_inner_shp_paths=payload.zip_inner_shp_paths,
             bulk_import_job_id=payload.job_id,
             finalize_collection=True,
+            replace_filters=replace_filters or None,
+            replace_prestaged=payload.mode == "replace_filtered",
         )
         if err:
             update_job(payload.job_id, status="failed", message=err, items_created=created, items_failed=failed)

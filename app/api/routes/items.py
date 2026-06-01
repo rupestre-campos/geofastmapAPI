@@ -21,6 +21,7 @@ from app.db.session import get_db, AsyncSessionLocal
 from app.models.feature import Feature
 from app.services.coverages import CogPathOutsideStorageError
 from app.services.bulk_import import list_shp_in_zip
+from app.services.bulk_import_params import validate_bulk_import_mode_and_filters
 from app.services.bulk_queue import BulkJobPayload, enqueue, register_bulk_import_job
 from app.services.bulk_storage import get_bulk_storage
 from app.services.bulk_upload_sessions import (
@@ -406,15 +407,17 @@ async def create_bulk_upload_session(
     ensure_vector_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
-    mode = str(body.get("mode") or "append")
-    if mode not in ("append", "replace"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="mode must be 'append' or 'replace'")
+    mode, replace_filter_lines = validate_bulk_import_mode_and_filters(
+        str(body.get("mode") or "append"),
+        body.get("replace_filters"),
+    )
     settings = get_settings()
     batch_size = int(body.get("batch_size") or settings.bulk_import_batch_size)
     if batch_size < 1 or batch_size > 100_000:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="batch_size out of range")
     filename = str(body.get("filename") or "upload.geojson")
     qt = bool(body.get("queue_compute_tiles", True))
+    extra = {"replace_filters": replace_filter_lines} if replace_filter_lines else None
     s = create_upload_session(
         collection_id=collection_id,
         owner_id=current_user.id if current_user else None,
@@ -422,6 +425,7 @@ async def create_bulk_upload_session(
         mode=mode,
         batch_size=batch_size,
         queue_compute_tiles=qt,
+        extra=extra,
     )
     return {
         "upload_id": s["upload_id"],
@@ -519,6 +523,7 @@ async def complete_bulk_upload_session(
         except Exception:
             pass
 
+    replace_filter_lines = s.get("replace_filters") or []
     payload = BulkJobPayload(
         job_id=job.job_id,
         collection_id=collection_id,
@@ -528,6 +533,7 @@ async def complete_bulk_upload_session(
         batch_size=int(s.get("batch_size") or settings.bulk_import_batch_size),
         queue_compute_tiles=bool(s.get("queue_compute_tiles", True)),
         zip_inner_shp_paths=zip_inner_shp_paths,
+        replace_filters=replace_filter_lines if replace_filter_lines else None,
     )
     if bool(settings.bulk_sharded_ingest_enabled):
         payload.job_kind = "parent"
@@ -575,7 +581,7 @@ async def abort_bulk_upload_session(
     "/{collection_id}/items/bulk",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Bulk import from geospatial file",
-    description="Upload a file (KML, GPKG, GeoJSON, GeoJSONSeq/.geojsonl/.geojsonseq, or .zip). A .zip may contain one or more shapefiles (.shp and sidecars); all .shp found inside the zip (including in subfolders) are imported into the collection. Import runs asynchronously. Use mode=append or replace. Returns job_id and status_url.",
+    description="Upload a file (KML, GPKG, GeoJSON, GeoJSONSeq/.geojsonl/.geojsonseq, or .zip). A .zip may contain one or more shapefiles (.shp and sidecars); all .shp found inside the zip (including in subfolders) are imported into the collection. Import runs asynchronously. Use mode=append, replace, or replace_filtered (with replace_filters). Returns job_id and status_url.",
 )
 async def bulk_import_items(
     request: Request,
@@ -584,7 +590,14 @@ async def bulk_import_items(
         ...,
         description="Geospatial file: .kml, .gpkg, .geojson, .geojsonl, .geojsonseq, .json, .zip or .shp.zip (shapefile inside)",
     ),
-    mode: str = Form("append", description="append = add to collection; replace = delete all then import"),
+    mode: str = Form(
+        "append",
+        description="append = add; replace = delete all then import; replace_filtered = delete matching replace_filters then import",
+    ),
+    replace_filters: str | None = Form(
+        None,
+        description="For replace_filtered: newline-separated filter lines (key:op:value), ANDed together",
+    ),
     batch_size: int | None = Form(None, ge=1, le=100_000, description="Features per DB batch (default from config)."),
     queue_compute_tiles: str | None = Form(
         "true",
@@ -600,8 +613,7 @@ async def bulk_import_items(
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
 
-    if mode not in ("append", "replace"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="mode must be 'append' or 'replace'")
+    mode, replace_filter_lines = validate_bulk_import_mode_and_filters(mode, replace_filters)
 
     settings = get_settings()
     batch = batch_size if batch_size is not None else settings.bulk_import_batch_size
@@ -646,6 +658,7 @@ async def bulk_import_items(
             batch_size=batch,
             queue_compute_tiles=qt,
             zip_inner_shp_paths=zip_inner_shp_paths,
+            replace_filters=replace_filter_lines if replace_filter_lines else None,
         )
         if bool(settings.bulk_sharded_ingest_enabled):
             payload.job_kind = "parent"

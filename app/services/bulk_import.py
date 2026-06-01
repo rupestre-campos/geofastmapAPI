@@ -7,6 +7,7 @@ import random
 import time
 import zipfile
 from datetime import datetime
+from collections.abc import Sequence
 from typing import Callable
 
 from sqlalchemy import create_engine, delete, text, update
@@ -19,8 +20,10 @@ from uuid6 import uuid7
 
 from app.core.config import get_settings
 from app.crud import collections as collections_crud
+from app.db.feature_property_filters import structured_filter_clause
 from app.models.collection import Collection
 from app.models.feature import Feature
+from app.utils.property_filters import PropertyFilter
 from app.utils.feature_subdivide import (
     MAX_COORDS_FOR_DB_SUBDIVIDE,
     _coord_count,
@@ -364,6 +367,8 @@ def run_bulk_import_sync(
     zip_inner_shp_paths: list[str] | None = None,
     bulk_import_job_id: str | None = None,
     finalize_collection: bool = True,
+    replace_filters: Sequence[PropertyFilter] | None = None,
+    replace_prestaged: bool = False,
 ) -> tuple[int, int, str | None]:
     """
     Read a geospatial file with fiona and insert features into the collection.
@@ -372,7 +377,10 @@ def run_bulk_import_sync(
     Args:
         file_path: Path to uploaded file (e.g. .kml, .gpkg, .geojson, .geojsonl, .geojsonseq, or .zip with shapefile).
         collection_id: Target collection id.
-        mode: "append" or "replace". Replace deletes all existing features first.
+        mode: "append", "replace", or "replace_filtered". Replace deletes all existing features first.
+            replace_filtered deletes rows matching replace_filters first (unless replace_prestaged).
+        replace_filters: Structured property filters for replace_filtered mode.
+        replace_prestaged: When True, skip delete (already done by replace_collection_prestage_sync).
         batch_size: Number of features per DB commit.
         on_progress: Optional callback(status, items_created, total_or_none) for job updates.
         zip_inner_shp_paths: When file_path is .zip, list of .shp member paths to import (all of them).
@@ -463,8 +471,24 @@ def run_bulk_import_sync(
                     _run_db_retry(label, _wrapped, on_retry=_retry_notice)
     
                 _raise_if_bulk_cancelled(bulk_import_job_id)
-    
-                if mode == "replace":
+
+                finalize_mode = mode
+                if mode == "replace_filtered":
+                    finalize_mode = "append"
+                    if not replace_prestaged and replace_filters:
+                        if on_progress:
+                            on_progress("replacing", 0, None)
+
+                        def _filtered_delete() -> None:
+                            stmt = delete(Feature).where(Feature.collection_id == collection_id)
+                            for pf in replace_filters:
+                                stmt = stmt.where(structured_filter_clause(pf))
+                            session.execute(stmt)
+
+                        _execute_with_retry(_filtered_delete, "replace_filtered_delete_features")
+                        session = _commit_with_retry(session)
+                        _update_feature_count_sync(engine, collection_id)
+                elif mode == "replace":
                     if on_progress:
                         on_progress("replacing", 0, None)
                     _execute_with_retry(
@@ -505,7 +529,7 @@ def run_bulk_import_sync(
                     total_failed += failed
     
                 if finalize_collection:
-                    if mode == "replace":
+                    if finalize_mode == "replace":
                         _execute_with_retry(
                             lambda: session.execute(
                                 update(Collection).where(Collection.id == collection_id).values(feature_count=total_created)
@@ -587,8 +611,56 @@ def finalize_collection_import_sync(collection_id: str) -> None:
         decr_collection_bulk_activity(collection_id)
 
 
-def replace_collection_prestage_sync(collection_id: str) -> None:
-    """Delete existing rows before sharded replace imports."""
+def delete_features_by_filters_sync(collection_id: str, filters: Sequence[PropertyFilter]) -> None:
+    """Delete feature rows matching structured property filters; refresh count and extent."""
+    if not filters:
+        raise ValueError("replace_filters required for filtered delete")
+    incr_collection_bulk_activity(collection_id)
+    engine: Engine | None = None
+    try:
+        settings = get_settings()
+        engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+        SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+
+        def _delete() -> None:
+            with SessionLocal() as session:
+                stmt = delete(Feature).where(Feature.collection_id == collection_id)
+                for pf in filters:
+                    stmt = stmt.where(structured_filter_clause(pf))
+                session.execute(stmt)
+                session.commit()
+
+        _run_db_retry("replace_filtered_delete", _delete)
+        _update_feature_count_sync(engine, collection_id)
+        extent_mode = str(getattr(settings, "bulk_extent_update_mode", "immediate") or "immediate").lower()
+        if extent_mode not in ("immediate", "deferred", "best_effort"):
+            extent_mode = "immediate"
+        if extent_mode != "deferred":
+            try:
+                _run_db_retry(
+                    "extent_recompute",
+                    lambda: collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id),
+                )
+            except Exception:
+                if extent_mode == "immediate":
+                    raise
+    finally:
+        if engine is not None:
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+        decr_collection_bulk_activity(collection_id)
+
+
+def replace_collection_prestage_sync(
+    collection_id: str,
+    replace_filters: Sequence[PropertyFilter] | None = None,
+) -> None:
+    """Delete existing rows before sharded replace imports (full collection or filtered subset)."""
+    if replace_filters:
+        delete_features_by_filters_sync(collection_id, replace_filters)
+        return
     incr_collection_bulk_activity(collection_id)
     engine: Engine | None = None
     try:

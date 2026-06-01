@@ -355,7 +355,15 @@
         <div class="radio-group">
           <label><input type="radio" name="mode" value="append" checked> Append to existing</label>
           <label><input type="radio" name="mode" value="replace"> Replace all (delete then import)</label>
+          <label><input type="radio" name="mode" value="replace_filtered"> Replace matching filter</label>
         </div>
+      </div>
+      <div class="form-row" id="bulk-replace-filters-wrap" style="display:none;">
+        <label for="bulk-replace-filters">Replace filters <span class="meta">(key:op:value per line, ANDed)</span></label>
+        <textarea id="bulk-replace-filters" name="replace_filters" rows="3" placeholder="state_id:eq:12&#10;date:lt:2026-07-12"></textarea>
+        {% from "components/filter_builder.html" import filter_builder %}
+        {{ filter_builder('bulk-replace-filters', base, collection_id, 'bulk-replace-filter-builder') }}
+        <p class="meta" style="margin-top:6px;">Deletes only features matching all filters, then imports the file. Canceling the import job does not restore deleted rows. Verify filters on the <a href="{{ base }}/collections/{{ collection_id }}/items?f=html">items page</a> first.</p>
       </div>
       {% endif %}
       <div class="form-row">
@@ -1807,6 +1815,18 @@
       window.refreshCollectionJobs = load;
     })();
 
+    (function initBulkReplaceFiltersUi() {
+      var wrap = document.getElementById('bulk-replace-filters-wrap');
+      var radios = document.querySelectorAll('input[name="mode"]');
+      if (!wrap || !radios.length) return;
+      function syncBulkReplaceFiltersVisibility() {
+        var checked = document.querySelector('input[name="mode"]:checked');
+        wrap.style.display = (checked && checked.value === 'replace_filtered') ? '' : 'none';
+      }
+      radios.forEach(function(r) { r.addEventListener('change', syncBulkReplaceFiltersVisibility); });
+      syncBulkReplaceFiltersVisibility();
+    })();
+
     document.getElementById('form-bulk-upload').onsubmit = function(e) {
       e.preventDefault();
       var bulkInput = document.getElementById('bulk-file');
@@ -1965,6 +1985,17 @@
       }
       var file = fileList[0];
       var mode = document.querySelector('input[name="mode"]:checked').value;
+      var replaceFiltersTa = document.getElementById('bulk-replace-filters');
+      var replaceFilters = [];
+      if (mode === 'replace_filtered' && replaceFiltersTa) {
+        replaceFilters = (replaceFiltersTa.value || '').split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
+        if (!replaceFilters.length) {
+          alert('Add at least one filter line (key:op:value), e.g. state_id:eq:12');
+          loadingEl.style.display = 'none';
+          submitBtn.disabled = false;
+          return;
+        }
+      }
       var queueTiles = (collectionType !== 'raster') && document.getElementById('bulk-queue-compute-tiles').checked;
       var chunkSize = 32 * 1024 * 1024; // 32 MiB default
       var maxParallelParts = 4;
@@ -1974,6 +2005,7 @@
         var formData = new FormData();
         formData.append('file', file);
         formData.append('mode', mode);
+        if (replaceFilters.length) formData.append('replace_filters', replaceFilters.join('\n'));
         formData.append('queue_compute_tiles', queueTiles ? 'true' : 'false');
         var bulkUrl = '/collections/' + encodeURIComponent(collectionId) + '/items/bulk';
         return fetch(bulkUrl, { method: 'POST', body: formData, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
@@ -1993,7 +2025,12 @@
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ filename: file.name, mode: mode, queue_compute_tiles: queueTiles })
+        body: JSON.stringify({
+          filename: file.name,
+          mode: mode,
+          queue_compute_tiles: queueTiles,
+          replace_filters: replaceFilters.length ? replaceFilters : undefined
+        })
       })
         .then(function(r) { return r.json().then(function(j) { if (!r.ok) throw (j || {}); return j; }); })
         .then(function(sess) {
