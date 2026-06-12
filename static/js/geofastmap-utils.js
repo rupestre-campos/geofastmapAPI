@@ -962,6 +962,12 @@
     return out;
   }
 
+  /** Match app.utils.geo.mvt_layer_name — MVT source-layer id for a collection. */
+  function mvtLayerName(collectionId) {
+    var safe = String(collectionId || '').replace(/[^a-zA-Z0-9_]/g, '_');
+    return safe || 'default';
+  }
+
   global.GeofastmapUtils = {
     LINE_DASH: LINE_DASH,
     DEFAULT_STYLE_SPEC: DEFAULT_STYLE_SPEC,
@@ -999,6 +1005,7 @@
     isExplicitSavedCamera: isExplicitSavedCamera,
     shouldFitBoundsOnLoad: shouldFitBoundsOnLoad,
     fitMapToBbox: fitMapToBbox,
-    sanitizeMapCameraForSave: sanitizeMapCameraForSave
+    sanitizeMapCameraForSave: sanitizeMapCameraForSave,
+    mvtLayerName: mvtLayerName
   };
 })(typeof window !== 'undefined' ? window : this);

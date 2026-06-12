@@ -30,6 +30,111 @@ def _partition_bound_literal(collection_id: str) -> str:
     return ("FOR VALUES IN ('" + collection_id.replace("'", "''") + "')").replace(" ", "")
 
 
+def _migrate_default_rows_to_partition_sync(conn, collection_id: str) -> None:
+    """Move any rows for collection_id from features_default into the routed partition."""
+    conn.execute(
+        text(
+            """
+            INSERT INTO features (
+                id, collection_id, part_index, geometry, properties, created_at, updated_at, bulk_import_job_id
+            )
+            SELECT id, collection_id, part_index, geometry, properties, created_at, updated_at, bulk_import_job_id
+            FROM features_default
+            WHERE collection_id = :cid
+            """
+        ),
+        {"cid": collection_id},
+    )
+    conn.execute(
+        text("DELETE FROM features_default WHERE collection_id = :cid"),
+        {"cid": collection_id},
+    )
+
+
+def _create_partition_sync(conn, collection_id: str) -> str:
+    name = _safe_partition_name(collection_id)
+    cid_escaped = collection_id.replace("'", "''")
+    conn.execute(
+        text(f'CREATE TABLE "{name}" PARTITION OF features FOR VALUES IN (\'{cid_escaped}\')'),
+    )
+    return name
+
+
+def _advisory_lock_partition(conn, collection_id: str) -> None:
+    """Serialize partition create/migrate for one collection (concurrent bulk shards)."""
+    conn.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:cid)::bigint)"),
+        {"cid": collection_id},
+    )
+
+
+def ensure_features_partition_sync(engine: Engine, collection_id: str) -> str:
+    """
+    Ensure a dedicated LIST partition exists for collection_id and migrate rows out of features_default.
+    Returns partition relname. Idempotent.
+    """
+    existing = resolve_features_partition_relname_sync(engine, collection_id)
+    if existing:
+        with engine.begin() as conn:
+            _advisory_lock_partition(conn, collection_id)
+            _migrate_default_rows_to_partition_sync(conn, collection_id)
+        return existing
+
+    with engine.begin() as conn:
+        _advisory_lock_partition(conn, collection_id)
+        existing = resolve_features_partition_relname_sync(engine, collection_id)
+        if existing:
+            _migrate_default_rows_to_partition_sync(conn, collection_id)
+            return existing
+        in_default = int(
+            conn.execute(
+                text("SELECT COUNT(*) FROM features_default WHERE collection_id = :cid"),
+                {"cid": collection_id},
+            ).scalar()
+            or 0
+        )
+        if in_default > 0:
+            # Cannot CREATE PARTITION while default still holds these rows (PG LIST overlap rule).
+            temp_name = "_ensure_" + hashlib.sha256(collection_id.encode()).hexdigest()[:12]
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TEMP TABLE "{temp_name}" ON COMMIT DROP AS
+                    SELECT id, collection_id, part_index, geometry, properties, created_at, updated_at, bulk_import_job_id
+                    FROM features_default
+                    WHERE collection_id = :cid
+                    """
+                ),
+                {"cid": collection_id},
+            )
+            conn.execute(
+                text("DELETE FROM features_default WHERE collection_id = :cid"),
+                {"cid": collection_id},
+            )
+            part_name = _create_partition_sync(conn, collection_id)
+            conn.execute(
+                text(
+                    f"""
+                    INSERT INTO features (
+                        id, collection_id, part_index, geometry, properties, created_at, updated_at, bulk_import_job_id
+                    )
+                    SELECT id, collection_id, part_index, geometry, properties, created_at, updated_at, bulk_import_job_id
+                    FROM "{temp_name}"
+                    """
+                ),
+            )
+            return part_name
+        try:
+            return _create_partition_sync(conn, collection_id)
+        except Exception as e:
+            msg = str(e).lower()
+            if "already exists" in msg or "duplicate" in msg:
+                again = resolve_features_partition_relname_sync(engine, collection_id)
+                if again:
+                    return again
+            raise
+
+
 def resolve_features_partition_relname_sync(engine: Engine, collection_id: str) -> str | None:
     """Return dedicated features partition relname for collection_id, or None (rows may be in features_default)."""
     target_norm = _partition_bound_literal(collection_id)

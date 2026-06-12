@@ -11,7 +11,8 @@
 
     <h3>Storage model</h3>
     <ul>
-      <li>Features live in Postgres and are partitioned by <code>collection_id</code> for performance.</li>
+      <li>Features live in Postgres, <code>LIST</code>-partitioned by <code>collection_id</code>. Each collection gets a dedicated partition when created (or on the next bulk import). Rows that predate partitioning may sit in <code>features_default</code> until migrated.</li>
+      <li>Full <strong>replace</strong> uses <code>TRUNCATE</code> on the collection partition (fast). <strong>replace_filtered</strong> uses batched <code>DELETE</code> with your filter lines.</li>
       <li>Collections keep a cached <code>feature_count</code> for fast listing.</li>
       <li>Geometry is stored as PostGIS geometry; properties are stored as JSON.</li>
     </ul>

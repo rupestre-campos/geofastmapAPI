@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.core.config import get_settings
+from app.db.features_partitions import ensure_features_partition_sync
 from app.services.bulk_import import (
     BulkImportCancelled,
     finalize_collection_import_sync,
@@ -505,6 +506,20 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
                 payload.queue_compute_tiles,
             )
         _release_bulk_collection_mutex(payload)
+        return
+
+    try:
+        from sqlalchemy import create_engine
+
+        engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+        try:
+            ensure_features_partition_sync(engine, payload.collection_id)
+        finally:
+            engine.dispose()
+    except Exception as e:
+        update_job(payload.job_id, status="failed", message=f"Partition setup failed: {e}")
+        _release_bulk_collection_mutex(payload)
+        print(f"[bulk-parent] partition setup failed parent_job_id={payload.job_id}: {e}", flush=True)
         return
 
     init_parent_state(

@@ -783,13 +783,15 @@
           addPointLayers(sid, vlId, s, beforeId);
         }
         if (layer.tiles_url) {
+          var defaultVlId = GeofastmapUtils.mvtLayerName(cid);
           return fetch(base + '/collections/' + encodeURIComponent(cid) + '/tiles', { headers: { 'Accept': 'application/json' } })
             .then(function(r) { return r.json(); })
             .then(function(tj) {
               var minz = tj.minzoom != null ? tj.minzoom : 0;
               var maxz = tj.maxzoom != null ? tj.maxzoom : 14;
+              var vlId = (tj.vector_layers && tj.vector_layers[0]) ? tj.vector_layers[0].id : defaultVlId;
               if (!map.getSource(sid)) map.addSource(sid, { type: 'vector', tiles: [layer.tiles_url], minzoom: minz, maxzoom: maxz });
-              addLayers(cid);
+              addLayers(vlId);
               if (layer.visible === false) {
                 try {
                   ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {
@@ -801,7 +803,7 @@
             })
             .catch(function() {
               if (!map.getSource(sid)) map.addSource(sid, { type: 'vector', tiles: [layer.tiles_url], minzoom: 0, maxzoom: 14 });
-              addLayers(cid);
+              addLayers(defaultVlId);
               if (layer.visible === false) {
                 try {
                   ['-fill', '-line', '-circle', '-symbol'].forEach(function(suf) {

@@ -1212,20 +1212,21 @@
         var glowLineWidth = (style.lineWidth != null ? Math.max(1, style.lineWidth) : 1.5) + 4;
         var ptRadius = style.pointRadius != null ? style.pointRadius : 8;
         var glowPtRadius = ptRadius + 4;
-        function addAllSearchLayers() {
+        var defaultVlId = GeofastmapUtils.mvtLayerName(collectionId);
+        function addAllSearchLayers(vlId) {
           if (!map.getSource('map-search-tiles')) return;
-          map.addLayer({ id: 'map-search-glow-fill', type: 'line', source: 'map-search-tiles', 'source-layer': collectionId, filter: notPointFilter, paint: { 'line-color': glowColor, 'line-width': glowWidth, 'line-opacity': 1 } });
-          map.addLayer({ id: 'map-search-glow-line', type: 'line', source: 'map-search-tiles', 'source-layer': collectionId, filter: notPointFilter, paint: { 'line-color': glowColor, 'line-width': glowLineWidth, 'line-opacity': 1 } });
-          map.addLayer({ id: 'map-search-glow-circle', type: 'circle', source: 'map-search-tiles', 'source-layer': collectionId, filter: pointFilter, paint: { 'circle-color': glowColor, 'circle-radius': glowPtRadius, 'circle-opacity': 1, 'circle-stroke-width': 0 } });
+          map.addLayer({ id: 'map-search-glow-fill', type: 'line', source: 'map-search-tiles', 'source-layer': vlId, filter: notPointFilter, paint: { 'line-color': glowColor, 'line-width': glowWidth, 'line-opacity': 1 } });
+          map.addLayer({ id: 'map-search-glow-line', type: 'line', source: 'map-search-tiles', 'source-layer': vlId, filter: notPointFilter, paint: { 'line-color': glowColor, 'line-width': glowLineWidth, 'line-opacity': 1 } });
+          map.addLayer({ id: 'map-search-glow-circle', type: 'circle', source: 'map-search-tiles', 'source-layer': vlId, filter: pointFilter, paint: { 'circle-color': glowColor, 'circle-radius': glowPtRadius, 'circle-opacity': 1, 'circle-stroke-width': 0 } });
           var fillColor = style.fillColor;
           var lineColor = style.lineColor;
           var fillOpacity = style.fillOpacity;
           var lineOpacity = style.lineOpacity;
           var lineWidth = style.lineWidth;
           var lineDash = style.lineDash;
-          map.addLayer({ id: 'map-search-fill', type: 'fill', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } });
-          map.addLayer({ id: 'map-search-line', type: 'line', source: 'map-search-tiles', 'source-layer': collectionId, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } });
-          map.addLayer({ id: 'map-search-circle', type: 'circle', source: 'map-search-tiles', 'source-layer': collectionId, filter: pointFilter, paint: { 'circle-color': style.pointColor || lineColor || '#58a6ff', 'circle-radius': ptRadius, 'circle-opacity': style.pointOpacity != null ? style.pointOpacity : 0.9 } });
+          map.addLayer({ id: 'map-search-fill', type: 'fill', source: 'map-search-tiles', 'source-layer': vlId, paint: { 'fill-color': fillColor, 'fill-opacity': fillOpacity } });
+          map.addLayer({ id: 'map-search-line', type: 'line', source: 'map-search-tiles', 'source-layer': vlId, paint: { 'line-color': lineColor, 'line-width': lineWidth, 'line-opacity': lineOpacity, 'line-dasharray': lineDash } });
+          map.addLayer({ id: 'map-search-circle', type: 'circle', source: 'map-search-tiles', 'source-layer': vlId, filter: pointFilter, paint: { 'circle-color': style.pointColor || lineColor || '#58a6ff', 'circle-radius': ptRadius, 'circle-opacity': style.pointOpacity != null ? style.pointOpacity : 0.9 } });
           updateLegendForSearch(true);
         }
         fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles', { headers: { 'Accept': 'application/json' } })
@@ -1233,12 +1234,13 @@
           .then(function(tj) {
             var minz = tj.minzoom != null ? tj.minzoom : 0;
             var maxz = tj.maxzoom != null ? tj.maxzoom : 14;
+            var vlId = (tj.vector_layers && tj.vector_layers[0]) ? tj.vector_layers[0].id : defaultVlId;
             map.addSource('map-search-tiles', { type: 'vector', tiles: [tileUrl], minzoom: minz, maxzoom: maxz });
-            addAllSearchLayers();
+            addAllSearchLayers(vlId);
           })
           .catch(function() {
             map.addSource('map-search-tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
-            addAllSearchLayers();
+            addAllSearchLayers(defaultVlId);
           });
       }
 
@@ -1503,18 +1505,20 @@
             resolve(sid + '-line');
           }
           if (layer.tiles_url) {
+            var defaultVlId = GeofastmapUtils.mvtLayerName(cid);
             fetch(base + '/collections/' + encodeURIComponent(cid) + '/tiles', { headers: { 'Accept': 'application/json' } })
               .then(function(r) { return r.json(); })
               .then(function(tj) {
                 var minz = tj.minzoom != null ? tj.minzoom : 0;
                 var maxz = tj.maxzoom != null ? tj.maxzoom : 14;
+                var vlId = (tj.vector_layers && tj.vector_layers[0]) ? tj.vector_layers[0].id : defaultVlId;
                 if (!map.getSource(sid)) map.addSource(sid, { type: 'vector', tiles: [layer.tiles_url], minzoom: minz, maxzoom: maxz });
-                addFillLinePoint(cid);
+                addFillLinePoint(vlId);
                 resolve(sid + '-line');
               })
               .catch(function() {
                 if (!map.getSource(sid)) map.addSource(sid, { type: 'vector', tiles: [layer.tiles_url], minzoom: 0, maxzoom: 14 });
-                addFillLinePoint(cid);
+                addFillLinePoint(defaultVlId);
                 resolve(sid + '-line');
               });
             return;

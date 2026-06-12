@@ -21,7 +21,10 @@ from uuid6 import uuid7
 from app.core.config import get_settings
 from app.crud import collections as collections_crud
 from app.db.feature_property_filters import structured_filter_clause
-from app.db.features_partitions import resolve_features_partition_relname_sync
+from app.db.features_partitions import (
+    ensure_features_partition_sync,
+    resolve_features_partition_relname_sync,
+)
 from app.models.collection import Collection
 from app.models.feature import Feature
 from app.utils.property_filters import PropertyFilter
@@ -107,6 +110,39 @@ def _delete_where_clause(collection_id: str, filters: Sequence[PropertyFilter] |
         for pf in filters:
             clauses.append(structured_filter_clause(pf))
     return and_(*clauses) if len(clauses) > 1 else clauses[0]
+
+
+def _truncate_collection_features_sync(
+    engine: Engine,
+    collection_id: str,
+    *,
+    bulk_import_job_id: str | None = None,
+    on_progress: Callable[[str, int, int | None], None] | None = None,
+) -> None:
+    """
+    Full replace prestage: ensure dedicated partition, TRUNCATE it (fast), clear default stragglers.
+    """
+    _raise_if_bulk_cancelled(bulk_import_job_id)
+    if on_progress:
+        on_progress("replacing", 0, None)
+    partition = ensure_features_partition_sync(engine, collection_id)
+    _raise_if_bulk_cancelled(bulk_import_job_id)
+
+    def _truncate() -> None:
+        with engine.connect() as conn:
+            conn.execute(text(f'TRUNCATE TABLE "{partition}"'))
+            conn.execute(
+                text("DELETE FROM features_default WHERE collection_id = :cid"),
+                {"cid": collection_id},
+            )
+            conn.commit()
+
+    _run_db_retry("replace_truncate_partition", _truncate)
+    holder = get_collection_bulk_mutex_holder(collection_id)
+    if holder:
+        refresh_collection_bulk_mutex(collection_id, holder)
+    if on_progress:
+        on_progress("replacing", 0, 0)
 
 
 def _delete_features_batched_sync(
@@ -307,8 +343,8 @@ def _import_one_source(
     heartbeat_seconds: float,
     commit_with_retry: Callable[[Session], Session],
     bulk_import_job_id: str | None = None,
-) -> tuple[int, int]:
-    """Read one fiona source and insert features with ST_Subdivide (≤256 vertices/row). Returns (created, failed)."""
+) -> tuple[int, int, Session]:
+    """Read one fiona source and insert features with ST_Subdivide (≤256 vertices/row). Returns (created, failed, session)."""
     import fiona
 
     created = 0
@@ -424,7 +460,7 @@ def _import_one_source(
             _raise_if_bulk_cancelled(bulk_import_job_id)
             if on_progress:
                 last_heartbeat = time.monotonic()
-    return created, failed
+    return created, failed, session
 
 
 def run_bulk_import_sync(
@@ -503,6 +539,11 @@ def run_bulk_import_sync(
                 coll = session.get(Collection, collection_id)
                 if not coll:
                     return 0, 0, "Collection not found"
+
+                try:
+                    ensure_features_partition_sync(engine, collection_id)
+                except Exception as e:
+                    return 0, 0, f"Failed ensuring features partition: {e}"
     
                 def _retry_notice(attempt: int, wait: float, reason: str) -> None:
                     if on_progress:
@@ -514,17 +555,25 @@ def run_bulk_import_sync(
     
                 def _commit_with_retry(sess: Session) -> Session:
                     def _do_commit() -> None:
-                        sess.commit()
-    
+                        try:
+                            sess.commit()
+                        except Exception:
+                            try:
+                                sess.rollback()
+                            except Exception:
+                                pass
+                            raise
+
                     try:
                         _run_db_retry("bulk_commit", _do_commit, on_retry=_retry_notice)
                         return sess
                     except Exception:
                         try:
                             sess.rollback()
+                            sess.close()
                         except Exception:
                             pass
-                        raise
+                        return SessionLocal()
     
                 def _execute_with_retry(fn: Callable[[], None], label: str) -> None:
                     def _wrapped() -> None:
@@ -564,15 +613,15 @@ def run_bulk_import_sync(
                     if on_progress:
                         on_progress("replacing", 0, None)
 
-                    def _batched_replace_delete() -> None:
-                        _delete_features_batched_sync(
+                    def _full_replace_clear() -> None:
+                        _truncate_collection_features_sync(
                             engine,
                             collection_id,
                             bulk_import_job_id=bulk_import_job_id,
                             on_progress=on_progress,
                         )
 
-                    _execute_with_retry(_batched_replace_delete, "replace_delete_features")
+                    _execute_with_retry(_full_replace_clear, "replace_truncate_features")
                     _execute_with_retry(
                         lambda: session.execute(
                             update(Collection).where(Collection.id == collection_id).values(feature_count=0)
@@ -590,7 +639,7 @@ def run_bulk_import_sync(
     
                 for open_path, driver in sources:
                     _raise_if_bulk_cancelled(bulk_import_job_id)
-                    created, failed = _import_one_source(
+                    created, failed, session = _import_one_source(
                         session,
                         open_path,
                         driver,
@@ -704,6 +753,7 @@ def delete_features_by_filters_sync(
     try:
         settings = get_settings()
         engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+        ensure_features_partition_sync(engine, collection_id)
         _delete_features_batched_sync(
             engine,
             collection_id,
@@ -755,7 +805,7 @@ def replace_collection_prestage_sync(
         settings = get_settings()
         engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
         SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
-        _delete_features_batched_sync(
+        _truncate_collection_features_sync(
             engine,
             collection_id,
             bulk_import_job_id=bulk_import_job_id,
