@@ -136,6 +136,36 @@ def init_parent_state(
     )
 
 
+def get_parent_shard_state(parent_job_id: str) -> dict[str, int] | None:
+    """Read aggregate shard progress for a parent bulk job (Redis only)."""
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return None
+    import redis
+
+    key = _parent_state_key(parent_job_id)
+    read_attempts = max(1, int(getattr(settings, "redis_retry_read_max_attempts", 15) or 15))
+
+    def _read() -> dict[str, int] | None:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        raw = r.hgetall(key) or {}
+        if not raw:
+            return None
+        return {
+            "expected_shards": int(raw.get("expected_shards", 0) or 0),
+            "completed_shards": int(raw.get("completed_shards", 0) or 0),
+            "failed_shards": int(raw.get("failed_shards", 0) or 0),
+            "items_created": int(raw.get("items_created", 0) or 0),
+            "items_failed": int(raw.get("items_failed", 0) or 0),
+        }
+
+    return run_redis_retry(
+        "bulk_parent_shard_state_read",
+        _read,
+        max_attempts=read_attempts,
+    )
+
+
 def record_parent_shard_result(
     *,
     parent_job_id: str,

@@ -5,6 +5,7 @@ import hashlib
 import re
 
 from sqlalchemy import text
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -15,20 +16,42 @@ def _safe_partition_name(collection_id: str) -> str:
     return f"features_{safe}_{h}"
 
 
+_PARTITION_LIST_SQL = """
+    SELECT c.relname AS relname, pg_get_expr(c.relpartbound, c.oid) AS bound
+    FROM pg_inherits i
+    JOIN pg_class c ON c.oid = i.inhrelid
+    JOIN pg_class p ON p.oid = i.inhparent
+    WHERE p.relname = 'features'
+      AND c.relname != 'features_default'
+"""
+
+
+def _partition_bound_literal(collection_id: str) -> str:
+    return ("FOR VALUES IN ('" + collection_id.replace("'", "''") + "')").replace(" ", "")
+
+
+def resolve_features_partition_relname_sync(engine: Engine, collection_id: str) -> str | None:
+    """Return dedicated features partition relname for collection_id, or None (rows may be in features_default)."""
+    target_norm = _partition_bound_literal(collection_id)
+
+    def _read() -> str | None:
+        with engine.connect() as conn:
+            rows = conn.execute(text(_PARTITION_LIST_SQL)).fetchall()
+            for row in rows:
+                bound = (row.bound or "").replace(" ", "")
+                if bound == target_norm:
+                    name = str(row.relname or "")
+                    if re.fullmatch(r"features_[a-zA-Z0-9_]+", name):
+                        return name
+        return None
+
+    return _read()
+
+
 async def _partition_exists_for(db: AsyncSession, collection_id: str) -> bool:
     """Return True if a partition of features already exists for this collection_id."""
-    r = await db.execute(
-        text("""
-            SELECT pg_get_expr(c.relpartbound, c.oid) AS bound
-            FROM pg_inherits i
-            JOIN pg_class c ON c.oid = i.inhrelid
-            JOIN pg_class p ON p.oid = i.inhparent
-            WHERE p.relname = 'features'
-              AND c.relname != 'features_default'
-        """)
-    )
-    target = "FOR VALUES IN ('" + collection_id.replace("'", "''") + "')"
-    target_norm = target.replace(" ", "")
+    r = await db.execute(text(_PARTITION_LIST_SQL))
+    target_norm = _partition_bound_literal(collection_id)
     for row in r.fetchall():
         if row.bound and row.bound.replace(" ", "") == target_norm:
             return True

@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # Parent/shard ingest mode for large files.
     bulk_sharded_ingest_enabled: bool = True
     bulk_shard_lines_per_part: int = 50000
+    # Replace mode: delete rows in batches to avoid one long table lock blocking other work.
+    bulk_replace_delete_batch_rows: int = 25000
+    # Per-collection Redis mutex TTL while a bulk import mutates features (refreshed during long jobs).
+    bulk_collection_mutex_ttl_seconds: int = 86400 * 2
 
     # Bulk storage: where uploaded files go (shared path for API and worker). Future: s3.
     bulk_storage_type: str = "filesystem"  # filesystem | s3 (s3 reserved)

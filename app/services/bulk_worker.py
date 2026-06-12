@@ -4,14 +4,25 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import time
 from pathlib import Path
+from typing import Callable
 
 from app.core.config import get_settings
 from app.services.bulk_import import (
+    BulkImportCancelled,
     finalize_collection_import_sync,
     list_shp_in_zip,
     replace_collection_prestage_sync,
     run_bulk_import_sync,
+)
+from app.services.bulk_collection_activity import (
+    get_collection_bulk_mutex_holder,
+    holds_collection_bulk_mutex,
+    refresh_collection_bulk_mutex,
+    release_collection_bulk_mutex,
+    try_acquire_collection_bulk_mutex,
 )
 from app.services.bulk_queue import (
     QUEUE_KEY,
@@ -19,6 +30,7 @@ from app.services.bulk_queue import (
     clear_parent_state,
     enqueue,
     get_bulk_import_storage_key,
+    get_parent_shard_state,
     init_parent_state,
     record_parent_shard_result,
     unregister_bulk_import_job,
@@ -79,6 +91,61 @@ def cleanup_orphan_bulk_uploads() -> None:
                 pass
 
 
+def _bulk_mutex_owner(payload: BulkJobPayload) -> str:
+    if payload.job_kind == "shard" and payload.parent_job_id:
+        return payload.parent_job_id
+    return payload.job_id
+
+
+def _bulk_job_status_id(payload: BulkJobPayload) -> str:
+    if payload.job_kind == "shard" and payload.parent_job_id:
+        return payload.parent_job_id
+    return payload.job_id
+
+
+def _defer_bulk_job_for_collection_mutex(payload: BulkJobPayload) -> bool:
+    """Re-queue when another bulk job holds the collection mutex. Returns True if deferred."""
+    owner = _bulk_mutex_owner(payload)
+    if payload.job_kind == "shard":
+        if holds_collection_bulk_mutex(payload.collection_id, owner):
+            refresh_collection_bulk_mutex(payload.collection_id, owner)
+            return False
+    elif try_acquire_collection_bulk_mutex(payload.collection_id, owner):
+        return False
+
+    holder = get_collection_bulk_mutex_holder(payload.collection_id)
+    status_job_id = _bulk_job_status_id(payload)
+    try:
+        update_job(
+            status_job_id,
+            status="pending",
+            message=(
+                "Waiting for another bulk import on this collection"
+                + (f" (job {holder})" if holder else "")
+                + "…"
+            ),
+        )
+    except Exception:
+        pass
+    try:
+        enqueue(payload)
+    except Exception as e:
+        print(
+            f"[bulk-worker] defer re-enqueue failed job_id={payload.job_id}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+    print(
+        f"[bulk-worker] deferred job_id={payload.job_id} collection={payload.collection_id} holder={holder}",
+        flush=True,
+    )
+    return True
+
+
+def _release_bulk_collection_mutex(payload: BulkJobPayload) -> None:
+    release_collection_bulk_mutex(payload.collection_id, _bulk_mutex_owner(payload))
+
+
 def process_bulk_job(payload: BulkJobPayload) -> None:
     """Load file from storage, run import, update job status, delete file. Optionally queue tile build."""
     storage = get_bulk_storage()
@@ -88,8 +155,13 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
         flush=True,
     )
 
+    if payload.job_kind != "raster_batch" and _defer_bulk_job_for_collection_mutex(payload):
+        return
+
     job = get_job(payload.job_id)
     if job and job.status == "cancelled":
+        if payload.job_kind != "raster_batch":
+            _release_bulk_collection_mutex(payload)
         try:
             storage.delete(payload.storage_key)
         except Exception:
@@ -180,6 +252,7 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
     finally:
         # Cleanup strategy differs by job kind.
         if payload.job_kind == "single":
+            _release_bulk_collection_mutex(payload)
             try:
                 storage.delete(payload.storage_key)
             except Exception:
@@ -191,6 +264,97 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
         else:
             # shard jobs are ephemeral and not registered in bulk cancel registry.
             pass
+
+
+def _shard_progress_heartbeat_seconds() -> float:
+    return max(0.0, float(getattr(get_settings(), "bulk_progress_heartbeat_seconds", 5.0) or 5.0))
+
+
+def _parent_shard_progress_message(
+    *,
+    shard_index: int | None,
+    shard_total: int | None,
+    status: str,
+    shard_created: int,
+    parent_state: dict[str, int] | None,
+) -> tuple[str, int]:
+    prior_created = int(parent_state.get("items_created", 0) or 0) if parent_state else 0
+    completed_shards = int(parent_state.get("completed_shards", 0) or 0) if parent_state else 0
+    total_created = prior_created + max(0, int(shard_created))
+    idx = int(shard_index or 0)
+    total = int(shard_total or 0)
+    if status == "replacing":
+        return "Deleting existing features before import…", prior_created
+    if idx and total:
+        msg = f"Shard {idx}/{total}: {status}"
+        if completed_shards:
+            msg += f" ({completed_shards} shard(s) finished)"
+        if shard_created:
+            msg += f"; {shard_created} in this shard"
+        msg += f"; {total_created} features total so far"
+        return msg, total_created
+    if shard_created:
+        return f"Importing… {total_created} features so far", total_created
+    return f"Importing… ({status})", total_created
+
+
+def _make_parent_shard_progress_cb(
+    parent_job_id: str,
+    shard_index: int | None,
+    shard_total: int | None,
+) -> Callable[[str, int, int | None], None]:
+    last_sent = 0.0
+    heartbeat = _shard_progress_heartbeat_seconds()
+
+    def on_progress(status: str, shard_created: int, _total: int | None) -> None:
+        nonlocal last_sent
+        now = time.monotonic()
+        if heartbeat > 0 and status == "running" and (now - last_sent) < heartbeat:
+            return
+        last_sent = now
+        parent_state = get_parent_shard_state(parent_job_id)
+        msg, total_created = _parent_shard_progress_message(
+            shard_index=shard_index,
+            shard_total=shard_total,
+            status=status,
+            shard_created=shard_created,
+            parent_state=parent_state,
+        )
+        try:
+            update_job(
+                parent_job_id,
+                status="running",
+                message=msg,
+                items_created=total_created,
+            )
+        except Exception:
+            pass
+
+    return on_progress
+
+
+def _notify_parent_shard_started(payload: BulkJobPayload) -> None:
+    parent_job_id = payload.parent_job_id or ""
+    if not parent_job_id:
+        return
+    parent_state = get_parent_shard_state(parent_job_id)
+    prior_created = int(parent_state.get("items_created", 0) or 0) if parent_state else 0
+    completed = int(parent_state.get("completed_shards", 0) or 0) if parent_state else 0
+    idx = payload.shard_index or 0
+    total = payload.shard_total or 0
+    try:
+        update_job(
+            parent_job_id,
+            status="running",
+            message=(
+                f"Processing shard {idx}/{total}"
+                + (f" ({completed} finished, {prior_created} features imported)" if completed or prior_created else "")
+                + "…"
+            ),
+            items_created=prior_created,
+        )
+    except Exception:
+        pass
 
 
 def _split_jsonl_to_chunk_keys(path: str, parent_job_id: str, lines_per_part: int) -> list[str]:
@@ -225,13 +389,40 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
     settings = get_settings()
     shard_payloads: list[BulkJobPayload] = []
     ext = Path(path).suffix.lower()
-    if payload.mode == "replace":
-        replace_collection_prestage_sync(payload.collection_id)
-    elif payload.mode == "replace_filtered":
-        replace_collection_prestage_sync(
-            payload.collection_id,
-            replace_filters=payload.parsed_replace_filters(),
-        )
+    def _prestage_progress(status: str, _created: int, deleted: int | None) -> None:
+        try:
+            if status == "replacing" and deleted is not None:
+                update_job(
+                    payload.job_id,
+                    status="replacing",
+                    message=f"Deleting existing features… ({deleted} rows removed so far)",
+                )
+            else:
+                update_job(payload.job_id, status=status)
+        except Exception:
+            pass
+
+    try:
+        if payload.mode == "replace":
+            update_job(payload.job_id, status="replacing", message="Deleting existing features before import…")
+            replace_collection_prestage_sync(
+                payload.collection_id,
+                bulk_import_job_id=payload.job_id,
+                on_progress=_prestage_progress,
+            )
+        elif payload.mode == "replace_filtered":
+            update_job(payload.job_id, status="replacing", message="Deleting features matching filter before import…")
+            replace_collection_prestage_sync(
+                payload.collection_id,
+                replace_filters=payload.parsed_replace_filters(),
+                bulk_import_job_id=payload.job_id,
+                on_progress=_prestage_progress,
+            )
+    except BulkImportCancelled:
+        _release_bulk_collection_mutex(payload)
+        update_job(payload.job_id, status="cancelled", message="Cancelled by user.")
+        print(f"[bulk-parent] cancelled during prestage parent_job_id={payload.job_id}", flush=True)
+        return
 
     if ext == ".zip":
         inner = payload.zip_inner_shp_paths
@@ -260,6 +451,7 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
                     )
                 )
     elif ext in (".geojsonl", ".geojsonseq", ".jsonl") and bool(settings.bulk_sharded_ingest_enabled):
+        update_job(payload.job_id, status="running", message="Splitting upload into shards…")
         shard_keys = _split_jsonl_to_chunk_keys(
             path, payload.job_id, max(1000, int(settings.bulk_shard_lines_per_part or 50000))
         )
@@ -312,6 +504,7 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
                 payload.owner_id,
                 payload.queue_compute_tiles,
             )
+        _release_bulk_collection_mutex(payload)
         return
 
     init_parent_state(
@@ -342,13 +535,20 @@ def _process_shard_bulk_job(payload: BulkJobPayload, path: str) -> None:
         f"[bulk-shard] start parent_job_id={parent_job_id} shard={payload.shard_index}/{payload.shard_total} path={path}",
         flush=True,
     )
+    if parent_job_id:
+        _notify_parent_shard_started(payload)
+    shard_progress = (
+        _make_parent_shard_progress_cb(parent_job_id, payload.shard_index, payload.shard_total)
+        if parent_job_id
+        else None
+    )
     try:
         created, failed, err = run_bulk_import_sync(
             path,
             payload.collection_id,
             "append",
             payload.batch_size,
-            on_progress=None,
+            on_progress=shard_progress,
             zip_inner_shp_paths=payload.zip_inner_shp_paths,
             bulk_import_job_id=parent_job_id or payload.job_id,
             finalize_collection=False,
@@ -451,3 +651,4 @@ def _process_shard_bulk_job(payload: BulkJobPayload, path: str) -> None:
                 pass
             unregister_bulk_import_job(parent_job_id)
             clear_parent_state(parent_job_id)
+            release_collection_bulk_mutex(payload.collection_id, parent_job_id)

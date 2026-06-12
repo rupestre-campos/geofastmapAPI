@@ -98,7 +98,7 @@ def test_parent_job_replace_filtered_calls_prestage(monkeypatch, tmp_path):
 
     prestage_calls = []
 
-    def fake_prestage(collection_id, replace_filters=None):
+    def fake_prestage(collection_id, replace_filters=None, **_kwargs):
         prestage_calls.append((collection_id, replace_filters))
 
     monkeypatch.setattr(bw, "replace_collection_prestage_sync", fake_prestage)

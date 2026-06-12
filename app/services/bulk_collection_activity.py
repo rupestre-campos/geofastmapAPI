@@ -9,7 +9,13 @@ from app.core.config import get_settings
 from app.services.redis_resilience import run_redis_retry
 
 BULK_COLLECTION_INFLIGHT_PREFIX = "geofastmap:bulk_collection_inflight:"
+BULK_COLLECTION_MUTEX_PREFIX = "geofastmap:bulk_collection_mutex:"
 _DEFAULT_INFLIGHT_TTL_SECONDS = 86400 * 2  # safety if a worker dies mid-import
+_DEFAULT_MUTEX_TTL_SECONDS = 86400 * 2
+
+
+def _mutex_key(collection_id: str) -> str:
+    return f"{BULK_COLLECTION_MUTEX_PREFIX}{collection_id}"
 
 
 def incr_collection_bulk_activity(collection_id: str) -> None:
@@ -68,6 +74,95 @@ def collection_has_bulk_activity(collection_id: str) -> bool:
             int(getattr(settings, "redis_retry_read_max_attempts", 15) or 15),
         ),
     )
+
+
+def get_collection_bulk_mutex_holder(collection_id: str) -> str | None:
+    """Return job_id holding the per-collection bulk mutex, or None."""
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return None
+    import redis
+
+    def _read() -> str | None:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        v = r.get(_mutex_key(collection_id))
+        return str(v) if v else None
+
+    return run_redis_retry(
+        "bulk_collection_mutex_read",
+        _read,
+        max_attempts=max(
+            1,
+            int(getattr(settings, "redis_retry_read_max_attempts", 15) or 15),
+        ),
+    )
+
+
+def holds_collection_bulk_mutex(collection_id: str, owner_job_id: str) -> bool:
+    holder = get_collection_bulk_mutex_holder(collection_id)
+    return holder is not None and holder == owner_job_id
+
+
+def try_acquire_collection_bulk_mutex(collection_id: str, owner_job_id: str) -> bool:
+    """Exclusive lock: one bulk mutator per collection (parent job owns lock for its shards)."""
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return True
+    import redis
+
+    key = _mutex_key(collection_id)
+    ttl = max(300, int(getattr(settings, "bulk_collection_mutex_ttl_seconds", _DEFAULT_MUTEX_TTL_SECONDS) or _DEFAULT_MUTEX_TTL_SECONDS))
+
+    def _run() -> bool:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        if r.set(key, owner_job_id, nx=True, ex=ttl):
+            return True
+        return (r.get(key) or "") == owner_job_id
+
+    return bool(
+        run_redis_retry(
+            "bulk_collection_mutex_acquire",
+            _run,
+            max_attempts=max(
+                1,
+                int(getattr(settings, "redis_retry_read_max_attempts", 15) or 15),
+            ),
+        )
+    )
+
+
+def release_collection_bulk_mutex(collection_id: str, owner_job_id: str) -> None:
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return
+    import redis
+
+    key = _mutex_key(collection_id)
+
+    def _run() -> None:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        if r.get(key) == owner_job_id:
+            r.delete(key)
+
+    run_redis_retry("bulk_collection_mutex_release", _run)
+
+
+def refresh_collection_bulk_mutex(collection_id: str, owner_job_id: str) -> None:
+    """Extend mutex TTL while long-running bulk work continues."""
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return
+    import redis
+
+    key = _mutex_key(collection_id)
+    ttl = max(300, int(getattr(settings, "bulk_collection_mutex_ttl_seconds", _DEFAULT_MUTEX_TTL_SECONDS) or _DEFAULT_MUTEX_TTL_SECONDS))
+
+    def _run() -> None:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        if r.get(key) == owner_job_id:
+            r.expire(key, ttl)
+
+    run_redis_retry("bulk_collection_mutex_refresh", _run)
 
 
 def wait_until_collection_bulk_idle(
