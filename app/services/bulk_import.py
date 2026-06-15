@@ -7,8 +7,8 @@ import random
 import time
 import zipfile
 from datetime import datetime
-from collections.abc import Sequence
-from typing import Callable
+from collections.abc import Callable, Sequence
+from typing import TypeVar
 
 from sqlalchemy import and_, create_engine, delete, literal_column, select, text, update
 from sqlalchemy.engine import Engine
@@ -44,6 +44,8 @@ from app.services.bulk_collection_activity import (
 )
 from app.services.job_store import get_job
 
+T = TypeVar("T")
+
 class BulkImportCancelled(Exception):
     """Raised when the bulk job is marked cancelled in job_store (cooperative stop)."""
 
@@ -75,18 +77,17 @@ def _retry_wait_seconds(attempt_idx: int, *, base: float, max_seconds: float) ->
 
 def _run_db_retry(
     label: str,
-    fn: Callable[[], None],
+    fn: Callable[[], T],
     *,
     on_retry: Callable[[int, float, str], None] | None = None,
-) -> None:
+) -> T:
     settings = get_settings()
     max_attempts = max(1, int(getattr(settings, "bulk_db_retry_max_attempts", 4) or 4))
     base = max(0.1, float(getattr(settings, "bulk_db_retry_base_seconds", 1.0) or 1.0))
     max_backoff = max(base, float(getattr(settings, "bulk_db_retry_max_seconds", 30.0) or 30.0))
     for attempt in range(1, max_attempts + 1):
         try:
-            fn()
-            return
+            return fn()
         except Exception as e:
             if attempt >= max_attempts or not _is_retryable_db_error(e):
                 raise
@@ -94,6 +95,7 @@ def _run_db_retry(
             if on_retry:
                 on_retry(attempt, wait, f"{label}: {type(e).__name__}: {e}")
             time.sleep(wait)
+    raise RuntimeError(f"{label}: retries exhausted")
 
 
 def _raise_if_bulk_cancelled(bulk_import_job_id: str | None) -> None:
@@ -350,7 +352,7 @@ def _import_one_source(
     created = 0
     failed = 0
     s = get_settings()
-    max_vertices = s.features_subdivide_max_vertices
+    max_vertices = max(1, int(s.features_subdivide_max_vertices or 256))
     insert_parts_batch_size = max(1, int(getattr(s, "bulk_insert_parts_batch_size", 160) or 160))
     last_heartbeat = time.monotonic()
 

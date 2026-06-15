@@ -38,6 +38,8 @@ def subdivide_geometry_by_vertices(geom: Any, max_vertices: int) -> list[Any]:
     """
     if geom is None or geom.is_empty:
         return []
+    if max_vertices is None or max_vertices <= 0:
+        max_vertices = 256
     n = _coord_count(geom)
     if n <= max_vertices:
         return [geom]

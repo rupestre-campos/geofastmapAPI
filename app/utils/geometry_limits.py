@@ -31,7 +31,7 @@ def geometry_exceeds_limit(geom: Any, max_bytes: int | None = None) -> bool:
     if geom is None or getattr(geom, "is_empty", True):
         return False
     max_b = get_settings().features_max_geometry_bytes if max_bytes is None else max_bytes
-    if max_b <= 0:
+    if max_b is None or max_b <= 0:
         return False
     return geometry_wkb_byte_length(geom) > max_b
 
@@ -44,7 +44,7 @@ def check_geometry_size_limit(geom: Any, max_bytes: int | None = None) -> None:
     if geom is None or getattr(geom, "is_empty", True):
         return
     max_b = get_settings().features_max_geometry_bytes if max_bytes is None else max_bytes
-    if max_b <= 0:
+    if max_b is None or max_b <= 0:
         return
     n = geometry_wkb_byte_length(geom)
     if n > max_b:
