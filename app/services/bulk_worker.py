@@ -21,6 +21,9 @@ from app.services.bulk_import import (
 from app.services.bulk_collection_activity import (
     get_collection_bulk_mutex_holder,
     holds_collection_bulk_mutex,
+    is_terminal_job_status,
+    reclaim_all_stale_bulk_mutexes,
+    reclaim_stale_collection_bulk_mutex,
     refresh_collection_bulk_mutex,
     release_collection_bulk_mutex,
     try_acquire_collection_bulk_mutex,
@@ -58,7 +61,13 @@ def _queue_tile_build_if_requested(collection_id: str, owner_id: int | None, que
 
 
 def cleanup_orphan_bulk_uploads() -> None:
-    """At startup, delete any file in bulk storage that does not have a job pending on the queue."""
+    """At startup, delete orphan upload files and reclaim stale collection mutexes."""
+    reclaimed = reclaim_all_stale_bulk_mutexes()
+    for collection_id, holder in reclaimed:
+        print(
+            f"[bulk-worker] startup reclaimed mutex collection={collection_id} holder={holder}",
+            flush=True,
+        )
     settings = get_settings()
     if settings.bulk_queue_type != "redis":
         return
@@ -115,6 +124,20 @@ def _defer_bulk_job_for_collection_mutex(payload: BulkJobPayload) -> bool:
         return False
 
     holder = get_collection_bulk_mutex_holder(payload.collection_id)
+    reclaim_stale_collection_bulk_mutex(payload.collection_id)
+    if try_acquire_collection_bulk_mutex(payload.collection_id, owner):
+        return False
+
+    holder = get_collection_bulk_mutex_holder(payload.collection_id)
+    holder_job = get_job(holder) if holder else None
+    if holder and holder_job and is_terminal_job_status(holder_job.status):
+        reclaim_stale_collection_bulk_mutex(payload.collection_id)
+        if try_acquire_collection_bulk_mutex(payload.collection_id, owner):
+            return False
+        holder = get_collection_bulk_mutex_holder(payload.collection_id)
+        holder_job = get_job(holder) if holder else None
+
+    holder_status = holder_job.status if holder_job else ("missing" if holder else "none")
     status_job_id = _bulk_job_status_id(payload)
     try:
         update_job(
@@ -122,7 +145,7 @@ def _defer_bulk_job_for_collection_mutex(payload: BulkJobPayload) -> bool:
             status="pending",
             message=(
                 "Waiting for another bulk import on this collection"
-                + (f" (job {holder})" if holder else "")
+                + (f" (job {holder}, status={holder_status})" if holder else "")
                 + "…"
             ),
         )
@@ -179,7 +202,21 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
 
     try:
         if payload.job_kind == "parent":
-            _process_parent_bulk_job(payload, path)
+            try:
+                _process_parent_bulk_job(payload, path)
+            except Exception as e:
+                print(
+                    f"[bulk-worker] parent job_id={payload.job_id} failed: {type(e).__name__}: {e}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                update_job(payload.job_id, status="failed", message=str(e))
+                _release_bulk_collection_mutex(payload)
+                try:
+                    storage.delete(payload.storage_key)
+                except Exception:
+                    pass
+                unregister_bulk_import_job(payload.job_id)
             return
         if payload.job_kind == "shard":
             _process_shard_bulk_job(payload, path)
@@ -423,6 +460,16 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
         _release_bulk_collection_mutex(payload)
         update_job(payload.job_id, status="cancelled", message="Cancelled by user.")
         print(f"[bulk-parent] cancelled during prestage parent_job_id={payload.job_id}", flush=True)
+        return
+    except Exception as e:
+        _release_bulk_collection_mutex(payload)
+        update_job(payload.job_id, status="failed", message=str(e))
+        try:
+            get_bulk_storage().delete(payload.storage_key)
+        except Exception:
+            pass
+        unregister_bulk_import_job(payload.job_id)
+        print(f"[bulk-parent] prestage failed parent_job_id={payload.job_id}: {e}", flush=True)
         return
 
     if ext == ".zip":

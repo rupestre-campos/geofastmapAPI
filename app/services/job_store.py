@@ -12,6 +12,23 @@ from typing import Any
 from app.core.config import get_settings
 from app.services.redis_resilience import run_redis_retry
 
+_TERMINAL_STATUSES_FOR_FINISHED = frozenset(
+    {"completed", "failed", "cancelled", "error", "success", "done", "succeeded"}
+)
+
+
+def _release_bulk_mutex_on_terminal(job_id: str, collection_id: str | None, status: str | None) -> None:
+    if not collection_id or not status:
+        return
+    if status.lower() not in _TERMINAL_STATUSES_FOR_FINISHED:
+        return
+    try:
+        from app.services.bulk_collection_activity import release_bulk_mutex_for_job
+
+        release_bulk_mutex_for_job(collection_id, job_id)
+    except Exception:
+        pass
+
 
 @dataclass
 class JobInfo:
@@ -91,7 +108,7 @@ def _update_job_memory(
         now = datetime.utcnow()
         if status is not None:
             job.status = status
-            if status in ("completed", "failed", "cancelled") and job.finished_at is None:
+            if status.lower() in _TERMINAL_STATUSES_FOR_FINISHED and job.finished_at is None:
                 job.finished_at = now
         if message is not None:
             job.message = message
@@ -104,6 +121,8 @@ def _update_job_memory(
         if finished_at is not None:
             job.finished_at = finished_at
         job.updated_at = now
+        if status is not None:
+            _release_bulk_mutex_on_terminal(job_id, job.collection_id, status)
         return job
 
 
@@ -215,11 +234,12 @@ def _update_job_redis(
     key = _redis_key(job_id)
     if not run_redis_retry("update_job_exists", lambda: r.exists(key)):
         return None
+    collection_id = run_redis_retry("update_job_collection", lambda: r.hget(key, "collection_id"))
     updates = {}
     now = datetime.utcnow().isoformat() + "Z"
     if status is not None:
         updates["status"] = status
-        if status in ("completed", "failed", "cancelled") and not r.hget(key, "finished_at"):
+        if status.lower() in _TERMINAL_STATUSES_FOR_FINISHED and not r.hget(key, "finished_at"):
             updates["finished_at"] = now
     if message is not None:
         updates["message"] = message
@@ -234,6 +254,8 @@ def _update_job_redis(
     if updates:
         updates["updated_at"] = now
         run_redis_retry("update_job", lambda: r.hset(key, mapping=updates))
+    if status is not None:
+        _release_bulk_mutex_on_terminal(job_id, collection_id, status)
     return _get_job_redis(job_id)
 
 

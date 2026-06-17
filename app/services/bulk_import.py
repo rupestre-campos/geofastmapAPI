@@ -503,6 +503,15 @@ def run_bulk_import_sync(
     try:
         import fiona
 
+        if not os.path.isfile(file_path):
+            return 0, 0, f"Upload file not found: {file_path}"
+        try:
+            file_size = os.path.getsize(file_path)
+        except OSError as e:
+            return 0, 0, f"Cannot read upload file {file_path}: {e}"
+        if file_size <= 0:
+            return 0, 0, f"Upload file is empty: {file_path}"
+
         settings = get_settings()
         sync_url = settings.database_sync_url
         engine = create_engine(sync_url, pool_pre_ping=True, future=True)

@@ -13,6 +13,14 @@ BULK_COLLECTION_MUTEX_PREFIX = "geofastmap:bulk_collection_mutex:"
 _DEFAULT_INFLIGHT_TTL_SECONDS = 86400 * 2  # safety if a worker dies mid-import
 _DEFAULT_MUTEX_TTL_SECONDS = 86400 * 2
 
+_TERMINAL_JOB_STATUSES = frozenset(
+    {"completed", "failed", "cancelled", "error", "success", "done", "succeeded"}
+)
+
+
+def is_terminal_job_status(status: str | None) -> bool:
+    return (status or "").lower() in _TERMINAL_JOB_STATUSES
+
 
 def _mutex_key(collection_id: str) -> str:
     return f"{BULK_COLLECTION_MUTEX_PREFIX}{collection_id}"
@@ -145,6 +153,61 @@ def release_collection_bulk_mutex(collection_id: str, owner_job_id: str) -> None
             r.delete(key)
 
     run_redis_retry("bulk_collection_mutex_release", _run)
+
+
+def release_bulk_mutex_for_job(collection_id: str, job_id: str) -> None:
+    """Release the collection mutex when *job_id* is the current holder."""
+    release_collection_bulk_mutex(collection_id, job_id)
+
+
+def reclaim_stale_collection_bulk_mutex(collection_id: str) -> str | None:
+    """
+    Release mutex when the holder job is missing or already terminal.
+    Returns the reclaimed holder job_id, or None if mutex was free or still active.
+    """
+    holder = get_collection_bulk_mutex_holder(collection_id)
+    if not holder:
+        return None
+    from app.services.job_store import get_job
+
+    job = get_job(holder)
+    if job is None or is_terminal_job_status(job.status) or job.finished_at is not None:
+        release_collection_bulk_mutex(collection_id, holder)
+        print(
+            f"[bulk-mutex] reclaimed stale lock collection={collection_id} "
+            f"holder={holder} status={getattr(job, 'status', 'missing')}",
+            flush=True,
+        )
+        return holder
+    return None
+
+
+def reclaim_all_stale_bulk_mutexes() -> list[tuple[str, str]]:
+    """At worker startup: drop mutexes whose holder jobs already finished."""
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return []
+    import redis
+
+    reclaimed: list[tuple[str, str]] = []
+
+    def _scan() -> list[str]:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        return list(r.scan_iter(match=f"{BULK_COLLECTION_MUTEX_PREFIX}*"))
+
+    try:
+        keys = run_redis_retry("bulk_collection_mutex_scan", _scan)
+    except Exception:
+        return reclaimed
+    prefix_len = len(BULK_COLLECTION_MUTEX_PREFIX)
+    for key in keys:
+        collection_id = key[prefix_len:]
+        if not collection_id:
+            continue
+        holder = reclaim_stale_collection_bulk_mutex(collection_id)
+        if holder:
+            reclaimed.append((collection_id, holder))
+    return reclaimed
 
 
 def refresh_collection_bulk_mutex(collection_id: str, owner_job_id: str) -> None:
