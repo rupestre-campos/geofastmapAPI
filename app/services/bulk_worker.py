@@ -17,6 +17,7 @@ from app.services.bulk_import import (
     list_shp_in_zip,
     replace_collection_prestage_sync,
     run_bulk_import_sync,
+    shadow_replace_import_enabled,
 )
 from app.services.bulk_collection_activity import (
     get_collection_bulk_mutex_holder,
@@ -34,6 +35,7 @@ from app.services.bulk_queue import (
     clear_parent_state,
     enqueue,
     get_bulk_import_storage_key,
+    get_parent_import_meta,
     get_parent_shard_state,
     init_parent_state,
     record_parent_shard_result,
@@ -51,6 +53,15 @@ from app.services.tile_build_queue import (
 
 def _queue_tile_build_if_requested(collection_id: str, owner_id: int | None, queue_requested: bool) -> None:
     if not queue_requested or get_settings().bulk_queue_type != "redis":
+        return
+    allowed_raw = (get_settings().bulk_auto_tile_build_collections or "").strip()
+    allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
+    if not allowed or collection_id not in allowed:
+        print(
+            f"[bulk-worker] skip auto tile build for {collection_id} "
+            f"(queue_compute_tiles={queue_requested}, allowlist={allowed_raw or 'disabled'})",
+            flush=True,
+        )
         return
     try:
         tile_job = create_tile_build_job(collection_id, owner_id=owner_id)
@@ -442,20 +453,26 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
 
     try:
         if payload.mode == "replace":
-            update_job(payload.job_id, status="replacing", message="Deleting existing features before import…")
-            replace_collection_prestage_sync(
-                payload.collection_id,
-                bulk_import_job_id=payload.job_id,
-                on_progress=_prestage_progress,
-            )
+            if shadow_replace_import_enabled():
+                update_job(payload.job_id, status="running", message="Shadow import: loading new data alongside existing…")
+            else:
+                update_job(payload.job_id, status="replacing", message="Deleting existing features before import…")
+                replace_collection_prestage_sync(
+                    payload.collection_id,
+                    bulk_import_job_id=payload.job_id,
+                    on_progress=_prestage_progress,
+                )
         elif payload.mode == "replace_filtered":
-            update_job(payload.job_id, status="replacing", message="Deleting features matching filter before import…")
-            replace_collection_prestage_sync(
-                payload.collection_id,
-                replace_filters=payload.parsed_replace_filters(),
-                bulk_import_job_id=payload.job_id,
-                on_progress=_prestage_progress,
-            )
+            if shadow_replace_import_enabled():
+                update_job(payload.job_id, status="running", message="Shadow import: loading filtered data alongside existing…")
+            else:
+                update_job(payload.job_id, status="replacing", message="Deleting features matching filter before import…")
+                replace_collection_prestage_sync(
+                    payload.collection_id,
+                    replace_filters=payload.parsed_replace_filters(),
+                    bulk_import_job_id=payload.job_id,
+                    on_progress=_prestage_progress,
+                )
     except BulkImportCancelled:
         _release_bulk_collection_mutex(payload)
         update_job(payload.job_id, status="cancelled", message="Cancelled by user.")
@@ -575,6 +592,7 @@ def _process_parent_bulk_job(payload: BulkJobPayload, path: str) -> None:
         expected_shards=len(shard_payloads),
         mode=payload.mode,
         queue_compute_tiles=payload.queue_compute_tiles,
+        replace_filters=payload.replace_filters,
     )
     for sp in shard_payloads:
         enqueue(sp)
@@ -667,7 +685,20 @@ def _process_shard_bulk_job(payload: BulkJobPayload, path: str) -> None:
         except Exception:
             error_samples = []
         try:
-            finalize_collection_import_sync(payload.collection_id)
+            from app.services.bulk_import_params import parsed_replace_filters
+
+            meta = get_parent_import_meta(parent_job_id)
+            replace_filters = None
+            raw_filters = (meta.get("replace_filters") or "").strip()
+            if raw_filters:
+                replace_filters = parsed_replace_filters(
+                    [line.strip() for line in raw_filters.splitlines() if line.strip()]
+                )
+            finalize_collection_import_sync(
+                payload.collection_id,
+                bulk_import_job_id=parent_job_id,
+                replace_filters=replace_filters,
+            )
             if st["failed_shards"] > 0:
                 msg = f"Sharded import completed with errors: {st['failed_shards']} shard(s) failed."
                 if error_samples:
@@ -699,7 +730,7 @@ def _process_shard_bulk_job(payload: BulkJobPayload, path: str) -> None:
                 _queue_tile_build_if_requested(
                     payload.collection_id,
                     payload.owner_id,
-                    bool(st.get("queue_compute_tiles", True)),
+                    bool(st.get("queue_compute_tiles", False)),
                 )
         except Exception as e:
             print(f"[bulk-parent] finalize failed parent_job_id={parent_job_id}: {e}", flush=True)

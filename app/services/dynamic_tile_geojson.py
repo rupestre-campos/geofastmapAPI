@@ -11,6 +11,7 @@ from shapely.geometry import box
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.services.shadow_import import active_shadow_exclude_job_ids
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.utils.datetime_parse import parse_datetime_param
@@ -95,6 +96,7 @@ async def get_geojson_for_tile(
         filter_list = [x for s in filter_param for x in s.strip().split("\n") if x.strip()]
     structured_filters = parse_filter_param(filter_list) if filter_list else []
     fulltext_q = q.strip() if q and q.strip() else None
+    exclude_bulk_job_ids = active_shadow_exclude_job_ids(collection_id)
 
     # Pagination mode: limit/offset define the search result page (same as items table)
     use_page_mode = limit is not None or offset != 0
@@ -119,6 +121,7 @@ async def get_geojson_for_tile(
             fulltext_q=fulltext_q,
             feature_ids=ids,
             collection_feature_count=collection.feature_count,
+            exclude_bulk_job_ids=exclude_bulk_job_ids or None,
         )
         # Keep only features that intersect this tile so the map shows the same set as the table
         features = [f for f in features if _feature_intersects_bbox(f, tile_minx, tile_miny, tile_maxx, tile_maxy)]
@@ -152,6 +155,7 @@ async def get_geojson_for_tile(
             fulltext_q=fulltext_q,
             feature_ids=ids,
             collection_feature_count=collection.feature_count,
+            exclude_bulk_job_ids=exclude_bulk_job_ids or None,
         )
 
     geojson_features = [_feature_to_geojson_feature(f) for f in features]
@@ -219,6 +223,7 @@ async def get_search_result_geojson(
         filter_list = [x for s in filter_param for x in s.strip().split("\n") if x.strip()]
     structured_filters = parse_filter_param(filter_list) if filter_list else []
     fulltext_q = q.strip() if q and q.strip() else None
+    exclude_bulk_job_ids = active_shadow_exclude_job_ids(collection_id)
 
     features, _ = await features_crud.list_features_paginated(
         db,
@@ -235,6 +240,7 @@ async def get_search_result_geojson(
         fulltext_q=fulltext_q,
         feature_ids=ids,
         collection_feature_count=collection.feature_count,
+        exclude_bulk_job_ids=exclude_bulk_job_ids or None,
     )
 
     geojson_features = [_feature_to_geojson_feature(f) for f in features]

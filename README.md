@@ -144,6 +144,7 @@ Key settings (env vars or `.env`; see `app/core/config.py`):
 - **PROCESS_QUEUE_TYPE** — `redis` or `memory` for intersection/erase jobs.
 - **TILES_STORAGE_PATH** — Where static MBTiles/PMTiles are stored (default `/data/tiles`).
 - **BULK_STORAGE_PATH** — Where uploaded files go (default `/data/bulk-uploads`).
+- **BULK_REPLACE_SHADOW_IMPORT** — When `true`, replace/replace_filtered bulk imports append tagged rows first and delete old rows at finalize so the items view and dynamic tiles keep showing the previous release during import (default `false`).
 - **DATABASE_POOL_SIZE** / **DATABASE_POOL_MAX_OVERFLOW** — Per **process** (each uvicorn worker has its own pool). Total load must fit PostgreSQL `max_connections` unless you use PgBouncer (see `docs/DEPLOYMENT.md`).
 
 **Auth (users, roles, visibility):**

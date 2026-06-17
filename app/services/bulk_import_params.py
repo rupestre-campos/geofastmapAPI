@@ -58,3 +58,12 @@ def validate_bulk_import_mode_and_filters(
 
 def parsed_replace_filters(lines: list[str]) -> list[PropertyFilter]:
     return parse_filter_param(lines)
+
+
+def parse_queue_compute_tiles(value: object | None, *, default: bool = False) -> bool:
+    """Parse bulk import flag; default false — tile builds use POST /tiles/build (manual/cron)."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() not in ("false", "0", "no", "")

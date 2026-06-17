@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Items busy – {{ collection_id }} – GeoFastMap API{% endblock %}
+{% block content %}
+<main class="container" style="max-width: 720px; margin: 2rem auto;">
+  <h1>Items temporarily unavailable</h1>
+  <p class="meta">
+    A bulk import is running on <code>{{ collection_id }}</code>.
+    Listing items is blocked or too slow while the database updates this layer
+    (replace/delete or heavy inserts). This avoids long page timeouts.
+  </p>
+  {% if active_jobs %}
+  <h2>Active import jobs</h2>
+  <ul>
+    {% for job in active_jobs %}
+    <li>
+      <a href="{{ base }}/jobs/{{ job.job_id }}?f=html">{{ job.job_id[:8] }}…</a>
+      — <strong>{{ job.status }}</strong>
+      {% if job.message %}<span class="meta"> · {{ job.message[:120] }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <p style="margin-top: 1.5rem;">
+    <a class="btn" href="{{ retry_url }}">Retry</a>
+    <a class="btn btn-secondary" href="{{ base }}/collections/{{ collection_id }}?f=html">Collection</a>
+    <a class="btn btn-secondary" href="{{ items_force_url }}">Try anyway (may be slow)</a>
+  </p>
+  <p class="meta" style="margin-top: 1rem;">Auto-refresh in <span id="countdown">30</span>s</p>
+</main>
+<script>
+  (function () {
+    var sec = 30;
+    var el = document.getElementById('countdown');
+    setInterval(function () {
+      sec -= 1;
+      if (el) el.textContent = String(Math.max(0, sec));
+      if (sec <= 0) window.location.reload();
+    }, 1000);
+  })();
+</script>
+{% endblock %}

@@ -5,7 +5,8 @@ from urllib.parse import urlencode
 
 import orjson
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Path, Query, Request, Response, status, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -19,9 +20,11 @@ from app.crud import features as features_crud
 from app.crud import styles as styles_crud
 from app.db.session import get_db, AsyncSessionLocal
 from app.models.feature import Feature
+from app.services.bulk_collection_activity import collection_has_destructive_bulk_activity
+from app.services.shadow_import import active_shadow_exclude_job_ids
 from app.services.coverages import CogPathOutsideStorageError
 from app.services.bulk_import import list_shp_in_zip
-from app.services.bulk_import_params import validate_bulk_import_mode_and_filters
+from app.services.bulk_import_params import parse_queue_compute_tiles, validate_bulk_import_mode_and_filters
 from app.services.bulk_queue import BulkJobPayload, enqueue, register_bulk_import_job
 from app.services.bulk_storage import get_bulk_storage
 from app.services.bulk_upload_sessions import (
@@ -30,7 +33,11 @@ from app.services.bulk_upload_sessions import (
     delete_upload_session,
     get_upload_session,
 )
-from app.services.job_store import create_job
+from app.services.job_store import create_job, list_jobs_for_collection
+from app.services.items_query_guards import (
+    apply_items_query_timeouts,
+    is_items_query_timeout_error,
+)
 from app.schemas.feature import (
     FeatureCollection,
     FeatureCreate,
@@ -55,7 +62,7 @@ def _base_url(request: Request) -> str:
 
 
 # Reserved query params for items list (not attribute filters). Include "f" for ?f=html (HTML view).
-ITEMS_RESERVED_PARAMS = {"limit", "offset", "bbox", "datetime", "sortby", "sortdesc", "properties", "filter", "q", "f", "bbox_only"}
+ITEMS_RESERVED_PARAMS = {"limit", "offset", "bbox", "datetime", "sortby", "sortdesc", "properties", "filter", "q", "f", "bbox_only", "force"}
 
 
 def _feature_to_read(
@@ -81,6 +88,37 @@ def _feature_to_read(
         created_at=feature.created_at,
         updated_at=feature.updated_at,
         bbox=bbox,
+    )
+
+
+def _active_bulk_import_jobs(collection_id: str) -> list:
+    jobs = list_jobs_for_collection(collection_id, limit=15)
+    active_statuses = frozenset({"pending", "running", "replacing", "cancelling"})
+    return [j for j in jobs if (j.status or "").lower() in active_statuses]
+
+
+def _items_import_busy_html(
+    request: Request,
+    collection_id: str,
+    *,
+    current_user,
+    active_jobs: list | None = None,
+) -> HTMLResponse:
+    base = _base_url(request)
+    query = dict(request.query_params)
+    query["f"] = "html"
+    retry_url = f"{base}/collections/{collection_id}/items?" + urlencode(sorted(query.items()))
+    force_q = {**query, "force": "1"}
+    items_force_url = f"{base}/collections/{collection_id}/items?" + urlencode(sorted(force_q.items()))
+    return html_response(
+        "items_import_busy.html",
+        base=base,
+        username=current_user.username if current_user else None,
+        is_admin=current_user.is_admin if current_user else False,
+        collection_id=collection_id,
+        active_jobs=active_jobs or _active_bulk_import_jobs(collection_id),
+        retry_url=retry_url,
+        items_force_url=items_force_url,
     )
 
 
@@ -188,23 +226,46 @@ async def list_items(
     is_raster = collection_type == "raster"
     include_geometry = (wants_html(request) and is_raster) or (not wants_html(request))
     skip_count = wants_html(request)
-    features, number_matched = await features_crud.list_features_paginated(
-        db,
-        collection_id,
-        limit=limit,
-        offset=offset,
-        bbox=bbox_tuple,
-        datetime_start=dt_start,
-        datetime_end=dt_end,
-        sortby=sortby,
-        sortdesc=sortdesc,
-        property_filters=property_filters or None,
-        structured_filters=structured_filters or None,
-        fulltext_q=fulltext_q,
-        collection_feature_count=collection.feature_count,
-        include_geometry=include_geometry,
-        skip_count=skip_count,
-    )
+    bulk_busy = collection_has_destructive_bulk_activity(collection_id)
+    force_read = request.query_params.get("force", "").lower() in ("1", "true", "yes")
+    exclude_bulk_job_ids = active_shadow_exclude_job_ids(collection_id)
+    try:
+        await apply_items_query_timeouts(
+            db,
+            during_bulk=bulk_busy and not force_read,
+        )
+        features, number_matched = await features_crud.list_features_paginated(
+            db,
+            collection_id,
+            limit=limit,
+            offset=offset,
+            bbox=bbox_tuple,
+            datetime_start=dt_start,
+            datetime_end=dt_end,
+            sortby=sortby,
+            sortdesc=sortdesc,
+            property_filters=property_filters or None,
+            structured_filters=structured_filters or None,
+            fulltext_q=fulltext_q,
+            collection_feature_count=collection.feature_count,
+            include_geometry=include_geometry,
+            skip_count=skip_count,
+            exclude_bulk_job_ids=exclude_bulk_job_ids or None,
+        )
+    except DBAPIError as exc:
+        if is_items_query_timeout_error(exc):
+            if wants_html(request):
+                return _items_import_busy_html(
+                    request,
+                    collection_id,
+                    current_user=current_user,
+                )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Items list temporarily unavailable while bulk import is running on this collection.",
+                headers={"Retry-After": "30"},
+            ) from exc
+        raise
     base = _base_url(request)
     base_path = f"{base}/collections/{collection_id}/items"
     links: list[Link] = [
@@ -416,7 +477,7 @@ async def create_bulk_upload_session(
     if batch_size < 1 or batch_size > 100_000:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="batch_size out of range")
     filename = str(body.get("filename") or "upload.geojson")
-    qt = bool(body.get("queue_compute_tiles", True))
+    qt = parse_queue_compute_tiles(body.get("queue_compute_tiles"), default=False)
     extra = {"replace_filters": replace_filter_lines} if replace_filter_lines else None
     s = create_upload_session(
         collection_id=collection_id,
@@ -523,15 +584,28 @@ async def complete_bulk_upload_session(
         except Exception:
             pass
 
-    replace_filter_lines = s.get("replace_filters") or []
+    session_mode = str(s.get("mode") or "append")
+    rf_raw = body.get("replace_filters")
+    if rf_raw is None and s.get("replace_filters"):
+        rf_raw = "\n".join(s.get("replace_filters") or [])
+    mode, replace_filter_lines = validate_bulk_import_mode_and_filters(
+        str(body.get("mode") or session_mode),
+        rf_raw,
+    )
+    qt_body = body.get("queue_compute_tiles")
+    if qt_body is None:
+        queue_compute_tiles = parse_queue_compute_tiles(s.get("queue_compute_tiles"), default=False)
+    else:
+        queue_compute_tiles = parse_queue_compute_tiles(qt_body, default=False)
+
     payload = BulkJobPayload(
         job_id=job.job_id,
         collection_id=collection_id,
         owner_id=current_user.id if current_user else None,
         storage_key=storage_key,
-        mode=str(s.get("mode") or "append"),
+        mode=mode,
         batch_size=int(s.get("batch_size") or settings.bulk_import_batch_size),
-        queue_compute_tiles=bool(s.get("queue_compute_tiles", True)),
+        queue_compute_tiles=queue_compute_tiles,
         zip_inner_shp_paths=zip_inner_shp_paths,
         replace_filters=replace_filter_lines if replace_filter_lines else None,
     )
@@ -600,8 +674,8 @@ async def bulk_import_items(
     ),
     batch_size: int | None = Form(None, ge=1, le=100_000, description="Features per DB batch (default from config)."),
     queue_compute_tiles: str | None = Form(
-        "true",
-        description="If true (default), queue a static tile build for this collection after the bulk import completes.",
+        "false",
+        description="If true, queue a static tile build after bulk import (off by default; use POST /tiles/build).",
     ),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user_optional),
@@ -646,7 +720,7 @@ async def bulk_import_items(
         except Exception:
             pass
 
-    qt = queue_compute_tiles is None or str(queue_compute_tiles).lower() not in ("false", "0", "no", "")
+    qt = parse_queue_compute_tiles(queue_compute_tiles, default=False)
     try:
         register_bulk_import_job(job.job_id, storage_key)
         payload = BulkJobPayload(

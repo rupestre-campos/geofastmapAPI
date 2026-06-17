@@ -38,13 +38,19 @@ from app.utils.feature_subdivide import (
 from app.utils.geometry_limits import geometry_exceeds_limit
 from app.services.bulk_collection_activity import (
     decr_collection_bulk_activity,
+    decr_collection_destructive_bulk_activity,
     get_collection_bulk_mutex_holder,
     incr_collection_bulk_activity,
+    incr_collection_destructive_bulk_activity,
     refresh_collection_bulk_mutex,
 )
 from app.services.job_store import get_job
 
 T = TypeVar("T")
+
+
+def shadow_replace_import_enabled() -> bool:
+    return bool(getattr(get_settings(), "bulk_replace_shadow_import", False))
 
 class BulkImportCancelled(Exception):
     """Raised when the bulk job is marked cancelled in job_store (cooperative stop)."""
@@ -125,26 +131,30 @@ def _truncate_collection_features_sync(
     Full replace prestage: ensure dedicated partition, TRUNCATE it (fast), clear default stragglers.
     """
     _raise_if_bulk_cancelled(bulk_import_job_id)
-    if on_progress:
-        on_progress("replacing", 0, None)
-    partition = ensure_features_partition_sync(engine, collection_id)
-    _raise_if_bulk_cancelled(bulk_import_job_id)
+    incr_collection_destructive_bulk_activity(collection_id)
+    try:
+        if on_progress:
+            on_progress("replacing", 0, None)
+        partition = ensure_features_partition_sync(engine, collection_id)
+        _raise_if_bulk_cancelled(bulk_import_job_id)
 
-    def _truncate() -> None:
-        with engine.connect() as conn:
-            conn.execute(text(f'TRUNCATE TABLE "{partition}"'))
-            conn.execute(
-                text("DELETE FROM features_default WHERE collection_id = :cid"),
-                {"cid": collection_id},
-            )
-            conn.commit()
+        def _truncate() -> None:
+            with engine.connect() as conn:
+                conn.execute(text(f'TRUNCATE TABLE "{partition}"'))
+                conn.execute(
+                    text("DELETE FROM features_default WHERE collection_id = :cid"),
+                    {"cid": collection_id},
+                )
+                conn.commit()
 
-    _run_db_retry("replace_truncate_partition", _truncate)
-    holder = get_collection_bulk_mutex_holder(collection_id)
-    if holder:
-        refresh_collection_bulk_mutex(collection_id, holder)
-    if on_progress:
-        on_progress("replacing", 0, 0)
+        _run_db_retry("replace_truncate_partition", _truncate)
+        holder = get_collection_bulk_mutex_holder(collection_id)
+        if holder:
+            refresh_collection_bulk_mutex(collection_id, holder)
+        if on_progress:
+            on_progress("replacing", 0, 0)
+    finally:
+        decr_collection_destructive_bulk_activity(collection_id)
 
 
 def _delete_features_batched_sync(
@@ -200,6 +210,66 @@ def _delete_features_batched_sync(
         if n < batch:
             break
     return deleted_total
+
+
+def _delete_shadow_stale_rows_sync(
+    engine: Engine,
+    collection_id: str,
+    keep_job_id: str,
+    filters: Sequence[PropertyFilter] | None = None,
+    *,
+    bulk_import_job_id: str | None = None,
+    on_progress: Callable[[str, int, int | None], None] | None = None,
+) -> int:
+    """Delete rows not tagged with keep_job_id (shadow replace finalize). Honors replace_filters scope."""
+    settings = get_settings()
+    batch = max(500, int(getattr(settings, "bulk_replace_delete_batch_rows", 25000) or 25000))
+    deleted_total = 0
+    ctid_col = literal_column("ctid")
+    stale_clause = Feature.bulk_import_job_id.is_distinct_from(keep_job_id)
+
+    def _one_batch() -> int:
+        where_parts = [Feature.collection_id == collection_id, stale_clause]
+        if filters:
+            for pf in filters:
+                where_parts.append(structured_filter_clause(pf))
+        where_clause = and_(*where_parts)
+        with engine.connect() as conn:
+            subq = select(ctid_col).where(where_clause).limit(batch)
+            result = conn.execute(delete(Feature).where(ctid_col.in_(subq)))
+            removed = int(result.rowcount or 0)
+            conn.commit()
+        return removed
+
+    while True:
+        _raise_if_bulk_cancelled(bulk_import_job_id)
+        n = _run_db_retry("shadow_finalize_delete_batch", _one_batch)
+        if n <= 0:
+            break
+        deleted_total += n
+        holder = get_collection_bulk_mutex_holder(collection_id)
+        if holder:
+            refresh_collection_bulk_mutex(collection_id, holder)
+        if on_progress:
+            on_progress("replacing", 0, deleted_total)
+        if n < batch:
+            break
+    return deleted_total
+
+
+def _clear_bulk_import_job_tags_sync(engine: Engine, collection_id: str, job_id: str) -> None:
+    def _run() -> None:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "UPDATE features SET bulk_import_job_id = NULL "
+                    "WHERE collection_id = :cid AND bulk_import_job_id = :jid"
+                ),
+                {"cid": collection_id, "jid": job_id},
+            )
+            conn.commit()
+
+    _run_db_retry("shadow_clear_job_tags", _run)
 
 
 def _update_feature_count_sync(engine: Engine, collection_id: str) -> None:
@@ -602,9 +672,10 @@ def run_bulk_import_sync(
                 _raise_if_bulk_cancelled(bulk_import_job_id)
 
                 finalize_mode = mode
+                shadow = shadow_replace_import_enabled()
                 if mode == "replace_filtered":
                     finalize_mode = "append"
-                    if not replace_prestaged and replace_filters:
+                    if not replace_prestaged and replace_filters and not shadow:
                         if on_progress:
                             on_progress("replacing", 0, None)
 
@@ -620,7 +691,7 @@ def run_bulk_import_sync(
                         _execute_with_retry(_filtered_delete, "replace_filtered_delete_features")
                         session = _commit_with_retry(session)
                         _update_feature_count_sync(engine, collection_id)
-                elif mode == "replace":
+                elif mode == "replace" and not shadow:
                     if on_progress:
                         on_progress("replacing", 0, None)
 
@@ -640,6 +711,8 @@ def run_bulk_import_sync(
                         "replace_reset_feature_count",
                     )
                     session = _commit_with_retry(session)
+                elif mode == "replace" and shadow:
+                    finalize_mode = "append"
     
                 if on_progress:
                     on_progress("running", 0, None)
@@ -667,7 +740,13 @@ def run_bulk_import_sync(
                     total_failed += failed
     
                 if finalize_collection:
-                    if finalize_mode == "replace":
+                    if shadow and mode in ("replace", "replace_filtered") and bulk_import_job_id:
+                        finalize_shadow_collection_import_sync(
+                            collection_id,
+                            bulk_import_job_id=bulk_import_job_id,
+                            replace_filters=replace_filters,
+                        )
+                    elif finalize_mode == "replace":
                         _execute_with_retry(
                             lambda: session.execute(
                                 update(Collection).where(Collection.id == collection_id).values(feature_count=total_created)
@@ -720,8 +799,65 @@ def run_bulk_import_sync(
         decr_collection_bulk_activity(collection_id)
 
 
-def finalize_collection_import_sync(collection_id: str) -> None:
+def finalize_shadow_collection_import_sync(
+    collection_id: str,
+    *,
+    bulk_import_job_id: str,
+    replace_filters: Sequence[PropertyFilter] | None = None,
+    on_progress: Callable[[str, int, int | None], None] | None = None,
+) -> None:
+    """Shadow replace finalize: delete stale rows, untag new rows, refresh count/extent."""
+    incr_collection_destructive_bulk_activity(collection_id)
+    engine: Engine | None = None
+    try:
+        settings = get_settings()
+        engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+        ensure_features_partition_sync(engine, collection_id)
+        _delete_shadow_stale_rows_sync(
+            engine,
+            collection_id,
+            bulk_import_job_id,
+            replace_filters,
+            bulk_import_job_id=bulk_import_job_id,
+            on_progress=on_progress,
+        )
+        _clear_bulk_import_job_tags_sync(engine, collection_id, bulk_import_job_id)
+        _update_feature_count_sync(engine, collection_id)
+        extent_mode = str(getattr(settings, "bulk_extent_update_mode", "immediate") or "immediate").lower()
+        if extent_mode not in ("immediate", "deferred", "best_effort"):
+            extent_mode = "immediate"
+        if extent_mode != "deferred":
+            try:
+                _run_db_retry(
+                    "extent_recompute",
+                    lambda: collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id),
+                )
+            except Exception:
+                if extent_mode == "immediate":
+                    raise
+    finally:
+        if engine is not None:
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+        decr_collection_destructive_bulk_activity(collection_id)
+
+
+def finalize_collection_import_sync(
+    collection_id: str,
+    *,
+    bulk_import_job_id: str | None = None,
+    replace_filters: Sequence[PropertyFilter] | None = None,
+) -> None:
     """Finalize a collection after sharded append imports."""
+    if shadow_replace_import_enabled() and bulk_import_job_id:
+        finalize_shadow_collection_import_sync(
+            collection_id,
+            bulk_import_job_id=bulk_import_job_id,
+            replace_filters=replace_filters,
+        )
+        return
     incr_collection_bulk_activity(collection_id)
     engine: Engine | None = None
     try:
@@ -759,7 +895,7 @@ def delete_features_by_filters_sync(
     """Delete feature rows matching structured property filters; refresh count and extent."""
     if not filters:
         raise ValueError("replace_filters required for filtered delete")
-    incr_collection_bulk_activity(collection_id)
+    incr_collection_destructive_bulk_activity(collection_id)
     engine: Engine | None = None
     try:
         settings = get_settings()
@@ -791,7 +927,7 @@ def delete_features_by_filters_sync(
                 engine.dispose()
             except Exception:
                 pass
-        decr_collection_bulk_activity(collection_id)
+        decr_collection_destructive_bulk_activity(collection_id)
 
 
 def replace_collection_prestage_sync(
@@ -802,6 +938,8 @@ def replace_collection_prestage_sync(
     on_progress: Callable[[str, int, int | None], None] | None = None,
 ) -> None:
     """Delete existing rows before sharded replace imports (full collection or filtered subset)."""
+    if shadow_replace_import_enabled():
+        return
     if replace_filters:
         delete_features_by_filters_sync(
             collection_id,
@@ -810,7 +948,6 @@ def replace_collection_prestage_sync(
             on_progress=on_progress,
         )
         return
-    incr_collection_bulk_activity(collection_id)
     engine: Engine | None = None
     try:
         settings = get_settings()
@@ -831,4 +968,3 @@ def replace_collection_prestage_sync(
                 engine.dispose()
             except Exception:
                 pass
-        decr_collection_bulk_activity(collection_id)

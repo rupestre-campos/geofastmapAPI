@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     bulk_shard_lines_per_part: int = 50000
     # Replace mode: delete rows in batches to avoid one long table lock blocking other work.
     bulk_replace_delete_batch_rows: int = 25000
+    # Shadow replace: append tagged rows first, delete old rows at finalize (items view keeps prior data).
+    bulk_replace_shadow_import: bool = False
     # Per-collection Redis mutex TTL while a bulk import mutates features (refreshed during long jobs).
     bulk_collection_mutex_ttl_seconds: int = 86400 * 2
 
@@ -66,8 +68,15 @@ class Settings(BaseSettings):
     bulk_queue_type: str = "redis"  # memory | redis
     # Standalone bulk worker (`app.worker_main`): concurrent queue jobs per process (threads). Each job holds DB + CPU; raise with Postgres max_connections in mind.
     bulk_worker_max_concurrent: int = 2
+    # Comma-separated collection ids allowed to auto-queue tile build after bulk import.
+    # Empty = disabled (use POST /collections/{id}/tiles/build for manual/cron rebuilds).
+    bulk_auto_tile_build_collections: str = ""
     # Tile worker: poll interval while waiting for bulk import to finish on the same collection.
     tile_build_bulk_wait_poll_seconds: float = 2.0
+    # Items list: fail fast when bulk import holds row/table locks (avoids nginx 60s timeout).
+    items_list_lock_timeout_seconds: float = 3.0
+    items_list_statement_timeout_seconds: float = 30.0
+    items_list_during_bulk_statement_timeout_seconds: float = 8.0
     redis_url: str = "redis://localhost:6379/0"  # used when bulk_queue_type=redis
     # Generic Redis retry/backoff knobs for queue consumers and enqueue operations.
     redis_retry_base_seconds: float = 1.0

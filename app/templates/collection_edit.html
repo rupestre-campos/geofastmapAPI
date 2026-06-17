@@ -373,14 +373,14 @@
             id="bulk-queue-compute-tiles"
             name="queue_compute_tiles"
             value="true"
-            {% if (collection.collection_type or 'vector') == 'raster' %}disabled{% else %}checked{% endif %}
+            {% if (collection.collection_type or 'vector') == 'raster' %}disabled{% endif %}
           >
           Queue compute tiles after import
         </label>
         {% if (collection.collection_type or 'vector') == 'raster' %}
         <p class="meta" style="margin-top:4px;">Static vector tile build queue is not used for raster collections.</p>
         {% else %}
-        <p class="meta" style="margin-top:4px;">When checked, a static tile build is queued for this collection as soon as the bulk import finishes.</p>
+        <p class="meta" style="margin-top:4px;">Off by default. Use <a href="{{ base }}/collections/{{ collection_id }}/tiles/build?f=html">Build tiles</a> when you want a static tile rebuild.</p>
         {% endif %}
       </div>
       <div class="btn-group">

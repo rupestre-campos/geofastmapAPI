@@ -47,6 +47,7 @@ from app.services.tile_build_queue import (
     update_tile_build_job,
 )
 from app.services.collection_tiles_revision import compute_collection_tiles_revision
+from app.services.shadow_import import active_shadow_exclude_job_ids, shadow_read_where_sql
 from app.services.collection_type_guard import ensure_vector_collection
 
 router = APIRouter()
@@ -530,6 +531,18 @@ def _build_dynamic_tile_where(
     return (" ".join(conditions), params)
 
 
+def _merge_shadow_tile_filter(
+    collection_id: str,
+    extra_where: str,
+    extra_params: dict,
+) -> tuple[str, dict]:
+    jobs = active_shadow_exclude_job_ids(collection_id)
+    if not jobs:
+        return extra_where, extra_params
+    clause, param = shadow_read_where_sql()
+    return extra_where + " " + clause, {**extra_params, param: jobs}
+
+
 @router.get(
     "/{collection_id}/tiles/dynamic/{z:int}/{x:int}/{y:int}.pbf",
     summary="Dynamic vector tile (PostGIS MVT or tippecanoe worker)",
@@ -776,6 +789,7 @@ async def get_tiles_dynamic(
             structured_filters=structured_filters,
             fulltext_q=fulltext_q,
         )
+        extra_where, extra_params = _merge_shadow_tile_filter(collection_id, extra_where, extra_params)
         sql = f"""
         WITH page AS (
             SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
@@ -824,6 +838,7 @@ async def get_tiles_dynamic(
             structured_filters=[],
             fulltext_q=None,
         )
+        extra_where, extra_params = _merge_shadow_tile_filter(collection_id, extra_where, extra_params)
         prop_select_by_id = (
             prop_select.replace("(properties ", "(by_id.properties ") if prop_cols else ""
         )
@@ -832,6 +847,7 @@ async def get_tiles_dynamic(
             SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
             FROM features
             WHERE collection_id = :cid AND id = ANY(:ids) AND geometry IS NOT NULL
+              {extra_where}
             GROUP BY id, collection_id
         )
         SELECT ST_AsMVT(tile, :layer_name, 4096, 'geom') AS mvt
@@ -859,6 +875,7 @@ async def get_tiles_dynamic(
             "cid": collection_id,
             "max_features": max_features,
             "ids": feature_ids,
+            **extra_params,
         }
     else:
         extra_where, extra_params = _build_dynamic_tile_where(
@@ -869,6 +886,7 @@ async def get_tiles_dynamic(
             structured_filters=[],
             fulltext_q=None,
         )
+        extra_where, extra_params = _merge_shadow_tile_filter(collection_id, extra_where, extra_params)
         prop_select_feat = prop_select.replace("(properties ", "(feat.properties ") if prop_cols else ""
         sql = f"""
         SELECT ST_AsMVT(tile, :layer_name, 4096, 'geom') AS mvt

@@ -11,6 +11,7 @@ from shapely.geometry import box as shapely_box
 from shapely.geometry import shape
 from shapely.ops import transform
 
+from app.utils.geo import mvt_layer_name
 from app.utils.tile_bbox import tile_bbox_mercator
 
 _EARTH_RADIUS = 6378137.0
@@ -107,7 +108,7 @@ def encode_geojson_to_mvt(
     if not mvt_features:
         return b""
 
-    layer = {"name": collection_id, "features": mvt_features}
+    layer = {"name": mvt_layer_name(collection_id), "features": mvt_features}
     return mapbox_vector_tile.encode(
         [layer],
         default_options={

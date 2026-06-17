@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.services.redis_resilience import run_redis_retry
 
 BULK_COLLECTION_INFLIGHT_PREFIX = "geofastmap:bulk_collection_inflight:"
+BULK_COLLECTION_DESTRUCTIVE_PREFIX = "geofastmap:bulk_collection_destructive:"
 BULK_COLLECTION_MUTEX_PREFIX = "geofastmap:bulk_collection_mutex:"
 _DEFAULT_INFLIGHT_TTL_SECONDS = 86400 * 2  # safety if a worker dies mid-import
 _DEFAULT_MUTEX_TTL_SECONDS = 86400 * 2
@@ -59,6 +60,80 @@ def decr_collection_bulk_activity(collection_id: str) -> None:
             r.delete(key)
 
     run_redis_retry("bulk_collection_activity_decr", _run)
+
+
+def incr_collection_destructive_bulk_activity(collection_id: str) -> None:
+    """TRUNCATE/DELETE prestage or shadow finalize — readers may block; use for items busy guards."""
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return
+    import redis
+
+    key = f"{BULK_COLLECTION_DESTRUCTIVE_PREFIX}{collection_id}"
+
+    def _run() -> None:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        r.incr(key)
+        r.expire(key, _DEFAULT_INFLIGHT_TTL_SECONDS)
+
+    run_redis_retry("bulk_collection_destructive_incr", _run)
+
+
+def decr_collection_destructive_bulk_activity(collection_id: str) -> None:
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return
+    import redis
+
+    key = f"{BULK_COLLECTION_DESTRUCTIVE_PREFIX}{collection_id}"
+
+    def _run() -> None:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        n = int(r.decr(key))
+        if n <= 0:
+            r.delete(key)
+
+    run_redis_retry("bulk_collection_destructive_decr", _run)
+
+
+def collection_has_destructive_bulk_activity(collection_id: str) -> bool:
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return False
+    import redis
+
+    key = f"{BULK_COLLECTION_DESTRUCTIVE_PREFIX}{collection_id}"
+
+    def _read() -> bool:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        v = r.get(key)
+        return bool(v) and int(v) > 0
+
+    return run_redis_retry(
+        "bulk_collection_destructive_read",
+        _read,
+        max_attempts=max(
+            1,
+            int(getattr(settings, "redis_retry_read_max_attempts", 15) or 15),
+        ),
+    )
+
+
+def get_active_bulk_job_ids(collection_id: str) -> list[str]:
+    """Parent job ids with in-flight bulk imports (mutex holder + non-terminal collection jobs)."""
+    from app.services.job_store import list_jobs_for_collection
+
+    active: set[str] = set()
+    holder = get_collection_bulk_mutex_holder(collection_id)
+    if holder:
+        active.add(holder)
+    active_statuses = frozenset({"pending", "running", "replacing", "cancelling"})
+    for job in list_jobs_for_collection(collection_id, limit=20):
+        status = (job.status or "").lower()
+        if status in active_statuses and job.job_id:
+            jid = job.job_id.split(":shard:")[0]
+            active.add(jid)
+    return sorted(active)
 
 
 def collection_has_bulk_activity(collection_id: str) -> bool:

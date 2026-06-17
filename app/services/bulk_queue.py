@@ -28,7 +28,7 @@ class BulkJobPayload:
     mode: str
     batch_size: int
     owner_id: int | None = None
-    queue_compute_tiles: bool = True
+    queue_compute_tiles: bool = False
     zip_inner_shp_paths: list[str] | None = None
     job_kind: str = "single"  # single | parent | shard
     parent_job_id: str | None = None
@@ -69,7 +69,7 @@ class BulkJobPayload:
     @classmethod
     def from_json(cls, s: str) -> "BulkJobPayload":
         d = json.loads(s)
-        qt = d.get("queue_compute_tiles", True)
+        qt = d.get("queue_compute_tiles", False)
         if isinstance(qt, bool):
             queue_compute_tiles = qt
         else:
@@ -105,7 +105,8 @@ def init_parent_state(
     collection_id: str,
     expected_shards: int,
     mode: str,
-    queue_compute_tiles: bool = True,
+    queue_compute_tiles: bool = False,
+    replace_filters: list[str] | None = None,
 ) -> None:
     settings = get_settings()
     if settings.bulk_queue_type != "redis":
@@ -128,6 +129,8 @@ def init_parent_state(
         "error_samples": "[]",
         "queue_compute_tiles": "1" if queue_compute_tiles else "0",
     }
+    if replace_filters:
+        mapping["replace_filters"] = "\n".join(replace_filters)
     run_redis_retry(
         "bulk_parent_state_init",
         lambda: redis.from_url(settings.redis_url, decode_responses=True).hset(
@@ -164,6 +167,25 @@ def get_parent_shard_state(parent_job_id: str) -> dict[str, int] | None:
         _read,
         max_attempts=read_attempts,
     )
+
+
+def get_parent_import_meta(parent_job_id: str) -> dict[str, str]:
+    """Read parent bulk job mode and replace_filters from Redis parent state."""
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return {}
+    import redis
+
+    def _read() -> dict[str, str]:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        raw = r.hgetall(_parent_state_key(parent_job_id)) or {}
+        return {k: str(v) for k, v in raw.items() if v is not None}
+
+    return run_redis_retry(
+        "bulk_parent_import_meta_read",
+        _read,
+        max_attempts=max(1, int(getattr(settings, "redis_retry_read_max_attempts", 15) or 15)),
+    ) or {}
 
 
 def record_parent_shard_result(
@@ -225,7 +247,7 @@ def record_parent_shard_result(
             "items_created": int(raw.get("items_created", 0) or 0),
             "items_failed": int(raw.get("items_failed", 0) or 0),
             "error_samples_json": raw.get("error_samples", "[]"),
-            "queue_compute_tiles": str(raw.get("queue_compute_tiles", "1")).lower() not in ("0", "false", "no", ""),
+            "queue_compute_tiles": str(raw.get("queue_compute_tiles", "0")).lower() not in ("0", "false", "no", ""),
         }
 
     ok = run_redis_retry(

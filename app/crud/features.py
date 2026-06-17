@@ -33,6 +33,7 @@ from app.db.feature_property_filters import property_filter_clause, structured_f
 from app.utils.property_filters import PropertyFilter, safe_json_key
 from app.services.coverages import CogPathOutsideStorageError, resolve_stored_cog_path
 from app.services.dynamic_tile_cache import invalidate_collection_cache
+from app.services.shadow_import import active_shadow_exclude_job_ids, shadow_distinct_on_order, shadow_read_where_sql
 
 # Properties key that must not be writable via API (feature id is from the resource)
 PROPERTIES_READONLY_KEYS = frozenset({"id"})
@@ -444,6 +445,7 @@ async def list_features_paginated(
     collection_feature_count: int | None = None,
     include_geometry: bool = True,
     skip_count: bool = False,
+    exclude_bulk_job_ids: Sequence[str] | None = None,
 ) -> Tuple[Sequence[Feature], int]:
     """
     List features with OGC query params. Returns (features, numberMatched).
@@ -457,6 +459,13 @@ async def list_features_paginated(
     """
     # Empty query params (e.g. sortby=) can arrive as ""; treat as None so we use the fast two-phase path
     sortby = (sortby.strip() if sortby else None) or None
+
+    shadow_jobs = [j for j in (exclude_bulk_job_ids or []) if j]
+    shadow_clause = ""
+    shadow_params: dict[str, list[str]] = {}
+    if shadow_jobs:
+        shadow_clause, shadow_param = shadow_read_where_sql()
+        shadow_params[shadow_param] = shadow_jobs
 
     has_filters = (
         bbox is not None
@@ -478,6 +487,10 @@ async def list_features_paginated(
 
     # Count: logical features (COUNT(DISTINCT id)); uses idx_features_collection_id_id when no filters.
     count_distinct = select(func.count(func.distinct(Feature.id))).where(Feature.collection_id == collection_id)
+    if shadow_jobs:
+        count_distinct = count_distinct.where(
+            (Feature.bulk_import_job_id.is_(None)) | (~Feature.bulk_import_job_id.in_(shadow_jobs))
+        )
     if feature_ids:
         count_distinct = count_distinct.where(Feature.id.in_(list(feature_ids)))
     if bbox is not None:
@@ -536,20 +549,22 @@ async def list_features_paginated(
             # not the whole table. Inner query emits one row per id in order; we take a slice for the page.
             order_dir = "DESC" if sortdesc else "ASC"
             fetch_count = limit + offset  # read this many "first row per id" from index
+            distinct_order = shadow_distinct_on_order(sortdesc) if shadow_jobs else f"id {order_dir}, part_index {order_dir}"
+            shadow_where = f"\n                        {shadow_clause}" if shadow_jobs else ""
             r1 = await db.execute(
                 text(f"""
                     SELECT id, collection_id
                     FROM (
                         SELECT DISTINCT ON (id) id, collection_id
                         FROM features
-                        WHERE collection_id = :cid
-                        ORDER BY id {order_dir}, part_index {order_dir}
+                        WHERE collection_id = :cid{shadow_where}
+                        ORDER BY {distinct_order}
                         LIMIT :fetch
                     ) sub
                     ORDER BY id {order_dir}
                     LIMIT :lim OFFSET :off
                 """),
-                {"cid": collection_id, "fetch": fetch_count, "lim": limit, "off": offset},
+                {"cid": collection_id, "fetch": fetch_count, "lim": limit, "off": offset, **shadow_params},
             )
             page_rows = r1.fetchall()
             page_ids = [r.id for r in page_rows]
@@ -557,19 +572,20 @@ async def list_features_paginated(
             # Fast path: only id, collection_id, created_at — matches idx_features_collection_created_at_id
             # so planner can use index-only scan (no heap). Still full index scan for GROUP BY + ORDER BY.
             order_dir = "DESC" if sortdesc else "ASC"
+            shadow_where = f" AND (bulk_import_job_id IS NULL OR bulk_import_job_id != ALL(:shadow_exclude_jobs))" if shadow_jobs else ""
             r1 = await db.execute(
                 text(f"""
                     SELECT id, collection_id
                     FROM (
                         SELECT id, collection_id, min(created_at) AS created_at
                         FROM features
-                        WHERE collection_id = :cid
+                        WHERE collection_id = :cid{shadow_where}
                         GROUP BY id, collection_id
                         ORDER BY created_at {order_dir}, id {order_dir}
                         LIMIT :lim OFFSET :off
                     ) sub
                 """),
-                {"cid": collection_id, "lim": limit, "off": offset},
+                {"cid": collection_id, "lim": limit, "off": offset, **shadow_params},
             )
             page_rows = r1.fetchall()
             page_ids = [r.id for r in page_rows]
@@ -640,6 +656,10 @@ async def list_features_paginated(
                 page_ids_stmt = page_ids_stmt.where(
                     Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\")
                 )
+            if shadow_jobs:
+                page_ids_stmt = page_ids_stmt.where(
+                    (Feature.bulk_import_job_id.is_(None)) | (~Feature.bulk_import_job_id.in_(shadow_jobs))
+                )
 
             page_ids_stmt = page_ids_stmt.order_by(order_page_ids).limit(limit).offset(offset)
             result1 = await db.execute(page_ids_stmt)
@@ -652,17 +672,22 @@ async def list_features_paginated(
         if not include_geometry:
             # Fast path: fetch per-part bbox only (no GROUP BY, no ST_Extent in DB — minimal work per row).
             # Aggregate bbox/properties in Python so DB does a simple index scan and releases quickly.
+            phase2_shadow = (
+                " AND (bulk_import_job_id IS NULL OR bulk_import_job_id != ALL(:shadow_exclude_jobs))"
+                if shadow_jobs
+                else ""
+            )
             r = await db.execute(
-                text("""
+                text(f"""
                     SELECT id, collection_id, part_index,
                            ST_XMin(geometry) AS xmin, ST_YMin(geometry) AS ymin,
                            ST_XMax(geometry) AS xmax, ST_YMax(geometry) AS ymax,
                            properties, created_at, updated_at
                     FROM features
-                    WHERE collection_id = :cid AND id = ANY(:ids)
+                    WHERE collection_id = :cid AND id = ANY(:ids){phase2_shadow}
                     ORDER BY id, part_index
                 """),
-                {"cid": collection_id, "ids": page_ids},
+                {"cid": collection_id, "ids": page_ids, **shadow_params},
             )
             rows = r.fetchall()
             by_id: dict[str, list[Any]] = {}
@@ -712,6 +737,10 @@ async def list_features_paginated(
             .where(Feature.collection_id == collection_id, Feature.id.in_(page_ids))
             .order_by(Feature.id, Feature.part_index)
         )
+        if shadow_jobs:
+            parts_stmt = parts_stmt.where(
+                (Feature.bulk_import_job_id.is_(None)) | (~Feature.bulk_import_job_id.in_(shadow_jobs))
+            )
         result2 = await db.execute(parts_stmt)
         rows = result2.fetchall()
         # Group by id (preserve part order)
@@ -736,15 +765,21 @@ async def get_feature(
     db: AsyncSession, collection_id: str, feature_id: str
 ) -> Feature | None:
     """Return one logical feature (ST_Union of parts) or None."""
+    shadow_jobs = active_shadow_exclude_job_ids(collection_id)
+    shadow_where = ""
+    params: dict[str, object] = {"cid": collection_id, "fid": feature_id}
+    if shadow_jobs:
+        shadow_where = " AND (bulk_import_job_id IS NULL OR bulk_import_job_id != ALL(:shadow_exclude_jobs))"
+        params["shadow_exclude_jobs"] = shadow_jobs
     r = await db.execute(
-        text("""
+        text(f"""
             SELECT id, collection_id, ST_AsText(ST_Union(geometry)) AS geometry_wkt,
                    (array_agg(properties ORDER BY part_index))[1] AS properties,
                    min(created_at) AS created_at, max(updated_at) AS updated_at
-            FROM features WHERE collection_id = :cid AND id = :fid
+            FROM features WHERE collection_id = :cid AND id = :fid{shadow_where}
             GROUP BY id, collection_id
         """),
-        {"cid": collection_id, "fid": feature_id},
+        params,
     )
     row = r.fetchone()
     return _row_to_logical_feature(row) if row else None
