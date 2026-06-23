@@ -34,6 +34,8 @@ class Collection(Base):
     collection_type: str = Column(String(16), nullable=False, default=COLLECTION_TYPE_VECTOR, server_default=COLLECTION_TYPE_VECTOR)
     # Ordered member list for composite collections: [{"collection_id": "..."}, ...]
     composite_members: dict | None = Column(JSON, nullable=True)
+    # Property keys to index on features.properties for this collection only (expression btree).
+    property_index_fields: list | None = Column(JSON, nullable=True)
 
     created_at: datetime = Column(
         DateTime(timezone=True),

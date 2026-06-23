@@ -41,6 +41,7 @@ from app.services.composite_collections import (
     validate_composite_members,
 )
 from app.services.composite_tiles_cache import invalidate_composite_tiles_cache
+from app.services.collection_property_indexes import normalize_property_index_fields
 from app.schemas.ogc import Link
 from app.schemas.resource_share import ShareAdd, ShareRead
 
@@ -284,6 +285,9 @@ async def get_collection_edit_form(
             "description": out.description,
             "collection_type": getattr(collection, "collection_type", "vector"),
             "raster_settings": getattr(collection, "raster_settings", None),
+            "property_index_fields": normalize_property_index_fields(
+                getattr(collection, "property_index_fields", None)
+            ),
         },
         extent_geojson=out.extent.model_dump() if out.extent else None,
         has_static_tiles=has_static_tiles,
@@ -459,6 +463,16 @@ async def patch_collection(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     if not await can_edit_collection(db, coll, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if "property_index_fields" in payload.model_fields_set:
+        if getattr(coll, "collection_type", COLLECTION_TYPE_VECTOR) != COLLECTION_TYPE_VECTOR:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Property indexes are only supported on vector collections",
+            )
+        try:
+            normalize_property_index_fields(payload.property_index_fields)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     if "composite_members" in payload.model_fields_set and is_composite_collection(coll):
         members = [
             {"collection_id": m.collection_id}
@@ -581,6 +595,11 @@ async def create_collection(
         ]
         if members:
             await validate_composite_members(db, payload.id, members)
+    if payload.collection_type == COLLECTION_TYPE_VECTOR and payload.property_index_fields:
+        try:
+            normalize_property_index_fields(payload.property_index_fields)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     collection = await collections_crud.create_collection(
         db, payload, owner_id=current_user.id, visibility="private"
     )

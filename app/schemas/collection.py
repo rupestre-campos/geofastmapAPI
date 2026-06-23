@@ -81,6 +81,10 @@ class CollectionBase(BaseModel):
         default=None,
         description="For composite collections: ordered member vector collection ids.",
     )
+    property_index_fields: list[str] | None = Field(
+        default=None,
+        description="Property keys with per-collection expression indexes on features.properties.",
+    )
 
 
 class CollectionCreate(CollectionBase):
@@ -97,6 +101,7 @@ class CollectionReplace(BaseModel):
     raster_settings: dict[str, Any] | None = None
     collection_type: str = "vector"
     composite_members: list[CompositeMember] | None = None
+    property_index_fields: list[str] | None = None
 
 
 class CollectionPatch(BaseModel):
@@ -111,6 +116,7 @@ class CollectionPatch(BaseModel):
     viewer_can_edit: bool | None = None  # when True, everyone who can view can edit
     collection_type: str | None = None  # vector | raster | composite
     composite_members: list[CompositeMember] | None = None
+    property_index_fields: list[str] | None = None
 
 
 class CompositeMemberStatus(BaseModel):

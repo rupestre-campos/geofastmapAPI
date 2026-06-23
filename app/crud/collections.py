@@ -1,6 +1,7 @@
 """CRUD for collections."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -24,6 +25,11 @@ from app.models.collection import (
 )
 from app.models.collection_tiles import CollectionTiles
 from app.models.resource_share import ResourceShare
+from app.services.collection_property_indexes import (
+    drop_all_collection_property_indexes_sync,
+    normalize_property_index_fields,
+    sync_collection_property_indexes_sync,
+)
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
 
 if TYPE_CHECKING:
@@ -286,6 +292,9 @@ async def create_collection(
 ) -> Collection:
     ctype = _normalize_collection_type(data.collection_type)
     members_json = _composite_members_json(data.composite_members) if ctype == COLLECTION_TYPE_COMPOSITE else None
+    index_fields = None
+    if ctype == COLLECTION_TYPE_VECTOR and data.property_index_fields:
+        index_fields = normalize_property_index_fields(data.property_index_fields) or None
     collection = Collection(
         id=data.id,
         title=data.title,
@@ -297,12 +306,20 @@ async def create_collection(
         visibility=visibility,
         collection_type=ctype,
         composite_members=members_json,
+        property_index_fields=index_fields,
     )
     db.add(collection)
     await db.commit()
     await db.refresh(collection)
     if ctype != COLLECTION_TYPE_COMPOSITE:
         await ensure_features_partition(db, data.id)
+    if index_fields:
+        await asyncio.to_thread(
+            sync_collection_property_indexes_sync,
+            data.id,
+            [],
+            index_fields,
+        )
     return collection
 
 
@@ -312,6 +329,7 @@ async def replace_collection(
     collection = await get_collection(db, collection_id)
     if collection is None:
         return None
+    old_index_fields = normalize_property_index_fields(collection.property_index_fields)
     collection.title = data.title
     collection.description = data.description
     collection.extent = data.extent.model_dump() if data.extent else None
@@ -322,8 +340,27 @@ async def replace_collection(
         collection.composite_members = _composite_members_json(data.composite_members)
     else:
         collection.composite_members = None
+    if collection.collection_type == COLLECTION_TYPE_VECTOR:
+        collection.property_index_fields = (
+            normalize_property_index_fields(data.property_index_fields) or None
+        )
+    else:
+        collection.property_index_fields = None
     await db.commit()
     await db.refresh(collection)
+    if collection.collection_type == COLLECTION_TYPE_VECTOR:
+        await asyncio.to_thread(
+            sync_collection_property_indexes_sync,
+            collection_id,
+            old_index_fields,
+            normalize_property_index_fields(collection.property_index_fields),
+        )
+    elif old_index_fields:
+        await asyncio.to_thread(
+            drop_all_collection_property_indexes_sync,
+            collection_id,
+            old_index_fields,
+        )
     return collection
 
 
@@ -333,6 +370,8 @@ async def patch_collection(
     collection = await get_collection(db, collection_id)
     if collection is None:
         return None
+    old_index_fields = normalize_property_index_fields(collection.property_index_fields)
+    sync_indexes = False
     if "title" in data.model_fields_set:
         collection.title = data.title
     if "description" in data.model_fields_set:
@@ -355,8 +394,30 @@ async def patch_collection(
         collection.composite_members = _composite_members_json(data.composite_members)
     if collection.collection_type != COLLECTION_TYPE_COMPOSITE:
         collection.composite_members = None
+    if "property_index_fields" in data.model_fields_set:
+        sync_indexes = True
+        if collection.collection_type == COLLECTION_TYPE_VECTOR:
+            collection.property_index_fields = (
+                normalize_property_index_fields(data.property_index_fields) or None
+            )
+        else:
+            collection.property_index_fields = None
     await db.commit()
     await db.refresh(collection)
+    if sync_indexes:
+        if collection.collection_type == COLLECTION_TYPE_VECTOR:
+            await asyncio.to_thread(
+                sync_collection_property_indexes_sync,
+                collection_id,
+                old_index_fields,
+                normalize_property_index_fields(collection.property_index_fields),
+            )
+        elif old_index_fields:
+            await asyncio.to_thread(
+                drop_all_collection_property_indexes_sync,
+                collection_id,
+                old_index_fields,
+            )
     return collection
 
 
@@ -364,6 +425,13 @@ async def delete_collection(db: AsyncSession, collection_id: str) -> bool:
     collection = await get_collection(db, collection_id)
     if collection is None:
         return False
+    index_fields = normalize_property_index_fields(collection.property_index_fields)
+    if index_fields:
+        await asyncio.to_thread(
+            drop_all_collection_property_indexes_sync,
+            collection_id,
+            index_fields,
+        )
     # Delete static MBTiles file if present (before collection_tiles row is CASCADE-deleted)
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     if rec and rec.pmtiles_path:
