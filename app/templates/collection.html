@@ -54,7 +54,9 @@
     <div class="collection-info-label">Title</div>
     <div class="collection-info-value title">{{ collection.title or collection.id }}</div>
     <div class="collection-info-label">Layer id</div>
-    <div class="collection-info-value"><code>{{ collection.id }}</code></div>
+    <div class="collection-info-value"><code>{{ collection.id }}</code>
+      {% if is_composite %}<span class="meta"> — composite (merged static tiles)</span>{% endif %}
+    </div>
     <div class="collection-info-label">Description</div>
     <div class="collection-info-value">{{ collection.description or '—' }}</div>
     {% if stac_source %}
@@ -77,6 +79,35 @@
     <div class="collection-info-label">Features last updated</div>
     <div class="collection-info-value">{% if collection.features_last_updated_at %}{{ collection.features_last_updated_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC{% else %}—{% endif %} <span class="meta">(geometries &amp; attributes on the map)</span></div>
   </div>
+
+  {% if is_composite %}
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Member collections</h2>
+      {% if can_edit_collection %}
+      <div class="card-actions">
+        <a href="{{ base }}/collections/{{ collection.id }}/composite/edit?f=html" class="btn btn-primary">Edit members</a>
+      </div>
+      {% endif %}
+    </div>
+    {% if member_status %}
+    <table class="collections-table">
+      <thead><tr><th>Collection</th><th>Features</th><th>Static tiles</th></tr></thead>
+      <tbody>
+        {% for m in member_status %}
+        <tr>
+          <td><a href="{{ base }}/collections/{{ m.collection_id }}?f=html"><code>{{ m.collection_id }}</code></a></td>
+          <td>{{ m.feature_count }}</td>
+          <td>{% if m.has_static_tiles %}yes{% else %}<span class="meta">not built</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="meta">No members configured.</p>
+    {% endif %}
+  </div>
+  {% endif %}
 
   {% if (collection.collection_type or 'vector') == 'raster' %}
   <div class="card">

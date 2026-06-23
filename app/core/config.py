@@ -35,24 +35,34 @@ class Settings(BaseSettings):
     # Max size of one geometry (OGC WKB byte length). Rejects API writes and skips bulk-import parts over limit.
     features_max_geometry_bytes: int = 50 * 1024 * 1024  # 50 MiB; set 0 to disable
 
-    # Bulk import: batch size for DB inserts (background job)
-    bulk_import_batch_size: int = 1000
+    # Bulk import: batch size for DB commits (features per transaction).
+    bulk_import_batch_size: int = 3000
     # SQL VALUES tuples per INSERT when one source feature splits into many geometry parts.
-    bulk_insert_parts_batch_size: int = 160
+    bulk_insert_parts_batch_size: int = 200
+    # Logical features buffered before flushing multi-row INSERT statements (GeoJSONL fast path).
+    bulk_features_per_insert: int = 32
+    # GeoJSONL: orjson line reader instead of Fiona (default on for .geojsonl).
+    bulk_geojsonl_fast_path: bool = True
+    # Per-feature SAVEPOINT isolation (off on fast path for throughput).
+    bulk_per_feature_savepoint: bool = False
+    # Skip row trigger on features during bulk import; refresh collections.features_last_updated_at once at end.
+    bulk_skip_features_touch_trigger: bool = True
+    # Buffered read size when splitting large GeoJSONL into shard files.
+    bulk_shard_split_buffer_bytes: int = 8 * 1024 * 1024
     # Emit progress updates while a large batch is still in-flight (seconds). 0 = commit-bound updates only.
     bulk_progress_heartbeat_seconds: float = 5.0
     # Post-import extent update mode: immediate (blocking), deferred (skip during job), or best_effort.
-    bulk_extent_update_mode: str = "immediate"  # immediate | deferred | best_effort
+    bulk_extent_update_mode: str = "deferred"  # immediate | deferred | best_effort
     # Retry transient DB failures during bulk import/finalization.
     bulk_db_retry_max_attempts: int = 4
     bulk_db_retry_base_seconds: float = 1.0
     bulk_db_retry_max_seconds: float = 30.0
     # Resumable upload sessions (chunked upload API).
     bulk_upload_session_ttl_seconds: int = 86400
-    bulk_upload_chunk_size_bytes: int = 32 * 1024 * 1024  # 32 MiB
+    bulk_upload_chunk_size_bytes: int = 64 * 1024 * 1024  # 64 MiB
     # Parent/shard ingest mode for large files.
     bulk_sharded_ingest_enabled: bool = True
-    bulk_shard_lines_per_part: int = 50000
+    bulk_shard_lines_per_part: int = 100000
     # Replace mode: delete rows in batches to avoid one long table lock blocking other work.
     bulk_replace_delete_batch_rows: int = 25000
     # Shadow replace: append tagged rows first, delete old rows at finalize (items view keeps prior data).
@@ -67,7 +77,7 @@ class Settings(BaseSettings):
     # Bulk queue: memory = in-process consumer; redis = separate worker(s), scalable.
     bulk_queue_type: str = "redis"  # memory | redis
     # Standalone bulk worker (`app.worker_main`): concurrent queue jobs per process (threads). Each job holds DB + CPU; raise with Postgres max_connections in mind.
-    bulk_worker_max_concurrent: int = 2
+    bulk_worker_max_concurrent: int = 3
     # Comma-separated collection ids allowed to auto-queue tile build after bulk import.
     # Empty = disabled (use POST /collections/{id}/tiles/build for manual/cron rebuilds).
     bulk_auto_tile_build_collections: str = ""
@@ -83,7 +93,9 @@ class Settings(BaseSettings):
     redis_retry_max_seconds: float = 30.0
     redis_retry_enqueue_max_attempts: int = 5
     # Hot-path Redis reads (e.g. job cancel polls during bulk import, parent shard aggregation).
-    redis_retry_read_max_attempts: int = 15
+    redis_retry_read_max_attempts: int = 20
+    # Composite collection: Redis TTL for merged static MVT tiles (seconds). 0 = disabled.
+    composite_tiles_cache_ttl_seconds: int = 3600
 
     # OGC API - Processes: geometric operations (intersection, erase) between collections.
     process_queue_type: str = "redis"  # redis | memory (memory = no separate worker)

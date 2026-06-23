@@ -23,16 +23,24 @@ from app.crud import styles as styles_crud
 from app.core.html import html_response, wants_html
 from app.db.session import get_db
 from app.models.resource_share import RESOURCE_TYPE_COLLECTION
-from app.models.collection import COLLECTION_TYPE_RASTER, COLLECTION_TYPE_VECTOR
+from app.models.collection import COLLECTION_TYPE_COMPOSITE, COLLECTION_TYPE_RASTER, COLLECTION_TYPE_VECTOR
 from app.schemas.collection import (
     CollectionCreate,
     CollectionPatch,
     CollectionRead,
     CollectionReplace,
     CollectionsList,
+    CompositeMemberStatus,
     ExtentRecomputeResponse,
     clamp_bbox,
 )
+from app.services.composite_collections import (
+    is_composite_collection,
+    member_tile_status,
+    parse_composite_members,
+    validate_composite_members,
+)
+from app.services.composite_tiles_cache import invalidate_composite_tiles_cache
 from app.schemas.ogc import Link
 from app.schemas.resource_share import ShareAdd, ShareRead
 
@@ -40,6 +48,25 @@ router = APIRouter()
 
 # Reserved path segment: GET /collections/edit is the edit-collections (create form) page.
 COLLECTION_ID_RESERVED = "edit"
+
+
+def _collection_read_with_extras(
+    collection,
+    *,
+    base: str,
+    collection_id: str,
+    member_status: list | None = None,
+    default_style_id: str | None = None,
+) -> CollectionRead:
+    out = CollectionRead.model_validate(collection)
+    extra: dict = {}
+    if member_status is not None:
+        extra["member_status"] = [CompositeMemberStatus.model_validate(m) for m in member_status]
+    links = _collection_links(base, collection_id, default_style_id) + [
+        Link(href=f"{base}/collections/{collection_id}?f=html", rel="alternate", type="text/html")
+    ]
+    extra["links"] = links
+    return out.model_copy(update=extra)
 
 
 def _base_url(request: Request) -> str:
@@ -311,11 +338,26 @@ async def get_collection(
     default_style = await styles_crud.get_default_style(db, collection_id)
     default_style_id = default_style.id if default_style else None
     out = CollectionRead.model_validate(collection)
+    is_composite = is_composite_collection(collection)
     if wants_html(request):
-        rec = await tiles_crud.get_collection_tiles(db, collection_id)
-        has_static_tiles = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
-        static_minzoom = rec.minzoom if (rec and rec.minzoom is not None) else 0
-        static_maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
+        member_status_list: list | None = None
+        if is_composite:
+            members = parse_composite_members(getattr(collection, "composite_members", None))
+            member_status_list = await member_tile_status(db, members)
+            has_static_tiles = any(s.get("has_static_tiles") for s in member_status_list)
+            static_minzoom = min(
+                (s["minzoom"] for s in member_status_list if s.get("minzoom") is not None),
+                default=0,
+            )
+            static_maxzoom = max(
+                (s["maxzoom"] for s in member_status_list if s.get("maxzoom") is not None),
+                default=14,
+            )
+        else:
+            rec = await tiles_crud.get_collection_tiles(db, collection_id)
+            has_static_tiles = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
+            static_minzoom = rec.minzoom if (rec and rec.minzoom is not None) else 0
+            static_maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
         settings = get_settings()
         owner_username = None
         if getattr(collection, "owner_id", None):
@@ -356,12 +398,19 @@ async def get_collection(
             stac_source=getattr(collection, "stac_source", None),
             default_raster_style=default_raster_style,
             raster_viz=raster_viz,
+            is_composite=is_composite,
+            member_status=member_status_list or [],
         )
-    return out.model_copy(
-        update={
-            "links": _collection_links(base, collection_id, default_style_id)
-            + [Link(href=f"{base}/collections/{collection_id}?f=html", rel="alternate", type="text/html")],
-        },
+    member_status_json = None
+    if is_composite:
+        members = parse_composite_members(getattr(collection, "composite_members", None))
+        member_status_json = await member_tile_status(db, members)
+    return _collection_read_with_extras(
+        collection,
+        base=base,
+        collection_id=collection_id,
+        member_status=member_status_json,
+        default_style_id=default_style_id,
     )
 
 
@@ -410,15 +459,32 @@ async def patch_collection(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     if not await can_edit_collection(db, coll, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if "composite_members" in payload.model_fields_set and is_composite_collection(coll):
+        members = [
+            {"collection_id": m.collection_id}
+            for m in (payload.composite_members or [])
+        ]
+        await validate_composite_members(db, collection_id, members)
     collection = await collections_crud.patch_collection(db, collection_id, payload)
     if not collection:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
+    if is_composite_collection(collection):
+        invalidate_composite_tiles_cache(collection_id)
     base = _base_url(request)
-    out = CollectionRead.model_validate(collection)
-    return out.model_copy(update={"links": _collection_links(base, collection_id)})
+    member_status_json = None
+    if is_composite_collection(collection):
+        member_status_json = await member_tile_status(
+            db, parse_composite_members(collection.composite_members)
+        )
+    return _collection_read_with_extras(
+        collection,
+        base=base,
+        collection_id=collection_id,
+        member_status=member_status_json,
+    )
 
 
 @router.get(
@@ -508,10 +574,90 @@ async def create_collection(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Collection with this id already exists",
         )
+    if payload.collection_type == COLLECTION_TYPE_COMPOSITE:
+        members = [
+            {"collection_id": m.collection_id}
+            for m in (payload.composite_members or [])
+        ]
+        if members:
+            await validate_composite_members(db, payload.id, members)
     collection = await collections_crud.create_collection(
         db, payload, owner_id=current_user.id, visibility="private"
     )
-    return CollectionRead.model_validate(collection)
+    member_status_json = None
+    if is_composite_collection(collection):
+        member_status_json = await member_tile_status(
+            db, parse_composite_members(collection.composite_members)
+        )
+    return CollectionRead.model_validate(collection).model_copy(
+        update={"member_status": member_status_json} if member_status_json else {}
+    )
+
+
+@router.post(
+    "/{collection_id}/composite/invalidate-tiles-cache",
+    status_code=status.HTTP_200_OK,
+    summary="Invalidate merged composite tile cache",
+)
+async def invalidate_composite_tiles(
+    collection_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not is_composite_collection(collection):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not a composite collection")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    invalidate_composite_tiles_cache(collection_id)
+    return {"message": "Composite tile cache invalidated", "collection_id": collection_id}
+
+
+@router.get(
+    "/{collection_id}/composite/edit",
+    summary="Edit composite collection members (HTML)",
+)
+async def get_composite_collection_edit_form(
+    request: Request,
+    collection_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html")
+    collection = await collections_crud.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not is_composite_collection(collection):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not a composite collection")
+    if not await can_edit_collection(db, collection, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    base = _base_url(request)
+    members = parse_composite_members(getattr(collection, "composite_members", None))
+    member_status_list = await member_tile_status(db, members)
+    all_collections, _ = await collections_crud.list_collections(
+        db,
+        limit=500,
+        offset=0,
+        current_user=current_user,
+        collection_type=COLLECTION_TYPE_VECTOR,
+    )
+    picker = [
+        {"id": c.id, "title": c.title or c.id}
+        for c in all_collections
+        if c.id != collection_id and getattr(c, "collection_type", "") != COLLECTION_TYPE_COMPOSITE
+    ]
+    return html_response(
+        "composite_collection_edit.html",
+        base=base,
+        username=current_user.username if current_user else None,
+        collection_id=collection_id,
+        collection_title=collection.title or collection_id,
+        member_status=member_status_list,
+        vector_collections=picker,
+    )
 
 
 @router.post(

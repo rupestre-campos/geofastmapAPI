@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Edit composite {{ collection_id }} – GeoFastMap API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Composite: {{ collection_title }}</h1>
+    <p class="breadcrumb">
+      <a href="{{ base }}/collections?f=html">Collections</a> ›
+      <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> ›
+      Edit members
+    </p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Member collections</h2>
+    <p class="meta">Merged static tiles are served from member MBTiles at <code>…/tiles/static/{z}/{x}/{y}.pbf</code>. Build tiles on each member first.</p>
+    <table class="collections-table" id="members-table">
+      <thead>
+        <tr>
+          <th>Order</th>
+          <th>Collection</th>
+          <th>Features</th>
+          <th>Static tiles</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="members-body">
+        {% for m in member_status %}
+        <tr data-cid="{{ m.collection_id }}">
+          <td class="order-cell">
+            <button type="button" class="btn btn-sm btn-move-up" title="Move up">↑</button>
+            <button type="button" class="btn btn-sm btn-move-down" title="Move down">↓</button>
+          </td>
+          <td>
+            <a href="{{ base }}/collections/{{ m.collection_id }}?f=html"><code>{{ m.collection_id }}</code></a>
+            {% if m.title %}<span class="meta"> — {{ m.title }}</span>{% endif %}
+          </td>
+          <td>{{ m.feature_count }}</td>
+          <td>
+            {% if m.has_static_tiles %}
+              <span class="meta">built{% if m.built_at %} {{ m.built_at[:10] }}{% endif %}</span>
+              <a href="{{ base }}/collections/{{ m.collection_id }}/tiles/build?f=html" class="btn btn-sm">Rebuild</a>
+            {% else %}
+              <span class="meta">missing</span>
+              <a href="{{ base }}/collections/{{ m.collection_id }}/tiles/build?f=html" class="btn btn-sm btn-primary">Build tiles</a>
+            {% endif %}
+          </td>
+          <td><button type="button" class="btn btn-sm btn-remove-member">Remove</button></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="form-row" style="margin-top: 1rem;">
+      <label for="add-member-select">Add vector collection</label>
+      <select id="add-member-select">
+        <option value="">— select —</option>
+        {% for c in vector_collections %}
+        <option value="{{ c.id }}">{{ c.id }}{% if c.title and c.title != c.id %} — {{ c.title }}{% endif %}</option>
+        {% endfor %}
+      </select>
+      <button type="button" class="btn" id="btn-add-member">Add</button>
+    </div>
+
+    <div class="btn-group" style="margin-top: 1rem;">
+      <button type="button" class="btn btn-primary" id="btn-save-members">Save members</button>
+      <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn">Back to collection</a>
+    </div>
+    <p id="save-msg" class="meta" style="margin-top: 0.5rem;"></p>
+  </div>
+{% endblock %}
+{% block script %}
+  <script>
+    const base = {{ base | tojson }};
+    const collectionId = {{ collection_id | tojson }};
+
+    function memberIds() {
+      return Array.from(document.querySelectorAll('#members-body tr[data-cid]'))
+        .map(tr => tr.getAttribute('data-cid'));
+    }
+
+    function rebindRow(tr) {
+      tr.querySelector('.btn-remove-member').onclick = function() {
+        if (confirm('Remove ' + tr.getAttribute('data-cid') + ' from composite?')) tr.remove();
+      };
+      tr.querySelector('.btn-move-up').onclick = function() {
+        const prev = tr.previousElementSibling;
+        if (prev) tr.parentNode.insertBefore(tr, prev);
+      };
+      tr.querySelector('.btn-move-down').onclick = function() {
+        const next = tr.nextElementSibling;
+        if (next) tr.parentNode.insertBefore(next, tr);
+      };
+    }
+
+    document.querySelectorAll('#members-body tr[data-cid]').forEach(rebindRow);
+
+    document.getElementById('btn-add-member').onclick = function() {
+      const sel = document.getElementById('add-member-select');
+      const cid = sel.value;
+      if (!cid) return;
+      if (memberIds().includes(cid)) { alert('Already a member'); return; }
+      const tbody = document.getElementById('members-body');
+      const tr = document.createElement('tr');
+      tr.setAttribute('data-cid', cid);
+      tr.innerHTML = `
+        <td class="order-cell">
+          <button type="button" class="btn btn-sm btn-move-up">↑</button>
+          <button type="button" class="btn btn-sm btn-move-down">↓</button>
+        </td>
+        <td><code>${cid}</code> <span class="meta">(new)</span></td>
+        <td>—</td>
+        <td><span class="meta">check after save</span></td>
+        <td><button type="button" class="btn btn-sm btn-remove-member">Remove</button></td>`;
+      tbody.appendChild(tr);
+      rebindRow(tr);
+      sel.value = '';
+    };
+
+    document.getElementById('btn-save-members').onclick = function() {
+      const ids = memberIds();
+      if (!ids.length) { alert('Add at least one member'); return; }
+      const body = {
+        composite_members: ids.map(id => ({ collection_id: id }))
+      };
+      fetch(base + '/collections/' + encodeURIComponent(collectionId), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(r => {
+        if (!r.ok) return r.json().then(j => Promise.reject(j));
+        return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/composite/invalidate-tiles-cache', { method: 'POST' });
+      }).then(() => {
+        document.getElementById('save-msg').textContent = 'Saved. Reloading…';
+        location.reload();
+      }).catch(e => alert('Error: ' + (e.detail || JSON.stringify(e))));
+    };
+  </script>
+{% endblock %}

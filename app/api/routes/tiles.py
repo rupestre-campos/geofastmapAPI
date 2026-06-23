@@ -49,8 +49,45 @@ from app.services.tile_build_queue import (
 from app.services.collection_tiles_revision import compute_collection_tiles_revision
 from app.services.shadow_import import active_shadow_exclude_job_ids, shadow_read_where_sql
 from app.services.collection_type_guard import ensure_vector_collection
+from app.models.collection import COLLECTION_TYPE_COMPOSITE
+from app.services.composite_collections import (
+    composite_tiles_revision,
+    member_tile_status,
+    parse_composite_members,
+)
+from app.services.composite_tiles_cache import get_composite_tile, set_composite_tile
+from app.services.mvt_merge import merge_mvt_tiles, read_tile_from_mbtiles
 
 router = APIRouter()
+
+
+async def _serve_composite_static_tile(
+    db: AsyncSession,
+    composite_id: str,
+    members: list[dict[str, str]],
+    z: int,
+    x: int,
+    y: int,
+) -> bytes:
+    revision = await composite_tiles_revision(db, members)
+    cached = get_composite_tile(composite_id, z, x, y, revision)
+    if cached is not None:
+        return cached
+    raw_tiles: list[bytes] = []
+    for m in members:
+        cid = m["collection_id"]
+        rec = await tiles_crud.get_collection_tiles(db, cid)
+        if not rec or not rec.pmtiles_path:
+            continue
+        path = Path(rec.pmtiles_path)
+        if not path.is_file():
+            continue
+        raw = await asyncio.to_thread(read_tile_from_mbtiles, path, z, x, y)
+        if raw:
+            raw_tiles.append(raw)
+    merged = merge_mvt_tiles(raw_tiles, mvt_layer_name(composite_id), z, x, y)
+    set_composite_tile(composite_id, z, x, y, revision, merged)
+    return merged
 
 
 class TileBuildRequestBody(BaseModel):
@@ -364,16 +401,28 @@ async def get_tiles_tilejson(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     base = _base_url(request)
     settings = get_settings()
-    rec = await tiles_crud.get_collection_tiles(db, collection_id)
-    has_static = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
-    tiles_revision = compute_collection_tiles_revision(collection_id, rec.pmtiles_path if rec else None)
-    minzoom = rec.minzoom if (rec and rec.minzoom is not None) else 0
-    maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
-    # Prefer static ZXY URL when static tiles (MBTiles) exist so clients can use a single tile endpoint
-    tile_urls = [f"{base}/collections/{collection_id}/tiles/dynamic/{{z}}/{{x}}/{{y}}.pbf"]
-    if has_static:
-        tile_urls.insert(0, _tile_url_with_revision(base, collection_id, tiles_revision))
-    layer_id = mvt_layer_name(collection_id)
+    is_composite = getattr(collection, "collection_type", "") == COLLECTION_TYPE_COMPOSITE
+    if is_composite:
+        members = parse_composite_members(getattr(collection, "composite_members", None))
+        statuses = await member_tile_status(db, members)
+        has_static = any(s.get("has_static_tiles") for s in statuses)
+        tiles_revision = await composite_tiles_revision(db, members)
+        minzoom = min((s["minzoom"] for s in statuses if s.get("minzoom") is not None), default=0)
+        maxzoom = max((s["maxzoom"] for s in statuses if s.get("maxzoom") is not None), default=14)
+        tile_urls = []
+        if has_static:
+            tile_urls.append(_tile_url_with_revision(base, collection_id, tiles_revision))
+        layer_id = mvt_layer_name(collection_id)
+    else:
+        rec = await tiles_crud.get_collection_tiles(db, collection_id)
+        has_static = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
+        tiles_revision = compute_collection_tiles_revision(collection_id, rec.pmtiles_path if rec else None)
+        minzoom = rec.minzoom if (rec and rec.minzoom is not None) else 0
+        maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
+        tile_urls = [f"{base}/collections/{collection_id}/tiles/dynamic/{{z}}/{{x}}/{{y}}.pbf"]
+        if has_static:
+            tile_urls.insert(0, _tile_url_with_revision(base, collection_id, tiles_revision))
+        layer_id = mvt_layer_name(collection_id)
     tilejson = {
         "tilejson": "2.2.0",
         "name": collection_id,
@@ -995,6 +1044,26 @@ async def get_tiles_static_zxy(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if getattr(collection, "collection_type", "") == COLLECTION_TYPE_COMPOSITE:
+        members = parse_composite_members(getattr(collection, "composite_members", None))
+        if not members:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Composite has no members.")
+        statuses = await member_tile_status(db, members)
+        if not any(s.get("has_static_tiles") for s in statuses):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No member static tiles built yet. Build tiles on member collections first.",
+            )
+        tiles_revision = await composite_tiles_revision(db, members)
+        version_query = request.query_params.get("v")
+        pinned_version = bool(tiles_revision and version_query and version_query == tiles_revision)
+        cache_headers = _static_tile_cache_headers(etag=tiles_revision, versioned=pinned_version)
+        tile_bytes = await _serve_composite_static_tile(db, collection_id, members, z, x, y)
+        return Response(
+            content=tile_bytes,
+            media_type="application/x-protobuf",
+            headers=cache_headers,
+        )
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     if not rec or not rec.pmtiles_path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tiles not built yet. POST to /tiles/build first.")

@@ -25,6 +25,7 @@
         <label for="create-type">Collection type</label>
         <select id="create-type" name="collection_type">
           <option value="vector" selected>Vector</option>
+          <option value="composite">Composite (merged layers)</option>
           <option value="raster">Raster</option>
         </select>
       </div>
@@ -73,8 +74,14 @@
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify(body)
       }).then(r => {
-        if (r.ok) location.href = base + '/collections/' + encodeURIComponent(id) + '?f=html';
-        else return r.json().then(j => Promise.reject(j));
+        if (!r.ok) return r.json().then(j => Promise.reject(j));
+        return r.json();
+      }).then(data => {
+        if (collectionType === 'composite') {
+          location.href = base + '/collections/' + encodeURIComponent(id) + '/composite/edit?f=html';
+        } else {
+          location.href = base + '/collections/' + encodeURIComponent(id) + '?f=html';
+        }
       }).catch(e => alert('Error: ' + (e.detail || JSON.stringify(e))));
     };
   </script>

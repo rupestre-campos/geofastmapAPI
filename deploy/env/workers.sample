@@ -1,7 +1,7 @@
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@YOUR_DB_HOST:5432/geofastmap
 # DATABASE_USE_PGBOUNCER=false  # true when DATABASE_URL targets PgBouncer (transaction pool)
-DATABASE_POOL_SIZE=5
-DATABASE_POOL_MAX_OVERFLOW=5
+DATABASE_POOL_SIZE=4
+DATABASE_POOL_MAX_OVERFLOW=4
 REDIS_URL=redis://YOUR_REDIS_HOST:6379/0
 BULK_QUEUE_TYPE=redis
 PROCESS_QUEUE_TYPE=redis
@@ -10,22 +10,22 @@ REDIS_RETRY_BASE_SECONDS=1
 REDIS_RETRY_MAX_SECONDS=30
 REDIS_RETRY_ENQUEUE_MAX_ATTEMPTS=5
 # Hot-path Redis reads (bulk cancel polls, parent shard aggregation). Raise on flaky LAN.
-REDIS_RETRY_READ_MAX_ATTEMPTS=15
+REDIS_RETRY_READ_MAX_ATTEMPTS=20
 ## Bulk ingest resilience/perf profile (large files)
-BULK_IMPORT_BATCH_SIZE=2000
-BULK_INSERT_PARTS_BATCH_SIZE=160
+BULK_IMPORT_BATCH_SIZE=3000
+BULK_INSERT_PARTS_BATCH_SIZE=200
 BULK_PROGRESS_HEARTBEAT_SECONDS=5
-## immediate|deferred|best_effort (workers usually run best_effort/deferred for huge layers)
-BULK_EXTENT_UPDATE_MODE=best_effort
+## immediate|deferred|best_effort (workers usually run deferred for huge layers)
+BULK_EXTENT_UPDATE_MODE=deferred
 BULK_DB_RETRY_MAX_ATTEMPTS=4
 BULK_DB_RETRY_BASE_SECONDS=1
 BULK_DB_RETRY_MAX_SECONDS=30
 BULK_UPLOAD_SESSION_TTL_SECONDS=86400
-BULK_UPLOAD_CHUNK_SIZE_BYTES=33554432
+BULK_UPLOAD_CHUNK_SIZE_BYTES=67108864
 BULK_SHARDED_INGEST_ENABLED=true
-BULK_SHARD_LINES_PER_PART=50000
+BULK_SHARD_LINES_PER_PART=100000
 # Standalone bulk worker: concurrent import threads per process (see app.worker_main). Watch Postgres max_connections.
-BULK_WORKER_MAX_CONCURRENT=2
+BULK_WORKER_MAX_CONCURRENT=3
 # Tile worker (app.tile_worker_main): poll interval while waiting for bulk import to finish on the same collection.
 TILE_BUILD_BULK_WAIT_POLL_SECONDS=2
 

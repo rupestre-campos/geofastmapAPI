@@ -408,24 +408,50 @@ def _notify_parent_shard_started(payload: BulkJobPayload) -> None:
 
 def _split_jsonl_to_chunk_keys(path: str, parent_job_id: str, lines_per_part: int) -> list[str]:
     storage = get_bulk_storage()
+    settings = get_settings()
+    buf_size = max(65536, int(getattr(settings, "bulk_shard_split_buffer_bytes", 8 * 1024 * 1024) or 8 * 1024 * 1024))
     out_keys: list[str] = []
-    with open(path, "r", encoding="utf-8", errors="ignore") as src:
+    with open(path, "rb") as src:
         part_idx = 0
         line_count = 0
         dst = None
         dst_key = ""
+        pending = b""
         try:
-            for line in src:
-                if line_count % lines_per_part == 0:
+            while True:
+                chunk = src.read(buf_size)
+                if not chunk and not pending:
+                    break
+                pending += chunk
+                while b"\n" in pending or (not chunk and pending):
+                    if b"\n" not in pending:
+                        if not chunk:
+                            line, pending = pending, b""
+                        else:
+                            break
+                    else:
+                        line, _, pending = pending.partition(b"\n")
+                    if not line.strip():
+                        continue
+                    if line_count % lines_per_part == 0:
+                        if dst is not None:
+                            dst.close()
+                        part_idx += 1
+                        dst_key = f"{parent_job_id}.shard.{part_idx:04d}.geojsonl"
+                        out_keys.append(dst_key)
+                        dst = open(storage.get_write_path(dst_key), "wb")
                     if dst is not None:
-                        dst.close()
-                    part_idx += 1
-                    dst_key = f"{parent_job_id}.shard.{part_idx:04d}.geojsonl"
-                    out_keys.append(dst_key)
-                    dst = open(storage.get_write_path(dst_key), "w", encoding="utf-8")
-                if dst is not None:
-                    dst.write(line)
-                line_count += 1
+                        dst.write(line + b"\n")
+                    line_count += 1
+                    if not chunk and not pending:
+                        break
+                if not chunk:
+                    if pending.strip() and dst is not None:
+                        dst.write(pending)
+                        if not pending.endswith(b"\n"):
+                            dst.write(b"\n")
+                        pending = b""
+                    break
         finally:
             if dst is not None:
                 dst.close()

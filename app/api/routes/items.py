@@ -51,7 +51,7 @@ from app.api.responses import GeoJSONResponse
 from app.schemas.ogc import Link
 from app.utils.geo import bbox_from_geometries, geometry_to_geojson
 from app.utils.datetime_parse import parse_datetime_param
-from app.services.collection_type_guard import ensure_vector_collection
+from app.services.collection_type_guard import ensure_vector_collection, ensure_vector_data_collection
 from app.utils.property_filters import parse_filter_param
 
 router = APIRouter()
@@ -465,7 +465,7 @@ async def create_bulk_upload_session(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     mode, replace_filter_lines = validate_bulk_import_mode_and_filters(
@@ -513,7 +513,7 @@ async def upload_bulk_session_part(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     s = get_upload_session(upload_id)
@@ -549,7 +549,7 @@ async def complete_bulk_upload_session(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     s = get_upload_session(upload_id)
@@ -639,7 +639,7 @@ async def abort_bulk_upload_session(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     s = get_upload_session(upload_id)
@@ -683,7 +683,7 @@ async def bulk_import_items(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
 
@@ -1065,7 +1065,7 @@ async def replace_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     try:
@@ -1149,7 +1149,7 @@ async def create_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
 

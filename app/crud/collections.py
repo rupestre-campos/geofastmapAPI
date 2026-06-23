@@ -16,6 +16,7 @@ from app.crud import styles as styles_crud
 from app.db.features_partitions import ensure_features_partition
 from app.models.collection import (
     Collection,
+    COLLECTION_TYPE_COMPOSITE,
     COLLECTION_TYPE_RASTER,
     COLLECTION_TYPE_VECTOR,
     VISIBILITY_LOGGED,
@@ -259,6 +260,23 @@ async def get_collections_bboxes(db: AsyncSession) -> dict[str, Extent]:
     return {row.collection_id: _row_to_extent(row) for row in rows}
 
 
+def _composite_members_json(members: list | None) -> list[dict[str, str]] | None:
+    if not members:
+        return None
+    out: list[dict[str, str]] = []
+    for m in members:
+        cid = m.collection_id if hasattr(m, "collection_id") else m.get("collection_id")
+        if cid:
+            out.append({"collection_id": str(cid).strip()})
+    return out or None
+
+
+def _normalize_collection_type(value: str | None) -> str:
+    if value in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER, COLLECTION_TYPE_COMPOSITE):
+        return value
+    return COLLECTION_TYPE_VECTOR
+
+
 async def create_collection(
     db: AsyncSession,
     data: CollectionCreate,
@@ -266,6 +284,8 @@ async def create_collection(
     owner_id: int | None = None,
     visibility: str = "private",
 ) -> Collection:
+    ctype = _normalize_collection_type(data.collection_type)
+    members_json = _composite_members_json(data.composite_members) if ctype == COLLECTION_TYPE_COMPOSITE else None
     collection = Collection(
         id=data.id,
         title=data.title,
@@ -275,12 +295,14 @@ async def create_collection(
         raster_settings=data.raster_settings,
         owner_id=owner_id,
         visibility=visibility,
-        collection_type=data.collection_type if data.collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER) else COLLECTION_TYPE_VECTOR,
+        collection_type=ctype,
+        composite_members=members_json,
     )
     db.add(collection)
     await db.commit()
     await db.refresh(collection)
-    await ensure_features_partition(db, data.id)
+    if ctype != COLLECTION_TYPE_COMPOSITE:
+        await ensure_features_partition(db, data.id)
     return collection
 
 
@@ -295,7 +317,11 @@ async def replace_collection(
     collection.extent = data.extent.model_dump() if data.extent else None
     collection.stac_source = data.stac_source
     collection.raster_settings = data.raster_settings
-    collection.collection_type = data.collection_type if data.collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER) else COLLECTION_TYPE_VECTOR
+    collection.collection_type = _normalize_collection_type(data.collection_type)
+    if collection.collection_type == COLLECTION_TYPE_COMPOSITE:
+        collection.composite_members = _composite_members_json(data.composite_members)
+    else:
+        collection.composite_members = None
     await db.commit()
     await db.refresh(collection)
     return collection
@@ -323,8 +349,12 @@ async def patch_collection(
         collection.stac_source = data.stac_source
     if "raster_settings" in data.model_fields_set:
         collection.raster_settings = data.raster_settings
-    if "collection_type" in data.model_fields_set and data.collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER):
-        collection.collection_type = data.collection_type
+    if "collection_type" in data.model_fields_set and data.collection_type:
+        collection.collection_type = _normalize_collection_type(data.collection_type)
+    if "composite_members" in data.model_fields_set:
+        collection.composite_members = _composite_members_json(data.composite_members)
+    if collection.collection_type != COLLECTION_TYPE_COMPOSITE:
+        collection.composite_members = None
     await db.commit()
     await db.refresh(collection)
     return collection
