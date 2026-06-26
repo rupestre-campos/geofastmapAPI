@@ -2178,6 +2178,8 @@
         });
       }
 
+      msgEl.textContent = 'Loading property keys…';
+
       function toggleField(name, on) {
         var i = selected.indexOf(name);
         if (on && i < 0) selected.push(name);
@@ -2208,9 +2210,13 @@
           keys.forEach(addCheckbox);
           selected.forEach(function(k) { addCheckbox(k); });
           renderSelected();
+          msgEl.textContent = keys.length
+            ? ''
+            : 'No property keys found in sample — use Custom field or import data first.';
         }).catch(function() {
           selected.forEach(addCheckbox);
           renderSelected();
+          msgEl.textContent = 'Could not load property keys — use Custom field or retry.';
         });
 
       document.getElementById('btn-property-index-add').onclick = function() {

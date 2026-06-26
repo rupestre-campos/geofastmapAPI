@@ -298,7 +298,50 @@ def _update_feature_count_sync(engine: Engine, collection_id: str) -> None:
 
 
 def _sync_delete_bulk_import_rows_and_refresh(engine: Engine, collection_id: str, job_id: str) -> None:
-    """Remove rows tagged with this bulk job and refresh cached count + extent."""
+    """Remove rows tagged with this bulk job and refresh cached count + extent.
+
+    Uses TRUNCATE on the collection partition when every row belongs to this job
+    (typical after full ``replace`` prestage). Otherwise deletes by ``bulk_import_job_id``.
+    """
+
+    def _row_counts() -> tuple[int, int]:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT
+                      COUNT(*) FILTER (WHERE bulk_import_job_id = :jid) AS tagged,
+                      COUNT(*) FILTER (
+                        WHERE bulk_import_job_id IS DISTINCT FROM :jid
+                      ) AS other
+                    FROM features
+                    WHERE collection_id = :cid
+                    """
+                ),
+                {"cid": collection_id, "jid": job_id},
+            ).first()
+            if not row:
+                return 0, 0
+            return int(row.tagged or 0), int(row.other or 0)
+
+    tagged, other = _row_counts()
+    if tagged <= 0:
+        _update_feature_count_sync(engine, collection_id)
+        try:
+            collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id)
+        except Exception:
+            pass
+        return
+
+    if other == 0:
+        _truncate_collection_features_sync(engine, collection_id, bulk_import_job_id=None)
+        _update_feature_count_sync(engine, collection_id)
+        try:
+            collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id)
+        except Exception:
+            pass
+        return
+
     def _delete_rows() -> None:
         with engine.connect() as conn:
             conn.execute(

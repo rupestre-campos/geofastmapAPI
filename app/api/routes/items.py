@@ -447,7 +447,13 @@ async def get_collection_queryables(
     if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     keys = await features_crud.get_collection_property_keys(db, collection_id)
-    return {"properties": keys}
+    from app.services.collection_property_indexes import normalize_property_index_fields
+
+    configured = normalize_property_index_fields(
+        getattr(collection, "property_index_fields", None)
+    )
+    merged = sorted(set(keys) | set(configured))
+    return {"properties": merged}
 
 
 @router.post(

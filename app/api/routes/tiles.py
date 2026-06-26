@@ -466,18 +466,10 @@ async def _get_property_keys(
             """),
             {"cid": collection_id, "ids": feature_ids, "limit": _MVT_MAX_PROPERTY_KEYS},
         )
-    else:
-        r = await db.execute(
-            text("""
-            SELECT DISTINCT key
-            FROM features, jsonb_object_keys(properties) AS key
-            WHERE collection_id = :cid
-            ORDER BY 1
-            LIMIT :limit
-            """),
-            {"cid": collection_id, "limit": _MVT_MAX_PROPERTY_KEYS},
-        )
-    return [row[0] for row in r.fetchall()]
+        return [row[0] for row in r.fetchall()]
+    from app.crud import features as features_crud
+
+    return await features_crud.get_collection_property_keys(db, collection_id)
 
 
 def _mvt_property_select_fragment(keys: list[str]) -> str:

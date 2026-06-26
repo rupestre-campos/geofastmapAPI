@@ -146,19 +146,32 @@ def _row_to_logical_feature(row, geometry_geojson: bool = False) -> Feature:
 
 # Max property keys to return for queryables (UI filter builder)
 QUERYABLES_KEYS_LIMIT = 500
+# Sample logical features instead of scanning the whole collection (car_area_imovel scale).
+QUERYABLES_SAMPLE_FEATURES = 100
 
 
 async def get_collection_property_keys(db: AsyncSession, collection_id: str) -> list[str]:
-    """Return distinct top-level keys from features.properties for a collection (for filter builder / queryables)."""
+    """Return top-level property keys from a sample of features (for filter builder / queryables)."""
     r = await db.execute(
         text("""
-            SELECT DISTINCT key
-            FROM features, jsonb_object_keys(properties) AS key
-            WHERE collection_id = :cid
+            SELECT DISTINCT k.key
+            FROM (
+                SELECT DISTINCT ON (id) properties
+                FROM features
+                WHERE collection_id = :cid
+                  AND properties IS NOT NULL
+                ORDER BY id
+                LIMIT :sample_limit
+            ) AS sample
+            CROSS JOIN LATERAL jsonb_object_keys(sample.properties) AS k(key)
             ORDER BY 1
             LIMIT :limit
         """),
-        {"cid": collection_id, "limit": QUERYABLES_KEYS_LIMIT},
+        {
+            "cid": collection_id,
+            "sample_limit": QUERYABLES_SAMPLE_FEATURES,
+            "limit": QUERYABLES_KEYS_LIMIT,
+        },
     )
     return [row[0] for row in r.fetchall()]
 
