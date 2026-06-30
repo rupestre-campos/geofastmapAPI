@@ -372,16 +372,8 @@
         <label>Import mode</label>
         <div class="radio-group">
           <label><input type="radio" name="mode" value="append" checked> Append to existing</label>
-          <label><input type="radio" name="mode" value="replace"> Replace all (delete then import)</label>
-          <label><input type="radio" name="mode" value="replace_filtered"> Replace matching filter</label>
+          <label><input type="radio" name="mode" value="replace"> Replace all (staging swap)</label>
         </div>
-      </div>
-      <div class="form-row" id="bulk-replace-filters-wrap" style="display:none;">
-        <label for="bulk-replace-filters">Replace filters <span class="meta">(key:op:value per line, ANDed)</span></label>
-        <textarea id="bulk-replace-filters" name="replace_filters" rows="3" placeholder="state_id:eq:12&#10;date:lt:2026-07-12"></textarea>
-        {% from "components/filter_builder.html" import filter_builder %}
-        {{ filter_builder('bulk-replace-filters', base, collection_id, 'bulk-replace-filter-builder') }}
-        <p class="meta" style="margin-top:6px;">Deletes only features matching all filters, then imports the file. Canceling the import job does not restore deleted rows. Verify filters on the <a href="{{ base }}/collections/{{ collection_id }}/items?f=html">items page</a> first.</p>
       </div>
       {% endif %}
       <div class="form-row">

@@ -50,7 +50,10 @@
   </header>
 
   <div class="card">
-    <h2 class="card-title">All jobs</h2>
+    <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space); margin-bottom: var(--space);">
+      <h2 class="card-title" style="margin: 0;">All jobs</h2>
+      <button type="button" class="btn btn-danger" id="btn-cancel-all-active" title="Cancel every pending, running, or replacing job">Cancel all active</button>
+    </div>
     <p class="meta" style="margin-bottom: var(--space);">Bulk import, static tile build, and geoprocessing jobs. Types and inputs are labeled consistently. Newest first; refreshes while jobs are active.</p>
     <div id="jobs-wrap" style="{{ 'display: none;' if not jobs else '' }}">
       <table class="jobs-table" id="jobs-table">
@@ -332,6 +335,30 @@
 
   if (window.GeofastmapApplyJobTimes) window.GeofastmapApplyJobTimes(document.getElementById('jobs-table'));
   loadJobs();
+
+  var cancelAllBtn = document.getElementById('btn-cancel-all-active');
+  if (cancelAllBtn) {
+    cancelAllBtn.addEventListener('click', function() {
+      openJobCancelModal(
+        'Cancel all pending, running, and replacing jobs? Running bulk imports will stop and drop staged data; tile builds and process jobs will be asked to stop cooperatively.',
+        function() {
+          cancelAllBtn.disabled = true;
+          fetch(base + '/jobs/cancel-active', { method: 'POST', headers: { 'Accept': 'application/json' } })
+            .then(function(r) { return r.ok ? r.json() : r.json().then(function(e) { throw e; }); })
+            .then(function(d) {
+              cancelAllBtn.disabled = false;
+              var n = d.cancelled_count != null ? d.cancelled_count : 0;
+              alert(d.message || ('Cancelled ' + n + ' job(s).'));
+              loadJobs();
+            })
+            .catch(function(e) {
+              cancelAllBtn.disabled = false;
+              alert('Failed: ' + (e.detail || e.message || 'Unknown'));
+            });
+        }
+      );
+    });
+  }
 
   document.getElementById('jobs-table').addEventListener('click', function(e) {
     var btn = e.target && e.target.closest && e.target.closest('.btn-copy-json');

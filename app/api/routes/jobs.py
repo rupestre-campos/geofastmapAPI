@@ -22,10 +22,12 @@ from app.services.bulk_queue import (
 from app.services.bulk_storage import get_bulk_storage
 from app.services.job_store import get_job, list_all_jobs, list_jobs_for_collection, update_job
 from app.services.process_queue import get_process_job_meta
-from app.services.tile_build_queue import get_latest_tile_build_job
+from app.services.tile_build_queue import clear_pending, get_latest_tile_build_job, update_tile_build_job
 from app.utils.job_display import build_job_view_dict
 
 router = APIRouter()
+
+_ACTIVE_JOB_STATUSES = frozenset({"pending", "running", "replacing"})
 
 
 def _base_url(request: Request) -> str:
@@ -37,6 +39,103 @@ def _can_see_job(job_owner_id: int | None, user: User) -> bool:
     if job_owner_id is None:
         return user.is_admin
     return user.id == job_owner_id or user.is_admin
+
+
+def _is_latest_tile_build_job(job_id: str, collection_id: str | None) -> bool:
+    if not collection_id:
+        return False
+    try:
+        latest = get_latest_tile_build_job(collection_id)
+        return latest is not None and latest.job_id == job_id
+    except Exception:
+        return False
+
+
+def cancel_job_record(job) -> dict:
+    """
+    Cancel a single job when allowed. Returns a result dict with cancelled=True/False.
+    Does not raise HTTPException for non-cancellable jobs (returns cancelled=False instead).
+    """
+    job_id = job.job_id
+    if job.status not in _ACTIVE_JOB_STATUSES:
+        return {
+            "job_id": job_id,
+            "cancelled": False,
+            "status": job.status,
+            "message": f"Skipped: job is {job.status}.",
+        }
+
+    if _is_latest_tile_build_job(job_id, job.collection_id) and job.status in ("pending", "running"):
+        clear_pending(job.collection_id)
+        update_tile_build_job(job_id, status="cancelled", message="Cancelled by user.")
+        return {
+            "job_id": job_id,
+            "cancelled": True,
+            "status": "cancelled",
+            "message": "Tile build cancelled.",
+        }
+
+    is_process = get_process_job_meta(job_id) is not None
+    is_bulk = is_registered_bulk_import_job(job_id)
+
+    if job.status == "pending" and is_bulk:
+        sk = get_bulk_import_storage_key(job_id)
+        remove_bulk_job_from_redis_queue(job_id)
+        if sk:
+            try:
+                get_bulk_storage().delete(sk)
+            except Exception:
+                pass
+        unregister_bulk_import_job(job_id)
+        update_job(job_id, status="cancelled", message="Cancelled by user.")
+        return {
+            "job_id": job_id,
+            "cancelled": True,
+            "status": "cancelled",
+            "message": "Bulk import cancelled before it started.",
+        }
+
+    if job.status == "pending":
+        update_job(job_id, status="cancelled", message="Cancelled by user.")
+        return {
+            "job_id": job_id,
+            "cancelled": True,
+            "status": "cancelled",
+            "message": "Job cancelled.",
+        }
+
+    if job.status in ("running", "replacing") and is_bulk:
+        update_job(
+            job_id,
+            status="cancelled",
+            message="Cancellation requested — stopping soon…",
+        )
+        return {
+            "job_id": job_id,
+            "cancelled": True,
+            "status": "cancelled",
+            "message": "Bulk import cancellation requested.",
+        }
+
+    if job.status in ("running", "replacing") and is_process:
+        update_job(
+            job_id,
+            status="cancelled",
+            message="Cancellation requested — stopping soon…",
+        )
+        return {
+            "job_id": job_id,
+            "cancelled": True,
+            "status": "cancelled",
+            "message": "Process job cancellation requested.",
+        }
+
+    return {
+        "job_id": job_id,
+        "cancelled": False,
+        "status": job.status,
+        "message": "Job type or status cannot be cancelled from here.",
+    }
 
 
 def _build_job_dicts(jobs, include_owner_username: bool = False, owner_names: dict | None = None):
@@ -129,56 +228,76 @@ async def cancel_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     if not _can_see_job(job.owner_id, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    is_process = get_process_job_meta(job_id) is not None
-    is_bulk = is_registered_bulk_import_job(job_id)
-
-    if job.status == "pending" and is_bulk:
-        sk = get_bulk_import_storage_key(job_id)
-        remove_bulk_job_from_redis_queue(job_id)
-        if sk:
-            try:
-                get_bulk_storage().delete(sk)
-            except Exception:
-                pass
-        unregister_bulk_import_job(job_id)
-        update_job(job_id, status="cancelled", message="Cancelled by user.")
-        return {
-            "job_id": job_id,
-            "status": "cancelled",
-            "message": "Bulk import cancelled before it started.",
-        }
-
-    if job.status == "pending":
-        update_job(job_id, status="cancelled", message="Cancelled by user.")
-        return {"job_id": job_id, "status": "cancelled", "message": "Job cancelled."}
-
-    if job.status in ("running", "replacing") and is_bulk:
-        update_job(
-            job_id,
-            status="cancelled",
-            message="Cancellation requested — stopping soon…",
+    result = cancel_job_record(job)
+    if not result.get("cancelled"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=result.get("message") or f"Job is {job.status}; cannot cancel.",
         )
-        return {
-            "job_id": job_id,
-            "status": "cancelled",
-            "message": "Cancellation requested; rows from this import will be removed when the worker stops.",
-        }
+    return {
+        "job_id": job_id,
+        "status": result.get("status", "cancelled"),
+        "message": result.get("message", "Cancelled."),
+    }
 
-    if job.status in ("running", "replacing") and is_process:
-        update_job(
-            job_id,
-            status="cancelled",
-            message="Cancellation requested — stopping soon…",
-        )
-        return {
-            "job_id": job_id,
-            "status": "cancelled",
-            "message": "Cancellation requested; the worker will stop and clean up shortly.",
-        }
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=f"Job is {job.status}; only pending jobs, bulk imports, or running process jobs can be cancelled here.",
-    )
+
+@router.post(
+    "/cancel-active",
+    status_code=status.HTTP_200_OK,
+    summary="Cancel all active jobs",
+    description=(
+        "Cancels every job in pending, running, or replacing state visible to the caller "
+        "(own jobs, or all jobs for admins). Bulk imports, process jobs, and tile builds are included."
+    ),
+)
+async def cancel_active_jobs(
+    current_user: Annotated[User, Depends(get_current_user_required)],
+    limit: int = Query(200, ge=1, le=500, description="Max jobs to scan"),
+):
+    owner_filter = None if current_user.is_admin else current_user.id
+    jobs = list_all_jobs(limit=limit, owner_id=owner_filter)
+    results: list[dict] = []
+    cancelled_count = 0
+    skipped_count = 0
+    seen_tile_collections: set[str] = set()
+
+    for job in jobs:
+        if job.status not in _ACTIVE_JOB_STATUSES:
+            continue
+        if not _can_see_job(job.owner_id, current_user):
+            continue
+        if _is_latest_tile_build_job(job.job_id, job.collection_id):
+            cid = job.collection_id or ""
+            if cid and cid in seen_tile_collections:
+                skipped_count += 1
+                results.append(
+                    {
+                        "job_id": job.job_id,
+                        "cancelled": False,
+                        "status": job.status,
+                        "message": "Skipped: tile build for collection already cancelled.",
+                    }
+                )
+                continue
+            if cid:
+                seen_tile_collections.add(cid)
+        result = cancel_job_record(job)
+        results.append(result)
+        if result.get("cancelled"):
+            cancelled_count += 1
+        else:
+            skipped_count += 1
+
+    return {
+        "cancelled_count": cancelled_count,
+        "skipped_count": skipped_count,
+        "scanned_active": len(results),
+        "results": results,
+        "message": (
+            f"Cancelled {cancelled_count} job(s)."
+            + (f" Skipped {skipped_count}." if skipped_count else "")
+        ),
+    }
 
 
 @router.get(

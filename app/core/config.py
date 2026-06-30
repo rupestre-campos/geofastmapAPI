@@ -60,9 +60,19 @@ class Settings(BaseSettings):
     # Resumable upload sessions (chunked upload API).
     bulk_upload_session_ttl_seconds: int = 86400
     bulk_upload_chunk_size_bytes: int = 64 * 1024 * 1024  # 64 MiB
-    # Parent/shard ingest mode for large files.
-    bulk_sharded_ingest_enabled: bool = True
+    # Legacy parent/shard ingest (deprecated; use bulk_copy_ingest_enabled).
+    bulk_sharded_ingest_enabled: bool = False
     bulk_shard_lines_per_part: int = 100000
+    # COPY + staging table ingest (GeoJSONSeq and shapefile via fiona).
+    bulk_copy_ingest_enabled: bool = True
+    # Rows per COPY flush during staging load.
+    bulk_copy_batch_rows: int = 50000
+    # Parser processes for GeoJSONSeq (0 = auto: max(1, cpu_count - 1)).
+    bulk_copy_parser_workers: int = 0
+    # Fail running bulk jobs with no progress heartbeat after this many seconds.
+    bulk_job_stale_seconds: float = 3600.0
+    # Interval between mutex/stale-job watchdog passes in the worker loop (seconds).
+    bulk_watchdog_interval_seconds: float = 300.0
     # Replace mode: delete rows in batches to avoid one long table lock blocking other work.
     bulk_replace_delete_batch_rows: int = 25000
     # Shadow replace: append tagged rows first, delete old rows at finalize (items view keeps prior data).
@@ -77,7 +87,7 @@ class Settings(BaseSettings):
     # Bulk queue: memory = in-process consumer; redis = separate worker(s), scalable.
     bulk_queue_type: str = "redis"  # memory | redis
     # Standalone bulk worker (`app.worker_main`): concurrent queue jobs per process (threads). Each job holds DB + CPU; raise with Postgres max_connections in mind.
-    bulk_worker_max_concurrent: int = 3
+    bulk_worker_max_concurrent: int = 1
     # Comma-separated collection ids allowed to auto-queue tile build after bulk import.
     # Empty = disabled (use POST /collections/{id}/tiles/build for manual/cron rebuilds).
     bulk_auto_tile_build_collections: str = ""

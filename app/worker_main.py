@@ -3,9 +3,8 @@
 Standalone bulk import worker. Consumes jobs from Redis and runs imports.
 Run when BULK_QUEUE_TYPE=redis (e.g. in a separate container or machine).
 
-Concurrency: up to `bulk_worker_max_concurrent` jobs run in parallel (thread pool),
-so one process can use multiple cores on shard-heavy workloads. Scale further by
-running more worker containers.
+One job loads one file; GeoJSONSeq parsing uses (cpu_count - 1) processes inside the job.
+Default bulk_worker_max_concurrent=1 — scale by running more worker containers.
 """
 from __future__ import annotations
 
@@ -13,11 +12,12 @@ import json
 import os
 import sys
 import time
-from pathlib import Path
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from pathlib import Path
 
 from app.core.config import get_settings
 from app.services.bulk_queue import QUEUE_KEY, BulkJobPayload
+from app.services.bulk_watchdog import run_bulk_watchdog_pass
 from app.services.bulk_worker import cleanup_orphan_bulk_uploads, process_bulk_job
 from app.services.redis_resilience import retry_wait_seconds
 
@@ -66,6 +66,8 @@ def main() -> None:
     )
 
     futures: set[Future[None]] = set()
+    last_watchdog = time.monotonic()
+    watchdog_interval = max(60.0, float(getattr(settings, "bulk_watchdog_interval_seconds", 300.0) or 300.0))
 
     def _reap_done() -> None:
         nonlocal futures
@@ -79,6 +81,12 @@ def main() -> None:
 
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bulkjob") as executor:
         while True:
+            if time.monotonic() - last_watchdog >= watchdog_interval:
+                try:
+                    run_bulk_watchdog_pass()
+                except Exception as e:
+                    print(f"[bulk-worker] watchdog error: {e}", file=sys.stderr, flush=True)
+                last_watchdog = time.monotonic()
             _reap_done()
             in_flight = len(futures)
             slots = max_workers - in_flight

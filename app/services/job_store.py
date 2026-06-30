@@ -42,6 +42,7 @@ class JobInfo:
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     finished_at: datetime | None = None  # set when status becomes completed, failed, or cancelled
+    last_progress_at: datetime | None = None  # updated on each progress/status write during import
     owner_id: int | None = None  # user id; None = legacy (only admin can see)
     job_label: str | None = None  # e.g. raster_batch — for UI classification (optional)
 
@@ -57,6 +58,7 @@ class JobInfo:
             "created_at": self.created_at.isoformat() + "Z",
             "updated_at": self.updated_at.isoformat() + "Z",
             "finished_at": self.finished_at.isoformat() + "Z" if self.finished_at else None,
+            "last_progress_at": self.last_progress_at.isoformat() + "Z" if self.last_progress_at else None,
         }
         if self.owner_id is not None:
             out["owner_id"] = self.owner_id
@@ -121,6 +123,8 @@ def _update_job_memory(
         if finished_at is not None:
             job.finished_at = finished_at
         job.updated_at = now
+        if status is not None or items_created is not None or message is not None:
+            job.last_progress_at = now
         if status is not None:
             _release_bulk_mutex_on_terminal(job_id, job.collection_id, status)
         return job
@@ -163,6 +167,8 @@ def _create_job_redis(
     }
     if job.finished_at is not None:
         mapping["finished_at"] = job.finished_at.isoformat() + "Z"
+    if job.last_progress_at is not None:
+        mapping["last_progress_at"] = job.last_progress_at.isoformat() + "Z"
     if owner_id is not None:
         mapping["owner_id"] = str(owner_id)
     if job_label:
@@ -195,6 +201,9 @@ def _get_job_redis(job_id: str) -> JobInfo | None:
     finished_at = None
     if raw.get("finished_at"):
         finished_at = datetime.fromisoformat(raw["finished_at"].replace("Z", "+00:00"))
+    last_progress_at = None
+    if raw.get("last_progress_at"):
+        last_progress_at = datetime.fromisoformat(raw["last_progress_at"].replace("Z", "+00:00"))
     owner_id = None
     if raw.get("owner_id"):
         try:
@@ -213,6 +222,7 @@ def _get_job_redis(job_id: str) -> JobInfo | None:
         created_at=datetime.fromisoformat(raw["created_at"].replace("Z", "+00:00")),
         updated_at=datetime.fromisoformat(raw["updated_at"].replace("Z", "+00:00")),
         finished_at=finished_at,
+        last_progress_at=last_progress_at,
         owner_id=owner_id,
         job_label=str(jl) if jl else None,
     )
@@ -253,6 +263,7 @@ def _update_job_redis(
         updates["finished_at"] = finished_at.isoformat() + "Z"
     if updates:
         updates["updated_at"] = now
+        updates["last_progress_at"] = now
         run_redis_retry("update_job", lambda: r.hset(key, mapping=updates))
     if status is not None:
         _release_bulk_mutex_on_terminal(job_id, collection_id, status)

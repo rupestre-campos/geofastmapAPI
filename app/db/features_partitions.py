@@ -8,6 +8,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
+
 
 def _safe_partition_name(collection_id: str) -> str:
     """Return a valid, unique table name for a features partition (max 63 chars)."""
@@ -161,6 +163,43 @@ async def _partition_exists_for(db: AsyncSession, collection_id: str) -> bool:
         if row.bound and row.bound.replace(" ", "") == target_norm:
             return True
     return False
+
+
+def swap_staging_into_collection_partition_sync(
+    engine: Engine,
+    collection_id: str,
+    staging_table: str,
+) -> None:
+    """
+    Replace a collection's dedicated partition by detaching the old child and attaching staging.
+    Staging must be a standalone table with the same columns as features (except generated properties_flat).
+    """
+    cid_escaped = collection_id.replace("'", "''")
+    settings = get_settings()
+    skip_touch = bool(getattr(settings, "bulk_skip_features_touch_trigger", True))
+
+    with engine.begin() as conn:
+        if skip_touch:
+            conn.execute(text("SET LOCAL geofast.bulk_skip_features_touch = 'on'"))
+        conn.execute(
+            text("DELETE FROM features_default WHERE collection_id = :cid"),
+            {"cid": collection_id},
+        )
+        old_part = resolve_features_partition_relname_sync(engine, collection_id)
+        if old_part and old_part != staging_table:
+            conn.execute(text(f'ALTER TABLE features DETACH PARTITION "{old_part}"'))
+            conn.execute(text(f'DROP TABLE "{old_part}"'))
+        elif old_part == staging_table:
+            return
+        conn.execute(text(f'ALTER TABLE "{staging_table}" SET LOGGED'))
+        conn.execute(
+            text(
+                f"ALTER TABLE features ATTACH PARTITION \"{staging_table}\" "
+                f"FOR VALUES IN ('{cid_escaped}')"
+            )
+        )
+        if skip_touch:
+            conn.execute(text("RESET geofast.bulk_skip_features_touch"))
 
 
 async def ensure_features_partition(db: AsyncSession, collection_id: str) -> None:

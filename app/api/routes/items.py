@@ -615,9 +615,6 @@ async def complete_bulk_upload_session(
         zip_inner_shp_paths=zip_inner_shp_paths,
         replace_filters=replace_filter_lines if replace_filter_lines else None,
     )
-    if bool(settings.bulk_sharded_ingest_enabled):
-        payload.job_kind = "parent"
-        payload.finalize_collection = True
     try:
         register_bulk_import_job(job.job_id, storage_key)
         enqueue(payload)
@@ -661,7 +658,7 @@ async def abort_bulk_upload_session(
     "/{collection_id}/items/bulk",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Bulk import from geospatial file",
-    description="Upload a file (KML, GPKG, GeoJSON, GeoJSONSeq/.geojsonl/.geojsonseq, or .zip). A .zip may contain one or more shapefiles (.shp and sidecars); all .shp found inside the zip (including in subfolders) are imported into the collection. Import runs asynchronously. Use mode=append, replace, or replace_filtered (with replace_filters). Returns job_id and status_url.",
+    description="Upload a file (KML, GPKG, GeoJSON, GeoJSONSeq/.geojsonl/.geojsonseq, or .zip). Import runs asynchronously. Use mode=append or replace. Returns job_id and status_url.",
 )
 async def bulk_import_items(
     request: Request,
@@ -672,7 +669,7 @@ async def bulk_import_items(
     ),
     mode: str = Form(
         "append",
-        description="append = add; replace = delete all then import; replace_filtered = delete matching replace_filters then import",
+        description="append = add to collection; replace = swap entire collection from staged import",
     ),
     replace_filters: str | None = Form(
         None,
@@ -740,9 +737,6 @@ async def bulk_import_items(
             zip_inner_shp_paths=zip_inner_shp_paths,
             replace_filters=replace_filter_lines if replace_filter_lines else None,
         )
-        if bool(settings.bulk_sharded_ingest_enabled):
-            payload.job_kind = "parent"
-            payload.finalize_collection = True
         enqueue(payload)
     except Exception as e:
         try:
