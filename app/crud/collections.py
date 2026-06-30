@@ -30,6 +30,7 @@ from app.services.collection_property_indexes import (
     normalize_property_index_fields,
     sync_collection_property_indexes_sync,
 )
+from app.services.composite_property_indexes import sync_composite_property_indexes_to_members_sync
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
 
 if TYPE_CHECKING:
@@ -400,17 +401,30 @@ async def patch_collection(
             collection.property_index_fields = (
                 normalize_property_index_fields(data.property_index_fields) or None
             )
+        elif collection.collection_type == COLLECTION_TYPE_COMPOSITE:
+            collection.property_index_fields = (
+                normalize_property_index_fields(data.property_index_fields) or None
+            )
         else:
             collection.property_index_fields = None
     await db.commit()
     await db.refresh(collection)
     if sync_indexes:
+        new_fields = normalize_property_index_fields(collection.property_index_fields)
         if collection.collection_type == COLLECTION_TYPE_VECTOR:
             await asyncio.to_thread(
                 sync_collection_property_indexes_sync,
                 collection_id,
                 old_index_fields,
-                normalize_property_index_fields(collection.property_index_fields),
+                new_fields,
+            )
+        elif collection.collection_type == COLLECTION_TYPE_COMPOSITE:
+            await asyncio.to_thread(
+                sync_composite_property_indexes_to_members_sync,
+                collection_id,
+                collection.composite_members,
+                old_index_fields,
+                new_fields,
             )
         elif old_index_fields:
             await asyncio.to_thread(

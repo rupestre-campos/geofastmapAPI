@@ -172,7 +172,7 @@ def swap_staging_into_collection_partition_sync(
 ) -> None:
     """
     Replace a collection's dedicated partition by detaching the old child and attaching staging.
-    Staging must be a standalone table with the same columns as features (except generated properties_flat).
+    Staging must include the same columns as features (including generated properties_flat).
     """
     cid_escaped = collection_id.replace("'", "''")
     settings = get_settings()

@@ -33,6 +33,17 @@ from app.services.bulk_upload_sessions import (
     delete_upload_session,
     get_upload_session,
 )
+from app.services.composite_collections import is_composite_collection
+from app.services.composite_items import (
+    composite_feature_to_geojson,
+    composite_member_ids,
+    format_composite_item_id,
+    get_composite_feature,
+    get_composite_property_keys,
+    list_composite_features_paginated,
+    parse_composite_item_id,
+    stream_composite_features_geojsonl,
+)
 from app.services.job_store import create_job, list_jobs_for_collection
 from app.services.items_query_guards import (
     apply_items_query_timeouts,
@@ -229,29 +240,58 @@ async def list_items(
     bulk_busy = collection_has_destructive_bulk_activity(collection_id)
     force_read = request.query_params.get("force", "").lower() in ("1", "true", "yes")
     exclude_bulk_job_ids = active_shadow_exclude_job_ids(collection_id)
+    is_composite = is_composite_collection(collection)
     try:
         await apply_items_query_timeouts(
             db,
             during_bulk=bulk_busy and not force_read,
         )
-        features, number_matched = await features_crud.list_features_paginated(
-            db,
-            collection_id,
-            limit=limit,
-            offset=offset,
-            bbox=bbox_tuple,
-            datetime_start=dt_start,
-            datetime_end=dt_end,
-            sortby=sortby,
-            sortdesc=sortdesc,
-            property_filters=property_filters or None,
-            structured_filters=structured_filters or None,
-            fulltext_q=fulltext_q,
-            collection_feature_count=collection.feature_count,
-            include_geometry=include_geometry,
-            skip_count=skip_count,
-            exclude_bulk_job_ids=exclude_bulk_job_ids or None,
-        )
+        if is_composite:
+            member_ids = await composite_member_ids(db, collection)
+            rows, number_matched = await list_composite_features_paginated(
+                db,
+                member_ids,
+                limit=limit,
+                offset=offset,
+                bbox=bbox_tuple,
+                datetime_start=dt_start,
+                datetime_end=dt_end,
+                sortby=sortby,
+                sortdesc=sortdesc,
+                property_filters=property_filters or None,
+                structured_filters=structured_filters or None,
+                fulltext_q=fulltext_q,
+                include_geometry=include_geometry,
+                skip_count=skip_count,
+            )
+            read_list = []
+            for mid, feat in rows:
+                r = _feature_to_read(feat, props_include_set)
+                comp_id = format_composite_item_id(mid, feat.id)
+                props = dict(r.properties or {})
+                props["_member_collection_id"] = mid
+                props["_member_feature_id"] = feat.id
+                read_list.append(r.model_copy(update={"id": comp_id, "properties": props}))
+        else:
+            features, number_matched = await features_crud.list_features_paginated(
+                db,
+                collection_id,
+                limit=limit,
+                offset=offset,
+                bbox=bbox_tuple,
+                datetime_start=dt_start,
+                datetime_end=dt_end,
+                sortby=sortby,
+                sortdesc=sortdesc,
+                property_filters=property_filters or None,
+                structured_filters=structured_filters or None,
+                fulltext_q=fulltext_q,
+                collection_feature_count=collection.feature_count,
+                include_geometry=include_geometry,
+                skip_count=skip_count,
+                exclude_bulk_job_ids=exclude_bulk_job_ids or None,
+            )
+            read_list = [_feature_to_read(f, props_include_set) for f in features]
     except DBAPIError as exc:
         if is_items_query_timeout_error(exc):
             if wants_html(request):
@@ -277,11 +317,10 @@ async def list_items(
         q["offset"] = str(new_offset)
         q["limit"] = str(limit)
         return f"{base_path}?{urlencode(sorted(q.items()))}"
-    if offset + len(features) < number_matched:
+    if offset + len(read_list) < number_matched:
         links.append(Link(href=_page_href(offset + limit), rel="next", type="application/geo+json"))
     if offset > 0:
         links.append(Link(href=_page_href(max(0, offset - limit)), rel="prev", type="application/geo+json"))
-    read_list = [_feature_to_read(f, props_include_set) for f in features]
     # Build GeoJSON features once (used for extent, cache, HTML, and JSON response)
     features_geojson = []
     bboxes_only: list[list[float]] = []
@@ -449,6 +488,13 @@ async def get_collection_queryables(
     keys = await features_crud.get_collection_property_keys(db, collection_id)
     from app.services.collection_property_indexes import normalize_property_index_fields
 
+    if is_composite_collection(collection):
+        member_ids = await composite_member_ids(db, collection)
+        configured = normalize_property_index_fields(
+            getattr(collection, "property_index_fields", None)
+        )
+        merged = await get_composite_property_keys(db, member_ids, configured)
+        return {"properties": merged}
     configured = normalize_property_index_fields(
         getattr(collection, "property_index_fields", None)
     )
@@ -858,21 +904,33 @@ async def download_items_data(
     _GEOJSONL_CHUNK_TARGET = 256 * 1024  # 256 KB per yield for good throughput, still low RAM
 
     async def _iter_geojsonl():
-        # Use a dedicated session so we don't hold the request-scoped connection for the
-        # whole download; close it explicitly so the pool never leaks (fixes GC warning).
         session = AsyncSessionLocal()
         try:
-            gen = features_crud.stream_features_geojsonl(
-                session,
-                collection_id,
-                bbox=bbox_tuple,
-                datetime_start=dt_start,
-                datetime_end=dt_end,
-                property_filters=property_filters or None,
-                structured_filters=structured_filters or None,
-                fulltext_q=fulltext_q,
-                batch_size=_GEOJSONL_BATCH_SIZE,
-            )
+            if is_composite_collection(collection):
+                member_ids = await composite_member_ids(session, collection)
+                gen = stream_composite_features_geojsonl(
+                    session,
+                    member_ids,
+                    bbox=bbox_tuple,
+                    datetime_start=dt_start,
+                    datetime_end=dt_end,
+                    property_filters=property_filters or None,
+                    structured_filters=structured_filters or None,
+                    fulltext_q=fulltext_q,
+                    batch_size=_GEOJSONL_BATCH_SIZE,
+                )
+            else:
+                gen = features_crud.stream_features_geojsonl(
+                    session,
+                    collection_id,
+                    bbox=bbox_tuple,
+                    datetime_start=dt_start,
+                    datetime_end=dt_end,
+                    property_filters=property_filters or None,
+                    structured_filters=structured_filters or None,
+                    fulltext_q=fulltext_q,
+                    batch_size=_GEOJSONL_BATCH_SIZE,
+                )
             try:
                 buf: list[bytes] = []
                 buf_size = 0
@@ -921,17 +979,24 @@ async def get_item(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user_optional),
 ):
-    feature = await features_crud.get_feature(db, collection_id, feature_id)
-    if not feature:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Feature not found",
-        )
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feature not found")
+    feature = await features_crud.get_feature(db, collection_id, feature_id)
+    composite_item_id = feature_id
+    if not feature and is_composite_collection(collection):
+        member_ids = await composite_member_ids(db, collection)
+        found = await get_composite_feature(db, member_ids, feature_id)
+        if found:
+            member_id, feature = found
+            composite_item_id = format_composite_item_id(member_id, feature.id)
+    if not feature:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Feature not found",
+        )
     geom_dict = geometry_to_geojson(feature.geometry)
     if bbox_only:
         bbox = bbox_from_geometries([geom_dict])
@@ -940,13 +1005,19 @@ async def get_item(
             media_type="application/json",
         )
     base = _base_url(request)
+    props = dict(feature.properties) if feature.properties else {}
+    if is_composite_collection(collection):
+        parsed = parse_composite_item_id(composite_item_id)
+        if parsed:
+            props.setdefault("_member_collection_id", parsed[0])
+            props.setdefault("_member_feature_id", parsed[1])
     feat_geojson = FeatureGeoJSON(
         type="Feature",
-        id=feature.id,
+        id=composite_item_id if is_composite_collection(collection) else feature.id,
         geometry=Geometry(**geom_dict) if geom_dict else None,
-        properties=feature.properties,
+        properties=props,
         links=[
-            Link(href=f"{base}/collections/{collection_id}/items/{feature_id}", rel="self", type="application/geo+json"),
+            Link(href=f"{base}/collections/{collection_id}/items/{composite_item_id}", rel="self", type="application/geo+json"),
             Link(href=f"{base}/collections/{collection_id}", rel="collection", type="application/json"),
         ],
     )

@@ -1,6 +1,7 @@
 """Composite (merged) collection helpers."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -124,3 +125,16 @@ async def composite_tiles_revision(db: AsyncSession, members: list[dict[str, str
         row = result.first()
         revisions.append(row.tiles_revision if row else None)
     return compute_composite_tiles_revision(revisions)
+
+
+async def composite_dynamic_revision(db: AsyncSession, members: list[dict[str, str]]) -> str:
+    """Revision for merged dynamic tiles (member feature update timestamps)."""
+    parts: list[str] = []
+    for m in members:
+        cid = m["collection_id"]
+        coll = await db.get(Collection, cid)
+        stamp = ""
+        if coll and coll.features_last_updated_at:
+            stamp = coll.features_last_updated_at.isoformat()
+        parts.append(f"{cid}:{stamp}")
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]

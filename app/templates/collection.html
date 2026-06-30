@@ -55,7 +55,7 @@
     <div class="collection-info-value title">{{ collection.title or collection.id }}</div>
     <div class="collection-info-label">Layer id</div>
     <div class="collection-info-value"><code>{{ collection.id }}</code>
-      {% if is_composite %}<span class="meta"> — composite (merged static tiles)</span>{% endif %}
+      {% if is_composite %}<span class="meta"> — composite (merged vector layers)</span>{% endif %}
     </div>
     <div class="collection-info-label">Description</div>
     <div class="collection-info-value">{{ collection.description or '—' }}</div>
@@ -173,6 +173,9 @@
     const staticMaxzoom = {{ static_maxzoom | tojson }};
     const tileLayerId = {{ tile_layer_id | tojson }};
     const tileUrlStatic = hasStaticTiles ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' : null;
+    const tileUrlDynamic = (collectionType === 'vector' || collectionType === 'composite')
+      ? base + '/collections/' + collectionId + '/tiles/dynamic/{z}/{x}/{y}.pbf'
+      : null;
     const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
     const collectionStylesUrl = {{ collection_styles_url | tojson if collection_styles_url else 'null' }};
     const collectionType = {{ (collection.collection_type or 'vector') | tojson }};
@@ -289,6 +292,25 @@
           filter: pointFilter,
           layout: { visibility: (s.pointVisible !== false) ? 'visible' : 'none' },
           paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity }
+        });
+      } else if (tileUrlDynamic) {
+        var specD = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
+        var sD = GeofastmapUtils.specToPaint(specD);
+        map.addSource('tiles', { type: 'vector', tiles: [tileUrlDynamic], minzoom: staticMinzoom, maxzoom: staticMaxzoom });
+        map.addLayer({
+          id: 'layer', type: 'fill', source: 'tiles', 'source-layer': tileLayerId,
+          filter: notPointFilter,
+          paint: { 'fill-color': sD.fillColor, 'fill-opacity': sD.fillOpacity }
+        });
+        map.addLayer({
+          id: 'layer-line', type: 'line', source: 'tiles', 'source-layer': tileLayerId,
+          filter: notPointFilter,
+          paint: { 'line-color': sD.lineColor, 'line-width': sD.lineWidth }
+        });
+        map.addLayer({
+          id: 'layer-circle', type: 'circle', source: 'tiles', 'source-layer': tileLayerId,
+          filter: pointFilter,
+          paint: { 'circle-color': sD.pointColor, 'circle-radius': sD.pointRadius }
         });
       }
       if (extent && extent.bbox && isUsableBbox(extent.bbox[0])) {

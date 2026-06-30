@@ -51,6 +51,7 @@ from app.services.shadow_import import active_shadow_exclude_job_ids, shadow_rea
 from app.services.collection_type_guard import ensure_vector_collection
 from app.models.collection import COLLECTION_TYPE_COMPOSITE
 from app.services.composite_collections import (
+    composite_dynamic_revision,
     composite_tiles_revision,
     member_tile_status,
     parse_composite_members,
@@ -87,6 +88,100 @@ async def _serve_composite_static_tile(
             raw_tiles.append(raw)
     merged = merge_mvt_tiles(raw_tiles, mvt_layer_name(composite_id), z, x, y)
     set_composite_tile(composite_id, z, x, y, revision, merged)
+    return merged
+
+
+async def _dynamic_mvt_bytes_for_member(
+    db: AsyncSession,
+    member_id: str,
+    z: int,
+    x: int,
+    y: int,
+) -> bytes:
+    """PostGIS MVT for one member collection intersecting tile z/x/y."""
+    settings = get_settings()
+    layer_name = mvt_layer_name(member_id)
+    max_features = settings.tiles_mvt_max_features
+    tile_env = "ST_Transform(ST_TileEnvelope(:z, :x, :y), 4326)"
+    extra_where, extra_params = _build_dynamic_tile_where(
+        bbox_tuple=None,
+        dt_start=None,
+        dt_end=None,
+        feature_ids=None,
+        structured_filters=[],
+        fulltext_q=None,
+    )
+    extra_where, extra_params = _merge_shadow_tile_filter(member_id, extra_where, extra_params)
+    property_keys = await _get_property_keys(db, member_id, None)
+    prop_cols = _mvt_property_select_fragment(property_keys)
+    prop_select_feat = prop_cols.replace("(properties ", "(feat.properties ") if prop_cols else ""
+    sql = f"""
+        SELECT ST_AsMVT(tile, :layer_name, 4096, 'geom') AS mvt
+        FROM (
+            SELECT
+                feat.id{prop_select_feat},
+                ST_AsMVTGeom(
+                    ST_Transform(ST_CurveToLine(feat.geometry::geometry), 3857),
+                    ST_TileEnvelope(:z, :x, :y),
+                    4096,
+                    256,
+                    true
+                ) AS geom
+            FROM (
+                SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
+                FROM features
+                WHERE collection_id = :cid AND geometry IS NOT NULL
+                  AND ST_Intersects(geometry, {tile_env})
+                  {extra_where}
+                GROUP BY id, collection_id
+            ) AS feat
+            LIMIT :max_features
+        ) AS tile
+        WHERE tile.geom IS NOT NULL
+    """
+    params = {
+        "layer_name": layer_name,
+        "z": z,
+        "x": x,
+        "y": y,
+        "cid": member_id,
+        "max_features": max_features,
+        **extra_params,
+    }
+    timeout_sec = getattr(settings, "tiles_dynamic_statement_timeout_seconds", 0) or 0
+    if timeout_sec > 0:
+        await db.execute(text(f"SET statement_timeout = {int(timeout_sec * 1000)}"))
+    try:
+        result = await db.execute(text(sql), params)
+        row = result.first()
+        mvt = row.mvt if row and row.mvt else None
+        return bytes(mvt) if mvt else b""
+    finally:
+        if timeout_sec > 0:
+            await db.execute(text("RESET statement_timeout"))
+
+
+async def _serve_composite_dynamic_tile(
+    db: AsyncSession,
+    composite_id: str,
+    members: list[dict[str, str]],
+    z: int,
+    x: int,
+    y: int,
+) -> bytes:
+    revision = await composite_dynamic_revision(db, members)
+    cache_revision = f"dyn:{revision}"
+    cached = get_composite_tile(composite_id, z, x, y, cache_revision)
+    if cached is not None:
+        return cached
+    raw_tiles: list[bytes] = []
+    for m in members:
+        cid = m["collection_id"]
+        tile = await _dynamic_mvt_bytes_for_member(db, cid, z, x, y)
+        if tile:
+            raw_tiles.append(tile)
+    merged = merge_mvt_tiles(raw_tiles, mvt_layer_name(composite_id), z, x, y)
+    set_composite_tile(composite_id, z, x, y, cache_revision, merged)
     return merged
 
 
@@ -409,9 +504,9 @@ async def get_tiles_tilejson(
         tiles_revision = await composite_tiles_revision(db, members)
         minzoom = min((s["minzoom"] for s in statuses if s.get("minzoom") is not None), default=0)
         maxzoom = max((s["maxzoom"] for s in statuses if s.get("maxzoom") is not None), default=14)
-        tile_urls = []
+        tile_urls = [f"{base}/collections/{collection_id}/tiles/dynamic/{{z}}/{{x}}/{{y}}.pbf"]
         if has_static:
-            tile_urls.append(_tile_url_with_revision(base, collection_id, tiles_revision))
+            tile_urls.insert(0, _tile_url_with_revision(base, collection_id, tiles_revision))
         layer_id = mvt_layer_name(collection_id)
     else:
         rec = await tiles_crud.get_collection_tiles(db, collection_id)
@@ -621,6 +716,11 @@ async def get_tiles_dynamic(
     cache_headers = _dynamic_tile_cache_headers_for_zoom(z)
     cache_hit_headers = {**cache_headers, "X-From-Cache": "true"}
 
+    is_composite = getattr(collection, "collection_type", "") == COLLECTION_TYPE_COMPOSITE
+    composite_members: list[dict[str, str]] | None = None
+    if is_composite:
+        composite_members = parse_composite_members(getattr(collection, "composite_members", None))
+
     feature_ids: list[str] | None = None
     if ids:
         feature_ids = [i.strip() for i in ids.split(",") if i.strip()]
@@ -643,6 +743,13 @@ async def get_tiles_dynamic(
         or bool(feature_ids)
         or bool(props_include)
     )
+
+    if is_composite and composite_members is not None:
+        if not composite_members:
+            return Response(content=b"", media_type="application/x-protobuf", headers=cache_headers)
+        if not has_query_params:
+            tile_bytes = await _serve_composite_dynamic_tile(db, collection_id, composite_members, z, x, y)
+            return Response(content=tile_bytes, media_type="application/x-protobuf", headers=cache_headers)
 
     if not has_query_params:
         cached = get_cached_tile(collection_id, z, x, y)

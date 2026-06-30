@@ -41,6 +41,13 @@ def test_staging_table_name_sanitizes_job_id():
     assert "-" not in name
 
 
+def test_staging_ddl_includes_properties_flat():
+    from app.services import bulk_staging as mod
+
+    assert "properties_flat" in mod._STAGING_COLUMNS_DDL
+    assert "jsonb_flat_text(properties)" in mod._STAGING_COLUMNS_DDL
+
+
 def test_is_geojson_seq_extensions():
     assert _is_geojson_seq_path("/data/foo.geojsonl")
     assert _is_geojson_seq_path("/data/foo.geojsonseq")

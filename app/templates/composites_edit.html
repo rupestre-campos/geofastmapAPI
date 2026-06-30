@@ -90,10 +90,26 @@
     <p id="members-msg" class="meta" style="margin-top: 0.5rem;"></p>
   </div>
 
+  <div class="card" id="property-indexes-card">
+    <h2 class="card-title">Property indexes</h2>
+    <p class="meta">Creates expression indexes on <strong>each member</strong> collection for faster filters and queries through this composite.</p>
+    <p class="meta">Selected: <span id="property-index-selected-label">—</span></p>
+    <div id="property-index-checkboxes" class="checkbox-grid"></div>
+    <div class="form-row" style="margin-top: 0.75rem;">
+      <label for="property-index-custom">Custom field</label>
+      <input type="text" id="property-index-custom" placeholder="field_name">
+      <button type="button" class="btn btn-sm" id="btn-property-index-add">Add</button>
+    </div>
+    <div class="btn-group" style="margin-top: 0.75rem;">
+      <button type="button" class="btn btn-primary" id="btn-save-property-indexes">Save indexes on members</button>
+    </div>
+    <p id="property-index-msg" class="meta" style="margin-top: 0.5rem;"></p>
+  </div>
+
   <div class="card">
     <h2 class="card-title">Preview map</h2>
     {% if not has_static_tiles %}
-    <p class="meta">Build static tiles on at least one member to preview the merged layer here.</p>
+    <p class="meta">No member static tiles yet — preview uses merged <strong>dynamic</strong> tiles from member data.</p>
     {% endif %}
     <div id="map" class="map-container" style="min-height: 320px;">
       <div class="map-controls">
@@ -116,6 +132,8 @@
     const tileUrlStatic = hasStaticTiles
       ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf'
       : null;
+    const tileUrlDynamic = base + '/collections/' + collectionId + '/tiles/dynamic/{z}/{x}/{y}.pbf';
+    const propertyIndexFieldsInitial = {{ (property_index_fields or []) | tojson }};
 
     function memberIds() {
       return Array.from(document.querySelectorAll('#members-body tr[data-cid]'))
@@ -233,6 +251,19 @@
             filter: GeofastmapUtils.notPointFilter,
             paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth }
           });
+        } else {
+          var s2 = GeofastmapUtils.specToPaint({});
+          map.addSource('tiles', { type: 'vector', tiles: [tileUrlDynamic], minzoom: staticMinzoom, maxzoom: staticMaxzoom });
+          map.addLayer({
+            id: 'layer', type: 'fill', source: 'tiles', 'source-layer': tileLayerId,
+            filter: GeofastmapUtils.notPointFilter,
+            paint: { 'fill-color': s2.fillColor, 'fill-opacity': s2.fillOpacity }
+          });
+          map.addLayer({
+            id: 'layer-line', type: 'line', source: 'tiles', 'source-layer': tileLayerId,
+            filter: GeofastmapUtils.notPointFilter,
+            paint: { 'line-color': s2.lineColor, 'line-width': s2.lineWidth }
+          });
         }
         if (extent && extent.bbox && extent.bbox[0] && extent.bbox[0].length >= 4) {
           var b = extent.bbox[0];
@@ -244,6 +275,69 @@
       document.getElementById('map-basemap').onchange = function() {
         var cfg = BASEMAPS[this.value];
         if (cfg) GeofastmapUtils.applyBasemapToMap(map, cfg);
+      };
+    })();
+
+    (function initPropertyIndexes() {
+      var selected = propertyIndexFieldsInitial.slice();
+      var box = document.getElementById('property-index-checkboxes');
+      var labelEl = document.getElementById('property-index-selected-label');
+      var msgEl = document.getElementById('property-index-msg');
+      function renderSelected() {
+        labelEl.textContent = selected.length ? selected.join(', ') : '—';
+        if (!box) return;
+        box.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
+          cb.checked = selected.indexOf(cb.value) >= 0;
+        });
+      }
+      function toggleField(name, on) {
+        var i = selected.indexOf(name);
+        if (on && i < 0) selected.push(name);
+        if (!on && i >= 0) selected.splice(i, 1);
+        renderSelected();
+      }
+      function addCheckbox(name) {
+        if (!name || box.querySelector('input[value="' + name.replace(/"/g, '') + '"]')) return;
+        var lbl = document.createElement('label');
+        lbl.className = 'checkbox-inline';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = name;
+        cb.checked = selected.indexOf(name) >= 0;
+        cb.onchange = function() { toggleField(name, cb.checked); };
+        lbl.appendChild(cb);
+        lbl.appendChild(document.createTextNode(' ' + name));
+        box.appendChild(lbl);
+      }
+      fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/queryables', {
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' }
+      }).then(function(r) { return r.ok ? r.json() : { properties: [] }; })
+        .then(function(data) {
+          (data.properties || []).forEach(addCheckbox);
+          selected.forEach(addCheckbox);
+          renderSelected();
+        });
+      document.getElementById('btn-property-index-add').onclick = function() {
+        var raw = document.getElementById('property-index-custom').value.trim();
+        if (!raw || !/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(raw)) {
+          alert('Invalid field name');
+          return;
+        }
+        addCheckbox(raw);
+        toggleField(raw, true);
+        document.getElementById('property-index-custom').value = '';
+      };
+      document.getElementById('btn-save-property-indexes').onclick = function() {
+        msgEl.textContent = 'Saving indexes on members…';
+        fetch(base + '/collections/' + encodeURIComponent(collectionId), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ property_index_fields: selected })
+        }).then(function(r) {
+          if (!r.ok) return r.json().then(function(j) { throw j; });
+          msgEl.textContent = 'Indexes saved on all members.';
+        }).catch(function(e) { alert('Error: ' + (e.detail || JSON.stringify(e))); });
       };
     })();
   </script>

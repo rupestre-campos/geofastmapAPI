@@ -30,6 +30,7 @@ from app.services.composite_collections import (
     parse_composite_members,
     validate_composite_members,
 )
+from app.services.collection_property_indexes import normalize_property_index_fields
 from app.utils.geo import mvt_layer_name
 
 router = APIRouter()
@@ -95,6 +96,9 @@ async def _composite_edit_context(
         "collection_id": collection.id,
         "collection_title": collection.title or collection.id,
         "collection_description": collection.description or "",
+        "property_index_fields": normalize_property_index_fields(
+            getattr(collection, "property_index_fields", None)
+        ),
         "member_status": member_status_list,
         "member_count": len(members),
         "vector_collections": picker,

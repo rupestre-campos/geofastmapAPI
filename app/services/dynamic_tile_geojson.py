@@ -14,6 +14,12 @@ from app.core.config import get_settings
 from app.services.shadow_import import active_shadow_exclude_job_ids
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
+from app.services.composite_collections import is_composite_collection
+from app.services.composite_items import (
+    composite_feature_to_geojson,
+    composite_member_ids,
+    list_composite_features_paginated,
+)
 from app.utils.datetime_parse import parse_datetime_param
 from app.utils.property_filters import parse_filter_param
 from app.utils.geo import geometry_to_geojson
@@ -97,9 +103,72 @@ async def get_geojson_for_tile(
     structured_filters = parse_filter_param(filter_list) if filter_list else []
     fulltext_q = q.strip() if q and q.strip() else None
     exclude_bulk_job_ids = active_shadow_exclude_job_ids(collection_id)
-
-    # Pagination mode: limit/offset define the search result page (same as items table)
     use_page_mode = limit is not None or offset != 0
+
+    if is_composite_collection(collection):
+        member_ids = await composite_member_ids(db, collection)
+        if use_page_mode:
+            if limit is None:
+                limit = min(settings.items_default_limit, settings.items_max_limit)
+            limit = min(limit, settings.items_max_limit)
+            rows, _ = await list_composite_features_paginated(
+                db,
+                member_ids,
+                limit=limit,
+                offset=offset,
+                bbox=bbox_user,
+                datetime_start=dt_start,
+                datetime_end=dt_end,
+                sortby=sortby,
+                sortdesc=sortdesc,
+                property_filters=property_filters or None,
+                structured_filters=structured_filters or None,
+                fulltext_q=fulltext_q,
+                feature_ids=ids,
+                include_geometry=True,
+                skip_count=True,
+            )
+            geojson_features = [
+                composite_feature_to_geojson(mid, f, composite_collection_id=collection_id)
+                for mid, f in rows
+                if _feature_intersects_bbox(f, tile_minx, tile_miny, tile_maxx, tile_maxy)
+            ]
+        else:
+            if bbox_user is not None:
+                minx = max(tile_bbox[0], bbox_user[0])
+                miny = max(tile_bbox[1], bbox_user[1])
+                maxx = min(tile_bbox[2], bbox_user[2])
+                maxy = min(tile_bbox[3], bbox_user[3])
+                if minx >= maxx or miny >= maxy:
+                    fc = {"type": "FeatureCollection", "features": []}
+                    return json.dumps(fc).encode("utf-8")
+                bbox = (minx, miny, maxx, maxy)
+            else:
+                bbox = tile_bbox
+            limit = min(settings.items_max_limit, getattr(settings, "tiles_mvt_max_features", 10_000))
+            rows, _ = await list_composite_features_paginated(
+                db,
+                member_ids,
+                limit=limit,
+                offset=0,
+                bbox=bbox,
+                datetime_start=dt_start,
+                datetime_end=dt_end,
+                sortby=sortby,
+                sortdesc=sortdesc,
+                property_filters=property_filters or None,
+                structured_filters=structured_filters or None,
+                fulltext_q=fulltext_q,
+                feature_ids=ids,
+                include_geometry=True,
+                skip_count=True,
+            )
+            geojson_features = [
+                composite_feature_to_geojson(mid, f, composite_collection_id=collection_id)
+                for mid, f in rows
+            ]
+        fc = {"type": "FeatureCollection", "features": geojson_features}
+        return json.dumps(fc).encode("utf-8")
 
     if use_page_mode:
         # Fetch the exact same page as GET items: user bbox only, no tile bbox
@@ -224,6 +293,32 @@ async def get_search_result_geojson(
     structured_filters = parse_filter_param(filter_list) if filter_list else []
     fulltext_q = q.strip() if q and q.strip() else None
     exclude_bulk_job_ids = active_shadow_exclude_job_ids(collection_id)
+
+    if is_composite_collection(collection):
+        member_ids = await composite_member_ids(db, collection)
+        rows, _ = await list_composite_features_paginated(
+            db,
+            member_ids,
+            limit=limit,
+            offset=offset,
+            bbox=bbox_user,
+            datetime_start=dt_start,
+            datetime_end=dt_end,
+            sortby=sortby,
+            sortdesc=sortdesc,
+            property_filters=property_filters or None,
+            structured_filters=structured_filters or None,
+            fulltext_q=fulltext_q,
+            feature_ids=ids,
+            include_geometry=True,
+            skip_count=True,
+        )
+        geojson_features = [
+            composite_feature_to_geojson(mid, f, composite_collection_id=collection_id)
+            for mid, f in rows
+        ]
+        fc = {"type": "FeatureCollection", "features": geojson_features}
+        return json.dumps(fc).encode("utf-8")
 
     features, _ = await features_crud.list_features_paginated(
         db,

@@ -16,6 +16,20 @@ from app.db.features_partitions import (
 
 STAGING_TABLE_PREFIX = "bulk_staging_"
 
+# Must match features partition columns (including generated properties_flat) for ATTACH PARTITION.
+_STAGING_COLUMNS_DDL = """
+    id varchar NOT NULL,
+    collection_id varchar NOT NULL,
+    part_index integer NOT NULL DEFAULT 0,
+    geometry geometry(Geometry, 4326) NOT NULL,
+    properties jsonb NOT NULL DEFAULT '{}'::jsonb,
+    properties_flat text GENERATED ALWAYS AS (jsonb_flat_text(properties)) STORED,
+    bulk_import_job_id varchar,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (id, collection_id, part_index)
+"""
+
 
 def staging_table_name(job_id: str) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_]", "_", job_id)[:48].strip("_") or "job"
@@ -25,19 +39,12 @@ def staging_table_name(job_id: str) -> str:
 def create_staging_table_sync(conn: Connection, job_id: str) -> str:
     """Create UNLOGGED staging table for a bulk job. Returns table name."""
     name = staging_table_name(job_id)
+    conn.execute(text(f'DROP TABLE IF EXISTS "{name}"'))
     conn.execute(
         text(
             f"""
-            CREATE UNLOGGED TABLE IF NOT EXISTS "{name}" (
-                id varchar NOT NULL,
-                collection_id varchar NOT NULL,
-                part_index integer NOT NULL DEFAULT 0,
-                geometry geometry(Geometry, 4326) NOT NULL,
-                properties jsonb NOT NULL DEFAULT '{{}}'::jsonb,
-                bulk_import_job_id varchar,
-                created_at timestamptz NOT NULL,
-                updated_at timestamptz NOT NULL,
-                PRIMARY KEY (id, collection_id, part_index)
+            CREATE UNLOGGED TABLE "{name}" (
+                {_STAGING_COLUMNS_DDL.strip()}
             )
             """
         )
