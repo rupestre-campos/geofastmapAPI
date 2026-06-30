@@ -11,6 +11,9 @@ REDIS_RETRY_MAX_SECONDS=30
 REDIS_RETRY_ENQUEUE_MAX_ATTEMPTS=5
 # Hot-path Redis reads (bulk cancel polls, parent shard aggregation). Raise on flaky LAN.
 REDIS_RETRY_READ_MAX_ATTEMPTS=20
+# Bulk worker BRPOP: socket read timeout must exceed BRPOP wait (see app.services.redis_client).
+REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS=10
+REDIS_BRPOP_SOCKET_TIMEOUT_SECONDS=30
 ## Bulk ingest resilience/perf profile (large files)
 BULK_IMPORT_BATCH_SIZE=3000
 BULK_INSERT_PARTS_BATCH_SIZE=200

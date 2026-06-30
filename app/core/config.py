@@ -71,6 +71,8 @@ class Settings(BaseSettings):
     bulk_copy_parser_workers: int = 0
     # Fail running bulk jobs with no progress heartbeat after this many seconds.
     bulk_job_stale_seconds: float = 3600.0
+    # Pending job still holds collection mutex (worker died before marking running): reclaim after this.
+    bulk_job_pending_stale_seconds: float = 600.0
     # Interval between mutex/stale-job watchdog passes in the worker loop (seconds).
     bulk_watchdog_interval_seconds: float = 300.0
     # Replace mode: delete rows in batches to avoid one long table lock blocking other work.
@@ -98,6 +100,10 @@ class Settings(BaseSettings):
     items_list_statement_timeout_seconds: float = 30.0
     items_list_during_bulk_statement_timeout_seconds: float = 8.0
     redis_url: str = "redis://localhost:6379/0"  # used when bulk_queue_type=redis
+    # TCP timeouts for redis-py (seconds). BRPOP consumer needs socket_timeout > BRPOP wait.
+    redis_socket_connect_timeout_seconds: float = 10.0
+    redis_socket_timeout_seconds: float = 0.0  # 0 = redis-py default (no read timeout)
+    redis_brpop_socket_timeout_seconds: float = 0.0  # 0 = auto: max(30, brpop_timeout + 15)
     # Generic Redis retry/backoff knobs for queue consumers and enqueue operations.
     redis_retry_base_seconds: float = 1.0
     redis_retry_max_seconds: float = 30.0

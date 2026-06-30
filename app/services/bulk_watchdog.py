@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from app.core.config import get_settings
 from app.services.bulk_collection_activity import (
     BULK_COLLECTION_MUTEX_PREFIX,
+    _job_age_seconds,
+    _pending_stale_seconds,
     get_collection_bulk_mutex_holder,
     is_terminal_job_status,
     reclaim_stale_collection_bulk_mutex,
@@ -25,6 +27,63 @@ def _job_last_progress(job) -> datetime | None:
     if job.last_progress_at is not None:
         return job.last_progress_at
     return job.updated_at
+
+
+def fail_stale_pending_mutex_holders() -> list[str]:
+    """
+    Fail pending jobs that still hold the collection mutex (worker died before running).
+    Releases the mutex so other imports on that collection can proceed.
+    """
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis":
+        return []
+    import redis
+
+    threshold = _pending_stale_seconds()
+    failed: list[str] = []
+
+    def _scan_mutex_keys() -> list[str]:
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        return list(r.scan_iter(match=f"{BULK_COLLECTION_MUTEX_PREFIX}*", count=200))
+
+    try:
+        keys = run_redis_retry("bulk_watchdog_pending_mutex_scan", _scan_mutex_keys)
+    except Exception:
+        keys = []
+
+    prefix_len = len(BULK_COLLECTION_MUTEX_PREFIX)
+    for key in keys:
+        collection_id = key[prefix_len:]
+        if not collection_id:
+            continue
+        holder = get_collection_bulk_mutex_holder(collection_id)
+        if not holder:
+            continue
+        job = get_job(holder)
+        if not job or (job.status or "").lower() != "pending":
+            continue
+        age = _job_age_seconds(job)
+        if age < threshold:
+            continue
+        release_collection_bulk_mutex(collection_id, holder)
+        try:
+            update_job(
+                holder,
+                status="failed",
+                message=(
+                    f"Bulk import interrupted before start (pending {int(age)}s with collection lock); "
+                    "re-submit the upload."
+                ),
+            )
+        except Exception:
+            continue
+        failed.append(holder)
+        print(
+            f"[bulk-watchdog] failed pending mutex holder job_id={holder} "
+            f"collection={collection_id} age={int(age)}s",
+            flush=True,
+        )
+    return failed
 
 
 def fail_stale_running_jobs() -> list[str]:
@@ -121,4 +180,5 @@ def run_bulk_watchdog_pass() -> None:
                     f"[bulk-watchdog] reclaimed mutex collection={collection_id} holder={reclaimed}",
                     flush=True,
                 )
+    fail_stale_pending_mutex_holders()
     fail_stale_running_jobs()

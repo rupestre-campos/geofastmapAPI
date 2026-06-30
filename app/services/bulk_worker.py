@@ -28,6 +28,7 @@ from app.services.bulk_queue import (
 from app.services.bulk_storage import get_bulk_storage
 from app.services.bulk_watchdog import run_bulk_watchdog_pass
 from app.services.job_store import get_job, update_job
+from app.services.redis_resilience import run_redis_retry
 from app.services.raster_batch import run_raster_batch_job
 from app.services.tile_build_queue import (
     create_tile_build_job,
@@ -234,17 +235,63 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
         return
 
     def on_progress(status: str, items_created: int, _total: int | None) -> None:
+        job = get_job(payload.job_id)
+        if job and job.status in ("failed", "cancelled"):
+            raise BulkImportCancelled()
         try:
-            refresh_collection_bulk_mutex(payload.collection_id, payload.job_id)
-            update_job(payload.job_id, status=status, items_created=items_created)
-        except Exception:
-            pass
+            def _write() -> None:
+                refresh_collection_bulk_mutex(payload.collection_id, payload.job_id)
+                update_job(payload.job_id, status=status, items_created=items_created)
+
+            run_redis_retry(
+                "bulk_import_progress",
+                _write,
+                max_attempts=max(
+                    3,
+                    int(getattr(get_settings(), "redis_retry_read_max_attempts", 15) or 15),
+                ),
+            )
+        except Exception as e:
+            if not hasattr(on_progress, "_last_err_log"):
+                on_progress._last_err_log = 0.0  # type: ignore[attr-defined]
+            now = time.monotonic()
+            if now - on_progress._last_err_log >= 60.0:  # type: ignore[attr-defined]
+                print(
+                    f"[bulk-worker] progress Redis update failed job_id={payload.job_id}: {e}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                on_progress._last_err_log = now  # type: ignore[attr-defined]
 
     try:
-        update_job(payload.job_id, status="running")
+        # Mark running immediately after mutex acquire so a crash cannot leave a pending mutex holder.
+        run_redis_retry(
+            "bulk_import_start",
+            lambda: update_job(
+                payload.job_id, status="running", message="Starting bulk import…"
+            ),
+            max_attempts=max(
+                3,
+                int(getattr(get_settings(), "redis_retry_read_max_attempts", 15) or 15),
+            ),
+        )
         if payload.mode == "replace":
-            update_job(payload.job_id, status="replacing", message="Loading replacement data into staging…")
+            run_redis_retry(
+                "bulk_import_replacing",
+                lambda: update_job(
+                    payload.job_id,
+                    status="replacing",
+                    message="Loading replacement data into staging…",
+                ),
+                max_attempts=max(
+                    3,
+                    int(getattr(get_settings(), "redis_retry_read_max_attempts", 15) or 15),
+                ),
+            )
         created, failed, err = _run_vector_import(path, payload, on_progress)
+        terminal = get_job(payload.job_id)
+        if terminal and terminal.status in ("failed", "cancelled"):
+            return
         if err == "cancelled":
             update_job(
                 payload.job_id,

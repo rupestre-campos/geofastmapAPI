@@ -19,6 +19,7 @@ from app.core.config import get_settings
 from app.services.bulk_queue import QUEUE_KEY, BulkJobPayload
 from app.services.bulk_watchdog import run_bulk_watchdog_pass
 from app.services.bulk_worker import cleanup_orphan_bulk_uploads, process_bulk_job
+from app.services.redis_client import make_redis_client
 from app.services.redis_resilience import retry_wait_seconds
 
 
@@ -54,10 +55,12 @@ def main() -> None:
         flush=True,
     )
 
-    import redis
-
-    r = redis.from_url(settings.redis_url, decode_responses=True)
     redis_failures = 0
+
+    def _connect_consumer(brpop_timeout: float):
+        return make_redis_client(for_brpop=True, brpop_timeout=brpop_timeout)
+
+    r = _connect_consumer(5.0)
 
     max_workers = max(1, int(getattr(settings, "bulk_worker_max_concurrent", 2) or 2))
     print(
@@ -118,7 +121,7 @@ def main() -> None:
                     flush=True,
                 )
                 try:
-                    r = redis.from_url(settings.redis_url, decode_responses=True)
+                    r = _connect_consumer(brpop_timeout)
                 except Exception:
                     pass
                 time.sleep(wait_s)
