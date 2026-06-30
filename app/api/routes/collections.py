@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_optional
@@ -104,7 +105,7 @@ async def list_collections(
     limit: int | None = Query(None, ge=1, le=1000, description="Max collections per page."),
     offset: int = Query(0, ge=0, description="Number of collections to skip."),
     has_static_tiles: bool = Query(False, description="If true, only list collections that have static tiles built (for map layer picker)."),
-    collection_type: str | None = Query(None, description="Filter by collection type: vector or raster."),
+    collection_type: str | None = Query(None, description="Filter by collection type: vector, raster, or composite."),
 ):
     base = _base_url(request)
     bbox_tuple: tuple[float, float, float, float] | None = None
@@ -252,6 +253,11 @@ async def get_collection_edit_form(
     base = _base_url(request)
     if not wants_html(request):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="HTML only")
+    if is_composite_collection(collection):
+        return RedirectResponse(
+            url=f"{base}/composites/{collection_id}/edit?f=html",
+            status_code=status.HTTP_302_FOUND,
+        )
     settings = get_settings()
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     has_static_tiles = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
@@ -569,6 +575,12 @@ async def remove_collection_share(
     response_model=CollectionRead,
     status_code=status.HTTP_201_CREATED,
     summary="Create collection",
+    description=(
+        "Create a vector, raster, or composite collection. "
+        "For composite (merged vector mosaic), set collection_type to composite and optionally "
+        "composite_members as an ordered list of member vector collection ids. "
+        "Members can also be set later via PATCH. See POST /composites for a composite-only alias."
+    ),
 )
 async def create_collection(
     payload: CollectionCreate,
@@ -654,28 +666,9 @@ async def get_composite_collection_edit_form(
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     base = _base_url(request)
-    members = parse_composite_members(getattr(collection, "composite_members", None))
-    member_status_list = await member_tile_status(db, members)
-    all_collections, _ = await collections_crud.list_collections(
-        db,
-        limit=500,
-        offset=0,
-        current_user=current_user,
-        collection_type=COLLECTION_TYPE_VECTOR,
-    )
-    picker = [
-        {"id": c.id, "title": c.title or c.id}
-        for c in all_collections
-        if c.id != collection_id and getattr(c, "collection_type", "") != COLLECTION_TYPE_COMPOSITE
-    ]
-    return html_response(
-        "composite_collection_edit.html",
-        base=base,
-        username=current_user.username if current_user else None,
-        collection_id=collection_id,
-        collection_title=collection.title or collection_id,
-        member_status=member_status_list,
-        vector_collections=picker,
+    return RedirectResponse(
+        url=f"{base}/composites/{collection_id}/edit?f=html",
+        status_code=status.HTTP_302_FOUND,
     )
 
 

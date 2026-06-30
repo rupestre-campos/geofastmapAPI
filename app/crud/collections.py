@@ -85,7 +85,7 @@ async def list_collections(
         )
         base = base.where(Collection.id.in_(static_ids))
         count_base = count_base.where(Collection.id.in_(static_ids))
-    if collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER):
+    if collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER, COLLECTION_TYPE_COMPOSITE):
         base = base.where(Collection.collection_type == collection_type)
         count_base = count_base.where(Collection.collection_type == collection_type)
 

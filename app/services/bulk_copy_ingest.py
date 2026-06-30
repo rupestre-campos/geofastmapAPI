@@ -271,7 +271,7 @@ def _load_geojson_seq_into_staging(
     pending_rows: list[tuple] = []
 
     def flush(force: bool = False) -> None:
-        nonlocal pending_rows, last_hb
+        nonlocal pending_rows, created, last_hb
         if not pending_rows:
             return
         if not force and len(pending_rows) < batch_size:

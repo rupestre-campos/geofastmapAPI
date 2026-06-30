@@ -20,6 +20,7 @@ from app.api.routes import (
     basemaps_pages,
     collection_styles,
     collections,
+    composites,
     coverages,
     internal_raster,
     items,
@@ -204,6 +205,11 @@ def create_app() -> FastAPI:
         collections.router,
         prefix="/collections",
         tags=["collections"],
+    )
+    app.include_router(
+        composites.router,
+        prefix="/composites",
+        tags=["composites"],
     )
     app.include_router(
         items.router,

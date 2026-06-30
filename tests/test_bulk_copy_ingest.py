@@ -12,6 +12,7 @@ from app.services import bulk_import_params
 from app.services.bulk_copy_ingest import (
     _feature_rows_from_record,
     _is_geojson_seq_path,
+    _load_geojson_seq_into_staging,
 )
 from app.services.bulk_staging import STAGING_TABLE_PREFIX, staging_table_name
 
@@ -91,3 +92,49 @@ def test_validate_replace_filtered_when_legacy_insert(copy_ingest_disabled):
     )
     assert mode == "replace_filtered"
     assert lines == ["state_id:eq:12"]
+
+
+def test_load_geojson_seq_flush_counts_created(tmp_path, monkeypatch):
+    """Regression: flush() must use nonlocal created (UnboundLocalError otherwise)."""
+    path = tmp_path / "features.geojsonl"
+    path.write_text(
+        '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{"id":"a"}}\n'
+        '{"type":"Feature","geometry":{"type":"Point","coordinates":[3,4]},"properties":{"id":"b"}}\n'
+    )
+    monkeypatch.setattr(
+        "app.services.bulk_copy_ingest.get_settings",
+        lambda: type(
+            "S",
+            (),
+            {
+                "features_subdivide_max_vertices": 256,
+                "bulk_copy_batch_rows": 50000,
+                "bulk_progress_heartbeat_seconds": 0,
+            },
+        )(),
+    )
+    monkeypatch.setattr("app.services.bulk_copy_ingest._parser_worker_count", lambda: 1)
+    monkeypatch.setattr("app.services.bulk_copy_ingest._raise_if_cancelled", lambda _j: None)
+    monkeypatch.setattr("app.services.bulk_copy_ingest._copy_rows_to_staging", lambda *a: None)
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class _Engine:
+        def begin(self):
+            return _Conn()
+
+    created, failed = _load_geojson_seq_into_staging(
+        _Engine(),
+        path=str(path),
+        collection_id="test-col",
+        job_id="job-1",
+        staging="bulk_staging_job1",
+        on_progress=None,
+    )
+    assert created == 2
+    assert failed == 0

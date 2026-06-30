@@ -98,7 +98,7 @@
             <td>{{ c.collection_type or 'vector' }}</td>
             <td>{{ (c.description or '—')[:80] }}{% if (c.description or '')|length > 80 %}…{% endif %}</td>
             <td>{{ c.owner_username or '—' }}</td>
-            <td class="col-actions">{% if c.can_edit %}<a href="{{ base }}/collections/{{ c.id }}/edit?f=html" class="btn btn-sm">Edit</a>{% else %}—{% endif %}</td>
+            <td class="col-actions">{% if c.can_edit %}{% if (c.collection_type or 'vector') == 'composite' %}<a href="{{ base }}/composites/{{ c.id }}/edit?f=html" class="btn btn-sm">Edit</a>{% else %}<a href="{{ base }}/collections/{{ c.id }}/edit?f=html" class="btn btn-sm">Edit</a>{% endif %}{% else %}—{% endif %}</td>
           </tr>
           {% endfor %}
         </tbody>

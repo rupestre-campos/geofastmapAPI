@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Tuple
 from uuid import uuid4
 
-from app.models.collection import VISIBILITY_PRIVATE, Collection
+from app.models.collection import COLLECTION_TYPE_COMPOSITE, VISIBILITY_PRIVATE, Collection
 from app.models.feature import Feature
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
 from app.schemas.feature import FeatureCreate, FeaturePatch, FeatureReplace
@@ -178,14 +178,45 @@ class FakeCollectionTilesCrud:
         return f"tiles_{safe}" if safe else "tiles_unnamed"
 
 
+def _composite_members_json(members: list | None) -> list[dict[str, str]] | None:
+    if not members:
+        return None
+    out: list[dict[str, str]] = []
+    for m in members:
+        cid = m.collection_id if hasattr(m, "collection_id") else m.get("collection_id")
+        if cid:
+            out.append({"collection_id": str(cid).strip()})
+    return out or None
+
+
 class FakeCollectionsCrud:
     """CRUD for collections backed by Store. Same async interface as app.crud.collections."""
 
     def __init__(self, store: Store) -> None:
         self._store = store
 
-    async def list_collections(self, db: Any) -> Sequence[Collection]:
-        return sorted(self._store.collections.values(), key=lambda c: c.id)
+    async def list_collections(self, db: Any, **kwargs: Any) -> Tuple[Sequence[Collection], int]:
+        items = sorted(self._store.collections.values(), key=lambda c: c.id)
+        ctype = kwargs.get("collection_type")
+        if ctype:
+            items = [c for c in items if getattr(c, "collection_type", "vector") == ctype]
+        q = kwargs.get("q")
+        if q:
+            q_lower = q.lower()
+            items = [
+                c for c in items
+                if q_lower in c.id.lower()
+                or (c.title and q_lower in c.title.lower())
+                or (c.description and q_lower in c.description.lower())
+            ]
+        total = len(items)
+        offset = int(kwargs.get("offset") or 0)
+        limit = kwargs.get("limit")
+        if limit is not None:
+            items = items[offset : offset + int(limit)]
+        else:
+            items = items[offset:]
+        return items, total
 
     async def get_collection(self, db: Any, collection_id: str) -> Collection | None:
         return self._store.collections.get(collection_id)
@@ -212,8 +243,11 @@ class FakeCollectionsCrud:
         c.updated_at = _now()
         return extent
 
-    async def create_collection(self, db: Any, data: CollectionCreate) -> Collection:
+    async def create_collection(self, db: Any, data: CollectionCreate, **kwargs: Any) -> Collection:
         now = _now()
+        ctype = data.collection_type or "vector"
+        owner_id = kwargs.get("owner_id")
+        visibility = kwargs.get("visibility", VISIBILITY_PRIVATE)
         collection = Collection(
             id=data.id,
             title=data.title,
@@ -223,9 +257,13 @@ class FakeCollectionsCrud:
             raster_settings=data.raster_settings,
             created_at=now,
             updated_at=now,
-            visibility=VISIBILITY_PRIVATE,
+            owner_id=owner_id,
+            visibility=visibility,
             viewer_can_edit=False,
-            collection_type=data.collection_type or "vector",
+            collection_type=ctype,
+            composite_members=_composite_members_json(data.composite_members)
+            if ctype == COLLECTION_TYPE_COMPOSITE
+            else None,
         )
         self._store.collections[data.id] = collection
         return collection
@@ -254,6 +292,12 @@ class FakeCollectionsCrud:
             c.description = data.description
         if "extent" in data.model_fields_set:
             c.extent = data.extent.model_dump() if data.extent else None
+        if "collection_type" in data.model_fields_set and data.collection_type:
+            c.collection_type = data.collection_type
+        if "composite_members" in data.model_fields_set:
+            c.composite_members = _composite_members_json(data.composite_members)
+        if getattr(c, "collection_type", "vector") != COLLECTION_TYPE_COMPOSITE:
+            c.composite_members = None
         c.updated_at = _now()
         return c
 

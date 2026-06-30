@@ -59,13 +59,31 @@ def app(store: Store):
     fake_coll = FakeCollectionsCrud(store)
     fake_feat = FakeFeaturesCrud(store)
 
+    async def _fake_member_tile_status(db, members):
+        return [
+            {
+                "collection_id": m["collection_id"],
+                "title": m["collection_id"],
+                "feature_count": 0,
+                "has_static_tiles": False,
+                "tiles_revision": None,
+                "minzoom": None,
+                "maxzoom": None,
+                "built_at": None,
+            }
+            for m in members
+        ]
+
     fake_tiles = FakeCollectionTilesCrud()
     with (
         patch("app.api.routes.collections.collections_crud", fake_coll),
+        patch("app.api.routes.composites.collections_crud", fake_coll),
         patch("app.api.routes.items.collections_crud", fake_coll),
         patch("app.api.routes.items.features_crud", fake_feat),
         patch("app.api.routes.tiles.collections_crud", fake_coll),
         patch("app.api.routes.tiles.tiles_crud", fake_tiles),
+        patch("app.api.routes.composites.member_tile_status", new=_fake_member_tile_status),
+        patch("app.api.routes.collections.member_tile_status", new=_fake_member_tile_status),
     ):
         yield app
 

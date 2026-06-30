@@ -78,7 +78,7 @@
         return r.json();
       }).then(data => {
         if (collectionType === 'composite') {
-          location.href = base + '/collections/' + encodeURIComponent(id) + '/composite/edit?f=html';
+          location.href = base + '/composites/' + encodeURIComponent(id) + '/edit?f=html';
         } else {
           location.href = base + '/collections/' + encodeURIComponent(id) + '?f=html';
         }
