@@ -34,8 +34,12 @@ from app.services.bulk_staging import (
     create_staging_table_sync,
     drop_staging_table_sync,
     promote_staging_sync,
+    staging_row_count_sync,
     staging_table_name,
 )
+
+# Returned as err when load succeeded and promote was queued (not an error).
+FINALIZE_QUEUED = "finalize_queued"
 from app.services.bulk_triggers import refresh_collection_features_last_updated_sync
 from app.services.job_store import get_job
 from app.utils.feature_subdivide import MAX_COORDS_FOR_DB_SUBDIVIDE, subdivide_geometry_by_vertices, _coord_count
@@ -530,6 +534,13 @@ def run_bulk_copy_import_sync(
         if on_progress:
             on_progress("running", created, None)
 
+        settings = get_settings()
+        if (
+            settings.bulk_queue_type == "redis"
+            and bool(getattr(settings, "bulk_finalize_queue_enabled", True))
+        ):
+            return created, failed, FINALIZE_QUEUED
+
         promote_staging_sync(engine, collection_id=collection_id, job_id=job_id, mode=mode)
         _finalize_after_promote(engine, collection_id)
         return created, failed, None
@@ -543,7 +554,15 @@ def run_bulk_copy_import_sync(
     except Exception as e:
         if engine is not None:
             try:
-                drop_staging_table_sync(engine, job_id)
+                staged = staging_row_count_sync(engine, job_id)
+                if staged > 0 and mode == "replace":
+                    print(
+                        f"[bulk-copy] promote failed but keeping staging ({staged} rows) "
+                        f"job_id={job_id}: {e}",
+                        flush=True,
+                    )
+                else:
+                    drop_staging_table_sync(engine, job_id)
             except Exception:
                 pass
         return created, failed, str(e)

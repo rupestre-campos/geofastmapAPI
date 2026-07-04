@@ -13,12 +13,17 @@ from app.crud import collections as collections_crud
 from app.crud import user as user_crud
 from app.db.session import get_db
 from app.models.user import User
+from app.services.bulk_finalize_queue import (
+    clear_finalize_pending,
+    remove_finalize_from_queue,
+)
 from app.services.bulk_queue import (
     get_bulk_import_storage_key,
     is_registered_bulk_import_job,
     remove_bulk_job_from_redis_queue,
     unregister_bulk_import_job,
 )
+from app.services.bulk_staging import drop_staging_table_sync
 from app.services.bulk_storage import get_bulk_storage
 from app.services.job_store import get_job, list_all_jobs, list_jobs_for_collection, update_job
 from app.services.process_queue import get_process_job_meta
@@ -27,7 +32,7 @@ from app.utils.job_display import build_job_view_dict
 
 router = APIRouter()
 
-_ACTIVE_JOB_STATUSES = frozenset({"pending", "running", "replacing"})
+_ACTIVE_JOB_STATUSES = frozenset({"pending", "running", "replacing", "finalizing"})
 
 
 def _base_url(request: Request) -> str:
@@ -115,6 +120,29 @@ def cancel_job_record(job) -> dict:
             "cancelled": True,
             "status": "cancelled",
             "message": "Bulk import cancellation requested.",
+        }
+
+    if job.status == "finalizing" and is_bulk:
+        remove_finalize_from_queue(job_id)
+        clear_finalize_pending(job_id)
+        try:
+            from sqlalchemy import create_engine
+            from app.core.config import get_settings
+
+            engine = create_engine(get_settings().database_sync_url, pool_pre_ping=True, future=True)
+            try:
+                drop_staging_table_sync(engine, job_id)
+            finally:
+                engine.dispose()
+        except Exception:
+            pass
+        unregister_bulk_import_job(job_id)
+        update_job(job_id, status="cancelled", message="Cancelled during partition swap; staged data dropped.")
+        return {
+            "job_id": job_id,
+            "cancelled": True,
+            "status": "cancelled",
+            "message": "Bulk finalize cancelled; staging table dropped.",
         }
 
     if job.status in ("running", "replacing") and is_process:

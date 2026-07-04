@@ -29,7 +29,9 @@ BULK_SHARDED_INGEST_ENABLED=true
 BULK_SHARD_LINES_PER_PART=100000
 # Standalone bulk worker: concurrent import threads per process (see app.worker_main). Watch Postgres max_connections.
 BULK_WORKER_MAX_CONCURRENT=3
-# Tile worker (app.tile_worker_main): poll interval while waiting for bulk import to finish on the same collection.
+# Dedicated single-consumer finalize worker (app.finalize_worker_main) — required for COPY ingest in production.
+BULK_FINALIZE_QUEUE_ENABLED=true
+REDIS_BRPOP_SOCKET_TIMEOUT_SECONDS=30
 TILE_BUILD_BULK_WAIT_POLL_SECONDS=2
 
 # --- Homogeneous mosaic workers (recommended default) ---

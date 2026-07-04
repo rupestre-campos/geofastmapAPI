@@ -76,6 +76,7 @@ def _is_retryable_db_error(err: Exception) -> bool:
             "terminating connection",
             "connection is closed",
             "ssl syscall error",
+            "deadlock detected",
         )
     )
 

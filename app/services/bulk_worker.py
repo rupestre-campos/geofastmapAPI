@@ -8,7 +8,8 @@ import time
 from typing import Callable
 
 from app.core.config import get_settings
-from app.services.bulk_copy_ingest import run_bulk_copy_import_sync
+from app.services.bulk_copy_ingest import FINALIZE_QUEUED, run_bulk_copy_import_sync
+from app.services.bulk_finalize_queue import BulkFinalizePayload, enqueue_finalize
 from app.services.bulk_import import BulkImportCancelled, run_bulk_import_sync
 from app.services.bulk_collection_activity import (
     get_collection_bulk_mutex_holder,
@@ -292,6 +293,33 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
         terminal = get_job(payload.job_id)
         if terminal and terminal.status in ("failed", "cancelled"):
             return
+        if err == FINALIZE_QUEUED:
+            enqueue_finalize(
+                BulkFinalizePayload(
+                    job_id=payload.job_id,
+                    collection_id=payload.collection_id,
+                    mode=payload.mode,
+                    items_created=created,
+                    items_failed=failed,
+                    owner_id=payload.owner_id,
+                    queue_compute_tiles=payload.queue_compute_tiles,
+                )
+            )
+            run_redis_retry(
+                "bulk_import_finalizing",
+                lambda: update_job(
+                    payload.job_id,
+                    status="finalizing",
+                    message=f"Loaded {created:,} features into staging; partition swap queued…",
+                    items_created=created,
+                    items_failed=failed,
+                ),
+                max_attempts=max(
+                    3,
+                    int(getattr(get_settings(), "redis_retry_read_max_attempts", 15) or 15),
+                ),
+            )
+            return
         if err == "cancelled":
             update_job(
                 payload.job_id,
@@ -336,8 +364,15 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
         update_job(payload.job_id, status="failed", message=str(e))
     finally:
         _release_bulk_collection_mutex(payload)
+        finalize_queued = False
+        try:
+            job_now = get_job(payload.job_id)
+            finalize_queued = job_now is not None and (job_now.status or "") == "finalizing"
+        except Exception:
+            pass
         try:
             storage.delete(payload.storage_key)
         except Exception:
             pass
-        unregister_bulk_import_job(payload.job_id)
+        if not finalize_queued:
+            unregister_bulk_import_job(payload.job_id)

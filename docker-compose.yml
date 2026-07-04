@@ -166,6 +166,30 @@ services:
       - geofastmap_rasters:/data/rasters
     command: python -m app.worker_main
 
+  finalize_worker:
+    build: .
+    container_name: geofastmap_finalize_worker
+    depends_on:
+      db:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+      redis:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@pgbouncer:5432/geofastmap
+      DATABASE_USE_PGBOUNCER: "true"
+      REDIS_URL: redis://redis:6379/0
+      BULK_QUEUE_TYPE: redis
+      BULK_FINALIZE_QUEUE_ENABLED: "true"
+      BULK_STORAGE_PATH: /data/bulk-uploads
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-2}
+      DATABASE_POOL_MAX_OVERFLOW: ${DATABASE_POOL_MAX_OVERFLOW:-2}
+    volumes:
+      - .:/app
+      - geofastmap_bulk_uploads:/data/bulk-uploads
+    command: python -m app.finalize_worker_main
+
   tile_worker:
     build: .
     container_name: geofastmap_tile_worker

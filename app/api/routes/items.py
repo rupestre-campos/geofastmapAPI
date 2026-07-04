@@ -104,7 +104,7 @@ def _feature_to_read(
 
 def _active_bulk_import_jobs(collection_id: str) -> list:
     jobs = list_jobs_for_collection(collection_id, limit=15)
-    active_statuses = frozenset({"pending", "running", "replacing", "cancelling"})
+    active_statuses = frozenset({"pending", "running", "replacing", "finalizing", "cancelling"})
     return [j for j in jobs if (j.status or "").lower() in active_statuses]
 
 

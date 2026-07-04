@@ -27,9 +27,58 @@ _PARTITION_LIST_SQL = """
       AND c.relname != 'features_default'
 """
 
+# Serialize all partition swap DDL across collections (prevents cross-collection deadlocks).
+_FEATURES_SWAP_ADVISORY_LOCK_KEY = 0xFEA7_0001
+
 
 def _partition_bound_literal(collection_id: str) -> str:
     return ("FOR VALUES IN ('" + collection_id.replace("'", "''") + "')").replace(" ", "")
+
+
+def _resolve_features_partition_relname_conn(conn, collection_id: str) -> str | None:
+    """Return attached features partition relname for collection_id using an open connection."""
+    target_norm = _partition_bound_literal(collection_id)
+    rows = conn.execute(text(_PARTITION_LIST_SQL)).fetchall()
+    for row in rows:
+        bound = (row.bound or "").replace(" ", "")
+        if bound == target_norm:
+            name = str(row.relname or "")
+            if re.fullmatch(r"features_[a-zA-Z0-9_]+", name):
+                return name
+    return None
+
+
+def _partition_is_attached_conn(conn, relname: str) -> bool:
+    row = conn.execute(
+        text(
+            """
+            SELECT 1
+            FROM pg_inherits i
+            JOIN pg_class c ON c.oid = i.inhrelid
+            JOIN pg_class p ON p.oid = i.inhparent
+            WHERE p.relname = 'features' AND c.relname = :name
+            """
+        ),
+        {"name": relname},
+    ).first()
+    return row is not None
+
+
+def _table_exists_conn(conn, relname: str) -> bool:
+    row = conn.execute(
+        text(
+            """
+            SELECT 1
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = current_schema()
+              AND c.relname = :name
+              AND c.relkind = 'r'
+            """
+        ),
+        {"name": relname},
+    ).first()
+    return row is not None
 
 
 def _migrate_default_rows_to_partition_sync(conn, collection_id: str) -> None:
@@ -139,20 +188,8 @@ def ensure_features_partition_sync(engine: Engine, collection_id: str) -> str:
 
 def resolve_features_partition_relname_sync(engine: Engine, collection_id: str) -> str | None:
     """Return dedicated features partition relname for collection_id, or None (rows may be in features_default)."""
-    target_norm = _partition_bound_literal(collection_id)
-
-    def _read() -> str | None:
-        with engine.connect() as conn:
-            rows = conn.execute(text(_PARTITION_LIST_SQL)).fetchall()
-            for row in rows:
-                bound = (row.bound or "").replace(" ", "")
-                if bound == target_norm:
-                    name = str(row.relname or "")
-                    if re.fullmatch(r"features_[a-zA-Z0-9_]+", name):
-                        return name
-        return None
-
-    return _read()
+    with engine.connect() as conn:
+        return _resolve_features_partition_relname_conn(conn, collection_id)
 
 
 async def _partition_exists_for(db: AsyncSession, collection_id: str) -> bool:
@@ -177,20 +214,39 @@ def swap_staging_into_collection_partition_sync(
     cid_escaped = collection_id.replace("'", "''")
     settings = get_settings()
     skip_touch = bool(getattr(settings, "bulk_skip_features_touch_trigger", True))
+    canonical_old = _safe_partition_name(collection_id)
 
     with engine.begin() as conn:
+        # Global + per-collection locks: serialize swap DDL and prevent deadlocks between workers.
+        conn.execute(
+            text("SELECT pg_advisory_xact_lock(:k)"),
+            {"k": _FEATURES_SWAP_ADVISORY_LOCK_KEY},
+        )
+        _advisory_lock_partition(conn, collection_id)
         if skip_touch:
             conn.execute(text("SET LOCAL geofast.bulk_skip_features_touch = 'on'"))
         conn.execute(
             text("DELETE FROM features_default WHERE collection_id = :cid"),
             {"cid": collection_id},
         )
-        old_part = resolve_features_partition_relname_sync(engine, collection_id)
+
+        if _partition_is_attached_conn(conn, staging_table):
+            if skip_touch:
+                conn.execute(text("RESET geofast.bulk_skip_features_touch"))
+            return
+
+        old_part = _resolve_features_partition_relname_conn(conn, collection_id)
         if old_part and old_part != staging_table:
             conn.execute(text(f'ALTER TABLE features DETACH PARTITION "{old_part}"'))
             conn.execute(text(f'DROP TABLE "{old_part}"'))
-        elif old_part == staging_table:
-            return
+        elif (
+            canonical_old != staging_table
+            and canonical_old != old_part
+            and _table_exists_conn(conn, canonical_old)
+        ):
+            # Leftover detached partition from an interrupted swap (not visible in pg_inherits).
+            conn.execute(text(f'DROP TABLE IF EXISTS "{canonical_old}"'))
+
         conn.execute(text(f'ALTER TABLE "{staging_table}" SET LOGGED'))
         conn.execute(
             text(

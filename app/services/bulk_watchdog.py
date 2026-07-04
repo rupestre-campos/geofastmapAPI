@@ -100,7 +100,7 @@ def fail_stale_running_jobs() -> list[str]:
     active_ids: set[str] = set()
 
     for job in list_all_jobs(limit=500):
-        if job.status in ("pending", "running", "replacing"):
+        if job.status in ("pending", "running", "replacing", "finalizing"):
             active_ids.add(job.job_id)
         if job.status not in ("running", "replacing"):
             continue
@@ -182,3 +182,70 @@ def run_bulk_watchdog_pass() -> None:
                 )
     fail_stale_pending_mutex_holders()
     fail_stale_running_jobs()
+
+
+def reconcile_orphan_finalize_jobs() -> list[str]:
+    """
+    Self-heal: jobs stuck in finalizing (or failed after load) with staging rows but no queue entry.
+    """
+    settings = get_settings()
+    if settings.bulk_queue_type != "redis" or not bool(
+        getattr(settings, "bulk_finalize_queue_enabled", True)
+    ):
+        return []
+    from sqlalchemy import create_engine
+
+    from app.services.bulk_finalize_queue import BulkFinalizePayload, enqueue_finalize, get_finalize_state, is_finalize_pending
+    from app.services.bulk_staging import staging_row_count_sync
+
+    requeued: list[str] = []
+    engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+    try:
+        for job in list_all_jobs(limit=500):
+            status = (job.status or "").lower()
+            if status not in ("finalizing", "failed"):
+                continue
+            if is_finalize_pending(job.job_id):
+                continue
+            try:
+                staged = staging_row_count_sync(engine, job.job_id)
+            except Exception:
+                staged = 0
+            if staged <= 0:
+                continue
+            state = get_finalize_state(job.job_id)
+            msg = (job.message or "").lower()
+            if status == "failed" and not state and "deadlock" not in msg and "partition swap" not in msg and "staging" not in msg:
+                continue
+            mode = state.get("mode") or ("replace" if "replace" in msg else "append")
+            owner_raw = state.get("owner_id") or ""
+            owner_id = int(owner_raw) if owner_raw.isdigit() else job.owner_id
+            payload = BulkFinalizePayload(
+                job_id=job.job_id,
+                collection_id=state.get("collection_id") or job.collection_id,
+                mode=mode,
+                items_created=int(state.get("items_created") or job.items_created or staged),
+                items_failed=int(state.get("items_failed") or job.items_failed or 0),
+                owner_id=owner_id,
+                queue_compute_tiles=str(state.get("queue_compute_tiles", "0")).lower() in ("1", "true", "yes"),
+            )
+            if enqueue_finalize(payload, force=True):
+                update_job(
+                    job.job_id,
+                    status="finalizing",
+                    message=f"Re-queued partition swap for {staged:,} staged features (self-heal).",
+                    items_created=job.items_created or staged,
+                )
+                requeued.append(job.job_id)
+                print(
+                    f"[bulk-finalize-watchdog] requeued job_id={job.job_id} collection={job.collection_id} rows={staged}",
+                    flush=True,
+                )
+    finally:
+        engine.dispose()
+    return requeued
+
+
+def run_finalize_watchdog_pass() -> None:
+    """Re-queue finalize work for orphaned staging tables."""
+    reconcile_orphan_finalize_jobs()

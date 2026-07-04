@@ -43,6 +43,13 @@ def main() -> int:
 
     qlen = int(r.llen(QUEUE_KEY) or 0)
     print(f"queue_key={QUEUE_KEY} length={qlen}")
+    try:
+        from app.services.bulk_finalize_queue import FINALIZE_QUEUE_KEY
+
+        flen = int(r.llen(FINALIZE_QUEUE_KEY) or 0)
+        print(f"finalize_queue_key={FINALIZE_QUEUE_KEY} length={flen}")
+    except Exception:
+        flen = 0
     if qlen:
         print("queue_head_to_tail:")
         for i, raw in enumerate(r.lrange(QUEUE_KEY, 0, min(qlen, 20) - 1)):
@@ -67,7 +74,7 @@ def main() -> int:
     for job in list_all_jobs(limit=500):
         if job.status == "pending":
             pending.append(job)
-        elif job.status in ("running", "replacing"):
+        elif job.status in ("running", "replacing", "finalizing"):
             running.append(job)
 
     print(f"jobs_pending={len(pending)} jobs_running={len(running)}")

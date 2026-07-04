@@ -151,7 +151,7 @@ def get_active_bulk_job_ids(collection_id: str) -> list[str]:
     holder = get_collection_bulk_mutex_holder(collection_id)
     if holder:
         active.add(holder)
-    active_statuses = frozenset({"pending", "running", "replacing", "cancelling"})
+    active_statuses = frozenset({"pending", "running", "replacing", "finalizing", "cancelling"})
     for job in list_jobs_for_collection(collection_id, limit=20):
         status = (job.status or "").lower()
         if status in active_statuses and job.job_id:

@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     bulk_shard_lines_per_part: int = 100000
     # COPY + staging table ingest (GeoJSONSeq and shapefile via fiona).
     bulk_copy_ingest_enabled: bool = True
+    # After COPY, enqueue partition promote to a dedicated single-consumer finalize queue.
+    bulk_finalize_queue_enabled: bool = True
+    bulk_finalize_retry_base_seconds: float = 2.0
+    bulk_finalize_retry_max_seconds: float = 120.0
+    bulk_finalize_watchdog_interval_seconds: float = 60.0
     # Rows per COPY flush during staging load.
     bulk_copy_batch_rows: int = 50000
     # Parser processes for GeoJSONSeq (0 = auto: max(1, cpu_count - 1)).
