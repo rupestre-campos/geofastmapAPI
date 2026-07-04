@@ -29,7 +29,8 @@ BULK_SHARDED_INGEST_ENABLED=true
 BULK_SHARD_LINES_PER_PART=100000
 # Standalone bulk worker: concurrent import threads per process (see app.worker_main). Watch Postgres max_connections.
 BULK_WORKER_MAX_CONCURRENT=3
-# Dedicated single-consumer finalize worker (app.finalize_worker_main) — required for COPY ingest in production.
+# Load workers enqueue finalize jobs; the consumer runs on the API host only (not this compose stack):
+#   docker compose -f deploy/compose/docker-compose.finalize-worker.yml up -d --build
 BULK_FINALIZE_QUEUE_ENABLED=true
 REDIS_BRPOP_SOCKET_TIMEOUT_SECONDS=30
 TILE_BUILD_BULK_WAIT_POLL_SECONDS=2

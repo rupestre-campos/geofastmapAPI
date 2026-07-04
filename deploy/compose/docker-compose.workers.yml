@@ -17,18 +17,6 @@ services:
       - geofastmap_rasters:/data/rasters
     command: python -m app.worker_main
 
-  finalize_worker:
-    restart: unless-stopped
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-    container_name: geofastmap_finalize_worker
-    env_file:
-      - ../env/.env.workers
-    volumes:
-      - geofastmap_bulk_uploads:/data/bulk-uploads
-    command: python -m app.finalize_worker_main
-
   tile_worker:
     restart: unless-stopped
     build:

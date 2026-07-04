@@ -166,6 +166,7 @@ services:
       - geofastmap_rasters:/data/rasters
     command: python -m app.worker_main
 
+  # Local dev all-in-one only. Production: use deploy/compose/docker-compose.finalize-worker.yml on the API host (not worker fleet).
   finalize_worker:
     build: .
     container_name: geofastmap_finalize_worker
