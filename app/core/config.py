@@ -75,7 +75,13 @@ class Settings(BaseSettings):
     # Parser processes for GeoJSONSeq (0 = auto: max(1, cpu_count - 1)).
     bulk_copy_parser_workers: int = 0
     # Fail running bulk jobs with no progress heartbeat after this many seconds.
-    bulk_job_stale_seconds: float = 3600.0
+    bulk_job_stale_seconds: float = 14400.0
+    # When false (default with finalize queue), load workers only reclaim mutexes — they do not fail long COPY jobs.
+    bulk_watchdog_fail_stale_running: bool | None = None
+    # Fail finalizing jobs with no progress after this (finalize worker watchdog only).
+    bulk_finalize_stale_seconds: float = 86400.0
+    # Min silence before recovering running jobs that have staging rows (avoid partial COPY finalize).
+    bulk_running_recover_staging_seconds: float = 600.0
     # Pending job still holds collection mutex (worker died before marking running): reclaim after this.
     bulk_job_pending_stale_seconds: float = 600.0
     # Interval between mutex/stale-job watchdog passes in the worker loop (seconds).
