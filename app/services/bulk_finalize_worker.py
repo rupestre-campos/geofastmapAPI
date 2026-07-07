@@ -8,6 +8,12 @@ import time
 from sqlalchemy import create_engine
 
 from app.core.config import get_settings
+from app.services.bulk_staging_recovery import (
+    StagingDuplicateUnrecoverableError,
+    abandon_staging_finalize_job,
+    is_staging_pk_duplicate_error,
+    prepare_staging_for_promote_sync,
+)
 from app.services.bulk_copy_ingest import _finalize_after_promote
 from app.services.bulk_finalize_queue import (
     BulkFinalizePayload,
@@ -32,6 +38,10 @@ def _finalize_backoff_seconds(attempt: int) -> float:
     base = max(1.0, float(getattr(settings, "bulk_finalize_retry_base_seconds", 2.0) or 2.0))
     cap = max(base, float(getattr(settings, "bulk_finalize_retry_max_seconds", 120.0) or 120.0))
     return retry_wait_seconds(max(1, attempt), base=base, max_seconds=cap)
+
+
+def _duplicate_give_up_attempts() -> int:
+    return max(1, int(getattr(get_settings(), "bulk_finalize_duplicate_give_up_attempts", 3) or 3))
 
 
 def process_bulk_finalize_job(payload: BulkFinalizePayload) -> None:
@@ -80,6 +90,19 @@ def process_bulk_finalize_job(payload: BulkFinalizePayload) -> None:
             items_failed=payload.items_failed,
         )
 
+        try:
+            prepare_staging_for_promote_sync(engine, payload.job_id)
+        except StagingDuplicateUnrecoverableError as e:
+            abandon_staging_finalize_job(
+                engine,
+                job_id=payload.job_id,
+                collection_id=payload.collection_id,
+                reason=str(e),
+                items_created=payload.items_created or staged,
+                items_failed=payload.items_failed,
+            )
+            return
+
         count = promote_staging_sync(
             engine,
             collection_id=payload.collection_id,
@@ -119,8 +142,43 @@ def process_bulk_finalize_job(payload: BulkFinalizePayload) -> None:
             pass
         clear_finalize_pending(payload.job_id)
         unregister_bulk_import_job(payload.job_id)
+    except StagingDuplicateUnrecoverableError as e:
+        abandon_staging_finalize_job(
+            engine,
+            job_id=payload.job_id,
+            collection_id=payload.collection_id,
+            reason=str(e),
+            items_created=payload.items_created,
+            items_failed=payload.items_failed,
+        )
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
+        if is_staging_pk_duplicate_error(e):
+            try:
+                prepare_staging_for_promote_sync(engine, payload.job_id)
+            except StagingDuplicateUnrecoverableError as dup_err:
+                abandon_staging_finalize_job(
+                    engine,
+                    job_id=payload.job_id,
+                    collection_id=payload.collection_id,
+                    reason=str(dup_err),
+                    items_created=payload.items_created,
+                    items_failed=payload.items_failed,
+                )
+                return
+            if payload.attempt >= _duplicate_give_up_attempts():
+                abandon_staging_finalize_job(
+                    engine,
+                    job_id=payload.job_id,
+                    collection_id=payload.collection_id,
+                    reason=(
+                        f"Duplicate staging primary keys persisted after "
+                        f"{payload.attempt + 1} finalize attempts. {err[:200]}"
+                    ),
+                    items_created=payload.items_created,
+                    items_failed=payload.items_failed,
+                )
+                return
         print(
             f"[bulk-finalize] failed job_id={payload.job_id} attempt={payload.attempt}: {err}",
             file=sys.stderr,

@@ -34,6 +34,12 @@ from app.services.bulk_staging import (
     staging_table_exists_sync,
     staging_table_name,
 )
+from app.services.bulk_staging_recovery import (
+    StagingDuplicateUnrecoverableError,
+    abandon_staging_finalize_job,
+    is_staging_pk_duplicate_error,
+    prepare_staging_for_promote_sync,
+)
 from app.services.job_store import list_all_jobs, update_job
 
 
@@ -44,6 +50,7 @@ class ReconcileStats:
     promoted: int = 0
     enqueued: int = 0
     empty_closed: int = 0
+    abandoned: int = 0
     skipped: int = 0
     errors: list[tuple[str, str]] = field(default_factory=list)
 
@@ -52,8 +59,8 @@ class ReconcileStats:
             f"orphans_dropped={self.orphans_dropped} "
             f"completed_already_swapped={self.completed_already_swapped} "
             f"promoted={self.promoted} enqueued={self.enqueued} "
-            f"empty_closed={self.empty_closed} skipped={self.skipped} "
-            f"errors={len(self.errors)}"
+            f"empty_closed={self.empty_closed} abandoned={self.abandoned} "
+            f"skipped={self.skipped} errors={len(self.errors)}"
         )
 
 
@@ -90,6 +97,42 @@ def _is_reconcile_candidate(job) -> bool:
     ):
         return True
     return False
+
+
+def _duplicate_give_up_attempts() -> int:
+    return max(1, int(getattr(get_settings(), "bulk_finalize_duplicate_give_up_attempts", 3) or 3))
+
+
+def _should_abandon_duplicate_job(job) -> bool:
+    """Jobs stuck retrying duplicate-key finalize errors should be abandoned, not re-queued forever."""
+    if not is_staging_pk_duplicate_error(job.message or ""):
+        return False
+    state = get_finalize_state(job.job_id)
+    attempt = int(state.get("attempt") or 0)
+    if attempt >= _duplicate_give_up_attempts():
+        return True
+    # Message already shows very high attempt counts from finalize worker retries.
+    msg = job.message or ""
+    if "attempt " in msg.lower():
+        import re
+
+        m = re.search(r"attempt\s+(\d+)", msg, re.IGNORECASE)
+        if m and int(m.group(1)) >= _duplicate_give_up_attempts():
+            return True
+    return False
+
+
+def _abandon_duplicate_job(engine: Engine, job, staged: int, *, stats: ReconcileStats, reason: str) -> None:
+    abandon_staging_finalize_job(
+        engine,
+        job_id=job.job_id,
+        collection_id=job.collection_id,
+        reason=reason,
+        items_created=staged or job.items_created or 0,
+        items_failed=job.items_failed,
+    )
+    stats.abandoned += 1
+    print(f"[reconcile] abandoned job_id={job.job_id} collection={job.collection_id}", flush=True)
 
 
 def _complete_swapped_job(
@@ -180,12 +223,32 @@ def _reconcile_one_job(engine: Engine, job, *, dry_run: bool, stats: ReconcileSt
 
     mode = _infer_import_mode(job)
     if dry_run:
+        if _should_abandon_duplicate_job(job):
+            stats.abandoned += 1
+            print(
+                f"[reconcile] would abandon duplicate-key job_id={job.job_id} rows={staged}",
+                flush=True,
+            )
+            return
         stats.enqueued += 1
         print(
             f"[reconcile] would promote job_id={job.job_id} collection={job.collection_id} "
             f"mode={mode} rows={staged}",
             flush=True,
         )
+        return
+
+    if _should_abandon_duplicate_job(job):
+        try:
+            prepare_staging_for_promote_sync(engine, job.job_id)
+        except StagingDuplicateUnrecoverableError as e:
+            _abandon_duplicate_job(engine, job, staged, stats=stats, reason=str(e))
+            return
+
+    try:
+        prepare_staging_for_promote_sync(engine, job.job_id)
+    except StagingDuplicateUnrecoverableError as e:
+        _abandon_duplicate_job(engine, job, staged, stats=stats, reason=str(e))
         return
 
     try:
@@ -210,8 +273,38 @@ def _reconcile_one_job(engine: Engine, job, *, dry_run: bool, stats: ReconcileSt
             f"[reconcile] promoted job_id={job.job_id} collection={job.collection_id} rows={count}",
             flush=True,
         )
+    except StagingDuplicateUnrecoverableError as e:
+        _abandon_duplicate_job(engine, job, staged, stats=stats, reason=str(e))
     except Exception as e:
         err = str(e)
+        if is_staging_pk_duplicate_error(e):
+            try:
+                prepare_staging_for_promote_sync(engine, job.job_id)
+                count = promote_staging_sync(
+                    engine,
+                    collection_id=job.collection_id,
+                    job_id=job.job_id,
+                    mode=mode,
+                )
+                _finalize_after_promote(engine, job.collection_id)
+                update_job(
+                    job.job_id,
+                    status="completed",
+                    message=f"Recovered: deduped and promoted {count:,} staged features (bulk reconcile).",
+                    items_created=count,
+                    items_failed=job.items_failed,
+                )
+                clear_finalize_pending(job.job_id)
+                unregister_bulk_import_job(job.job_id)
+                stats.promoted += 1
+                print(
+                    f"[reconcile] promoted after dedupe job_id={job.job_id} collection={job.collection_id} rows={count}",
+                    flush=True,
+                )
+                return
+            except StagingDuplicateUnrecoverableError as dup_err:
+                _abandon_duplicate_job(engine, job, staged, stats=stats, reason=str(dup_err))
+                return
         stats.errors.append((job.job_id, err))
         payload = BulkFinalizePayload(
             job_id=job.job_id,

@@ -7,13 +7,13 @@ from datetime import datetime
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
-
 from app.core.config import get_settings
 from app.db.features_partitions import (
     ensure_features_partition_sync,
     partition_swap_already_complete_sync,
     swap_staging_into_collection_partition_sync,
 )
+from app.services.bulk_staging_recovery import promote_with_staging_recovery
 
 STAGING_TABLE_PREFIX = "bulk_staging_"
 
@@ -102,28 +102,38 @@ def promote_staging_sync(
     if mode == "replace":
         if partition_swap_already_complete_sync(engine, collection_id, staging):
             return count
-        swap_staging_into_collection_partition_sync(engine, collection_id, staging)
+        promote_with_staging_recovery(
+            engine,
+            job_id=job_id,
+            promote_fn=lambda: swap_staging_into_collection_partition_sync(
+                engine, collection_id, staging
+            ),
+        )
     else:
         ensure_features_partition_sync(engine, collection_id)
-        with engine.begin() as conn:
-            if skip_touch:
-                conn.execute(text("SET LOCAL geofast.bulk_skip_features_touch = 'on'"))
-            conn.execute(
-                text(
-                    f"""
-                    INSERT INTO features (
-                        id, collection_id, part_index, geometry, properties,
-                        bulk_import_job_id, created_at, updated_at
+
+        def _append_promote() -> None:
+            with engine.begin() as conn:
+                if skip_touch:
+                    conn.execute(text("SET LOCAL geofast.bulk_skip_features_touch = 'on'"))
+                conn.execute(
+                    text(
+                        f"""
+                        INSERT INTO features (
+                            id, collection_id, part_index, geometry, properties,
+                            bulk_import_job_id, created_at, updated_at
+                        )
+                        SELECT
+                            id, collection_id, part_index, geometry, properties,
+                            bulk_import_job_id, created_at, updated_at
+                        FROM "{staging}"
+                        """
                     )
-                    SELECT
-                        id, collection_id, part_index, geometry, properties,
-                        bulk_import_job_id, created_at, updated_at
-                    FROM "{staging}"
-                    """
                 )
-            )
-            if skip_touch:
-                conn.execute(text("RESET geofast.bulk_skip_features_touch"))
+                if skip_touch:
+                    conn.execute(text("RESET geofast.bulk_skip_features_touch"))
+
+        promote_with_staging_recovery(engine, job_id=job_id, promote_fn=_append_promote)
         drop_staging_table_sync(engine, job_id)
     return count
 

@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     bulk_watchdog_fail_stale_running: bool | None = None
     # Fail finalizing jobs with no progress after this (finalize worker watchdog only).
     bulk_finalize_stale_seconds: float = 86400.0
+    # After this many finalize attempts on duplicate-key errors, abandon staging and fail the job.
+    bulk_finalize_duplicate_give_up_attempts: int = 3
     # Min silence before recovering running jobs that have staging rows (avoid partial COPY finalize).
     bulk_running_recover_staging_seconds: float = 600.0
     # Pending job still holds collection mutex (worker died before marking running): reclaim after this.
