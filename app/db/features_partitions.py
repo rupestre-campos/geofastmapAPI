@@ -35,17 +35,37 @@ def _partition_bound_literal(collection_id: str) -> str:
     return ("FOR VALUES IN ('" + collection_id.replace("'", "''") + "')").replace(" ", "")
 
 
+def _collection_id_from_bound(bound: str) -> str | None:
+    """Parse collection_id from a LIST partition bound expression."""
+    import re
+
+    m = re.search(r"IN\s*\('((?:[^']|'')*)'\)", bound or "", re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(1).replace("''", "'")
+
+
 def _resolve_features_partition_relname_conn(conn, collection_id: str) -> str | None:
-    """Return attached features partition relname for collection_id using an open connection."""
+    """Return attached features child relname for collection_id (any name, including bulk_staging_*)."""
     target_norm = _partition_bound_literal(collection_id)
     rows = conn.execute(text(_PARTITION_LIST_SQL)).fetchall()
     for row in rows:
         bound = (row.bound or "").replace(" ", "")
         if bound == target_norm:
             name = str(row.relname or "")
-            if re.fullmatch(r"features_[a-zA-Z0-9_]+", name):
-                return name
+            return name if name else None
     return None
+
+
+def partition_swap_already_complete_sync(
+    engine: Engine, collection_id: str, staging_table: str
+) -> bool:
+    """True when staging is already the attached live partition for this collection."""
+    with engine.connect() as conn:
+        if _partition_is_attached_conn(conn, staging_table):
+            return True
+        live = _resolve_features_partition_relname_conn(conn, collection_id)
+        return live == staging_table
 
 
 def _partition_is_attached_conn(conn, relname: str) -> bool:
@@ -79,6 +99,23 @@ def _table_exists_conn(conn, relname: str) -> bool:
         {"name": relname},
     ).first()
     return row is not None
+
+
+def _drop_orphan_detached_partition_conn(
+    conn,
+    collection_id: str,
+    staging_table: str,
+    canonical_old: str,
+) -> None:
+    """Drop detached features_* leftovers from failed swaps (not attached to features)."""
+    for name in (canonical_old,):
+        if not name or name == staging_table:
+            continue
+        if not _table_exists_conn(conn, name):
+            continue
+        if _partition_is_attached_conn(conn, name):
+            continue
+        conn.execute(text(f'DROP TABLE IF EXISTS "{name}"'))
 
 
 def _migrate_default_rows_to_partition_sync(conn, collection_id: str) -> None:
@@ -187,9 +224,47 @@ def ensure_features_partition_sync(engine: Engine, collection_id: str) -> str:
 
 
 def resolve_features_partition_relname_sync(engine: Engine, collection_id: str) -> str | None:
-    """Return dedicated features partition relname for collection_id, or None (rows may be in features_default)."""
+    """Return attached features partition relname for collection_id, or None (rows may be in features_default)."""
     with engine.connect() as conn:
         return _resolve_features_partition_relname_conn(conn, collection_id)
+
+
+def list_attached_feature_partitions_sync(engine: Engine) -> list[tuple[str, str]]:
+    """Return (relname, collection_id) for each non-default features partition."""
+    out: list[tuple[str, str]] = []
+    with engine.connect() as conn:
+        rows = conn.execute(text(_PARTITION_LIST_SQL)).fetchall()
+        for row in rows:
+            relname = str(row.relname or "")
+            cid = _collection_id_from_bound(row.bound or "")
+            if relname and cid:
+                out.append((relname, cid))
+    return out
+
+
+def cleanup_detached_orphan_feature_partitions_sync(engine: Engine) -> list[str]:
+    """
+    Drop detached features_* tables when another partition is already attached for the same collection.
+    Fixes overlap errors from failed replace swaps (orphan features_* + attached bulk_staging_*).
+    """
+    dropped: list[str] = []
+    with engine.begin() as conn:
+        rows = conn.execute(text(_PARTITION_LIST_SQL)).fetchall()
+        for row in rows:
+            collection_id = _collection_id_from_bound(row.bound or "")
+            attached = str(row.relname or "")
+            if not collection_id or not attached:
+                continue
+            canonical = _safe_partition_name(collection_id)
+            if canonical == attached:
+                continue
+            if not _table_exists_conn(conn, canonical):
+                continue
+            if _partition_is_attached_conn(conn, canonical):
+                continue
+            conn.execute(text(f'DROP TABLE IF EXISTS "{canonical}"'))
+            dropped.append(canonical)
+    return dropped
 
 
 async def _partition_exists_for(db: AsyncSession, collection_id: str) -> bool:
@@ -231,21 +306,22 @@ def swap_staging_into_collection_partition_sync(
         )
 
         if _partition_is_attached_conn(conn, staging_table):
+            _drop_orphan_detached_partition_conn(conn, collection_id, staging_table, canonical_old)
             if skip_touch:
                 conn.execute(text("RESET geofast.bulk_skip_features_touch"))
             return
 
         old_part = _resolve_features_partition_relname_conn(conn, collection_id)
+        if old_part == staging_table:
+            _drop_orphan_detached_partition_conn(conn, collection_id, staging_table, canonical_old)
+            if skip_touch:
+                conn.execute(text("RESET geofast.bulk_skip_features_touch"))
+            return
+
         if old_part and old_part != staging_table:
             conn.execute(text(f'ALTER TABLE features DETACH PARTITION "{old_part}"'))
             conn.execute(text(f'DROP TABLE "{old_part}"'))
-        elif (
-            canonical_old != staging_table
-            and canonical_old != old_part
-            and _table_exists_conn(conn, canonical_old)
-        ):
-            # Leftover detached partition from an interrupted swap (not visible in pg_inherits).
-            conn.execute(text(f'DROP TABLE IF EXISTS "{canonical_old}"'))
+        _drop_orphan_detached_partition_conn(conn, collection_id, staging_table, canonical_old)
 
         conn.execute(text(f'ALTER TABLE "{staging_table}" SET LOGGED'))
         conn.execute(

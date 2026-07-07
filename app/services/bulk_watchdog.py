@@ -410,6 +410,7 @@ def reconcile_orphan_finalize_jobs() -> list[str]:
 
 
 def run_finalize_watchdog_pass() -> None:
-    """Re-queue finalize work for orphaned staging; fail only very stale finalizing jobs."""
-    reconcile_orphan_finalize_jobs()
-    fail_stale_finalizing_jobs()
+    """Reconcile stuck jobs, re-queue orphans, drop detached partition leftovers."""
+    from app.services.bulk_finalize_reconcile import reconcile_all_stuck_finalize_jobs
+
+    reconcile_all_stuck_finalize_jobs(dry_run=False, limit=5000)

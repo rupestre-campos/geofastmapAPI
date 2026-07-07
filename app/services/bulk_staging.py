@@ -11,6 +11,7 @@ from sqlalchemy.engine import Connection, Engine
 from app.core.config import get_settings
 from app.db.features_partitions import (
     ensure_features_partition_sync,
+    partition_swap_already_complete_sync,
     swap_staging_into_collection_partition_sync,
 )
 
@@ -97,11 +98,13 @@ def promote_staging_sync(
         drop_staging_table_sync(engine, job_id)
         return 0
 
-    ensure_features_partition_sync(engine, collection_id)
     skip_touch = bool(getattr(get_settings(), "bulk_skip_features_touch_trigger", True))
     if mode == "replace":
+        if partition_swap_already_complete_sync(engine, collection_id, staging):
+            return count
         swap_staging_into_collection_partition_sync(engine, collection_id, staging)
     else:
+        ensure_features_partition_sync(engine, collection_id)
         with engine.begin() as conn:
             if skip_touch:
                 conn.execute(text("SET LOCAL geofast.bulk_skip_features_touch = 'on'"))
