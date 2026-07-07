@@ -7,10 +7,13 @@ import sys
 import time
 from typing import Callable
 
+from sqlalchemy import create_engine
+
 from app.core.config import get_settings
 from app.services.bulk_copy_ingest import FINALIZE_QUEUED, run_bulk_copy_import_sync
 from app.services.bulk_finalize_queue import BulkFinalizePayload, enqueue_finalize
 from app.services.bulk_import import BulkImportCancelled, run_bulk_import_sync
+from app.services.bulk_staging import drop_staging_table_sync
 from app.services.bulk_collection_activity import (
     get_collection_bulk_mutex_holder,
     is_terminal_job_status,
@@ -294,6 +297,37 @@ def process_bulk_job(payload: BulkJobPayload) -> None:
         if terminal and terminal.status in ("failed", "cancelled"):
             return
         if err == FINALIZE_QUEUED:
+            if created <= 0:
+                try:
+                    eng = create_engine(
+                        get_settings().database_sync_url, pool_pre_ping=True, future=True
+                    )
+                    try:
+                        drop_staging_table_sync(eng, payload.job_id)
+                    finally:
+                        eng.dispose()
+                except Exception:
+                    pass
+                run_redis_retry(
+                    "bulk_import_empty",
+                    lambda: update_job(
+                        payload.job_id,
+                        status="failed",
+                        message=(
+                            "No features were imported from the file "
+                            f"({failed} geometries skipped or invalid)."
+                            if failed
+                            else "No features were imported from the file (empty or unreadable)."
+                        ),
+                        items_created=0,
+                        items_failed=failed,
+                    ),
+                    max_attempts=max(
+                        3,
+                        int(getattr(get_settings(), "redis_retry_read_max_attempts", 15) or 15),
+                    ),
+                )
+                return
             enqueue_finalize(
                 BulkFinalizePayload(
                     job_id=payload.job_id,

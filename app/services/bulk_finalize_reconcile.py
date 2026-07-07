@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -17,6 +18,7 @@ from app.db.features_partitions import (
     partition_swap_already_complete_sync,
     resolve_features_partition_relname_sync,
 )
+from app.services.bulk_collection_activity import holds_collection_bulk_mutex
 from app.services.bulk_copy_ingest import _finalize_after_promote
 from app.services.bulk_finalize_queue import (
     BulkFinalizePayload,
@@ -74,25 +76,64 @@ def _infer_import_mode(job) -> str:
     return "append"
 
 
+def _job_last_activity(job) -> datetime | None:
+    for ts in (job.last_progress_at, job.updated_at, job.created_at):
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=timezone.utc)
+        return ts
+    return None
+
+
+def _job_activity_age_seconds(job) -> float:
+    last = _job_last_activity(job)
+    if last is None:
+        return 0.0
+    return max(0.0, (datetime.now(timezone.utc) - last).total_seconds())
+
+
+def _load_still_in_progress(job) -> bool:
+    """
+    True when a load worker is likely still COPY-ing into staging.
+    Reconcile must not touch these jobs (empty staging is normal early on).
+    """
+    status = (job.status or "").lower()
+    if status in ("pending", "running", "replacing"):
+        return True
+    if holds_collection_bulk_mutex(job.collection_id, job.job_id):
+        return True
+    min_age = max(
+        60.0,
+        float(getattr(get_settings(), "bulk_running_recover_staging_seconds", 600.0) or 600.0),
+    )
+    if status == "finalizing" and (job.items_created or 0) <= 0 and _job_activity_age_seconds(job) < min_age:
+        return True
+    return False
+
+
 def _is_reconcile_candidate(job) -> bool:
     status = (job.status or "").lower()
     if status not in ("finalizing", "failed", "running", "replacing"):
         return False
-    msg = (job.message or "").lower()
+    if _load_still_in_progress(job):
+        return False
     if status == "finalizing":
         return True
     if (job.items_created or 0) > 0:
         return True
+    msg = (job.message or "").lower()
     if any(
         k in msg
         for k in (
             "partition swap",
-            "staging",
             "overlap",
             "deadlock",
             "watchdog",
             "finalize",
             "bulk import stalled",
+            "duplicate key",
+            "uniqueviolation",
         )
     ):
         return True
@@ -208,16 +249,51 @@ def _reconcile_one_job(engine: Engine, job, *, dry_run: bool, stats: ReconcileSt
         if dry_run:
             stats.empty_closed += 1
             return
+        if _load_still_in_progress(job):
+            stats.skipped += 1
+            return
+        live = resolve_features_partition_relname_sync(engine, job.collection_id)
+        if live and not live.startswith(STAGING_TABLE_PREFIX):
+            try:
+                with engine.connect() as conn:
+                    count = int(
+                        conn.execute(text(f'SELECT COUNT(*) FROM "{live}"')).scalar() or 0
+                    )
+            except Exception:
+                count = job.items_created or 0
+            if count > 0 or (job.items_created or 0) > 0:
+                _complete_swapped_job(
+                    engine,
+                    job,
+                    count or job.items_created or 0,
+                    dry_run=False,
+                    note="live partition already has data (staging dropped)",
+                    stats=stats,
+                )
+                return
         try:
             drop_staging_table_sync(engine, job.job_id)
         except Exception:
             pass
+        if (job.items_created or 0) > 0:
+            fail_msg = (
+                "Bulk import lost staged data before partition swap could complete. "
+                "Please re-import this file."
+            )
+        else:
+            fail_msg = (
+                "Bulk import produced no features (empty staging table). "
+                "Check the source file and re-import."
+            )
         update_job(
             job.job_id,
             status="failed",
-            message="Reconcile: empty staging table; nothing to promote.",
+            message=fail_msg,
+            items_created=0,
+            items_failed=job.items_failed,
         )
         clear_finalize_pending(job.job_id)
+        unregister_bulk_import_job(job.job_id)
         stats.empty_closed += 1
         return
 
