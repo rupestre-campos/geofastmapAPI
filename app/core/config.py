@@ -70,10 +70,14 @@ class Settings(BaseSettings):
     bulk_finalize_retry_base_seconds: float = 2.0
     bulk_finalize_retry_max_seconds: float = 120.0
     bulk_finalize_watchdog_interval_seconds: float = 60.0
-    # Rows per COPY flush during staging load.
-    bulk_copy_batch_rows: int = 50000
+    # Rows per COPY flush during staging load (lower = less RAM, more transactions).
+    bulk_copy_batch_rows: int = 20000
     # Parser processes for GeoJSONSeq (0 = auto: max(1, cpu_count - 1)).
     bulk_copy_parser_workers: int = 0
+    # Lines shipped to each parser process per task (bounds per-task RAM for millions of rows).
+    bulk_copy_parse_batch_lines: int = 8000
+    # Max parse tasks in flight (0 = auto: parser_workers * 2). Caps peak RAM independent of file size.
+    bulk_copy_max_inflight_batches: int = 0
     # Fail running bulk jobs with no progress heartbeat after this many seconds.
     bulk_job_stale_seconds: float = 14400.0
     # When false (default with finalize queue), load workers only reclaim mutexes — they do not fail long COPY jobs.

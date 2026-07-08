@@ -7,9 +7,10 @@ import json
 import multiprocessing
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections import deque
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Iterable, Iterator
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -66,7 +67,20 @@ def _parser_worker_count() -> int:
 
 
 def _copy_batch_size() -> int:
-    return max(1000, int(getattr(get_settings(), "bulk_copy_batch_rows", 50000) or 50000))
+    return max(1000, int(getattr(get_settings(), "bulk_copy_batch_rows", 20000) or 20000))
+
+
+def _parse_batch_lines() -> int:
+    """Lines per parse task shipped to a worker process (bounds per-task RAM)."""
+    return max(500, int(getattr(get_settings(), "bulk_copy_parse_batch_lines", 8000) or 8000))
+
+
+def _max_inflight_batches(workers: int) -> int:
+    """Cap parse tasks in flight so the whole file is never resident in RAM at once."""
+    configured = int(getattr(get_settings(), "bulk_copy_max_inflight_batches", 0) or 0)
+    if configured > 0:
+        return configured
+    return max(2, workers * 2)
 
 
 def _geojson_seq_extensions() -> frozenset[str]:
@@ -173,43 +187,6 @@ def _parse_line_bytes(
     )
 
 
-def _split_file_line_chunks(path: str, n_parts: int) -> list[tuple[int, int]]:
-    """Byte ranges aligned to newline boundaries for parallel read."""
-    size = os.path.getsize(path)
-    if size <= 0 or n_parts <= 1:
-        return [(0, size)]
-    chunk = max(1, size // n_parts)
-    ranges: list[tuple[int, int]] = []
-    with open(path, "rb") as f:
-        start = 0
-        while start < size:
-            end = min(size, start + chunk)
-            if end < size:
-                f.seek(end)
-                f.readline()
-                end = f.tell()
-            ranges.append((start, end))
-            start = end
-    return ranges
-
-
-def _read_chunk_lines(path: str, start: int, end: int) -> list[bytes]:
-    lines: list[bytes] = []
-    with open(path, "rb") as f:
-        f.seek(start)
-        data = f.read(max(0, end - start))
-    if start > 0:
-        first_nl = data.find(b"\n")
-        if first_nl >= 0:
-            data = data[first_nl + 1 :]
-        else:
-            data = b""
-    for line in data.split(b"\n"):
-        if line:
-            lines.append(line)
-    return lines
-
-
 def _dbapi_connection(conn) -> object:
     sa_conn = conn.connection
     if hasattr(sa_conn, "dbapi_connection") and sa_conn.dbapi_connection is not None:
@@ -219,36 +196,152 @@ def _dbapi_connection(conn) -> object:
     return sa_conn
 
 
-def _copy_rows_to_staging(conn, staging: str, rows: list[tuple]) -> None:
-    if not rows:
-        return
+def _encode_copy_row(row: tuple) -> str:
+    parts = []
+    for val in row:
+        if val is None:
+            parts.append("\\N")
+        else:
+            s = str(val)
+            s = s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+            parts.append(s)
+    return "\t".join(parts) + "\n"
+
+
+class _RowCopyReader(io.TextIOBase):
+    """
+    Readable text stream that encodes row tuples to COPY text on demand.
+
+    psycopg2 pulls ~8 KiB per read(), so the full batch is never materialized as
+    one big string — only a small carry buffer plus the source row iterator.
+    """
+
+    def __init__(self, rows: Iterable[tuple]) -> None:
+        self._it: Iterator[tuple] = iter(rows)
+        self._carry = ""
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int | None = -1) -> str:
+        if size is None or size < 0:
+            chunks = [self._carry]
+            self._carry = ""
+            chunks.extend(_encode_copy_row(r) for r in self._it)
+            return "".join(chunks)
+        parts: list[str] = []
+        have = len(self._carry)
+        if self._carry:
+            parts.append(self._carry)
+            self._carry = ""
+        while have < size:
+            try:
+                row = next(self._it)
+            except StopIteration:
+                break
+            enc = _encode_copy_row(row)
+            parts.append(enc)
+            have += len(enc)
+        buf = "".join(parts)
+        if len(buf) > size:
+            self._carry = buf[size:]
+            return buf[:size]
+        return buf
+
+    # copy_expert also probes readline() on some paths.
+    def readline(self, size: int | None = -1) -> str:  # type: ignore[override]
+        if self._carry:
+            nl = self._carry.find("\n")
+            if nl >= 0:
+                line = self._carry[: nl + 1]
+                self._carry = self._carry[nl + 1 :]
+                return line
+        try:
+            row = next(self._it)
+        except StopIteration:
+            line = self._carry
+            self._carry = ""
+            return line
+        line = self._carry + _encode_copy_row(row)
+        self._carry = ""
+        return line
+
+
+_COPY_SQL_TEMPLATE = (
+    'COPY "{staging}" (\n'
+    "    id, collection_id, part_index, geometry, properties,\n"
+    "    bulk_import_job_id, created_at, updated_at\n"
+    ")\n"
+    "FROM STDIN WITH (FORMAT text, DELIMITER E'\\t', NULL '\\N')"
+)
+
+
+def _copy_rows_to_staging(conn, staging: str, rows: Iterable[tuple]) -> None:
     raw_conn = _dbapi_connection(conn)
-    buf = io.StringIO()
-    for row in rows:
-        parts = []
-        for val in row:
-            if val is None:
-                parts.append("\\N")
-            else:
-                s = str(val)
-                s = s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
-                parts.append(s)
-        buf.write("\t".join(parts) + "\n")
-    buf.seek(0)
     cur = raw_conn.cursor()
     try:
-        cur.copy_expert(
-            f"""
-            COPY "{staging}" (
-                id, collection_id, part_index, geometry, properties,
-                bulk_import_job_id, created_at, updated_at
-            )
-            FROM STDIN WITH (FORMAT text, DELIMITER E'\\t', NULL '\\N')
-            """,
-            buf,
-        )
+        cur.copy_expert(_COPY_SQL_TEMPLATE.format(staging=staging), _RowCopyReader(rows))
     finally:
         cur.close()
+
+
+class _StagingCopier:
+    """
+    Persistent-connection COPY sink that flushes in bounded row batches.
+
+    Keeps at most `batch_size` rows buffered, streams each flush straight to
+    PostgreSQL, and commits per batch so memory (and the UNLOGGED WAL) stay flat
+    regardless of total file size.
+    """
+
+    def __init__(self, engine: Engine, staging: str, batch_size: int) -> None:
+        self._engine = engine
+        self._staging = staging
+        self._batch_size = max(1000, batch_size)
+        self._buf: list[tuple] = []
+        self._raw = engine.raw_connection()
+
+    def add(self, rows: list[tuple]) -> int:
+        """Buffer rows; flush full batches. Returns rows written to the DB this call."""
+        if rows:
+            self._buf.extend(rows)
+        written = 0
+        while len(self._buf) >= self._batch_size:
+            batch = self._buf[: self._batch_size]
+            del self._buf[: self._batch_size]
+            written += self._flush_batch(batch)
+        return written
+
+    def flush_final(self) -> int:
+        if not self._buf:
+            return 0
+        batch = self._buf
+        self._buf = []
+        return self._flush_batch(batch)
+
+    def _flush_batch(self, batch: list[tuple]) -> int:
+        cur = self._raw.cursor()
+        try:
+            cur.copy_expert(
+                _COPY_SQL_TEMPLATE.format(staging=self._staging),
+                _RowCopyReader(batch),
+            )
+            self._raw.commit()
+        except Exception:
+            try:
+                self._raw.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            cur.close()
+        return len(batch)
+
+    def close(self) -> None:
+        try:
+            self._raw.close()
+        except Exception:
+            pass
 
 
 def _load_geojson_seq_into_staging(
@@ -264,77 +357,92 @@ def _load_geojson_seq_into_staging(
     max_vertices = max(1, int(settings.features_subdivide_max_vertices or 256))
     batch_size = _copy_batch_size()
     heartbeat = max(0.0, float(getattr(settings, "bulk_progress_heartbeat_seconds", 5.0) or 5.0))
-    now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
     workers = _parser_worker_count()
+    parse_lines = _parse_batch_lines()
     created = 0
     failed = 0
     last_hb = time.monotonic()
 
-    chunks = _split_file_line_chunks(path, workers)
-    pending_rows: list[tuple] = []
+    copier = _StagingCopier(engine, staging, batch_size)
 
-    def flush(force: bool = False) -> None:
-        nonlocal pending_rows, created, last_hb
-        if not pending_rows:
-            return
-        if not force and len(pending_rows) < batch_size:
-            return
-        _raise_if_cancelled(job_id)
-        with engine.begin() as conn:
-            _copy_rows_to_staging(conn, staging, pending_rows)
-        created += len(pending_rows)
-        pending_rows = []
+    def _account(rows: list[tuple], fail: int) -> None:
+        nonlocal created, failed, last_hb
+        failed += fail
+        if rows:
+            created += len(rows)
+            copier.add(rows)
         if on_progress and heartbeat > 0 and (time.monotonic() - last_hb) >= heartbeat:
             on_progress("running", created, None)
             last_hb = time.monotonic()
 
-    if len(chunks) <= 1:
-        with open(path, "rb") as f:
-            for raw_line in f:
-                _raise_if_cancelled(job_id)
-                rows, fail = _parse_line_bytes(
-                    raw_line,
-                    collection_id=collection_id,
-                    job_id=job_id,
-                    now_iso=now_iso,
-                    max_vertices=max_vertices,
-                )
-                failed += fail
-                pending_rows.extend(rows)
-                if len(pending_rows) >= batch_size:
-                    flush(force=True)
-        flush(force=True)
-    else:
-        with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
-            futures = []
-            for start, end in chunks:
-                lines = _read_chunk_lines(path, start, end)
-                futures.append(
-                    pool.submit(
-                        _parse_lines_batch,
-                        lines,
-                        collection_id,
-                        job_id,
-                        now_iso,
-                        max_vertices,
+    try:
+        if workers <= 1:
+            with open(path, "rb") as f:
+                for i, raw_line in enumerate(f):
+                    if i % 2000 == 0:
+                        _raise_if_cancelled(job_id)
+                    rows, fail = _parse_line_bytes(
+                        raw_line,
+                        collection_id=collection_id,
+                        job_id=job_id,
+                        now_iso=now_iso,
+                        max_vertices=max_vertices,
                     )
-                )
-            for fut in as_completed(futures):
-                _raise_if_cancelled(job_id)
-                rows, fail = fut.result()
-                failed += fail
-                pending_rows.extend(rows)
-                while len(pending_rows) >= batch_size:
-                    batch = pending_rows[:batch_size]
-                    pending_rows = pending_rows[batch_size:]
-                    with engine.begin() as conn:
-                        _copy_rows_to_staging(conn, staging, batch)
-                    created += len(batch)
-                    if on_progress and heartbeat > 0 and (time.monotonic() - last_hb) >= heartbeat:
-                        on_progress("running", created, None)
-                        last_hb = time.monotonic()
-        flush(force=True)
+                    _account(rows, fail)
+        else:
+            max_inflight = _max_inflight_batches(workers)
+            with ProcessPoolExecutor(
+                max_workers=workers,
+                mp_context=multiprocessing.get_context("spawn"),
+            ) as pool:
+                futures: deque = deque()
+
+                def _drain_one() -> None:
+                    fut = futures.popleft()
+                    rows, fail = fut.result()
+                    _raise_if_cancelled(job_id)
+                    _account(rows, fail)
+                    del rows
+
+                batch: list[bytes] = []
+                with open(path, "rb") as f:
+                    for raw_line in f:
+                        if not raw_line.strip():
+                            continue
+                        batch.append(raw_line)
+                        if len(batch) >= parse_lines:
+                            futures.append(
+                                pool.submit(
+                                    _parse_lines_batch,
+                                    batch,
+                                    collection_id,
+                                    job_id,
+                                    now_iso,
+                                    max_vertices,
+                                )
+                            )
+                            batch = []
+                            while len(futures) >= max_inflight:
+                                _drain_one()
+                if batch:
+                    futures.append(
+                        pool.submit(
+                            _parse_lines_batch,
+                            batch,
+                            collection_id,
+                            job_id,
+                            now_iso,
+                            max_vertices,
+                        )
+                    )
+                    batch = []
+                while futures:
+                    _drain_one()
+
+        copier.flush_final()
+    finally:
+        copier.close()
 
     return created, failed
 
@@ -380,45 +488,38 @@ def _load_fiona_source_into_staging(
     now = datetime.now(timezone.utc)
     created = 0
     failed = 0
-    pending_rows: list[tuple] = []
     last_hb = time.monotonic()
+    cancel_check_interval = 2000
 
-    def flush(force: bool = False) -> None:
-        nonlocal pending_rows, created, last_hb
-        if not pending_rows:
-            return
-        if not force and len(pending_rows) < batch_size:
-            return
-        _raise_if_cancelled(job_id)
-        with engine.begin() as conn:
-            _copy_rows_to_staging(conn, staging, pending_rows)
-        created += len(pending_rows)
-        pending_rows = []
-        if on_progress and heartbeat > 0 and (time.monotonic() - last_hb) >= heartbeat:
-            on_progress("running", created, None)
-            last_hb = time.monotonic()
-
-    with fiona.open(open_path, driver=driver) as src:
-        for feat in src:
-            _raise_if_cancelled(job_id)
-            props = dict(feat.get("properties") or {})
-            geom_dict = feat.get("geometry")
-            rec = {"type": "Feature", "geometry": geom_dict, "properties": props}
-            fid = props.get("id") or feat.get("id")
-            if fid is not None:
-                rec["id"] = fid
-            rows, fail = _feature_rows_from_record(
-                rec,
-                collection_id=collection_id,
-                job_id=job_id,
-                now=now,
-                max_vertices=max_vertices,
-            )
-            failed += fail
-            pending_rows.extend(rows)
-            if len(pending_rows) >= batch_size:
-                flush(force=True)
-    flush(force=True)
+    copier = _StagingCopier(engine, staging, batch_size)
+    try:
+        with fiona.open(open_path, driver=driver) as src:
+            for i, feat in enumerate(src):
+                if i % cancel_check_interval == 0:
+                    _raise_if_cancelled(job_id)
+                props = dict(feat.get("properties") or {})
+                geom_dict = feat.get("geometry")
+                rec = {"type": "Feature", "geometry": geom_dict, "properties": props}
+                fid = props.get("id") or feat.get("id")
+                if fid is not None:
+                    rec["id"] = fid
+                rows, fail = _feature_rows_from_record(
+                    rec,
+                    collection_id=collection_id,
+                    job_id=job_id,
+                    now=now,
+                    max_vertices=max_vertices,
+                )
+                failed += fail
+                if rows:
+                    created += len(rows)
+                    copier.add(rows)
+                if on_progress and heartbeat > 0 and (time.monotonic() - last_hb) >= heartbeat:
+                    on_progress("running", created, None)
+                    last_hb = time.monotonic()
+        copier.flush_final()
+    finally:
+        copier.close()
     return created, failed
 
 
