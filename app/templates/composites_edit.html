@@ -31,8 +31,22 @@
   </div>
 
   <div class="card">
+    <h2 class="card-title">Composite static tiles</h2>
+    <p class="meta">Recommended: one MBTiles file merged from all members (fast map pan/zoom). Filtered views still use dynamic tiles.</p>
+    {% if has_own_static_tiles %}
+    <p class="meta">Composite tiles built{% if tiles_revision %} — revision <code>{{ tiles_revision }}</code>{% endif %}</p>
+    <a href="{{ base }}/collections/{{ collection_id }}/tiles/build?f=html" class="btn btn-sm">Rebuild composite tiles</a>
+    {% else %}
+    <p class="meta">No composite MBTiles yet{% if has_static_tiles %} (member merge fallback may apply){% endif %}.</p>
+    <a href="{{ base }}/collections/{{ collection_id }}/tiles/build?f=html" class="btn btn-sm btn-primary">Build composite tiles</a>
+    {% endif %}
+    <button type="button" class="btn btn-sm" id="btn-invalidate-cache" style="margin-left: 6px;">Invalidate tile cache</button>
+    <p id="composite-tiles-msg" class="meta" style="margin-top: 0.5rem;"></p>
+  </div>
+
+  <div class="card">
     <h2 class="card-title">Member collections</h2>
-    <p class="meta">Merged static tiles are served at <code>{{ base }}/collections/{{ collection_id }}/tiles/static/{z}/{x}/{y}.pbf</code>. Build tiles on each member first.</p>
+    <p class="meta">Build <strong>composite</strong> static tiles (one tippecanoe run over all members) or per-member tiles as fallback. Tile URLs include <code>?v=</code> revision for cache pinning.</p>
     <table class="collections-table" id="members-table">
       <thead>
         <tr>
@@ -83,11 +97,10 @@
 
     <div class="btn-group" style="margin-top: 1rem;">
       <button type="button" class="btn btn-primary" id="btn-save-members">Save members</button>
-      <button type="button" class="btn" id="btn-invalidate-cache">Invalidate tile cache</button>
       <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn">View collection</a>
       <a href="{{ base }}/composites?f=html" class="btn">Back to list</a>
     </div>
-    <p id="members-msg" class="meta" style="margin-top: 0.5rem;"></p>
+    <p id="members-save-msg" class="meta" style="margin-top: 0.5rem;"></p>
   </div>
 
   <div class="card" id="property-indexes-card">
@@ -109,7 +122,7 @@
   <div class="card">
     <h2 class="card-title">Preview map</h2>
     {% if not has_static_tiles %}
-    <p class="meta">No member static tiles yet — preview uses merged <strong>dynamic</strong> tiles from member data.</p>
+    <p class="meta">No static tiles yet — preview uses <strong>dynamic</strong> tiles (merged from all members).</p>
     {% endif %}
     <div id="map" class="map-container" style="min-height: 320px;">
       <div class="map-controls">
@@ -125,14 +138,23 @@
     const base = {{ base | tojson }};
     const collectionId = {{ collection_id | tojson }};
     const hasStaticTiles = {{ has_static_tiles | tojson }};
+    const tilesRevision = {{ tiles_revision | tojson }};
+    const dynamicRevision = {{ dynamic_revision | tojson }};
     const staticMinzoom = {{ static_minzoom | tojson }};
     const staticMaxzoom = {{ static_maxzoom | tojson }};
     const tileLayerId = {{ tile_layer_id | tojson }};
     const extent = {{ extent_geojson | tojson if extent_geojson else 'null' }};
-    const tileUrlStatic = hasStaticTiles
-      ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf'
-      : null;
-    const tileUrlDynamic = base + '/collections/' + collectionId + '/tiles/dynamic/{z}/{x}/{y}.pbf';
+    function tileUrlWithRevision(path, revision) {
+      if (!revision) return path;
+      return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'v=' + encodeURIComponent(revision);
+    }
+    const tileUrlStatic = hasStaticTiles && tilesRevision
+      ? tileUrlWithRevision(base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf', tilesRevision)
+      : (hasStaticTiles ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' : null);
+    const tileUrlDynamic = tileUrlWithRevision(
+      base + '/collections/' + collectionId + '/tiles/dynamic/{z}/{x}/{y}.pbf',
+      dynamicRevision
+    );
     const propertyIndexFieldsInitial = {{ (property_index_fields or []) | tojson }};
 
     function memberIds() {
@@ -205,7 +227,7 @@
         if (!r.ok) return r.json().then(j => Promise.reject(j));
         return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/composite/invalidate-tiles-cache', { method: 'POST' });
       }).then(() => {
-        document.getElementById('members-msg').textContent = 'Members saved. Reloading…';
+        document.getElementById('members-save-msg').textContent = 'Members saved. Reloading…';
         location.reload();
       }).catch(e => alert('Error: ' + (e.detail || JSON.stringify(e))));
     };
@@ -214,7 +236,7 @@
       fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/composite/invalidate-tiles-cache', { method: 'POST' })
         .then(r => {
           if (!r.ok) return r.json().then(j => Promise.reject(j));
-          document.getElementById('members-msg').textContent = 'Tile cache invalidated.';
+          document.getElementById('composite-tiles-msg').textContent = 'Tile cache invalidated.';
         })
         .catch(e => alert('Error: ' + (e.detail || JSON.stringify(e))));
     };

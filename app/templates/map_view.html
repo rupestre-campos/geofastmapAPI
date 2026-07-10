@@ -328,7 +328,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofastmap-utils.js?v=7"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=8"></script>
   <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
   {% include "_style_editor_toolbox_script.html" %}
@@ -338,8 +338,9 @@
       var mapDefinition = {{ map_definition | tojson }};
       var googleKey = {{ google_maps_api_key | tojson }};
       var layers = (mapDefinition && mapDefinition.layers && Array.isArray(mapDefinition.layers))
-        ? GeofastmapUtils.dedupeMosaicMapLayers(mapDefinition.layers)
+        ? GeofastmapUtils.normalizeMapLayersForHost(mapDefinition.layers)
         : [];
+      layers.forEach(normalizeTerrainRasterOverlay);
       var collectionTitles = {{ collection_titles | default({}) | tojson }};
       function layerDisplayNameForLegend(cid) {
         if (!cid) return '';
@@ -375,9 +376,13 @@
       function terrainRasterOverlayWanted(layer) {
         if (!layer) return true;
         if (layer.terrain_raster_overlay === false) return false;
-        if (layer.terrain_raster_overlay === true) return true;
-        if (layer.terrain_enabled === true) return false;
         return true;
+      }
+      function normalizeTerrainRasterOverlay(layer) {
+        if (!layer || !layerRasterTrue(layer)) return;
+        if (layer.terrain_enabled === true && layer.terrain_raster_overlay !== true && layer.terrain_raster_overlay !== false) {
+          layer.terrain_raster_overlay = true;
+        }
       }
       function mosaicRasterTilesUrlTemplateWithV(baseUrl, viewId, revision) {
         var u = baseUrl + '/raster-views/' + encodeURIComponent(String(viewId)) + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png';
@@ -432,11 +437,6 @@
       }
       function isWorldScaleView() {
         try { return map && map.getZoom() < 4; } catch (e) { return true; }
-      }
-      function rasterSourceBounds(bbox) {
-        if (!GeofastmapUtils.isValidMapBbox(bbox)) return undefined;
-        // MapLibre raster source bounds: [west, south, east, north]
-        return [Number(bbox[0]), Number(bbox[1]), Number(bbox[2]), Number(bbox[3])];
       }
 
       var BASEMAPS;
@@ -1433,8 +1433,6 @@
             if (!isFinite(ro) || ro < 0) ro = 1;
             if (overlay) {
               var rsrc = { type: 'raster', tiles: [rasterTU], tileSize: 256, maxzoom: 18 };
-              var rb = rasterSourceBounds(mapBbox);
-              if (rb) rsrc.bounds = rb;
               if (layer.stac_viewer_path || layer.stacViewerPath) rsrc.attribution = 'STAC / Titiler';
               map.addSource(sid, rsrc);
               map.addLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);

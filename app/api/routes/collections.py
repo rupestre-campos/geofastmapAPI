@@ -37,6 +37,7 @@ from app.schemas.collection import (
 )
 from app.services.composite_collections import (
     is_composite_collection,
+    mark_composite_static_stale,
     member_tile_status,
     parse_composite_members,
     validate_composite_members,
@@ -496,6 +497,8 @@ async def patch_collection(
         )
     if is_composite_collection(collection):
         invalidate_composite_tiles_cache(collection_id)
+        if "composite_members" in payload.model_fields_set:
+            await mark_composite_static_stale(db, collection_id)
     base = _base_url(request)
     member_status_json = None
     if is_composite_collection(collection):

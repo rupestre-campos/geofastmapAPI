@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     bulk_queue_type: str = "redis"  # memory | redis
     # Standalone bulk worker (`app.worker_main`): concurrent queue jobs per process (threads). Each job holds DB + CPU; raise with Postgres max_connections in mind.
     bulk_worker_max_concurrent: int = 1
+    # After claiming a job while free slots remain, wait this long before claiming the next.
+    # Lets idle worker machines win the next job from the shared queue (spreads bursts across hosts).
+    # 0 = greedy (one host can grab a whole burst). Set >0 (e.g. 0.5) to favor cross-host distribution.
+    bulk_worker_dispatch_cooldown_seconds: float = 0.5
     # Comma-separated collection ids allowed to auto-queue tile build after bulk import.
     # Empty = disabled (use POST /collections/{id}/tiles/build for manual/cron rebuilds).
     bulk_auto_tile_build_collections: str = ""
@@ -129,6 +133,8 @@ class Settings(BaseSettings):
     redis_retry_read_max_attempts: int = 20
     # Composite collection: Redis TTL for merged static MVT tiles (seconds). 0 = disabled.
     composite_tiles_cache_ttl_seconds: int = 3600
+    # Max rows fetched per member when merging filtered composite item queries.
+    composite_items_merge_cap: int = 5000
 
     # OGC API - Processes: geometric operations (intersection, erase) between collections.
     process_queue_type: str = "redis"  # redis | memory (memory = no separate worker)

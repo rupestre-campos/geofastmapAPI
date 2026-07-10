@@ -962,6 +962,41 @@
     return out;
   }
 
+  function isGeofastTileUrlPath(pathname) {
+    if (!pathname) return false;
+    return pathname.indexOf('/titiler/tiles/') !== -1 ||
+      pathname.indexOf('/rasters/tiles/') !== -1 ||
+      pathname.indexOf('/tiles/dynamic/') !== -1 ||
+      pathname.indexOf('/tiles/static/') !== -1 ||
+      pathname.indexOf('/stac/') !== -1;
+  }
+
+  /**
+   * Rewrite same-origin GeoFast tile URLs to the browser host (IP vs domain behind nginx).
+   */
+  function rewriteGeofastTileUrlToCurrentOrigin(url) {
+    if (!url || typeof url !== 'string' || url.indexOf('http') !== 0) return url;
+    if (typeof window === 'undefined' || !window.location) return url;
+    try {
+      var u = new URL(url);
+      if (!isGeofastTileUrlPath(u.pathname)) return url;
+      if (u.host === window.location.host) return url;
+      return window.location.origin + u.pathname + u.search + (u.hash || '');
+    } catch (e) {
+      return url;
+    }
+  }
+
+  /** Dedupe mosaic layers and align tile URL hosts with the page the user opened. */
+  function normalizeMapLayersForHost(layers) {
+    return dedupeMosaicMapLayers(layers).map(function(layer) {
+      if (!layer || !layer.tiles_url) return layer;
+      var out = Object.assign({}, layer);
+      out.tiles_url = rewriteGeofastTileUrlToCurrentOrigin(layer.tiles_url);
+      return out;
+    });
+  }
+
   /** Match app.utils.geo.mvt_layer_name — MVT source-layer id for a collection. */
   function mvtLayerName(collectionId) {
     var safe = String(collectionId || '').replace(/[^a-zA-Z0-9_]/g, '_');
@@ -1000,6 +1035,8 @@
     DEFAULT_EARTH_SEARCH_COLLECTION_ID: DEFAULT_EARTH_SEARCH_COLLECTION_ID,
     mosaicViewIdFromLayer: mosaicViewIdFromLayer,
     dedupeMosaicMapLayers: dedupeMosaicMapLayers,
+    rewriteGeofastTileUrlToCurrentOrigin: rewriteGeofastTileUrlToCurrentOrigin,
+    normalizeMapLayersForHost: normalizeMapLayersForHost,
     isValidMapBbox: isValidMapBbox,
     isPlaceholderMapCamera: isPlaceholderMapCamera,
     isExplicitSavedCamera: isExplicitSavedCamera,

@@ -266,6 +266,7 @@ services:
     command: python -m app.mosaic_worker_main
 
   titiler:
+    restart: unless-stopped
     image: ghcr.io/developmentseed/titiler:latest
     container_name: geofastmap_titiler
     volumes:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -21,6 +22,8 @@ from app.services.bulk_watchdog import run_bulk_watchdog_pass
 from app.services.bulk_worker import cleanup_orphan_bulk_uploads, process_bulk_job
 from app.services.redis_client import make_redis_client
 from app.services.redis_resilience import retry_wait_seconds
+
+WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 
 
 def _process_payload_json(payload_json: str) -> None:
@@ -63,8 +66,12 @@ def main() -> None:
     r = _connect_consumer(5.0)
 
     max_workers = max(1, int(getattr(settings, "bulk_worker_max_concurrent", 2) or 2))
+    dispatch_cooldown = max(
+        0.0, float(getattr(settings, "bulk_worker_dispatch_cooldown_seconds", 0.5) or 0.0)
+    )
     print(
-        f"Bulk import worker started (max {max_workers} concurrent jobs). Waiting for jobs...",
+        f"Bulk import worker started id={WORKER_ID} (max {max_workers} concurrent jobs, "
+        f"dispatch_cooldown={dispatch_cooldown:.2f}s). Waiting for jobs...",
         flush=True,
     )
 
@@ -139,7 +146,25 @@ def main() -> None:
                 continue
 
             _key, payload_json = result
+            try:
+                _claimed = BulkJobPayload.from_json(payload_json)
+                print(
+                    f"[bulk-worker] claimed job_id={_claimed.job_id} "
+                    f"collection={_claimed.collection_id} worker={WORKER_ID} "
+                    f"in_flight={in_flight + 1}/{max_workers}",
+                    flush=True,
+                )
+            except Exception:
+                pass
             futures.add(executor.submit(_process_payload_json, payload_json))
+
+            # Fair dispatch: if this host still has free slots, pause briefly so an idle
+            # worker machine can claim the next queued job before we grab it ourselves.
+            if dispatch_cooldown > 0 and (max_workers - len(futures)) > 0:
+                deadline = time.monotonic() + dispatch_cooldown
+                while time.monotonic() < deadline:
+                    _reap_done()
+                    time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
 
 
 if __name__ == "__main__":

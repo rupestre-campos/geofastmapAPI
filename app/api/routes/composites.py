@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.html import html_response, wants_html
 from app.core.permissions import can_edit_collection
 from app.crud import collections as collections_crud
+from app.crud import collection_tiles as tiles_crud
 from app.db.session import get_db
 from app.models.collection import COLLECTION_TYPE_COMPOSITE, COLLECTION_TYPE_VECTOR
 from app.schemas.collection import (
@@ -24,7 +25,12 @@ from app.schemas.collection import (
     Extent,
 )
 from app.schemas.ogc import Link
+from app.services.collection_tiles_revision import compute_collection_tiles_revision
 from app.services.composite_collections import (
+    composite_dynamic_revision,
+    composite_has_own_static_tiles,
+    composite_has_static_tiles,
+    composite_resolved_static_revision,
     is_composite_collection,
     member_tile_status,
     parse_composite_members,
@@ -81,15 +87,28 @@ async def _composite_edit_context(
 ) -> dict:
     members = parse_composite_members(getattr(collection, "composite_members", None))
     member_status_list = await member_tile_status(db, members)
-    has_static_tiles = any(s.get("has_static_tiles") for s in member_status_list)
-    static_minzoom = min(
-        (s["minzoom"] for s in member_status_list if s.get("minzoom") is not None),
-        default=0,
-    )
-    static_maxzoom = max(
-        (s["maxzoom"] for s in member_status_list if s.get("maxzoom") is not None),
-        default=14,
-    )
+    own_rec = await tiles_crud.get_collection_tiles(db, collection.id)
+    has_own_static = await composite_has_own_static_tiles(db, collection.id)
+    has_static_tiles = has_own_static or await composite_has_static_tiles(db, collection.id, members)
+    if has_own_static and own_rec:
+        static_minzoom = own_rec.minzoom if own_rec.minzoom is not None else 0
+        static_maxzoom = own_rec.maxzoom if own_rec.maxzoom is not None else 14
+        tiles_revision = own_rec.tiles_revision or (
+            compute_collection_tiles_revision(collection.id, own_rec.pmtiles_path)
+            if own_rec.pmtiles_path
+            else None
+        )
+    else:
+        static_minzoom = min(
+            (s["minzoom"] for s in member_status_list if s.get("minzoom") is not None),
+            default=0,
+        )
+        static_maxzoom = max(
+            (s["maxzoom"] for s in member_status_list if s.get("maxzoom") is not None),
+            default=14,
+        )
+        tiles_revision = await composite_resolved_static_revision(db, collection.id, members)
+    dynamic_revision = await composite_dynamic_revision(db, members)
     picker = await _vector_picker(db, current_user=current_user, exclude_id=collection.id)
     out = CollectionRead.model_validate(collection)
     return {
@@ -103,6 +122,9 @@ async def _composite_edit_context(
         "member_count": len(members),
         "vector_collections": picker,
         "has_static_tiles": has_static_tiles,
+        "has_own_static_tiles": has_own_static,
+        "tiles_revision": tiles_revision,
+        "dynamic_revision": dynamic_revision,
         "static_minzoom": static_minzoom,
         "static_maxzoom": static_maxzoom,
         "tile_layer_id": mvt_layer_name(collection.id),

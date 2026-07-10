@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.crud import collection_tiles as tiles_crud
 from app.models.collection import COLLECTION_TYPE_COMPOSITE, COLLECTION_TYPE_VECTOR, Collection
+from app.services.collection_tiles_revision import compute_collection_tiles_revision
 from app.services.mvt_merge import compute_composite_tiles_revision
 
 
@@ -125,6 +128,67 @@ async def composite_tiles_revision(db: AsyncSession, members: list[dict[str, str
         row = result.first()
         revisions.append(row.tiles_revision if row else None)
     return compute_composite_tiles_revision(revisions)
+
+
+async def composite_has_own_static_tiles(db: AsyncSession, composite_id: str) -> bool:
+    rec = await tiles_crud.get_collection_tiles(db, composite_id)
+    return bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).is_file())
+
+
+async def composite_own_tile_record(db: AsyncSession, composite_id: str):
+    return await tiles_crud.get_collection_tiles(db, composite_id)
+
+
+async def composite_members_max_feature_updated_at(
+    db: AsyncSession,
+    members: list[dict[str, str]],
+) -> Any:
+    ids = member_collection_ids(members)
+    if not ids:
+        return None
+    result = await db.execute(
+        text("SELECT MAX(features_last_updated_at) AS m FROM collections WHERE id = ANY(:ids)"),
+        {"ids": ids},
+    )
+    row = result.first()
+    return row.m if row and row.m else None
+
+
+async def composite_resolved_static_revision(
+    db: AsyncSession,
+    composite_id: str,
+    members: list[dict[str, str]],
+) -> str | None:
+    """Revision for static tile URLs: composite MBTiles when built, else merged member revisions."""
+    rec = await tiles_crud.get_collection_tiles(db, composite_id)
+    if rec and rec.pmtiles_path and Path(rec.pmtiles_path).is_file():
+        return rec.tiles_revision or compute_collection_tiles_revision(composite_id, rec.pmtiles_path)
+    rev = await composite_tiles_revision(db, members)
+    return rev or None
+
+
+async def composite_has_static_tiles(
+    db: AsyncSession,
+    composite_id: str,
+    members: list[dict[str, str]],
+) -> bool:
+    if await composite_has_own_static_tiles(db, composite_id):
+        return True
+    statuses = await member_tile_status(db, members)
+    return any(s.get("has_static_tiles") for s in statuses)
+
+
+async def mark_composite_static_stale(db: AsyncSession, composite_id: str) -> None:
+    """Drop composite-owned MBTiles so the next build exports all current members."""
+    rec = await tiles_crud.get_collection_tiles(db, composite_id)
+    if rec and rec.pmtiles_path:
+        path = Path(rec.pmtiles_path)
+        if path.is_file():
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    await tiles_crud.clear_static_tiles(db, composite_id)
 
 
 async def composite_dynamic_revision(db: AsyncSession, members: list[dict[str, str]]) -> str:

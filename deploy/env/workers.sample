@@ -28,7 +28,12 @@ BULK_UPLOAD_CHUNK_SIZE_BYTES=67108864
 BULK_SHARDED_INGEST_ENABLED=true
 BULK_SHARD_LINES_PER_PART=100000
 # Standalone bulk worker: concurrent import threads per process (see app.worker_main). Watch Postgres max_connections.
-BULK_WORKER_MAX_CONCURRENT=3
+# With 3 worker machines, keep this low (1-2) so a burst of jobs spreads across hosts instead of
+# one host greedily filling all its slots. Raise only if you want a single host to parallelize.
+BULK_WORKER_MAX_CONCURRENT=2
+# After claiming a job with free slots left, wait this long before claiming the next, so idle
+# worker machines can win the next queued job. 0 = greedy (one host can grab a whole burst).
+BULK_WORKER_DISPATCH_COOLDOWN_SECONDS=0.5
 # Load workers enqueue finalize jobs; the consumer runs on the API host only (not this compose stack):
 #   docker compose -f deploy/compose/docker-compose.finalize-worker.yml up -d --build
 BULK_FINALIZE_QUEUE_ENABLED=true

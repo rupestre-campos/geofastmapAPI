@@ -16,6 +16,45 @@ from app.services.tile_build_queue import (
 )
 from app.services.bulk_collection_activity import wait_until_collection_bulk_idle
 from app.services.tile_builder import BUILD_CANCELLED, build_pmtiles_sync
+from app.services.composite_tile_builder import build_composite_pmtiles_sync
+
+
+def _collection_type_sync(collection_id: str) -> str:
+    from sqlalchemy import create_engine, text
+
+    settings = get_settings()
+    engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT collection_type FROM collections WHERE id = :cid"),
+                {"cid": collection_id},
+            ).first()
+        return str(row[0]) if row and row[0] else ""
+    finally:
+        engine.dispose()
+
+
+def _composite_member_ids_sync(collection_id: str) -> list[str]:
+    import json
+    from sqlalchemy import create_engine, text
+
+    from app.services.composite_collections import member_collection_ids, parse_composite_members
+
+    settings = get_settings()
+    engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT composite_members FROM collections WHERE id = :cid"),
+                {"cid": collection_id},
+            ).first()
+        raw = row[0] if row else None
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        return member_collection_ids(parse_composite_members(raw))
+    finally:
+        engine.dispose()
 
 
 def _recover_orphaned_tile_builds() -> None:
@@ -75,7 +114,16 @@ def main() -> None:
             clear_pending(cid)
             continue
 
-        err = build_pmtiles_sync(cid, options=payload.options, stop_check=stop_check)
+        if _collection_type_sync(cid) == "composite":
+            member_ids = _composite_member_ids_sync(cid)
+            err = build_composite_pmtiles_sync(
+                cid,
+                member_ids,
+                options=payload.options,
+                stop_check=stop_check,
+            )
+        else:
+            err = build_pmtiles_sync(cid, options=payload.options, stop_check=stop_check)
         clear_pending(cid)
         if err == BUILD_CANCELLED:
             print(f"Tile build for {cid} was cancelled; intermediate files cleaned up", flush=True)

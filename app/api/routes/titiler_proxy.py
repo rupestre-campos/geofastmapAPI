@@ -86,6 +86,10 @@ async def titiler_proxy_tile(
     if not p.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="COG file missing on disk")
 
+    # Release the pooled DB connection before the slow upstream tile fetch, so a burst of tile
+    # requests can't exhaust the DB pool and stall unrelated page requests.
+    await db.close()
+
     secret = settings.titiler_internal_secret
     fetch_base = settings.raster_internal_fetch_base_url.rstrip("/")
     if secret and fetch_base:

@@ -1,6 +1,7 @@
 """Fan-out items queries across composite collection members."""
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
@@ -168,8 +169,10 @@ async def list_composite_features_paginated(
 
     total = 0
     if not skip_count:
-        for mid in member_ids:
-            total += await _member_count(db, mid, query_kwargs=base_kwargs)
+        counts = await asyncio.gather(
+            *[_member_count(db, mid, query_kwargs=base_kwargs) for mid in member_ids]
+        )
+        total = sum(counts)
     else:
         total = await composite_feature_count(db, member_ids)
 
@@ -215,10 +218,10 @@ async def list_composite_features_paginated(
         return out, total
 
     settings = get_settings()
-    merge_cap = max(limit + offset, int(getattr(settings, "composite_items_merge_cap", 5000) or 5000))
+    merge_cap = max(limit + offset, int(getattr(settings, "composite_items_merge_cap", 5000)))
     fetch_limit = min(merge_cap, settings.items_max_limit)
-    merged: list[tuple[str, Feature]] = []
-    for mid in member_ids:
+
+    async def _fetch_member(mid: str) -> tuple[str, list[Feature]]:
         coll = await collections_crud.get_collection(db, mid)
         page, _ = await features_crud.list_features_paginated(
             db,
@@ -238,6 +241,11 @@ async def list_composite_features_paginated(
             skip_count=True,
             exclude_bulk_job_ids=active_shadow_exclude_job_ids(mid) or None,
         )
+        return mid, list(page)
+
+    member_pages = await asyncio.gather(*[_fetch_member(mid) for mid in member_ids])
+    merged: list[tuple[str, Feature]] = []
+    for mid, page in member_pages:
         merged.extend((mid, f) for f in page)
 
     def _sort_key(row: tuple[str, Feature]) -> Any:
