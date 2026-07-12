@@ -172,8 +172,11 @@
     const hasStaticTiles = {{ has_static_tiles | tojson }};
     const staticMinzoom = {{ static_minzoom | tojson }};
     const staticMaxzoom = {{ static_maxzoom | tojson }};
+    const tilesRevision = {{ tiles_revision | tojson if tiles_revision is defined else 'null' }};
     const tileLayerId = {{ tile_layer_id | tojson }};
-    const tileUrlStatic = hasStaticTiles ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' : null;
+    const tileUrlStatic = hasStaticTiles
+      ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' + (tilesRevision ? '?v=' + encodeURIComponent(tilesRevision) : '')
+      : null;
     const tileUrlDynamic = (collectionType === 'vector' || collectionType === 'composite')
       ? base + '/collections/' + collectionId + '/tiles/dynamic/{z}/{x}/{y}.pbf'
       : null;

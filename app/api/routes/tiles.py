@@ -65,6 +65,22 @@ from app.services.mvt_merge import merge_mvt_tiles, read_tile_from_mbtiles
 router = APIRouter()
 
 
+async def _execute_mvt_sql(db: AsyncSession, sql: str, params: dict) -> bytes:
+    """Run an MVT query with optional statement timeout; rollback on failure."""
+    settings = get_settings()
+    timeout_sec = getattr(settings, "tiles_dynamic_statement_timeout_seconds", 0) or 0
+    try:
+        if timeout_sec > 0:
+            await db.execute(text(f"SET LOCAL statement_timeout = {int(timeout_sec * 1000)}"))
+        result = await db.execute(text(sql), params)
+        row = result.first()
+        mvt = row.mvt if row and row.mvt else None
+        return bytes(mvt) if mvt else b""
+    except Exception:
+        await db.rollback()
+        raise
+
+
 async def _serve_composite_static_tile(
     db: AsyncSession,
     composite_id: str,
@@ -73,10 +89,18 @@ async def _serve_composite_static_tile(
     x: int,
     y: int,
 ) -> bytes:
-    revision = await composite_tiles_revision(db, members)
+    revision = await composite_resolved_static_revision(db, composite_id, members)
+    if not revision:
+        return b""
     cached = get_composite_tile(composite_id, z, x, y, revision)
     if cached is not None:
         return cached
+    own_rec = await tiles_crud.get_collection_tiles(db, composite_id)
+    if own_rec and own_rec.pmtiles_path and Path(own_rec.pmtiles_path).is_file():
+        raw = await asyncio.to_thread(read_tile_from_mbtiles, Path(own_rec.pmtiles_path), z, x, y)
+        payload = raw if raw else b""
+        set_composite_tile(composite_id, z, x, y, revision, payload)
+        return payload
     raw_tiles: list[bytes] = []
     for m in members:
         cid = m["collection_id"]
@@ -115,53 +139,47 @@ async def _dynamic_mvt_bytes_for_member(
         fulltext_q=None,
     )
     extra_where, extra_params = _merge_shadow_tile_filter(member_id, extra_where, extra_params)
-    property_keys = await _get_property_keys(db, member_id, None)
-    prop_cols = _mvt_property_select_fragment(property_keys)
-    prop_select_feat = prop_cols.replace("(properties ", "(feat.properties ") if prop_cols else ""
-    sql = f"""
-        SELECT ST_AsMVT(tile, :layer_name, 4096, 'geom') AS mvt
-        FROM (
-            SELECT
-                feat.id{prop_select_feat},
-                ST_AsMVTGeom(
-                    ST_Transform(ST_CurveToLine(feat.geometry::geometry), 3857),
-                    ST_TileEnvelope(:z, :x, :y),
-                    4096,
-                    256,
-                    true
-                ) AS geom
-            FROM (
-                SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
-                FROM features
-                WHERE collection_id = :cid AND geometry IS NOT NULL
-                  AND ST_Intersects(geometry, {tile_env})
-                  {extra_where}
-                GROUP BY id, collection_id
-            ) AS feat
-            LIMIT :max_features
-        ) AS tile
-        WHERE tile.geom IS NOT NULL
-    """
-    params = {
-        "layer_name": layer_name,
-        "z": z,
-        "x": x,
-        "y": y,
-        "cid": member_id,
-        "max_features": max_features,
-        **extra_params,
-    }
-    timeout_sec = getattr(settings, "tiles_dynamic_statement_timeout_seconds", 0) or 0
-    if timeout_sec > 0:
-        await db.execute(text(f"SET statement_timeout = {int(timeout_sec * 1000)}"))
     try:
-        result = await db.execute(text(sql), params)
-        row = result.first()
-        mvt = row.mvt if row and row.mvt else None
-        return bytes(mvt) if mvt else b""
-    finally:
-        if timeout_sec > 0:
-            await db.execute(text("RESET statement_timeout"))
+        property_keys = await _get_property_keys(db, member_id, None)
+        prop_cols = _mvt_property_select_fragment(property_keys)
+        prop_select_feat = prop_cols.replace("(properties ", "(feat.properties ") if prop_cols else ""
+        sql = f"""
+            SELECT ST_AsMVT(tile, :layer_name, 4096, 'geom') AS mvt
+            FROM (
+                SELECT
+                    feat.id{prop_select_feat},
+                    ST_AsMVTGeom(
+                        ST_Transform(ST_CurveToLine(feat.geometry::geometry), 3857),
+                        ST_TileEnvelope(:z, :x, :y),
+                        4096,
+                        256,
+                        true
+                    ) AS geom
+                FROM (
+                    SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
+                    FROM features
+                    WHERE collection_id = :cid AND geometry IS NOT NULL
+                      AND ST_Intersects(geometry, {tile_env})
+                      {extra_where}
+                    GROUP BY id, collection_id
+                ) AS feat
+                LIMIT :max_features
+            ) AS tile
+            WHERE tile.geom IS NOT NULL
+        """
+        params = {
+            "layer_name": layer_name,
+            "z": z,
+            "x": x,
+            "y": y,
+            "cid": member_id,
+            "max_features": max_features,
+            **extra_params,
+        }
+        return await _execute_mvt_sql(db, sql, params)
+    except Exception:
+        await db.rollback()
+        raise
 
 
 async def _serve_composite_dynamic_tile(
@@ -180,7 +198,10 @@ async def _serve_composite_dynamic_tile(
     raw_tiles: list[bytes] = []
     for m in members:
         cid = m["collection_id"]
-        tile = await _dynamic_mvt_bytes_for_member(db, cid, z, x, y)
+        try:
+            tile = await _dynamic_mvt_bytes_for_member(db, cid, z, x, y)
+        except Exception:
+            tile = b""
         if tile:
             raw_tiles.append(tile)
     merged = merge_mvt_tiles(raw_tiles, mvt_layer_name(composite_id), z, x, y)
@@ -1207,18 +1228,7 @@ async def get_tiles_dynamic(
             "max_features": max_features,
             **extra_params,
         }
-    timeout_sec = getattr(settings, "tiles_dynamic_statement_timeout_seconds", 0) or 0
-    if timeout_sec > 0:
-        # SET does not accept bound params; value is from config (integer ms).
-        await db.execute(text(f"SET statement_timeout = {int(timeout_sec * 1000)}"))
-    try:
-        result = await db.execute(text(sql), params)
-        row = result.first()
-        mvt = row.mvt if row and row.mvt else None
-        payload = bytes(mvt) if mvt else b""
-    finally:
-        if timeout_sec > 0:
-            await db.execute(text("RESET statement_timeout"))
+    payload = await _execute_mvt_sql(db, sql, params)
     if not has_query_params:
         set_cached_tile(collection_id, z, x, y, payload)
     elif params_key is not None:
