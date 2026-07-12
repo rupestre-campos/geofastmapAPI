@@ -165,6 +165,7 @@
   <script>
     const base = {{ base | tojson }};
     const collectionId = {{ collection.id | tojson }};
+    const collectionType = {{ (collection.collection_type or 'vector') | tojson }};
     const collectionTitle = {{ (collection.title or '') | tojson }};
     const collectionDescription = {{ (collection.description or '') | tojson }};
     const extent = {{ extent_geojson | tojson if extent_geojson else 'null' }};
@@ -178,7 +179,6 @@
       : null;
     const defaultStyle = {{ default_style | tojson if default_style else 'null' }};
     const collectionStylesUrl = {{ collection_styles_url | tojson if collection_styles_url else 'null' }};
-    const collectionType = {{ (collection.collection_type or 'vector') | tojson }};
 
     const googleKey = {{ google_maps_api_key | tojson }};
     var canEditByCollection = {};
