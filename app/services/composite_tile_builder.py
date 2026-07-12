@@ -102,24 +102,11 @@ def build_composite_pmtiles_sync(
         feature_count = count_row.n if count_row and count_row.n else 0
 
     if feature_count == 0:
-        try:
-            if os.path.exists(out_path_final):
-                os.unlink(out_path_final)
-        except OSError:
-            pass
-        with SessionLocal() as s:
-            s.execute(
-                text("""
-                    INSERT INTO collection_tiles (collection_id, pmtiles_path, built_at, features_updated_at, minzoom, maxzoom, tiles_revision)
-                    VALUES (:cid, NULL, :now, NULL, NULL, NULL, NULL)
-                    ON CONFLICT (collection_id) DO UPDATE SET
-                        pmtiles_path = NULL, built_at = :now, features_updated_at = NULL, minzoom = NULL, maxzoom = NULL, tiles_revision = NULL
-                """),
-                {"cid": composite_id, "now": datetime.now(timezone.utc)},
-            )
-            s.commit()
+        if os.path.exists(out_path_final):
+            engine.dispose()
+            return "No features in member collections (existing tiles kept)"
         engine.dispose()
-        return None
+        return "No features in member collections"
 
     def row_data(r):
         return (r.id, r.geometry, dict(r.properties) if r.properties else None)

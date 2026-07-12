@@ -178,10 +178,11 @@
     const staticMinzoom = {{ static_minzoom | tojson }};
     const staticMaxzoom = {{ static_maxzoom | tojson }};
     const tilesRevision = {{ tiles_revision | tojson if tiles_revision is defined else 'null' }};
+    const staticTileUrl = {{ static_tile_url | tojson if static_tile_url is defined else 'null' }};
     const tileLayerId = {{ tile_layer_id | tojson }};
-    const tileUrlStatic = hasStaticTiles
+    const tileUrlStatic = staticTileUrl || (hasStaticTiles
       ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' + (tilesRevision ? '?v=' + encodeURIComponent(tilesRevision) : '')
-      : null;
+      : null);
     const tileUrlDynamic = (collectionType === 'vector' || collectionType === 'composite')
       ? base + '/collections/' + collectionId + '/tiles/dynamic/{z}/{x}/{y}.pbf'
       : null;
@@ -317,9 +318,14 @@
         })
         .then(function(tilejson) {
           var tiles = tilejson.tiles || [];
-          var staticUrl = tiles.filter(function(t) { return (t || '').indexOf('/tiles/static/') !== -1; })[0];
-          var dynamicUrl = tiles.filter(function(t) { return (t || '').indexOf('/tiles/dynamic/') !== -1; })[0];
-          var tileUrl = staticUrl || dynamicUrl;
+          var tileUrl = null;
+          if (tiles.length && (tiles[0] || '').indexOf('/tiles/static/') !== -1) {
+            tileUrl = tiles[0];
+          } else {
+            var staticUrl = tiles.filter(function(t) { return (t || '').indexOf('/tiles/static/') !== -1; })[0];
+            var dynamicUrl = tiles.filter(function(t) { return (t || '').indexOf('/tiles/dynamic/') !== -1; })[0];
+            tileUrl = staticUrl || dynamicUrl;
+          }
           if (!tileUrl) return;
           if (tileUrl.indexOf('{z}') === -1) {
             tileUrl = base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf';
@@ -341,11 +347,14 @@
         }).catch(function() {});
         return;
       }
+      if (tileUrlStatic) {
+        addVectorTileOverlay(tileUrlStatic, tileLayerId, staticMinzoom, staticMaxzoom);
+        addExtentBboxLayer();
+        return;
+      }
       loadVectorTilesFromTilejson()
         .catch(function() {
-          if (tileUrlStatic) {
-            addVectorTileOverlay(tileUrlStatic, tileLayerId, staticMinzoom, staticMaxzoom);
-          } else if (tileUrlDynamic) {
+          if (tileUrlDynamic) {
             addVectorTileOverlay(tileUrlDynamic, tileLayerId, staticMinzoom, staticMaxzoom);
           }
         })

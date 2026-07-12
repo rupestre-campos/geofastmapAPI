@@ -36,7 +36,6 @@ from app.schemas.collection import (
     clamp_bbox,
 )
 from app.services.composite_collections import (
-    composite_has_own_static_tiles,
     composite_has_static_tiles,
     composite_resolved_static_revision,
     is_composite_collection,
@@ -46,6 +45,7 @@ from app.services.composite_collections import (
     validate_composite_members,
 )
 from app.services.collection_tiles_revision import compute_collection_tiles_revision
+from app.services.static_tiles_path import read_mbtiles_zoom_range, resolve_mbtiles_path
 from app.services.composite_tiles_cache import invalidate_composite_tiles_cache
 from app.services.collection_property_indexes import normalize_property_index_fields
 from app.schemas.ogc import Link
@@ -78,6 +78,13 @@ def _collection_read_with_extras(
 
 def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
+
+
+def _versioned_static_tile_url(base: str, collection_id: str, revision: str | None) -> str:
+    path = f"{base}/collections/{collection_id}/tiles/static/{{z}}/{{x}}/{{y}}.pbf"
+    if revision:
+        return f"{path}?{urlencode({'v': revision})}"
+    return path
 
 
 def _collection_links(base: str, collection_id: str, default_style_id: str | None = None) -> list[Link]:
@@ -357,22 +364,26 @@ async def get_collection(
     if wants_html(request):
         member_status_list: list | None = None
         tiles_revision: str | None = None
+        static_tile_url: str | None = None
         has_own_static = False
         if is_composite:
             members = parse_composite_members(getattr(collection, "composite_members", None))
             member_status_list = await member_tile_status(db, members)
             own_rec = await tiles_crud.get_collection_tiles(db, collection_id)
-            has_own_static = await composite_has_own_static_tiles(db, collection_id)
+            own_path = resolve_mbtiles_path(collection_id, own_rec.pmtiles_path if own_rec else None)
+            has_own_static = own_path is not None
             has_static_tiles = has_own_static or await composite_has_static_tiles(
                 db, collection_id, members
             )
-            if has_own_static and own_rec:
-                static_minzoom = own_rec.minzoom if own_rec.minzoom is not None else 0
-                static_maxzoom = own_rec.maxzoom if own_rec.maxzoom is not None else 14
-                tiles_revision = own_rec.tiles_revision or (
-                    compute_collection_tiles_revision(collection_id, own_rec.pmtiles_path)
-                    if own_rec.pmtiles_path
-                    else None
+            if has_own_static and own_path:
+                if own_rec and own_rec.minzoom is not None and own_rec.maxzoom is not None:
+                    static_minzoom = own_rec.minzoom
+                    static_maxzoom = own_rec.maxzoom
+                else:
+                    static_minzoom, static_maxzoom = read_mbtiles_zoom_range(own_path)
+                tiles_revision = (
+                    (own_rec.tiles_revision if own_rec else None)
+                    or compute_collection_tiles_revision(collection_id, str(own_path))
                 )
             else:
                 tiles_revision = await composite_resolved_static_revision(db, collection_id, members)
@@ -386,13 +397,23 @@ async def get_collection(
                 )
         else:
             rec = await tiles_crud.get_collection_tiles(db, collection_id)
-            has_static_tiles = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
-            static_minzoom = rec.minzoom if (rec and rec.minzoom is not None) else 0
-            static_maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
-            if rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists():
-                tiles_revision = rec.tiles_revision or compute_collection_tiles_revision(
-                    collection_id, rec.pmtiles_path
+            resolved = resolve_mbtiles_path(collection_id, rec.pmtiles_path if rec else None)
+            has_static_tiles = resolved is not None
+            if resolved and rec and rec.minzoom is not None and rec.maxzoom is not None:
+                static_minzoom = rec.minzoom
+                static_maxzoom = rec.maxzoom
+            elif resolved:
+                static_minzoom, static_maxzoom = read_mbtiles_zoom_range(resolved)
+            else:
+                static_minzoom = 0
+                static_maxzoom = 14
+            if resolved:
+                tiles_revision = (
+                    (rec.tiles_revision if rec else None)
+                    or compute_collection_tiles_revision(collection_id, str(resolved))
                 )
+        if has_static_tiles:
+            static_tile_url = _versioned_static_tile_url(base, collection_id, tiles_revision)
         settings = get_settings()
         owner_username = None
         if getattr(collection, "owner_id", None):
@@ -426,6 +447,7 @@ async def get_collection(
             static_minzoom=static_minzoom,
             static_maxzoom=static_maxzoom,
             tiles_revision=tiles_revision,
+            static_tile_url=static_tile_url,
             tile_layer_id=mvt_layer_name(collection_id),
             google_maps_api_key=settings.google_maps_api_key or "",
             default_style={"id": default_style.id, "title": default_style.title, "style_spec": default_style.style_spec} if default_style else None,

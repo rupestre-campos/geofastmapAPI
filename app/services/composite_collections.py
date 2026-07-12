@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.crud import collection_tiles as tiles_crud
 from app.models.collection import COLLECTION_TYPE_COMPOSITE, COLLECTION_TYPE_VECTOR, Collection
 from app.services.collection_tiles_revision import compute_collection_tiles_revision
+from app.services.static_tiles_path import has_static_mbtiles_file, resolve_mbtiles_path
 from app.services.mvt_merge import compute_composite_tiles_revision
 
 
@@ -101,7 +102,7 @@ async def member_tile_status(
         )
         tile_row = result.first()
         path = tile_row.pmtiles_path if tile_row else None
-        has_static = bool(path and Path(path).is_file())
+        has_static = has_static_mbtiles_file(cid, path)
         out.append(
             {
                 "collection_id": cid,
@@ -132,7 +133,7 @@ async def composite_tiles_revision(db: AsyncSession, members: list[dict[str, str
 
 async def composite_has_own_static_tiles(db: AsyncSession, composite_id: str) -> bool:
     rec = await tiles_crud.get_collection_tiles(db, composite_id)
-    return bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).is_file())
+    return has_static_mbtiles_file(composite_id, rec.pmtiles_path if rec else None)
 
 
 async def composite_own_tile_record(db: AsyncSession, composite_id: str):
@@ -161,8 +162,11 @@ async def composite_resolved_static_revision(
 ) -> str | None:
     """Revision for static tile URLs: composite MBTiles when built, else merged member revisions."""
     rec = await tiles_crud.get_collection_tiles(db, composite_id)
-    if rec and rec.pmtiles_path and Path(rec.pmtiles_path).is_file():
-        return rec.tiles_revision or compute_collection_tiles_revision(composite_id, rec.pmtiles_path)
+    resolved = resolve_mbtiles_path(composite_id, rec.pmtiles_path if rec else None)
+    if resolved:
+        if rec and rec.tiles_revision:
+            return rec.tiles_revision
+        return compute_collection_tiles_revision(composite_id, str(resolved))
     rev = await composite_tiles_revision(db, members)
     return rev or None
 

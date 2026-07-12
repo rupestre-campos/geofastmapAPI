@@ -61,6 +61,10 @@ from app.services.composite_collections import (
 )
 from app.services.composite_tiles_cache import get_composite_tile, set_composite_tile
 from app.services.mvt_merge import merge_mvt_tiles, read_tile_from_mbtiles
+from app.services.static_tiles_path import (
+    read_mbtiles_zoom_range,
+    resolve_mbtiles_path,
+)
 
 router = APIRouter()
 
@@ -96,8 +100,9 @@ async def _serve_composite_static_tile(
     if cached is not None:
         return cached
     own_rec = await tiles_crud.get_collection_tiles(db, composite_id)
-    if own_rec and own_rec.pmtiles_path and Path(own_rec.pmtiles_path).is_file():
-        raw = await asyncio.to_thread(read_tile_from_mbtiles, Path(own_rec.pmtiles_path), z, x, y)
+    own_path = resolve_mbtiles_path(composite_id, own_rec.pmtiles_path if own_rec else None)
+    if own_path:
+        raw = await asyncio.to_thread(read_tile_from_mbtiles, own_path, z, x, y)
         payload = raw if raw else b""
         set_composite_tile(composite_id, z, x, y, revision, payload)
         return payload
@@ -105,10 +110,10 @@ async def _serve_composite_static_tile(
     for m in members:
         cid = m["collection_id"]
         rec = await tiles_crud.get_collection_tiles(db, cid)
-        if not rec or not rec.pmtiles_path:
+        if not rec:
             continue
-        path = Path(rec.pmtiles_path)
-        if not path.is_file():
+        path = resolve_mbtiles_path(cid, rec.pmtiles_path)
+        if not path:
             continue
         raw = await asyncio.to_thread(read_tile_from_mbtiles, path, z, x, y)
         if raw:
@@ -546,9 +551,13 @@ async def get_tiles_tilejson(
         has_static = await composite_has_static_tiles(db, collection_id, members)
         tiles_revision = await composite_resolved_static_revision(db, collection_id, members)
         own_rec = await tiles_crud.get_collection_tiles(db, collection_id)
-        if own_rec and own_rec.pmtiles_path and Path(own_rec.pmtiles_path).is_file():
-            minzoom = own_rec.minzoom if own_rec.minzoom is not None else 0
-            maxzoom = own_rec.maxzoom if own_rec.maxzoom is not None else 14
+        own_path = resolve_mbtiles_path(collection_id, own_rec.pmtiles_path if own_rec else None)
+        if own_path:
+            if own_rec and own_rec.minzoom is not None and own_rec.maxzoom is not None:
+                minzoom = own_rec.minzoom
+                maxzoom = own_rec.maxzoom
+            else:
+                minzoom, maxzoom = read_mbtiles_zoom_range(own_path)
         else:
             minzoom = min((s["minzoom"] for s in statuses if s.get("minzoom") is not None), default=0)
             maxzoom = max((s["maxzoom"] for s in statuses if s.get("maxzoom") is not None), default=14)
@@ -559,10 +568,20 @@ async def get_tiles_tilejson(
         layer_id = mvt_layer_name(collection_id)
     else:
         rec = await tiles_crud.get_collection_tiles(db, collection_id)
-        has_static = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
-        tiles_revision = compute_collection_tiles_revision(collection_id, rec.pmtiles_path if rec else None)
-        minzoom = rec.minzoom if (rec and rec.minzoom is not None) else 0
-        maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
+        resolved = resolve_mbtiles_path(collection_id, rec.pmtiles_path if rec else None)
+        has_static = resolved is not None
+        tiles_revision = (
+            (rec.tiles_revision if rec else None)
+            or compute_collection_tiles_revision(collection_id, str(resolved) if resolved else None)
+        )
+        if resolved and rec and rec.minzoom is not None and rec.maxzoom is not None:
+            minzoom = rec.minzoom
+            maxzoom = rec.maxzoom
+        elif resolved:
+            minzoom, maxzoom = read_mbtiles_zoom_range(resolved)
+        else:
+            minzoom = 0
+            maxzoom = 14
         tile_urls = [f"{base}/collections/{collection_id}/tiles/dynamic/{{z}}/{{x}}/{{y}}.pbf"]
         if has_static:
             tile_urls.insert(0, _tile_url_with_revision(base, collection_id, tiles_revision))
@@ -1298,15 +1317,16 @@ async def get_tiles_static_zxy(
         if not members:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Composite has no members.")
         own_rec = await tiles_crud.get_collection_tiles(db, collection_id)
-        if own_rec and own_rec.pmtiles_path and Path(own_rec.pmtiles_path).is_file():
-            path = Path(own_rec.pmtiles_path)
-            tiles_revision = own_rec.tiles_revision or compute_collection_tiles_revision(
-                collection_id, own_rec.pmtiles_path
+        own_path = resolve_mbtiles_path(collection_id, own_rec.pmtiles_path if own_rec else None)
+        if own_path:
+            tiles_revision = (
+                (own_rec.tiles_revision if own_rec else None)
+                or compute_collection_tiles_revision(collection_id, str(own_path))
             )
             version_query = request.query_params.get("v")
             pinned_version = bool(tiles_revision and version_query and version_query == tiles_revision)
             cache_headers = _static_tile_cache_headers(etag=tiles_revision, versioned=pinned_version)
-            tile_bytes = await asyncio.to_thread(_read_tile_from_mbtiles, path, z, x, y)
+            tile_bytes = await asyncio.to_thread(_read_tile_from_mbtiles, own_path, z, x, y)
             if tile_bytes is None:
                 tile_bytes = b""
             return Response(
@@ -1331,12 +1351,13 @@ async def get_tiles_static_zxy(
             headers=cache_headers,
         )
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
-    if not rec or not rec.pmtiles_path:
+    path = resolve_mbtiles_path(collection_id, rec.pmtiles_path if rec else None)
+    if not path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tiles not built yet. POST to /tiles/build first.")
-    path = Path(rec.pmtiles_path)
-    if not path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tiles file missing.")
-    tiles_revision = compute_collection_tiles_revision(collection_id, rec.pmtiles_path)
+    tiles_revision = (
+        (rec.tiles_revision if rec else None)
+        or compute_collection_tiles_revision(collection_id, str(path))
+    )
     version_query = request.query_params.get("v")
     pinned_version = bool(tiles_revision and version_query and version_query == tiles_revision)
     cache_headers = _static_tile_cache_headers(etag=tiles_revision, versioned=pinned_version)
