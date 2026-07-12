@@ -36,6 +36,7 @@ from app.schemas.collection import (
     clamp_bbox,
 )
 from app.services.composite_collections import (
+    composite_has_own_static_tiles,
     composite_has_static_tiles,
     composite_resolved_static_revision,
     is_composite_collection,
@@ -356,16 +357,25 @@ async def get_collection(
     if wants_html(request):
         member_status_list: list | None = None
         tiles_revision: str | None = None
+        has_own_static = False
         if is_composite:
             members = parse_composite_members(getattr(collection, "composite_members", None))
             member_status_list = await member_tile_status(db, members)
-            has_static_tiles = await composite_has_static_tiles(db, collection_id, members)
-            tiles_revision = await composite_resolved_static_revision(db, collection_id, members)
             own_rec = await tiles_crud.get_collection_tiles(db, collection_id)
-            if own_rec and own_rec.pmtiles_path and Path(own_rec.pmtiles_path).exists():
+            has_own_static = await composite_has_own_static_tiles(db, collection_id)
+            has_static_tiles = has_own_static or await composite_has_static_tiles(
+                db, collection_id, members
+            )
+            if has_own_static and own_rec:
                 static_minzoom = own_rec.minzoom if own_rec.minzoom is not None else 0
                 static_maxzoom = own_rec.maxzoom if own_rec.maxzoom is not None else 14
+                tiles_revision = own_rec.tiles_revision or (
+                    compute_collection_tiles_revision(collection_id, own_rec.pmtiles_path)
+                    if own_rec.pmtiles_path
+                    else None
+                )
             else:
+                tiles_revision = await composite_resolved_static_revision(db, collection_id, members)
                 static_minzoom = min(
                     (s["minzoom"] for s in member_status_list if s.get("minzoom") is not None),
                     default=0,
@@ -425,6 +435,7 @@ async def get_collection(
             default_raster_style=default_raster_style,
             raster_viz=raster_viz,
             is_composite=is_composite,
+            has_own_static_tiles=has_own_static if is_composite else False,
             member_status=member_status_list or [],
         )
     member_status_json = None

@@ -205,6 +205,8 @@ async def _serve_composite_dynamic_tile(
         if tile:
             raw_tiles.append(tile)
     merged = merge_mvt_tiles(raw_tiles, mvt_layer_name(composite_id), z, x, y)
+    if not merged:
+        merged = await _serve_composite_static_tile(db, composite_id, members, z, x, y)
     set_composite_tile(composite_id, z, x, y, cache_revision, merged)
     return merged
 

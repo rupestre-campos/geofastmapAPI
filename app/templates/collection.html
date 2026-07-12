@@ -94,6 +94,11 @@
     <table class="collections-table">
       <thead><tr><th>Collection</th><th>Features</th><th>Static tiles</th></tr></thead>
       <tbody>
+        <tr>
+          <td><code>{{ collection.id }}</code> <span class="meta">(this composite)</span></td>
+          <td>—</td>
+          <td>{% if has_own_static_tiles %}yes{% else %}<span class="meta">not built</span>{% endif %}</td>
+        </tr>
         {% for m in member_status %}
         <tr>
           <td><a href="{{ base }}/collections/{{ m.collection_id }}?f=html"><code>{{ m.collection_id }}</code></a></td>
@@ -257,6 +262,76 @@
         }
       }
     }
+    function addExtentBboxLayer() {
+      if (extent && extent.bbox && isUsableBbox(extent.bbox[0])) {
+        var b = extent.bbox[0];
+        var bboxGeojson = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[b[0],b[1]],[b[2],b[1]],[b[2],b[3]],[b[0],b[3]],[b[0],b[1]]]] } };
+        if (!map.getSource('bbox')) {
+          map.addSource('bbox', { type: 'geojson', data: bboxGeojson });
+          map.addLayer({ id: 'bbox-line', type: 'line', source: 'bbox', paint: { 'line-color': '#58a6ff', 'line-width': 2 } });
+        }
+        map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40 });
+      }
+    }
+    function addVectorTileOverlay(tileUrl, sourceLayerId, minz, maxz) {
+      if (!tileUrl || map.getSource('tiles')) return;
+      var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
+      var s = GeofastmapUtils.specToPaint(spec);
+      map.addSource('tiles', { type: 'vector', tiles: [tileUrl], minzoom: minz, maxzoom: maxz });
+      map.addLayer({
+        id: 'layer',
+        type: 'fill',
+        source: 'tiles',
+        'source-layer': sourceLayerId,
+        filter: notPointFilter,
+        layout: { visibility: s.fillEnabled ? 'visible' : 'none' },
+        paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity }
+      });
+      map.addLayer({
+        id: 'layer-line',
+        type: 'line',
+        source: 'tiles',
+        'source-layer': sourceLayerId,
+        filter: notPointFilter,
+        layout: { visibility: (s.lineVisible !== false) ? 'visible' : 'none' },
+        paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash }
+      });
+      map.addLayer({
+        id: 'layer-circle',
+        type: 'circle',
+        source: 'tiles',
+        'source-layer': sourceLayerId,
+        filter: pointFilter,
+        layout: { visibility: (s.pointVisible !== false) ? 'visible' : 'none' },
+        paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity }
+      });
+    }
+    function loadVectorTilesFromTilejson() {
+      return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/tiles', {
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' }
+      })
+        .then(function(r) {
+          if (!r.ok) throw new Error('TileJSON ' + r.status);
+          return r.json();
+        })
+        .then(function(tilejson) {
+          var tiles = tilejson.tiles || [];
+          var staticUrl = tiles.filter(function(t) { return (t || '').indexOf('/tiles/static/') !== -1; })[0];
+          var dynamicUrl = tiles.filter(function(t) { return (t || '').indexOf('/tiles/dynamic/') !== -1; })[0];
+          var tileUrl = staticUrl || dynamicUrl;
+          if (!tileUrl) return;
+          if (tileUrl.indexOf('{z}') === -1) {
+            tileUrl = base + '/collections/' + encodeURIComponent(collectionId) + '/tiles/static/{z}/{x}/{y}.pbf';
+          }
+          var sourceLayerId = tilejson.vector_layers && tilejson.vector_layers[0]
+            ? tilejson.vector_layers[0].id
+            : tileLayerId;
+          var minz = tilejson.minzoom != null ? tilejson.minzoom : staticMinzoom;
+          var maxz = tilejson.maxzoom != null ? tilejson.maxzoom : staticMaxzoom;
+          addVectorTileOverlay(tileUrl, sourceLayerId, minz, maxz);
+        });
+    }
     function addOverlayLayers() {
       if (collectionType === 'raster') {
         fetchRastersListJson().then(function(info) {
@@ -265,67 +340,18 @@
           __rasterListSig = rasterListSignature(info);
         }).catch(function() {});
         return;
-      } else if (tileUrlStatic) {
-        var spec = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
-        var s = GeofastmapUtils.specToPaint(spec);
-        map.addSource('tiles', { type: 'vector', tiles: [tileUrlStatic], minzoom: staticMinzoom, maxzoom: staticMaxzoom });
-        map.addLayer({
-          id: 'layer',
-          type: 'fill',
-          source: 'tiles',
-          'source-layer': tileLayerId,
-          filter: notPointFilter,
-          layout: { visibility: s.fillEnabled ? 'visible' : 'none' },
-          paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity }
-        });
-        map.addLayer({
-          id: 'layer-line',
-          type: 'line',
-          source: 'tiles',
-          'source-layer': tileLayerId,
-          filter: notPointFilter,
-          layout: { visibility: (s.lineVisible !== false) ? 'visible' : 'none' },
-          paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash }
-        });
-        map.addLayer({
-          id: 'layer-circle',
-          type: 'circle',
-          source: 'tiles',
-          'source-layer': tileLayerId,
-          filter: pointFilter,
-          layout: { visibility: (s.pointVisible !== false) ? 'visible' : 'none' },
-          paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity }
-        });
-      } else if (tileUrlDynamic) {
-        var specD = defaultStyle && defaultStyle.style_spec ? defaultStyle.style_spec : {};
-        var sD = GeofastmapUtils.specToPaint(specD);
-        map.addSource('tiles', { type: 'vector', tiles: [tileUrlDynamic], minzoom: staticMinzoom, maxzoom: staticMaxzoom });
-        map.addLayer({
-          id: 'layer', type: 'fill', source: 'tiles', 'source-layer': tileLayerId,
-          filter: notPointFilter,
-          paint: { 'fill-color': sD.fillColor, 'fill-opacity': sD.fillOpacity }
-        });
-        map.addLayer({
-          id: 'layer-line', type: 'line', source: 'tiles', 'source-layer': tileLayerId,
-          filter: notPointFilter,
-          paint: { 'line-color': sD.lineColor, 'line-width': sD.lineWidth }
-        });
-        map.addLayer({
-          id: 'layer-circle', type: 'circle', source: 'tiles', 'source-layer': tileLayerId,
-          filter: pointFilter,
-          paint: { 'circle-color': sD.pointColor, 'circle-radius': sD.pointRadius }
-        });
       }
-      if (extent && extent.bbox && isUsableBbox(extent.bbox[0])) {
-        var b = extent.bbox[0];
-        var bboxGeojson = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[b[0],b[1]],[b[2],b[1]],[b[2],b[3]],[b[0],b[3]],[b[0],b[1]]]] } };
-        map.addSource('bbox', { type: 'geojson', data: bboxGeojson });
-        map.addLayer({ id: 'bbox-line', type: 'line', source: 'bbox', paint: { 'line-color': '#58a6ff', 'line-width': 2 } });
-      }
-      if (extent && extent.bbox && isUsableBbox(extent.bbox[0])) {
-        var b2 = extent.bbox[0];
-        map.fitBounds([[b2[0], b2[1]], [b2[2], b2[3]]], { padding: 40 });
-      }
+      loadVectorTilesFromTilejson()
+        .catch(function() {
+          if (tileUrlStatic) {
+            addVectorTileOverlay(tileUrlStatic, tileLayerId, staticMinzoom, staticMaxzoom);
+          } else if (tileUrlDynamic) {
+            addVectorTileOverlay(tileUrlDynamic, tileLayerId, staticMinzoom, staticMaxzoom);
+          }
+        })
+        .finally(function() {
+          addExtentBboxLayer();
+        });
     }
 
     function applyBasemapFromSelect() {
