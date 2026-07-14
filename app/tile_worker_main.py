@@ -2,7 +2,9 @@
 """Worker that builds MBTiles for collections. Consumes from Redis tile_build queue."""
 from __future__ import annotations
 
+import os
 import sys
+
 from app.core.config import get_settings
 from app.services.dynamic_tile_cache import invalidate_collection_cache
 from app.services.job_store import list_all_jobs
@@ -15,6 +17,7 @@ from app.services.tile_build_queue import (
     update_tile_build_job,
 )
 from app.services.bulk_collection_activity import wait_until_collection_bulk_idle
+from app.services.tile_build_verify import format_build_success_message, verify_mbtiles_artifact
 from app.services.tile_builder import BUILD_CANCELLED, build_pmtiles_sync
 from app.services.composite_tile_builder import build_composite_pmtiles_sync
 
@@ -126,6 +129,7 @@ def main() -> None:
             err = build_pmtiles_sync(cid, options=payload.options, stop_check=stop_check)
         clear_pending(cid)
         if err == BUILD_CANCELLED:
+            update_tile_build_job(job_id, status="cancelled", message="Tile build cancelled")
             print(f"Tile build for {cid} was cancelled; intermediate files cleaned up", flush=True)
             continue
         job = get_tile_build_job(job_id)
@@ -136,9 +140,19 @@ def main() -> None:
             update_tile_build_job(job_id, status="failed", message=err)
             print(f"Build FAILED for {cid}: {err}", file=sys.stderr, flush=True)
         else:
-            update_tile_build_job(job_id, status="completed")
-            invalidate_collection_cache(cid)
-            print(f"Build completed for {cid} (job_id={job_id})", flush=True)
+            out_path = os.path.join(settings.tiles_storage_path, f"{cid}.mbtiles")
+            verify_err = verify_mbtiles_artifact(out_path)
+            if verify_err:
+                update_tile_build_job(job_id, status="failed", message=verify_err)
+                print(f"Build FAILED for {cid}: {verify_err}", file=sys.stderr, flush=True)
+            else:
+                update_tile_build_job(
+                    job_id,
+                    status="completed",
+                    message=format_build_success_message(out_path),
+                )
+                invalidate_collection_cache(cid)
+                print(f"Build completed for {cid} (job_id={job_id})", flush=True)
 
 
 if __name__ == "__main__":

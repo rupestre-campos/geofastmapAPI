@@ -344,12 +344,9 @@ async def build_tiles(
     if pending_job_id:
         from datetime import datetime, timezone
         job = get_latest_tile_build_job(collection_id)
-        # If job stuck in "pending" or "running" for >30 min, allow re-queue (worker may have died)
-        if job and job.updated_at and job.status in ("pending", "running"):
+        if job and job.status in ("pending", "running") and job.updated_at:
             age_seconds = (datetime.now(timezone.utc) - job.updated_at).total_seconds()
-            if age_seconds > 30 * 60:  # 30 minutes
-                clear_pending(collection_id)
-            else:
+            if age_seconds <= 30 * 60:
                 update_tile_build_job(pending_job_id, message="Tile build")
                 return JSONResponse(
                     status_code=status.HTTP_202_ACCEPTED,
@@ -360,17 +357,7 @@ async def build_tiles(
                         "status_url": f"{base}/jobs/{pending_job_id}",
                     },
                 )
-        else:
-            update_tile_build_job(pending_job_id, message="Tile build")
-            return JSONResponse(
-                status_code=status.HTTP_202_ACCEPTED,
-                content={
-                    "message": "Tile build already queued or in progress.",
-                    "collection_id": collection_id,
-                    "job_id": pending_job_id,
-                    "status_url": f"{base}/jobs/{pending_job_id}",
-                },
-            )
+        clear_pending(collection_id)
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     is_composite = getattr(collection, "collection_type", "") == COLLECTION_TYPE_COMPOSITE
     if is_composite:
@@ -392,12 +379,17 @@ async def build_tiles(
     if body is not None and body.force:
         need_build = True
 
+    artifact_path = resolve_mbtiles_path(collection_id, rec.pmtiles_path if rec else None)
+    if not need_build and artifact_path is None:
+        need_build = True
+
     if not need_build:
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content={
                 "message": "No build needed; tiles are up to date.",
                 "collection_id": collection_id,
+                "tiles_path": str(artifact_path) if artifact_path else None,
             },
         )
     # Build options from request body (None = use defaults in worker)

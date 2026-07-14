@@ -16,6 +16,7 @@ import orjson
 
 from app.core.config import get_settings
 from app.services.collection_tiles_revision import compute_collection_tiles_revision
+from app.services.tile_build_verify import verify_mbtiles_artifact
 from app.services.tile_build_queue import TileBuildOptions
 from app.utils.geo import mvt_layer_name
 
@@ -179,6 +180,9 @@ def build_pmtiles_sync(
             if export_cancelled:
                 return BUILD_CANCELLED
 
+        if total_features == 0:
+            return f"No features exported for collection {collection_id}"
+
         # Build into a temp file, then atomically replace the live MBTiles so clients never read a partial file.
         out_path_tmp = os.path.join(tiles_dir, f"{collection_id}.mbtiles.{uuid.uuid4().hex}.tmp")
 
@@ -302,6 +306,15 @@ def build_pmtiles_sync(
                 os.unlink(out_path_tmp)
             except OSError:
                 pass
+
+    verify_err = verify_mbtiles_artifact(out_path_final)
+    if verify_err:
+        try:
+            if os.path.exists(out_path_final):
+                os.unlink(out_path_final)
+        except OSError:
+            pass
+        return verify_err
 
     # Remove previous file if DB pointed elsewhere (e.g. legacy path); live path is out_path_final.
     tiles_revision = compute_collection_tiles_revision(collection_id, out_path_final)

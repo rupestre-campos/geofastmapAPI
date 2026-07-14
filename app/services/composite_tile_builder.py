@@ -17,6 +17,7 @@ import orjson
 from app.core.config import get_settings
 from app.services.collection_tiles_revision import compute_collection_tiles_revision
 from app.services.composite_items import format_composite_item_id
+from app.services.tile_build_verify import verify_mbtiles_artifact
 from app.services.tile_builder import BUILD_CANCELLED, _EXPORT_CHUNK_SIZE, _QUEUE_MAX_SIZE, _stream_pipe
 from app.utils.geo import mvt_layer_name
 
@@ -154,6 +155,12 @@ def build_composite_pmtiles_sync(
             if export_cancelled:
                 return BUILD_CANCELLED
 
+        if total_features == 0:
+            return (
+                f"No features exported from {len(member_ids)} member collection(s); "
+                f"check composite_members and member feature data"
+            )
+
         out_path_tmp = os.path.join(tiles_dir, f"{composite_id}.mbtiles.{uuid.uuid4().hex}.tmp")
         layer_name = mvt_layer_name(composite_id)
         cmd = [
@@ -272,6 +279,15 @@ def build_composite_pmtiles_sync(
                 os.unlink(out_path_tmp)
             except OSError:
                 pass
+
+    verify_err = verify_mbtiles_artifact(out_path_final)
+    if verify_err:
+        try:
+            if os.path.exists(out_path_final):
+                os.unlink(out_path_final)
+        except OSError:
+            pass
+        return verify_err
 
     tiles_revision = compute_collection_tiles_revision(composite_id, out_path_final)
     with SessionLocal() as session:
