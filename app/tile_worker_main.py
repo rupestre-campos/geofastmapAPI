@@ -22,23 +22,8 @@ from app.services.tile_builder import BUILD_CANCELLED, build_pmtiles_sync
 from app.services.composite_tile_builder import build_composite_pmtiles_sync
 
 
-def _collection_type_sync(collection_id: str) -> str:
-    from sqlalchemy import create_engine, text
-
-    settings = get_settings()
-    engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
-    try:
-        with engine.connect() as conn:
-            row = conn.execute(
-                text("SELECT collection_type FROM collections WHERE id = :cid"),
-                {"cid": collection_id},
-            ).first()
-        return str(row[0]) if row and row[0] else ""
-    finally:
-        engine.dispose()
-
-
-def _composite_member_ids_sync(collection_id: str) -> list[str]:
+def _collection_build_meta_sync(collection_id: str) -> tuple[str, list[str]]:
+    """Return (collection_type, member_ids). Member ids non-empty means treat as composite."""
     import json
     from sqlalchemy import create_engine, text
 
@@ -49,13 +34,19 @@ def _composite_member_ids_sync(collection_id: str) -> list[str]:
     try:
         with engine.connect() as conn:
             row = conn.execute(
-                text("SELECT composite_members FROM collections WHERE id = :cid"),
+                text(
+                    "SELECT collection_type, composite_members FROM collections WHERE id = :cid"
+                ),
                 {"cid": collection_id},
             ).first()
-        raw = row[0] if row else None
+        if not row:
+            return "", []
+        ctype = str(row[0]) if row[0] else ""
+        raw = row[1]
         if isinstance(raw, str):
             raw = json.loads(raw)
-        return member_collection_ids(parse_composite_members(raw))
+        members = member_collection_ids(parse_composite_members(raw))
+        return ctype, members
     finally:
         engine.dispose()
 
@@ -100,7 +91,7 @@ def main() -> None:
             clear_pending(cid)
             continue
         print(f"Building tiles for {cid} (job_id={job_id})...", flush=True)
-        update_tile_build_job(job_id, status="building")
+        update_tile_build_job(job_id, status="building", message="Building tiles...")
 
         def stop_check() -> bool:
             j = get_tile_build_job(job_id)
@@ -117,14 +108,30 @@ def main() -> None:
             clear_pending(cid)
             continue
 
-        if _collection_type_sync(cid) == "composite":
-            member_ids = _composite_member_ids_sync(cid)
-            err = build_composite_pmtiles_sync(
-                cid,
-                member_ids,
-                options=payload.options,
-                stop_check=stop_check,
-            )
+        ctype, member_ids = _collection_build_meta_sync(cid)
+        use_composite = bool(payload.is_composite) or ctype == "composite" or bool(member_ids)
+        if use_composite:
+            if not member_ids:
+                err = (
+                    f"Composite {cid} has no members (collection_type={ctype!r}); "
+                    "add members before building tiles"
+                )
+            else:
+                update_tile_build_job(
+                    job_id,
+                    message=f"Building composite tiles ({len(member_ids)} members)...",
+                )
+                print(
+                    f"Composite build for {cid}: {len(member_ids)} members "
+                    f"(type={ctype!r}, payload.is_composite={payload.is_composite})",
+                    flush=True,
+                )
+                err = build_composite_pmtiles_sync(
+                    cid,
+                    member_ids,
+                    options=payload.options,
+                    stop_check=stop_check,
+                )
         else:
             err = build_pmtiles_sync(cid, options=payload.options, stop_check=stop_check)
         clear_pending(cid)
@@ -139,20 +146,19 @@ def main() -> None:
         if err:
             update_tile_build_job(job_id, status="failed", message=err)
             print(f"Build FAILED for {cid}: {err}", file=sys.stderr, flush=True)
-        else:
-            out_path = os.path.join(settings.tiles_storage_path, f"{cid}.mbtiles")
-            verify_err = verify_mbtiles_artifact(out_path)
-            if verify_err:
-                update_tile_build_job(job_id, status="failed", message=verify_err)
-                print(f"Build FAILED for {cid}: {verify_err}", file=sys.stderr, flush=True)
-            else:
-                update_tile_build_job(
-                    job_id,
-                    status="completed",
-                    message=format_build_success_message(out_path),
-                )
-                invalidate_collection_cache(cid)
-                print(f"Build completed for {cid} (job_id={job_id})", flush=True)
+            continue
+
+        out_path = os.path.join(settings.tiles_storage_path, f"{cid}.mbtiles")
+        verify_err = verify_mbtiles_artifact(out_path)
+        if verify_err:
+            update_tile_build_job(job_id, status="failed", message=verify_err)
+            print(f"Build FAILED for {cid}: {verify_err}", file=sys.stderr, flush=True)
+            continue
+
+        ok_msg = format_build_success_message(out_path)
+        update_tile_build_job(job_id, status="completed", message=ok_msg)
+        invalidate_collection_cache(cid)
+        print(f"Build completed for {cid} (job_id={job_id}): {ok_msg}", flush=True)
 
 
 if __name__ == "__main__":

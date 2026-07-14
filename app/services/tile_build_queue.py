@@ -83,9 +83,14 @@ class TileBuildPayload:
     collection_id: str
     job_id: str
     options: TileBuildOptions = field(default_factory=TileBuildOptions)
+    is_composite: bool = False
 
     def to_json(self) -> str:
-        out = {"collection_id": self.collection_id, "job_id": self.job_id}
+        out = {
+            "collection_id": self.collection_id,
+            "job_id": self.job_id,
+            "is_composite": bool(self.is_composite),
+        }
         opts = self.options.to_dict()
         if opts:
             out["options"] = opts
@@ -95,7 +100,12 @@ class TileBuildPayload:
     def from_json(cls, s: str) -> "TileBuildPayload":
         d = json.loads(s)
         opts = TileBuildOptions.from_dict(d.get("options"))
-        return cls(collection_id=d["collection_id"], job_id=d["job_id"], options=opts)
+        return cls(
+            collection_id=d["collection_id"],
+            job_id=d["job_id"],
+            options=opts,
+            is_composite=bool(d.get("is_composite")),
+        )
 
 
 def _redis():
@@ -169,6 +179,8 @@ def enqueue_tile_build(
     collection_id: str,
     job_id: str,
     options: TileBuildOptions | None = None,
+    *,
+    is_composite: bool = False,
 ) -> bool:
     """
     Add build job to queue. Set pending so we don't enqueue duplicate for same collection.
@@ -186,6 +198,7 @@ def enqueue_tile_build(
         collection_id=collection_id,
         job_id=job_id,
         options=options or TileBuildOptions(),
+        is_composite=is_composite,
     )
     r.lpush(TILE_BUILD_QUEUE_KEY, payload.to_json())
     return True

@@ -110,18 +110,32 @@ def build_pmtiles_sync(
     maxz = opts.max_zoom if opts.max_zoom is not None else settings.tippecanoe_maxzoom
 
     with SessionLocal() as session:
-        row = session.execute(
-            text("SELECT features_last_updated_at AS m FROM collections WHERE id = :cid"),
+        meta = session.execute(
+            text(
+                "SELECT features_last_updated_at AS m, collection_type, composite_members "
+                "FROM collections WHERE id = :cid"
+            ),
             {"cid": collection_id},
         ).first()
-        max_updated = row.m if row and row.m else None
+        max_updated = meta.m if meta and meta.m else None
+        ctype = str(meta.collection_type) if meta and meta.collection_type else ""
+        has_members = bool(meta.composite_members) if meta else False
         count_row = session.execute(
             text("SELECT COUNT(DISTINCT id) AS n FROM features WHERE collection_id = :cid"),
             {"cid": collection_id},
         ).first()
         feature_count = count_row.n if count_row and count_row.n else 0
 
+    # Composite collections have no rows in features under their own id — never treat as empty vector success.
+    if ctype == "composite" or has_members:
+        engine.dispose()
+        return (
+            f"Collection {collection_id} is composite; use composite tile builder "
+            "(worker must route by collection_type / composite_members)"
+        )
+
     if feature_count == 0:
+        # Do not report success: empty collections have no static tiles to serve.
         try:
             if os.path.exists(out_path_final):
                 os.unlink(out_path_final)
@@ -139,7 +153,7 @@ def build_pmtiles_sync(
             )
             s.commit()
         engine.dispose()
-        return None
+        return f"No features in collection {collection_id}; static tiles cleared"
 
     def row_data(r):
         return (r.id, r.geometry, dict(r.properties) if r.properties else None)

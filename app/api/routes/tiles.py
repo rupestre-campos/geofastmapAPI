@@ -409,8 +409,18 @@ async def build_tiles(
             no_point_dropping=body.no_point_dropping,
         )
     job = create_tile_build_job(collection_id, owner_id=current_user.id if current_user else None)
-    update_tile_build_job(job.job_id, message="Tile build")
-    enqueued = enqueue_tile_build(collection_id, job.job_id, options=options)
+    start_msg = (
+        f"Queued composite tile build ({len(members)} members)"
+        if is_composite
+        else "Queued tile build"
+    )
+    update_tile_build_job(job.job_id, message=start_msg)
+    enqueued = enqueue_tile_build(
+        collection_id,
+        job.job_id,
+        options=options,
+        is_composite=is_composite,
+    )
     if not enqueued:
         # Race: another request set pending; return that job
         existing = get_pending_job_id(collection_id)
