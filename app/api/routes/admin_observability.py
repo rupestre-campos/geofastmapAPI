@@ -323,3 +323,108 @@ async def observability_update_settings(
         url=f"{_base_url(request)}/admin/observability?f=html&settings=ok",
         status_code=status.HTTP_302_FOUND,
     )
+
+
+@router.get(
+    "/property-indexes/queue",
+    summary="Property-index Redis queue depth (admin)",
+)
+async def property_index_queue_status(
+    current_user: User = Depends(require_admin),
+):
+    from app.services.property_index_queue import (
+        PROPERTY_INDEX_QUEUE_KEY,
+        property_index_queue_depth,
+        property_index_queue_enabled,
+    )
+
+    depth = property_index_queue_depth()
+    return {
+        "queue_key": PROPERTY_INDEX_QUEUE_KEY,
+        "queue_enabled": property_index_queue_enabled(),
+        "depth": depth,
+        "message": (
+            "API will LPUSH here when PROCESS_QUEUE_TYPE=redis; "
+            "process_worker BRPOPs this key."
+            if property_index_queue_enabled()
+            else "PROCESS_QUEUE_TYPE is not redis on API — jobs run inline in the API process."
+        ),
+    }
+
+
+@router.post(
+    "/property-indexes/resync",
+    summary="Re-queue property index ensure for all configured collections (admin)",
+)
+async def property_indexes_resync_all(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+    limit: int = Query(500, ge=1, le=5000, description="Max collections to enqueue"),
+):
+    """
+    For every vector/composite collection with non-empty property_index_fields,
+    enqueue an ensure job (CREATE INDEX CONCURRENTLY IF NOT EXISTS).
+    Does not change collection metadata — only pushes work to process_worker.
+    """
+    from sqlalchemy import select
+
+    from app.models.collection import (
+        COLLECTION_TYPE_COMPOSITE,
+        COLLECTION_TYPE_VECTOR,
+        Collection,
+    )
+    from app.services.collection_property_indexes import normalize_property_index_fields
+    from app.services.property_index_queue import (
+        property_index_queue_depth,
+        property_index_queue_enabled,
+        schedule_property_index_job,
+    )
+
+    rows = (
+        await db.execute(
+            select(Collection).where(Collection.property_index_fields.isnot(None)).limit(limit)
+        )
+    ).scalars().all()
+
+    queued: list[dict] = []
+    skipped = 0
+    for coll in rows:
+        fields = normalize_property_index_fields(coll.property_index_fields)
+        if not fields:
+            skipped += 1
+            continue
+        ctype = getattr(coll, "collection_type", COLLECTION_TYPE_VECTOR)
+        if ctype == COLLECTION_TYPE_VECTOR:
+            job = schedule_property_index_job(
+                coll.id, [], fields, owner_id=coll.owner_id
+            )
+        elif ctype == COLLECTION_TYPE_COMPOSITE:
+            job = schedule_property_index_job(
+                coll.id,
+                [],
+                fields,
+                is_composite=True,
+                composite_members=coll.composite_members,
+                owner_id=coll.owner_id,
+            )
+        else:
+            skipped += 1
+            continue
+        queued.append({"collection_id": coll.id, "job_id": job.job_id, "fields": fields})
+
+    base = _base_url(request)
+    return {
+        "queued": len(queued),
+        "skipped": skipped,
+        "queue_enabled": property_index_queue_enabled(),
+        "queue_depth": property_index_queue_depth(),
+        "jobs_url": f"{base}/jobs?f=html",
+        "jobs": queued[:50],
+        "jobs_truncated": max(0, len(queued) - 50),
+        "message": (
+            f"Enqueued {len(queued)} property-index job(s). "
+            "Watch process_worker logs and /jobs for Property index sync."
+        ),
+    }
+

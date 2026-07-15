@@ -266,6 +266,7 @@
     <p class="meta" style="margin-top:8px;">Selected: <span id="property-index-selected-label">—</span></p>
     <div class="btn-group" style="margin-top: var(--space);">
       <button type="button" class="btn btn-primary" id="btn-save-property-indexes">Save property indexes</button>
+      <button type="button" class="btn" id="btn-resync-property-indexes" title="Re-queue ensure job without changing saved fields">Re-sync indexes</button>
     </div>
     <p id="property-index-msg" class="meta" style="margin-top:0.5rem;"></p>
   </div>
@@ -2260,6 +2261,36 @@
           alert('Error: ' + (e.detail || e.message || JSON.stringify(e)));
         });
       };
+
+      var resyncBtn = document.getElementById('btn-resync-property-indexes');
+      if (resyncBtn) {
+        resyncBtn.onclick = function() {
+          if (!selected.length) {
+            alert('No property index fields saved yet. Select fields and Save first.');
+            return;
+          }
+          msgEl.textContent = 'Re-queueing index ensure…';
+          fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/property-indexes/sync', {
+            method: 'POST',
+            headers: { 'Accept': 'application/json' },
+            credentials: 'same-origin'
+          }).then(function(r) {
+            if (!r.ok) return r.json().then(function(j) { throw j; });
+            return r.json();
+          }).then(function(data) {
+            var jobId = data && data.job_id;
+            if (!jobId) {
+              msgEl.textContent = 'Queued.';
+              return;
+            }
+            msgEl.innerHTML = 'Index ensure queued. <a href="' + base + '/jobs/' + encodeURIComponent(jobId) + '?f=html">Watch job</a>';
+            if (window.refreshCollectionJobs) window.refreshCollectionJobs();
+          }).catch(function(e) {
+            msgEl.textContent = '';
+            alert('Error: ' + (e.detail || e.message || JSON.stringify(e)));
+          });
+        };
+      }
     })();
 
     if (collectionType === 'raster') refreshRasterDemPanel();

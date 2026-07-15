@@ -30,6 +30,42 @@ from app.services.collection_property_indexes import (
     normalize_property_index_fields,
 )
 from app.services.property_index_queue import schedule_property_index_job
+
+
+async def schedule_property_index_resync_for_collection(
+    db: AsyncSession,
+    collection_id: str,
+) -> str | None:
+    """
+    Queue an ensure-sync for the collection's currently configured property_index_fields.
+    Returns job_id, or None if nothing to index.
+    """
+    collection = await get_collection(db, collection_id)
+    if collection is None:
+        return None
+    fields = normalize_property_index_fields(collection.property_index_fields)
+    if not fields:
+        return None
+    ctype = getattr(collection, "collection_type", COLLECTION_TYPE_VECTOR)
+    if ctype == COLLECTION_TYPE_VECTOR:
+        job = schedule_property_index_job(
+            collection_id,
+            [],  # pure ensure: do not drop anything based on "old"
+            fields,
+            owner_id=collection.owner_id,
+        )
+        return job.job_id
+    if ctype == COLLECTION_TYPE_COMPOSITE:
+        job = schedule_property_index_job(
+            collection_id,
+            [],
+            fields,
+            is_composite=True,
+            composite_members=collection.composite_members,
+            owner_id=collection.owner_id,
+        )
+        return job.job_id
+    return None
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
 
 if TYPE_CHECKING:

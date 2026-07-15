@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,7 +59,17 @@ def _redis():
 
 def property_index_queue_enabled() -> bool:
     """Only enqueue when process_worker will consume (PROCESS_QUEUE_TYPE=redis)."""
-    return get_settings().process_queue_type == "redis"
+    return (get_settings().process_queue_type or "").strip().lower() == "redis"
+
+
+def property_index_queue_depth() -> int | None:
+    """LLEN of the property-index queue, or None if Redis unavailable / queue disabled."""
+    if not property_index_queue_enabled():
+        return None
+    try:
+        return int(_redis().llen(PROPERTY_INDEX_QUEUE_KEY) or 0)
+    except Exception:
+        return None
 
 
 def enqueue_property_index_job(payload: PropertyIndexPayload) -> bool:
@@ -95,7 +106,7 @@ def schedule_property_index_job(
     update_job(
         job.job_id,
         message="Queued property index sync",
-        items_in=len(new_fields) + len(old_fields),
+        items_in=max(len(new_fields or []), len(old_fields or [])),
     )
     payload = PropertyIndexPayload(
         job_id=job.job_id,
@@ -106,7 +117,20 @@ def schedule_property_index_job(
         composite_members=members_list,
     )
     if enqueue_property_index_job(payload):
+        depth = property_index_queue_depth()
+        depth_s = str(depth) if depth is not None else "?"
+        print(
+            f"[property-index] queued collection={collection_id} job_id={job.job_id} "
+            f"queue={PROPERTY_INDEX_QUEUE_KEY} depth={depth_s}",
+            flush=True,
+        )
         return job
+    print(
+        f"[property-index] PROCESS_QUEUE_TYPE is not redis — running inline for "
+        f"collection={collection_id} job_id={job.job_id}",
+        file=sys.stderr,
+        flush=True,
+    )
     # Dev / memory mode: run synchronously so indexes still apply.
     run_property_index_job_sync(payload)
     return job

@@ -765,6 +765,48 @@ async def recompute_collection_extent(
     return ExtentRecomputeResponse(extent=extent)
 
 
+@router.post(
+    "/{collection_id}/property-indexes/sync",
+    summary="Re-queue property index ensure for this collection",
+    description=(
+        "Enqueues a background job that CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+        "for every field in the collection's saved property_index_fields. "
+        "Use after failed index jobs or when fields were saved but indexes never built."
+    ),
+)
+async def sync_property_indexes(
+    request: Request,
+    collection_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    coll = await collections_crud.get_collection(db, collection_id)
+    if not coll:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if not await can_edit_collection(db, coll, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    fields = normalize_property_index_fields(getattr(coll, "property_index_fields", None))
+    if not fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No property_index_fields configured on this collection. Save fields first.",
+        )
+    job_id = await collections_crud.schedule_property_index_resync_for_collection(db, collection_id)
+    if not job_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Property indexes are only supported on vector and composite collections",
+        )
+    base = _base_url(request)
+    return {
+        "collection_id": collection_id,
+        "property_index_fields": fields,
+        "job_id": job_id,
+        "status_url": f"{base}/jobs/{job_id}",
+        "message": "Property index ensure queued.",
+    }
+
+
 @router.delete(
     "/{collection_id}",
     status_code=status.HTTP_204_NO_CONTENT,
