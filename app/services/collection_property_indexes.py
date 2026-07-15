@@ -152,18 +152,23 @@ def sync_collection_property_indexes_sync(
     on_progress: Callable[[str], None] | None = None,
 ) -> dict[str, list[str]]:
     """
-    Create indexes for new_fields and drop indexes for fields removed since old_fields.
+    Ensure indexes for new_fields exist and drop indexes for fields removed since old_fields.
+
+    Creates use IF NOT EXISTS on every field in new_fields (not only the delta vs old_fields),
+    so re-saving the same config repairs missing indexes after a failed job.
 
     Uses CREATE/DROP INDEX CONCURRENTLY on the collection's leaf partition so
     SELECT/INSERT/UPDATE/DELETE (and property filter searches) are not blocked.
 
-    Returns {"created": [...], "dropped": [...]} field names.
+    Returns {"created": [...], "dropped": [...]} field names (ensured / dropped).
     """
     old_norm = normalize_property_index_fields(old_fields)
     new_norm = normalize_property_index_fields(new_fields)
-    old_set = set(old_norm)
     new_set = set(new_norm)
-    to_create = [f for f in new_norm if f not in old_set]
+    # Always ensure indexes for every desired field (IF NOT EXISTS). Do not key creates
+    # off old_fields alone — after a failed job the DB already stores the same fields,
+    # so a re-save would otherwise create an empty to_create and never build indexes.
+    to_create = list(new_norm)
     to_drop = [f for f in old_norm if f not in new_set]
 
     def _progress(msg: str) -> None:

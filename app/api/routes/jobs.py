@@ -158,6 +158,20 @@ def cancel_job_record(job) -> dict:
             "message": "Process job cancellation requested.",
         }
 
+    jl = getattr(job, "job_label", None) or ""
+    if job.status == "running" and jl == "property_index":
+        update_job(
+            job_id,
+            status="cancelled",
+            message="Cancellation requested — stopping soon…",
+        )
+        return {
+            "job_id": job_id,
+            "cancelled": True,
+            "status": "cancelled",
+            "message": "Property index job cancellation requested.",
+        }
+
     return {
         "job_id": job_id,
         "cancelled": False,

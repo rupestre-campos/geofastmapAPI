@@ -418,7 +418,7 @@
 
   <div class="card">
     <h2 class="card-title">Jobs for this collection</h2>
-    <p class="meta">Recent jobs for this collection (bulk import, tile build, geoprocessing). <a href="{{ base }}/jobs?f=html">All jobs →</a></p>
+    <p class="meta">Recent jobs for this collection (bulk import, tile build, property index, geoprocessing). <a href="{{ base }}/jobs?f=html">All jobs →</a></p>
     <div id="jobs-table-wrap">
       <p id="jobs-loading" class="meta">Loading…</p>
       <table id="jobs-table" style="display:none">
@@ -1778,6 +1778,7 @@
         }
       function jobTypeLabel(j) {
         if (j.job_type_label) return j.job_type_label;
+        if (j.job_category === 'property_index') return 'Property index sync';
         if (j.job_category === 'raster_import') return 'Raster import (COG)';
         if (j.job_category === 'tile_build') return 'Static tile build';
         if (j.process_id) return String(j.process_id).replace(/_/g, ' ');

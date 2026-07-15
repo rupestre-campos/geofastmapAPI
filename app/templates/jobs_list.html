@@ -54,7 +54,7 @@
       <h2 class="card-title" style="margin: 0;">All jobs</h2>
       <button type="button" class="btn btn-danger" id="btn-cancel-all-active" title="Cancel every pending, running, or replacing job">Cancel all active</button>
     </div>
-    <p class="meta" style="margin-bottom: var(--space);">Bulk import, static tile build, and geoprocessing jobs. Types and inputs are labeled consistently. Newest first; refreshes while jobs are active.</p>
+    <p class="meta" style="margin-bottom: var(--space);">Bulk import, static tile build, property index, and geoprocessing jobs. Newest first; refreshes while jobs are active.</p>
     <div id="jobs-wrap" style="{{ 'display: none;' if not jobs else '' }}">
       <table class="jobs-table" id="jobs-table">
         <thead>
@@ -233,6 +233,8 @@
   function typeLabel(j) {
     if (j.job_type_label) return j.job_type_label;
     if (j.process_id) return j.process_id === 'erase' ? 'Erase' : (j.process_id === 'intersection' ? 'Intersection' : j.process_id);
+    if (j.job_category === 'property_index') return 'Property index sync';
+    if (j.job_category === 'raster_import') return 'Raster import (COG)';
     return j.job_category === 'tile_build' ? 'Static tile build' : 'Bulk import';
   }
 
@@ -276,7 +278,7 @@
     mergeOpenJsonFromDom();
     var showOwner = (typeof is_admin !== 'undefined' && is_admin) || (jobs.length && jobs[0].owner_username !== undefined);
     tbody.innerHTML = jobs.map(function(j) {
-      var showCancel = j.status === 'pending' || (j.status === 'running' || j.status === 'replacing') && (j.is_tile_build || j.process_id || j.job_category === 'bulk_import');
+      var showCancel = j.status === 'pending' || ((j.status === 'running' || j.status === 'replacing') && (j.is_tile_build || j.process_id || j.job_category === 'bulk_import' || j.job_category === 'property_index'));
       var cancelBtn = showCancel
         ? '<button type="button" class="btn btn-danger btn-cancel" data-job-id="' + esc(j.job_id) + '" data-collection-id="' + esc(j.collection_id || '') + '" data-is-tile-build="' + (j.is_tile_build ? '1' : '') + '">Cancel</button>'
         : '';

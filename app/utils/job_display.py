@@ -107,7 +107,10 @@ def build_job_view_dict(
         d["input_summary"] = f"Collection: {job.collection_id}"
         details["property_index"] = {
             "collection_id": job.collection_id,
-            "note": "CREATE/DROP Postgres expression indexes on features.properties for this layer.",
+            "note": (
+                "Ensures Postgres expression indexes on features.properties "
+                "(CREATE INDEX CONCURRENTLY IF NOT EXISTS on the leaf partition)."
+            ),
         }
         d["details"] = details
         return d

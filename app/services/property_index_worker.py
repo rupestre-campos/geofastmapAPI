@@ -24,18 +24,19 @@ def run_property_index_job_sync(payload: PropertyIndexPayload) -> None:
 
     old_fields = normalize_property_index_fields(payload.old_fields)
     new_fields = normalize_property_index_fields(payload.new_fields)
-    to_create = [f for f in new_fields if f not in set(old_fields)]
+    # Mirror sync_collection_property_indexes_sync: ensure all desired fields.
+    to_ensure = list(new_fields)
     to_drop = [f for f in old_fields if f not in set(new_fields)]
 
     update_job(
         payload.job_id,
         status="running",
         message=(
-            f"Syncing property indexes on {payload.collection_id}: "
-            f"create {len(to_create)}, drop {len(to_drop)}"
+            f"Ensuring property indexes on {payload.collection_id}: "
+            f"ensure {len(to_ensure)}, drop {len(to_drop)}"
             + (" (composite → members)" if payload.is_composite else "")
         ),
-        items_in=len(to_create) + len(to_drop),
+        items_in=len(to_ensure) + len(to_drop),
         items_created=0,
         items_failed=0,
     )
@@ -63,7 +64,7 @@ def run_property_index_job_sync(payload: PropertyIndexPayload) -> None:
                 status="completed",
                 message=(
                     f"Property indexes synced on {members_n} member(s): "
-                    f"created {created}, dropped {dropped}"
+                    f"ensured {created}, dropped {dropped}"
                 ),
                 items_created=created,
                 items_failed=0,
@@ -80,7 +81,7 @@ def run_property_index_job_sync(payload: PropertyIndexPayload) -> None:
             update_job(
                 payload.job_id,
                 status="completed",
-                message=f"Property indexes synced: created {created}, dropped {dropped}",
+                message=f"Property indexes synced: ensured {created}, dropped {dropped}",
                 items_created=created,
                 items_failed=0,
             )
