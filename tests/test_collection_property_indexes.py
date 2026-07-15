@@ -35,10 +35,29 @@ def test_property_index_name_deterministic():
     assert a.startswith("idx_fp_")
 
 
-def test_create_index_sql_uses_concurrently():
-    sql, params = _create_index_sql("car-area_imovel", "state_code")
+def test_create_index_sql_uses_concurrently_on_leaf():
+    sql, params = _create_index_sql(
+        "features_car_restricted_use_sc_abcd1234",
+        "car-restricted_use-sc",
+        "car_code",
+        include_collection_predicate=False,
+    )
     text_sql = str(sql)
     assert "CREATE INDEX CONCURRENTLY" in text_sql
-    assert "IF NOT EXISTS" in text_sql
-    assert params["cid"] == "car-area_imovel"
-    assert params["field_key"] == "state_code"
+    assert "ON \"features_car_restricted_use_sc_abcd1234\"" in text_sql
+    assert "ON features " not in text_sql  # never the partitioned parent
+    assert "collection_id" not in text_sql
+    assert params["field_key"] == "car_code"
+
+
+def test_create_index_sql_default_partition_keeps_cid():
+    sql, params = _create_index_sql(
+        "features_default",
+        "car-restricted_use-sc",
+        "car_code",
+        include_collection_predicate=True,
+    )
+    text_sql = str(sql)
+    assert "ON \"features_default\"" in text_sql
+    assert "collection_id = :cid" in text_sql
+    assert params["cid"] == "car-restricted_use-sc"
