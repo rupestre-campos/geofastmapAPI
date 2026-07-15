@@ -255,12 +255,26 @@ async def list_items(
     props_include_set: set[str] | None = None
     if properties_include:
         props_include_set = {p.strip() for p in properties_include.split(",") if p.strip()}
-    # HTML vector: bbox-only, skip COUNT. JSON: full geometry + exact count unless overridden
-    # (UI pagination uses geometry=false&skip_count=true to stay on the lightweight path).
+    # HTML vector default: bbox-only (fast for million-row browses).
+    # Small filtered/search pages (≤25): include real geometries so the map is not bbox squares.
     collection_type = getattr(collection, "collection_type", "vector") or "vector"
     is_raster = collection_type == "raster"
+    has_item_filters = bool(
+        bbox_tuple
+        or datetime_param
+        or filter_param
+        or fulltext_q
+        or property_filters
+    )
     if geometry is None:
-        include_geometry = (wants_html(request) and is_raster) or (not wants_html(request))
+        if wants_html(request) and is_raster:
+            include_geometry = True
+        elif wants_html(request) and not is_raster and has_item_filters and limit <= 25:
+            include_geometry = True
+        elif wants_html(request):
+            include_geometry = False
+        else:
+            include_geometry = True
     else:
         include_geometry = bool(geometry)
     if skip_count is None:
@@ -289,6 +303,9 @@ async def list_items(
         )
         # Exact path always disables ILIKE — empty means "no matches", not "fall back to scan".
         fulltext_q = None
+        # Exact match is always a tiny set — always return real geometries for the map.
+        if wants_html(request) and not is_raster and geometry is None:
+            include_geometry = True
 
     try:
         from app.services.db_load_gate import DbLoadOverloaded, run_items_list_db
