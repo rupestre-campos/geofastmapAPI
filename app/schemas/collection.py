@@ -147,6 +147,10 @@ class CollectionRead(CollectionBase):
         description="For composite collections: per-member tile and feature status.",
     )
     links: list[Link] | None = Field(default=None, description="OGC links (self, items).")
+    property_index_job_id: str | None = Field(
+        default=None,
+        description="When property indexes were queued, job id to poll at GET /jobs/{id}.",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

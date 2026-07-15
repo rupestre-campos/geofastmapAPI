@@ -108,13 +108,17 @@ def main() -> None:
     except Exception:
         # Backfill is best-effort; continue even if it fails.
         pass
-    import redis
-    r = redis.from_url(settings.redis_url, decode_responses=True)
+    from app.services.property_index_queue import PROPERTY_INDEX_QUEUE_KEY, PropertyIndexPayload
+    from app.services.property_index_worker import run_property_index_job_sync
+    from app.services.redis_client import make_redis_client
+
+    brpop_timeout = 5
+    r = make_redis_client(for_brpop=True, brpop_timeout=brpop_timeout)
     redis_failures = 0
-    print("Process worker started. Waiting for jobs...", flush=True)
+    print("Process worker started (process + property-index queues). Waiting for jobs...", flush=True)
     while True:
         try:
-            result = r.brpop(PROCESS_QUEUE_KEY, timeout=5)
+            result = r.brpop(PROCESS_QUEUE_KEY, PROPERTY_INDEX_QUEUE_KEY, timeout=brpop_timeout)
             redis_failures = 0
         except Exception as e:
             redis_failures += 1
@@ -129,14 +133,29 @@ def main() -> None:
                 flush=True,
             )
             try:
-                r = redis.from_url(settings.redis_url, decode_responses=True)
+                r = make_redis_client(for_brpop=True, brpop_timeout=brpop_timeout)
             except Exception:
                 pass
             time.sleep(wait)
             continue
         if not result:
             continue
-        _, payload_json = result
+        queue_key, payload_json = result
+        if queue_key == PROPERTY_INDEX_QUEUE_KEY:
+            try:
+                idx_payload = PropertyIndexPayload.from_json(payload_json)
+            except Exception as e:
+                print(f"Invalid property-index payload: {e}", file=sys.stderr, flush=True)
+                continue
+            print(
+                f"Property index sync for {idx_payload.collection_id} (job_id={idx_payload.job_id})...",
+                flush=True,
+            )
+            try:
+                run_property_index_job_sync(idx_payload)
+            except Exception as e:
+                print(f"Property index job FAILED: {e}", file=sys.stderr, flush=True)
+            continue
         try:
             payload = ProcessJobPayload.from_json(payload_json)
         except Exception as e:

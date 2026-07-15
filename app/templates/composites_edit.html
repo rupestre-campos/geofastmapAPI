@@ -351,14 +351,33 @@
         document.getElementById('property-index-custom').value = '';
       };
       document.getElementById('btn-save-property-indexes').onclick = function() {
-        msgEl.textContent = 'Saving indexes on members…';
+        msgEl.textContent = 'Queueing index job on members…';
         fetch(base + '/collections/' + encodeURIComponent(collectionId), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify({ property_index_fields: selected })
         }).then(function(r) {
           if (!r.ok) return r.json().then(function(j) { throw j; });
-          msgEl.textContent = 'Indexes saved on all members.';
+          return r.json();
+        }).then(function(data) {
+          var jobId = data && data.property_index_job_id;
+          if (!jobId) {
+            msgEl.textContent = 'Indexes saved.';
+            return;
+          }
+          msgEl.innerHTML = 'Index job queued. <a href="' + base + '/jobs/' + encodeURIComponent(jobId) + '?f=html">Watch job</a>';
+          function poll() {
+            fetch(base + '/jobs/' + encodeURIComponent(jobId), { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+              .then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(job) {
+                if (!job) return;
+                var st = job.status || '';
+                var msg = job.message || '';
+                msgEl.textContent = st + (msg ? ': ' + msg : '');
+                if (st === 'pending' || st === 'running') setTimeout(poll, 2000);
+              }).catch(function() {});
+          }
+          poll();
         }).catch(function(e) { alert('Error: ' + (e.detail || JSON.stringify(e))); });
       };
     })();

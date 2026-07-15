@@ -101,6 +101,17 @@ def build_job_view_dict(
         d["details"] = details
         return d
 
+    if jl == "property_index":
+        d["job_category"] = "property_index"
+        d["job_type_label"] = "Property index sync"
+        d["input_summary"] = f"Collection: {job.collection_id}"
+        details["property_index"] = {
+            "collection_id": job.collection_id,
+            "note": "CREATE/DROP Postgres expression indexes on features.properties for this layer.",
+        }
+        d["details"] = details
+        return d
+
     if meta and meta.get("process_id"):
         pid = str(meta["process_id"])
         d["job_category"] = "process"

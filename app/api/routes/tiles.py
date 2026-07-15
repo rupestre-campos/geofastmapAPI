@@ -896,42 +896,41 @@ async def get_tiles_dynamic(
         if not has_query_params:
             tile_bytes = await _serve_composite_dynamic_tile(db, collection_id, composite_members, z, x, y)
             return Response(content=tile_bytes, media_type="application/x-protobuf", headers=cache_headers)
-        if params_key is None:
-            params_key = _params_key_from_query(
-                limit=limit,
-                offset=offset,
-                sortby=sortby,
-                sortdesc=sortdesc,
-                bbox=bbox,
-                datetime_param=datetime_param,
-                filter_param=filter_param,
-                q=q,
-                ids=ids,
-                properties=properties,
-            )
-        search_cache_ttl = getattr(settings, "tiles_search_result_cache_ttl_seconds", 300)
-        if search_cache_ttl <= 0:
-            return await _serve_composite_filtered_dynamic_tile(
-                db,
-                collection_id,
-                composite_members,
-                z,
-                x,
-                y,
-                limit=limit,
-                offset=offset,
-                sortby=sortby,
-                sortdesc=sortdesc,
-                bbox=bbox,
-                datetime_param=datetime_param,
-                filter_param=filter_param,
-                q=q,
-                ids=ids,
-                properties=properties,
-                params_key=params_key,
-                cache_headers=cache_headers,
-                cache_hit_headers=cache_hit_headers,
-            )
+        # Filtered / single-item composite tiles (e.g. ?ids=member:feature-uuid).
+        # Never fall through to the vector search-cache path — composite ids are not native feature ids.
+        params_key = _params_key_from_query(
+            limit=limit,
+            offset=offset,
+            sortby=sortby,
+            sortdesc=sortdesc,
+            bbox=bbox,
+            datetime_param=datetime_param,
+            filter_param=filter_param,
+            q=q,
+            ids=ids,
+            properties=properties,
+        )
+        return await _serve_composite_filtered_dynamic_tile(
+            db,
+            collection_id,
+            composite_members,
+            z,
+            x,
+            y,
+            limit=limit,
+            offset=offset,
+            sortby=sortby,
+            sortdesc=sortdesc,
+            bbox=bbox,
+            datetime_param=datetime_param,
+            filter_param=filter_param,
+            q=q,
+            ids=ids,
+            properties=properties,
+            params_key=params_key,
+            cache_headers=cache_headers,
+            cache_hit_headers=cache_hit_headers,
+        )
 
     if not has_query_params:
         cached = get_cached_tile(collection_id, z, x, y)

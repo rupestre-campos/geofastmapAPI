@@ -537,7 +537,9 @@ async def patch_collection(
             for m in (payload.composite_members or [])
         ]
         await validate_composite_members(db, collection_id, members)
-    collection = await collections_crud.patch_collection(db, collection_id, payload)
+    collection, property_index_job_id = await collections_crud.patch_collection(
+        db, collection_id, payload
+    )
     if not collection:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -553,12 +555,29 @@ async def patch_collection(
         member_status_json = await member_tile_status(
             db, parse_composite_members(collection.composite_members)
         )
-    return _collection_read_with_extras(
+    out = _collection_read_with_extras(
         collection,
         base=base,
         collection_id=collection_id,
         member_status=member_status_json,
     )
+    if property_index_job_id:
+        links = list(out.links or [])
+        links.append(
+            Link(
+                href=f"{base}/jobs/{property_index_job_id}",
+                rel="monitor",
+                type="application/json",
+                title="Property index job status",
+            )
+        )
+        return out.model_copy(
+            update={
+                "links": links,
+                "property_index_job_id": property_index_job_id,
+            }
+        )
+    return out
 
 
 @router.get(

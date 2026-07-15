@@ -282,10 +282,10 @@ class FakeCollectionsCrud:
 
     async def patch_collection(
         self, db: Any, collection_id: str, data: CollectionPatch
-    ) -> Collection | None:
+    ) -> tuple[Collection | None, str | None]:
         c = self._store.collections.get(collection_id)
         if c is None:
-            return None
+            return None, None
         if "title" in data.model_fields_set:
             c.title = data.title
         if "description" in data.model_fields_set:
@@ -299,7 +299,7 @@ class FakeCollectionsCrud:
         if getattr(c, "collection_type", "vector") != COLLECTION_TYPE_COMPOSITE:
             c.composite_members = None
         c.updated_at = _now()
-        return c
+        return c, None
 
     async def delete_collection(self, db: Any, collection_id: str) -> bool:
         if collection_id not in self._store.collections:

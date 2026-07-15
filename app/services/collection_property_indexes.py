@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import create_engine, text
@@ -48,7 +49,7 @@ def property_index_name(collection_id: str, field: str) -> str:
     return f"{_INDEX_PREFIX}{digest}"
 
 
-def _create_index_sql(collection_id: str, field: str) -> tuple[str, dict[str, str]]:
+def _create_index_sql(collection_id: str, field: str) -> tuple[Any, dict[str, str]]:
     idx = property_index_name(collection_id, field)
     # Partial btree on expression; scoped to one collection for partition pruning.
     sql = text(
@@ -67,6 +68,7 @@ def sync_collection_property_indexes_sync(
     new_fields: list[str],
     *,
     engine: Engine | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> dict[str, list[str]]:
     """
     Create indexes for new_fields and drop indexes for fields removed since old_fields.
@@ -79,6 +81,10 @@ def sync_collection_property_indexes_sync(
     to_create = [f for f in new_norm if f not in old_set]
     to_drop = [f for f in old_norm if f not in new_set]
 
+    def _progress(msg: str) -> None:
+        if on_progress:
+            on_progress(msg)
+
     owned = engine
     close = False
     if owned is None:
@@ -87,10 +93,16 @@ def sync_collection_property_indexes_sync(
         close = True
     try:
         with owned.connect() as conn:
-            for field in to_create:
+            for i, field in enumerate(to_create, start=1):
+                _progress(
+                    f"Creating index {i}/{len(to_create)} on {collection_id}.{field}…"
+                )
                 sql, params = _create_index_sql(collection_id, field)
                 conn.execute(sql, params)
-            for field in to_drop:
+            for i, field in enumerate(to_drop, start=1):
+                _progress(
+                    f"Dropping index {i}/{len(to_drop)} on {collection_id}.{field}…"
+                )
                 idx = property_index_name(collection_id, field)
                 conn.execute(text(f'DROP INDEX IF EXISTS "{idx}"'))
     finally:

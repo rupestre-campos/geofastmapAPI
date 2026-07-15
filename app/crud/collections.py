@@ -28,9 +28,8 @@ from app.models.resource_share import ResourceShare
 from app.services.collection_property_indexes import (
     drop_all_collection_property_indexes_sync,
     normalize_property_index_fields,
-    sync_collection_property_indexes_sync,
 )
-from app.services.composite_property_indexes import sync_composite_property_indexes_to_members_sync
+from app.services.property_index_queue import schedule_property_index_job
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
 
 if TYPE_CHECKING:
@@ -315,11 +314,11 @@ async def create_collection(
     if ctype != COLLECTION_TYPE_COMPOSITE:
         await ensure_features_partition(db, data.id)
     if index_fields:
-        await asyncio.to_thread(
-            sync_collection_property_indexes_sync,
+        schedule_property_index_job(
             data.id,
             [],
             index_fields,
+            owner_id=owner_id,
         )
     return collection
 
@@ -350,11 +349,11 @@ async def replace_collection(
     await db.commit()
     await db.refresh(collection)
     if collection.collection_type == COLLECTION_TYPE_VECTOR:
-        await asyncio.to_thread(
-            sync_collection_property_indexes_sync,
+        schedule_property_index_job(
             collection_id,
             old_index_fields,
             normalize_property_index_fields(collection.property_index_fields),
+            owner_id=collection.owner_id,
         )
     elif old_index_fields:
         await asyncio.to_thread(
@@ -367,10 +366,11 @@ async def replace_collection(
 
 async def patch_collection(
     db: AsyncSession, collection_id: str, data: CollectionPatch
-) -> Collection | None:
+) -> tuple[Collection | None, str | None]:
+    """Returns (collection, property_index_job_id or None)."""
     collection = await get_collection(db, collection_id)
     if collection is None:
-        return None
+        return None, None
     old_index_fields = normalize_property_index_fields(collection.property_index_fields)
     sync_indexes = False
     if "title" in data.model_fields_set:
@@ -409,30 +409,34 @@ async def patch_collection(
             collection.property_index_fields = None
     await db.commit()
     await db.refresh(collection)
+    index_job_id: str | None = None
     if sync_indexes:
         new_fields = normalize_property_index_fields(collection.property_index_fields)
         if collection.collection_type == COLLECTION_TYPE_VECTOR:
-            await asyncio.to_thread(
-                sync_collection_property_indexes_sync,
+            job = schedule_property_index_job(
                 collection_id,
                 old_index_fields,
                 new_fields,
+                owner_id=collection.owner_id,
             )
+            index_job_id = job.job_id
         elif collection.collection_type == COLLECTION_TYPE_COMPOSITE:
-            await asyncio.to_thread(
-                sync_composite_property_indexes_to_members_sync,
+            job = schedule_property_index_job(
                 collection_id,
-                collection.composite_members,
                 old_index_fields,
                 new_fields,
+                is_composite=True,
+                composite_members=collection.composite_members,
+                owner_id=collection.owner_id,
             )
+            index_job_id = job.job_id
         elif old_index_fields:
             await asyncio.to_thread(
                 drop_all_collection_property_indexes_sync,
                 collection_id,
                 old_index_fields,
             )
-    return collection
+    return collection, index_job_id
 
 
 async def delete_collection(db: AsyncSession, collection_id: str) -> bool:

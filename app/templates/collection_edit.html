@@ -256,7 +256,7 @@
   {% if (collection.collection_type or 'vector') == 'vector' %}
   <div class="card" id="property-indexes-card">
     <h2 class="card-title">Property indexes</h2>
-    <p class="meta">Create a Postgres index per selected property on <strong>this collection only</strong>. Speeds up item filters, queries, and <code>replace_filtered</code> bulk deletes (e.g. <code>state_code:eq:BA</code>). Large collections may take a minute to build the first index.</p>
+    <p class="meta">Create a Postgres index per selected property on <strong>this collection only</strong>. Speeds up item filters, queries, and <code>replace_filtered</code> bulk deletes (e.g. <code>state_code:eq:BA</code>). Saving queues a background job (watch status under Jobs); large collections can take minutes to build the first index.</p>
     <div id="property-index-checkboxes" class="form-row" style="display:flex;flex-wrap:wrap;gap:10px 16px;max-height:12rem;overflow:auto;"></div>
     <div class="form-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">
       <label for="property-index-custom" class="meta" style="margin:0;">Custom field</label>
@@ -2223,15 +2223,37 @@
       };
 
       document.getElementById('btn-save-property-indexes').onclick = function() {
-        msgEl.textContent = 'Saving indexes…';
+        msgEl.textContent = 'Queueing index job…';
         fetch(base + '/collections/' + encodeURIComponent(collectionId), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify({ property_index_fields: selected })
         }).then(function(r) {
           if (!r.ok) return r.json().then(function(j) { throw j; });
-          msgEl.textContent = 'Indexes updated.';
-          setTimeout(function() { location.reload(); }, 800);
+          return r.json();
+        }).then(function(data) {
+          var jobId = data && data.property_index_job_id;
+          if (!jobId) {
+            msgEl.textContent = 'Indexes saved.';
+            return;
+          }
+          msgEl.innerHTML = 'Index job queued. <a href="' + base + '/jobs/' + encodeURIComponent(jobId) + '?f=html">Watch job</a>';
+          function poll() {
+            fetch(base + '/jobs/' + encodeURIComponent(jobId), { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+              .then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(job) {
+                if (!job) return;
+                var st = job.status || '';
+                var msg = job.message || '';
+                msgEl.textContent = st + (msg ? ': ' + msg : '');
+                if (st === 'pending' || st === 'running') {
+                  setTimeout(poll, 2000);
+                } else if (st === 'completed') {
+                  msgEl.innerHTML = 'Done. <a href="' + base + '/jobs/' + encodeURIComponent(jobId) + '?f=html">Job details</a>';
+                }
+              }).catch(function() {});
+          }
+          poll();
         }).catch(function(e) {
           msgEl.textContent = '';
           alert('Error: ' + (e.detail || e.message || JSON.stringify(e)));
