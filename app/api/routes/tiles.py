@@ -946,6 +946,27 @@ async def _get_tiles_dynamic_impl(
     if q and q.strip() and len(q.strip()) < 4:
         q = None
 
+    # Exact tokens (CAR codes, etc.): resolve once to ids and never put ILIKE into per-tile SQL.
+    # This is why single-item (?ids=) was fast while search (?q=) hung on every tile.
+    if q and q.strip() and not feature_ids:
+        from app.crud import features as features_crud
+        from app.services.collection_property_indexes import normalize_property_index_fields
+
+        if features_crud.is_exact_search_token(q):
+            resolved = await features_crud.resolve_exact_search_feature_ids(
+                db,
+                collection_id,
+                q.strip(),
+                property_keys=normalize_property_index_fields(
+                    getattr(collection, "property_index_fields", None)
+                ),
+                limit=min(limit or settings.items_default_limit, 50),
+                exclude_bulk_job_ids=active_shadow_exclude_job_ids(collection_id) or None,
+            )
+            feature_ids = resolved
+            q = None
+            ids = ",".join(feature_ids) if feature_ids else ""
+
     has_query_params = (
         limit is not None
         or offset != 0
@@ -1164,7 +1185,11 @@ async def _get_tiles_dynamic_impl(
     prop_select = f", {prop_cols}" if prop_cols else ""
 
     only_ids_filter = bool(feature_ids)
-    use_pagination = limit is not None or offset != 0
+    # Search pages pass limit/offset, but once we have concrete ids the ids-only MVT path
+    # is as fast as single-item view — prefer it over paginated CTE + filters.
+    use_pagination = (limit is not None or offset != 0) and not (
+        feature_ids and len(feature_ids) <= 50
+    )
 
     if use_pagination:
         # Same page as GET items: apply limit/offset and item filters first, then clip to tile

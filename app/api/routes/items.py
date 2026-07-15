@@ -271,6 +271,25 @@ async def list_items(
     force_read = request.query_params.get("force", "").lower() in ("1", "true", "yes")
     exclude_bulk_job_ids = active_shadow_exclude_job_ids(collection_id)
     is_composite = is_composite_collection(collection)
+
+    # Exact CAR/parcel tokens: resolve via id / indexed property equality (skip trigram %q%).
+    exact_feature_ids: list[str] | None = None
+    if fulltext_q and features_crud.is_exact_search_token(fulltext_q) and not is_composite:
+        from app.services.collection_property_indexes import normalize_property_index_fields
+
+        exact_feature_ids = await features_crud.resolve_exact_search_feature_ids(
+            db,
+            collection_id,
+            fulltext_q,
+            property_keys=normalize_property_index_fields(
+                getattr(collection, "property_index_fields", None)
+            ),
+            limit=max(limit, 50),
+            exclude_bulk_job_ids=exclude_bulk_job_ids or None,
+        )
+        # Exact path always disables ILIKE — empty means "no matches", not "fall back to scan".
+        fulltext_q = None
+
     try:
         from app.services.db_load_gate import DbLoadOverloaded, run_items_list_db
 
@@ -306,6 +325,29 @@ async def list_items(
                     props["_member_feature_id"] = feat.id
                     read_list.append(r.model_copy(update={"id": comp_id, "properties": props}))
                 return read_list, number_matched
+            if exact_feature_ids is not None:
+                if not exact_feature_ids:
+                    return [], 0
+                features, number_matched = await features_crud.list_features_paginated(
+                    db,
+                    collection_id,
+                    limit=limit,
+                    offset=offset,
+                    bbox=bbox_tuple,
+                    datetime_start=dt_start,
+                    datetime_end=dt_end,
+                    sortby=sortby,
+                    sortdesc=sortdesc,
+                    property_filters=property_filters or None,
+                    structured_filters=structured_filters or None,
+                    fulltext_q=None,
+                    feature_ids=exact_feature_ids,
+                    collection_feature_count=len(exact_feature_ids),
+                    include_geometry=include_geometry,
+                    skip_count=True,
+                    exclude_bulk_job_ids=exclude_bulk_job_ids or None,
+                )
+                return [_feature_to_read(f, props_include_set) for f in features], number_matched
             features, number_matched = await features_crud.list_features_paginated(
                 db,
                 collection_id,

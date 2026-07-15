@@ -487,7 +487,7 @@
       if (map.getSource('tiles-collection')) map.removeSource('tiles-collection');
     }
     function removeResultsLayer() {
-      ['results-line', 'results-fill', 'results-circle', 'results-raster-line', 'results-raster-fill', 'results-raster-circle'].forEach(function(lid) {
+      ['results-line', 'results-fill', 'results-circle', 'results-detail-line', 'results-detail-fill', 'results-detail-circle', 'results-raster-line', 'results-raster-fill', 'results-raster-circle'].forEach(function(lid) {
         if (map.getLayer(lid)) map.removeLayer(lid);
       });
       if (map.getLayer('items-raster-mosaic')) map.removeLayer('items-raster-mosaic');
@@ -558,8 +558,8 @@
           .catch(function() { addRasterFootprintsOnly(); });
         return;
       }
-      // Vector View items: draw page footprints from SSR/JSON (bbox polygons). Avoids
-      // limit/offset dynamic tiles that refetched full geometries for every map tile.
+      // Vector View items: footprints for the page, plus precise geometries via ?ids=
+      // (never pass q=/filter=/limit= to tiles — that re-ran trigram search per tile).
       var fc = footprintFeatureCollection();
       map.addSource('results-geojson', { type: 'geojson', data: fc });
       map.addLayer({ id: 'results-fill', type: 'fill', source: 'results-geojson', filter: ['match', ['geometry-type'], 'Polygon', true, 'MultiPolygon', true, false], paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
@@ -568,6 +568,15 @@
       if (!s.fillEnabled) map.setLayoutProperty('results-fill', 'visibility', 'none');
       if (!s.lineEnabled) map.setLayoutProperty('results-line', 'visibility', 'none');
       if (!s.pointEnabled) map.setLayoutProperty('results-circle', 'visibility', 'none');
+      var pageIds = (features || []).map(function(f) { return f.id; }).filter(Boolean).slice(0, 50);
+      if (pageIds.length) {
+        var idsTileUrl = apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) +
+          '/tiles/dynamic/{z}/{x}/{y}.pbf?ids=' + encodeURIComponent(pageIds.join(','));
+        map.addSource('results-tiles', { type: 'vector', tiles: [idsTileUrl], minzoom: 0, maxzoom: 14 });
+        map.addLayer({ id: 'results-detail-fill', type: 'fill', source: 'results-tiles', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'fill-color': s.fillColor, 'fill-opacity': Math.min(0.35, (s.fillOpacity != null ? s.fillOpacity : 0.5) * 0.7) } });
+        map.addLayer({ id: 'results-detail-line', type: 'line', source: 'results-tiles', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
+        map.addLayer({ id: 'results-detail-circle', type: 'circle', source: 'results-tiles', 'source-layer': tileLayerId, filter: pointFilter, paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity } });
+      }
     }
     function applyBasemapFromSelect() {
       var sel = document.getElementById('map-basemap');
@@ -612,7 +621,7 @@
       }
       function getItemsMapPopupLayerIds() {
         var ids = [];
-        ['results-fill', 'results-line', 'results-circle', 'results-raster-fill', 'results-raster-line', 'results-raster-circle', 'tiles-fill', 'tiles-line', 'tiles-circle'].forEach(function(id) {
+        ['results-fill', 'results-line', 'results-circle', 'results-detail-fill', 'results-detail-line', 'results-detail-circle', 'results-raster-fill', 'results-raster-line', 'results-raster-circle', 'tiles-fill', 'tiles-line', 'tiles-circle'].forEach(function(id) {
           if (map.getLayer(id)) ids.push(id);
         });
         return ids;

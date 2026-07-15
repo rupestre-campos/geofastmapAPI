@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence, AsyncGenerator
 import json
+import re
+from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Tuple
@@ -438,6 +439,103 @@ def _property_filter_clause(key: str, value: str):
 
 def _structured_filter_clause(f: PropertyFilter):
     return structured_filter_clause(f)
+
+
+# Exact CAR / parcel-style tokens: prefer equality over trigram %token% (much faster on huge layers).
+_EXACT_SEARCH_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+
+
+def is_exact_search_token(q: str | None) -> bool:
+    """True when q looks like an exact id/code (not free-text)."""
+    if not q:
+        return False
+    s = q.strip()
+    if not s or any(ch in s for ch in ("*", "%", " ", "\t", "\n")):
+        return False
+    return bool(_EXACT_SEARCH_TOKEN_RE.match(s))
+
+
+async def resolve_exact_search_feature_ids(
+    db: AsyncSession,
+    collection_id: str,
+    token: str,
+    *,
+    property_keys: Sequence[str] | None = None,
+    limit: int = 50,
+    exclude_bulk_job_ids: Sequence[str] | None = None,
+) -> list[str]:
+    """
+    Resolve an exact search token to feature ids via:
+    1) feature id equality
+    2) equality on known property keys (e.g. car_code / property_index_fields)
+    Returns [] when nothing matches (caller should not fall back to slow ILIKE for exact tokens).
+    """
+    from app.services.collection_property_indexes import validate_property_index_field
+
+    tok = (token or "").strip()
+    if not tok:
+        return []
+
+    safe_keys: list[str] = []
+    for k in property_keys or []:
+        try:
+            safe_keys.append(validate_property_index_field(k))
+        except Exception:
+            continue
+    safe_keys = list(dict.fromkeys(safe_keys))[:12]
+    if not safe_keys:
+        # Fallbacks when collection has no property_index_fields configured.
+        for k in ("car_code", "cod_imovel", "codigo", "code"):
+            try:
+                safe_keys.append(validate_property_index_field(k))
+            except Exception:
+                continue
+
+    shadow_jobs = [j for j in (exclude_bulk_job_ids or []) if j]
+    shadow_sql = ""
+    params: dict = {"cid": collection_id, "tok": tok, "lim": max(1, int(limit))}
+    if shadow_jobs:
+        shadow_sql = " AND (bulk_import_job_id IS NULL OR bulk_import_job_id != ALL(:shadow_exclude_jobs))"
+        params["shadow_exclude_jobs"] = shadow_jobs
+
+    # Fast: id equals token (common when pasting a feature id into q).
+    r = await db.execute(
+        text(
+            f"""
+            SELECT DISTINCT id
+            FROM features
+            WHERE collection_id = :cid AND id = :tok{shadow_sql}
+            LIMIT :lim
+            """
+        ),
+        params,
+    )
+    ids = [row[0] for row in r.fetchall()]
+    if ids:
+        return ids
+
+    if not safe_keys:
+        return []
+
+    or_parts = []
+    for i, key in enumerate(safe_keys):
+        p = f"pk{i}"
+        or_parts.append(f"(properties ? :{p} AND properties ->> :{p} = :tok)")
+        params[p] = key
+    or_sql = " OR ".join(or_parts)
+    r = await db.execute(
+        text(
+            f"""
+            SELECT DISTINCT id
+            FROM features
+            WHERE collection_id = :cid{shadow_sql}
+              AND ({or_sql})
+            LIMIT :lim
+            """
+        ),
+        params,
+    )
+    return [row[0] for row in r.fetchall()]
 
 
 async def list_features_paginated(
