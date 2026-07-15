@@ -77,5 +77,27 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    async with AsyncSessionLocal() as session:
-        yield session
+    """Yield a DB session. Pool checkout failures become HTTP 503 (fail fast under load)."""
+    from fastapi import HTTPException, status
+    from sqlalchemy.exc import TimeoutError as SATimeoutError
+
+    try:
+        async with AsyncSessionLocal() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+    except SATimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database pool saturated; retry shortly.",
+            headers={"Retry-After": "2"},
+        ) from exc
+    except TimeoutError as exc:
+        # asyncpg / asyncio wait on pool
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database pool saturated; retry shortly.",
+            headers={"Retry-After": "2"},
+        ) from exc

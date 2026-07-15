@@ -73,7 +73,22 @@ def _base_url(request: Request) -> str:
 
 
 # Reserved query params for items list (not attribute filters). Include "f" for ?f=html (HTML view).
-ITEMS_RESERVED_PARAMS = {"limit", "offset", "bbox", "datetime", "sortby", "sortdesc", "properties", "filter", "q", "f", "bbox_only", "force"}
+ITEMS_RESERVED_PARAMS = {
+    "limit",
+    "offset",
+    "bbox",
+    "datetime",
+    "sortby",
+    "sortdesc",
+    "properties",
+    "filter",
+    "q",
+    "f",
+    "bbox_only",
+    "force",
+    "geometry",
+    "skip_count",
+}
 
 
 def _feature_to_read(
@@ -153,6 +168,14 @@ async def list_items(
     filter_param: list[str] | None = Query(None, alias="filter", description="Structured filters: key:op:value (op: eq, ne, gt, gte, lt, lte, like, ilike). Repeat for AND."),
     q: str | None = Query(None, description="Full-text search across all property values."),
     bbox_only: bool = Query(False, description="If true, return only { bbox, numberMatched } for the same query (no features)."),
+    geometry: bool | None = Query(
+        None,
+        description="If false, omit geometries and return feature.bbox only (fast). Default: false for HTML vector, true for JSON.",
+    ),
+    skip_count: bool | None = Query(
+        None,
+        description="If true, skip expensive COUNT(DISTINCT id). Default: true for HTML. Filtered lists use an approximate total.",
+    ),
 ):
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
@@ -232,47 +255,57 @@ async def list_items(
     props_include_set: set[str] | None = None
     if properties_include:
         props_include_set = {p.strip() for p in properties_include.split(",") if p.strip()}
-    # HTML view: skip full geometry for vector (bbox only); raster needs footprints on the map.
+    # HTML vector: bbox-only, skip COUNT. JSON: full geometry + exact count unless overridden
+    # (UI pagination uses geometry=false&skip_count=true to stay on the lightweight path).
     collection_type = getattr(collection, "collection_type", "vector") or "vector"
     is_raster = collection_type == "raster"
-    include_geometry = (wants_html(request) and is_raster) or (not wants_html(request))
-    skip_count = wants_html(request)
+    if geometry is None:
+        include_geometry = (wants_html(request) and is_raster) or (not wants_html(request))
+    else:
+        include_geometry = bool(geometry)
+    if skip_count is None:
+        skip_count_eff = wants_html(request)
+    else:
+        skip_count_eff = bool(skip_count)
     bulk_busy = collection_has_destructive_bulk_activity(collection_id)
     force_read = request.query_params.get("force", "").lower() in ("1", "true", "yes")
     exclude_bulk_job_ids = active_shadow_exclude_job_ids(collection_id)
     is_composite = is_composite_collection(collection)
     try:
-        await apply_items_query_timeouts(
-            db,
-            during_bulk=bulk_busy and not force_read,
-        )
-        if is_composite:
-            member_ids = await composite_member_ids(db, collection)
-            rows, number_matched = await list_composite_features_paginated(
+        from app.services.db_load_gate import DbLoadOverloaded, run_items_list_db
+
+        async def _load_page():
+            await apply_items_query_timeouts(
                 db,
-                member_ids,
-                limit=limit,
-                offset=offset,
-                bbox=bbox_tuple,
-                datetime_start=dt_start,
-                datetime_end=dt_end,
-                sortby=sortby,
-                sortdesc=sortdesc,
-                property_filters=property_filters or None,
-                structured_filters=structured_filters or None,
-                fulltext_q=fulltext_q,
-                include_geometry=include_geometry,
-                skip_count=skip_count,
+                during_bulk=bulk_busy and not force_read,
             )
-            read_list = []
-            for mid, feat in rows:
-                r = _feature_to_read(feat, props_include_set)
-                comp_id = format_composite_item_id(mid, feat.id)
-                props = dict(r.properties or {})
-                props["_member_collection_id"] = mid
-                props["_member_feature_id"] = feat.id
-                read_list.append(r.model_copy(update={"id": comp_id, "properties": props}))
-        else:
+            if is_composite:
+                member_ids = await composite_member_ids(db, collection)
+                rows, number_matched = await list_composite_features_paginated(
+                    db,
+                    member_ids,
+                    limit=limit,
+                    offset=offset,
+                    bbox=bbox_tuple,
+                    datetime_start=dt_start,
+                    datetime_end=dt_end,
+                    sortby=sortby,
+                    sortdesc=sortdesc,
+                    property_filters=property_filters or None,
+                    structured_filters=structured_filters or None,
+                    fulltext_q=fulltext_q,
+                    include_geometry=include_geometry,
+                    skip_count=skip_count_eff,
+                )
+                read_list = []
+                for mid, feat in rows:
+                    r = _feature_to_read(feat, props_include_set)
+                    comp_id = format_composite_item_id(mid, feat.id)
+                    props = dict(r.properties or {})
+                    props["_member_collection_id"] = mid
+                    props["_member_feature_id"] = feat.id
+                    read_list.append(r.model_copy(update={"id": comp_id, "properties": props}))
+                return read_list, number_matched
             features, number_matched = await features_crud.list_features_paginated(
                 db,
                 collection_id,
@@ -288,10 +321,18 @@ async def list_items(
                 fulltext_q=fulltext_q,
                 collection_feature_count=collection.feature_count,
                 include_geometry=include_geometry,
-                skip_count=skip_count,
+                skip_count=skip_count_eff,
                 exclude_bulk_job_ids=exclude_bulk_job_ids or None,
             )
-            read_list = [_feature_to_read(f, props_include_set) for f in features]
+            return [_feature_to_read(f, props_include_set) for f in features], number_matched
+
+        read_list, number_matched = await run_items_list_db(request, _load_page)
+    except DbLoadOverloaded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Items list is busy; try again in a moment.",
+            headers={"Retry-After": "2"},
+        ) from exc
     except DBAPIError as exc:
         if is_items_query_timeout_error(exc):
             if wants_html(request):
@@ -302,8 +343,8 @@ async def list_items(
                 )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Items list temporarily unavailable while bulk import is running on this collection.",
-                headers={"Retry-After": "30"},
+                detail="Items list query timed out. Narrow filters or retry; the server did not keep holding a DB connection.",
+                headers={"Retry-After": "5"},
             ) from exc
         raise
     base = _base_url(request)
@@ -391,7 +432,7 @@ async def list_items(
         if offset > 0:
             q_prev = {**query_params, "offset": str(max(0, offset - limit))}
             prev_page_url = base_path + "?" + urlencode(sorted(q_prev.items()))
-        if offset + len(features) < number_matched:
+        if offset + len(read_list) < number_matched:
             q_next = {**query_params, "offset": str(offset + limit)}
             next_page_url = base_path + "?" + urlencode(sorted(q_next.items()))
         # Fetch style and tiles in parallel (no dependency on features)
@@ -406,6 +447,22 @@ async def list_items(
         )
         has_static_tiles = bool(rec and rec.pmtiles_path and PathLib(rec.pmtiles_path).exists())
         can_edit = await can_edit_collection(db, collection, current_user)
+        # Prefer stored collection extent for map fit when browsing unfiltered pages.
+        collection_extent_bbox = None
+        if not bbox and not datetime_param and not filter_param and not fulltext_q and not property_filters:
+            ext = getattr(collection, "extent", None) or {}
+            spatial = ext.get("spatial") if isinstance(ext, dict) else None
+            bbox_list = None
+            if isinstance(spatial, dict):
+                bbox_list = spatial.get("bbox")
+            if isinstance(bbox_list, list) and bbox_list:
+                first = bbox_list[0] if isinstance(bbox_list[0], list) else bbox_list
+                if isinstance(first, (list, tuple)) and len(first) >= 4:
+                    try:
+                        collection_extent_bbox = [float(first[0]), float(first[1]), float(first[2]), float(first[3])]
+                    except (TypeError, ValueError):
+                        collection_extent_bbox = None
+        map_extent_bbox = collection_extent_bbox or extent_bbox
         return html_response(
             "items.html",
             base=base,
@@ -415,10 +472,10 @@ async def list_items(
             can_edit_collection=can_edit,
             features=read_list,
             features_geojson=features_geojson,
-            extent_bbox=extent_bbox,
+            extent_bbox=map_extent_bbox,
             property_keys=property_keys,
             number_matched=number_matched,
-            number_returned=len(features),
+            number_returned=len(read_list),
             limit=limit,
             limit_max_value=get_settings().items_max_limit,
             offset=offset,
@@ -442,7 +499,7 @@ async def list_items(
         features=read_list,
         bbox=extent_bbox,
         numberMatched=number_matched,
-        numberReturned=len(features),
+        numberReturned=len(read_list),
         links=links + [Link(href=f"{base_path}?f=html", rel="alternate", type="text/html")],
     )
     payload = fc.model_dump(mode="json")
@@ -485,7 +542,6 @@ async def get_collection_queryables(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    keys = await features_crud.get_collection_property_keys(db, collection_id)
     from app.services.collection_property_indexes import normalize_property_index_fields
 
     if is_composite_collection(collection):
@@ -498,8 +554,11 @@ async def get_collection_queryables(
     configured = normalize_property_index_fields(
         getattr(collection, "property_index_fields", None)
     )
-    merged = sorted(set(keys) | set(configured))
-    return {"properties": merged}
+    # Large layers: prefer configured index fields and skip DISTINCT sampling of feature rows.
+    if configured:
+        return {"properties": configured}
+    keys = await features_crud.get_collection_property_keys(db, collection_id)
+    return {"properties": keys}
 
 
 @router.post(

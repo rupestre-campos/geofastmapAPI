@@ -6,6 +6,7 @@ import gzip
 import json
 import os
 import re
+from contextvars import ContextVar
 from urllib.parse import urlencode
 from datetime import datetime
 from pathlib import Path
@@ -68,21 +69,44 @@ from app.services.static_tiles_path import (
 
 router = APIRouter()
 
+# Bound for the duration of get_tiles_dynamic so nested MVT helpers can gate/cancel.
+_tile_request_ctx: ContextVar[Request | None] = ContextVar("tile_request_ctx", default=None)
 
-async def _execute_mvt_sql(db: AsyncSession, sql: str, params: dict) -> bytes:
-    """Run an MVT query with optional statement timeout; rollback on failure."""
-    settings = get_settings()
-    timeout_sec = getattr(settings, "tiles_dynamic_statement_timeout_seconds", 0) or 0
-    try:
-        if timeout_sec > 0:
-            await db.execute(text(f"SET LOCAL statement_timeout = {int(timeout_sec * 1000)}"))
-        result = await db.execute(text(sql), params)
-        row = result.first()
-        mvt = row.mvt if row and row.mvt else None
-        return bytes(mvt) if mvt else b""
-    except Exception:
-        await db.rollback()
-        raise
+
+async def _execute_mvt_sql(
+    db: AsyncSession,
+    sql: str,
+    params: dict,
+    *,
+    request: Request | None = None,
+) -> bytes:
+    """Run an MVT query with optional statement timeout; rollback on failure.
+
+    Concurrent tile storms are limited by ``run_dynamic_tile_db`` so MapLibre
+    pan/zoom cannot exhaust the API connection pool.
+    """
+    from app.services.db_load_gate import run_dynamic_tile_db
+
+    req = request if request is not None else _tile_request_ctx.get()
+
+    async def _run() -> bytes:
+        settings = get_settings()
+        timeout_sec = getattr(settings, "tiles_dynamic_statement_timeout_seconds", 0) or 0
+        try:
+            if timeout_sec > 0:
+                await db.execute(text(f"SET LOCAL statement_timeout = {int(timeout_sec * 1000)}"))
+            result = await db.execute(text(sql), params)
+            row = result.first()
+            mvt = row.mvt if row and row.mvt else None
+            return bytes(mvt) if mvt else b""
+        except Exception:
+            await db.rollback()
+            raise
+
+    async def _empty() -> bytes:
+        return b""
+
+    return await run_dynamic_tile_db(req, _run, on_overload=_empty)
 
 
 async def _serve_composite_static_tile(
@@ -849,6 +873,51 @@ async def get_tiles_dynamic(
     ids: str | None = Query(None, description="Comma-separated feature ids (e.g. single item view)."),
     properties: str | None = Query(None),
 ):
+    token = _tile_request_ctx.set(request)
+    try:
+        return await _get_tiles_dynamic_impl(
+            request,
+            collection_id,
+            z,
+            x,
+            y,
+            db,
+            current_user,
+            limit=limit,
+            offset=offset,
+            sortby=sortby,
+            sortdesc=sortdesc,
+            bbox=bbox,
+            datetime_param=datetime_param,
+            filter_param=filter_param,
+            q=q,
+            ids=ids,
+            properties=properties,
+        )
+    finally:
+        _tile_request_ctx.reset(token)
+
+
+async def _get_tiles_dynamic_impl(
+    request: Request,
+    collection_id: str,
+    z: int,
+    x: int,
+    y: int,
+    db: AsyncSession,
+    current_user,
+    *,
+    limit: int | None,
+    offset: int,
+    sortby: str | None,
+    sortdesc: bool,
+    bbox: str | None,
+    datetime_param: str | None,
+    filter_param: list[str] | None,
+    q: str | None,
+    ids: str | None,
+    properties: str | None,
+):
     if z < 0 or z > 22:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid z")
     if x < 0 or x >= (1 << z) or y < 0 or y >= (1 << z):
@@ -973,27 +1042,32 @@ async def get_tiles_dynamic(
         from app.services.search_result_cache import ensure_search_result_cached
         from app.services.dynamic_tile_cache import get_search_result
         from app.services.dynamic_tile_geojson import filter_geojson_to_tile_bbox
+        from app.services.db_load_gate import run_dynamic_tile_db
         from app.services.mvt_encode import encode_geojson_to_mvt
 
-        ok = await ensure_search_result_cached(
-            db,
-            collection_id,
-            params_key,
-            limit=limit or settings.items_default_limit,
-            offset=offset,
-            sortby=sortby,
-            sortdesc=sortdesc,
-            bbox=bbox,
-            datetime_param=datetime_param,
-            filter_param=filter_param,
-            q=q,
-            ids=ids,
-        )
-        if not ok:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Search result cache unavailable",
+        async def _cache_search() -> bool:
+            return await ensure_search_result_cached(
+                db,
+                collection_id,
+                params_key,
+                limit=limit or settings.items_default_limit,
+                offset=offset,
+                sortby=sortby,
+                sortdesc=sortdesc,
+                bbox=bbox,
+                datetime_param=datetime_param,
+                filter_param=filter_param,
+                q=q,
+                ids=ids,
             )
+
+        async def _cache_miss() -> bool:
+            return False
+
+        ok = await run_dynamic_tile_db(request, _cache_search, on_overload=_cache_miss)
+        if not ok:
+            # Overloaded or cache fill failed — empty tile beats pinning the pool.
+            return Response(content=b"", media_type="application/x-protobuf", headers=cache_headers)
         # Re-check tile cache (another request may have built it)
         payload = get_tile_with_params(collection_id, z, x, y, params_key)
         if payload is not None:
@@ -1119,15 +1193,56 @@ async def get_tiles_dynamic(
             fulltext_q=fulltext_q,
         )
         extra_where, extra_params = _merge_shadow_tile_filter(collection_id, extra_where, extra_params)
+        # Two-phase page: pick page ids cheaply, then ST_Union only those ids.
+        # (Previous single CTE GROUP BY + ST_Union before LIMIT scanned the whole partition.)
+        if not sortby or sortby == "id":
+            id_order = "id DESC" if sortdesc else "id ASC"
+            page_ids_cte = f"""
+            page_ids AS (
+                SELECT DISTINCT ON (id) id
+                FROM features
+                WHERE collection_id = :cid AND geometry IS NOT NULL
+                  {extra_where}
+                ORDER BY {id_order}
+                LIMIT :page_limit OFFSET :offset
+            )"""
+        elif sortby == "created_at":
+            ca_order = "min(created_at) DESC" if sortdesc else "min(created_at) ASC"
+            page_ids_cte = f"""
+            page_ids AS (
+                SELECT id
+                FROM features
+                WHERE collection_id = :cid AND geometry IS NOT NULL
+                  {extra_where}
+                GROUP BY id
+                ORDER BY {ca_order}, id ASC
+                LIMIT :page_limit OFFSET :offset
+            )"""
+        else:
+            # Property sort: order by first-part property then id.
+            page_ids_cte = f"""
+            page_ids AS (
+                SELECT id
+                FROM (
+                    SELECT DISTINCT ON (id) id, properties
+                    FROM features
+                    WHERE collection_id = :cid AND geometry IS NOT NULL
+                      {extra_where}
+                    ORDER BY id, part_index
+                ) uniq
+                ORDER BY {order_sql}, id ASC
+                LIMIT :page_limit OFFSET :offset
+            )"""
         sql = f"""
-        WITH page AS (
-            SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
-            FROM features
-            WHERE collection_id = :cid AND geometry IS NOT NULL
-              {extra_where}
-            GROUP BY id, collection_id
-            ORDER BY {order_sql}
-            LIMIT :page_limit OFFSET :offset
+        WITH {page_ids_cte},
+        page AS (
+            SELECT f.id,
+                   ST_Union(f.geometry) AS geometry,
+                   (array_agg(f.properties ORDER BY f.part_index))[1] AS properties
+            FROM features f
+            JOIN page_ids p ON p.id = f.id
+            WHERE f.collection_id = :cid AND f.geometry IS NOT NULL
+            GROUP BY f.id
         )
         SELECT ST_AsMVT(tile, :layer_name, 4096, 'geom') AS mvt
         FROM (

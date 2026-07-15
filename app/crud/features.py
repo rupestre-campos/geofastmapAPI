@@ -463,7 +463,8 @@ async def list_features_paginated(
     """
     List features with OGC query params. Returns (features, numberMatched).
     include_geometry=False: return features with bbox only (no geometry) for fast list/HTML view with large layers.
-    skip_count=True: do not run COUNT query; use collection_feature_count when no filters, else 0. Speeds up HTML view.
+    skip_count=True: do not run COUNT(DISTINCT id). Unfiltered uses collection_feature_count; filtered uses an
+    approximate total after the page fetch (offset+returned, or offset+returned+1 when a full page is returned).
     property_filters: legacy name=value (* partial). structured_filters: key:op:value (eq, ne, gt, gte, lt, lte, like, ilike).
     fulltext_q: search term across all properties (uses properties_flat trigram index).
     feature_ids: when set, only return features with id in this list (e.g. for single-item tile).
@@ -523,12 +524,15 @@ async def list_features_paginated(
         pattern = f"%{q}%"
         count_distinct = count_distinct.where(Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\"))
 
+    # skip_count: never pay for COUNT(DISTINCT id) on million-row partitions.
+    # Unfiltered → cached collection.feature_count. Filtered → approximate after the page fetch
+    # so the list UI can still show "has more" without scanning the full match set.
+    deferred_total = False
     if skip_count and not has_filters and collection_feature_count is not None:
         total = int(collection_feature_count)
-    elif skip_count and has_filters:
-        total = (await db.execute(count_distinct)).scalar() or 0
     elif skip_count:
         total = 0
+        deferred_total = True
     elif has_filters:
         total = (await db.execute(count_distinct)).scalar() or 0
     elif collection_feature_count is not None:
@@ -680,11 +684,18 @@ async def list_features_paginated(
             page_ids = [r.id for r in page_rows]
 
         if not page_ids:
+            if deferred_total:
+                total = offset
             return ([], int(total))
 
+        if deferred_total:
+            n = len(page_ids)
+            # Exact when short page; otherwise advertise at least one more page (has_more).
+            total = offset + n if n < limit else offset + n + 1
+
         if not include_geometry:
-            # Fast path: fetch per-part bbox only (no GROUP BY, no ST_Extent in DB — minimal work per row).
-            # Aggregate bbox/properties in Python so DB does a simple index scan and releases quickly.
+            # Fast path: one row per logical id — ST_Extent over parts (avoids shipping every
+            # subdivided part to Python). Still no ST_AsGeoJSON / ST_Union of full rings.
             phase2_shadow = (
                 " AND (bulk_import_job_id IS NULL OR bulk_import_job_id != ALL(:shadow_exclude_jobs))"
                 if shadow_jobs
@@ -692,42 +703,40 @@ async def list_features_paginated(
             )
             r = await db.execute(
                 text(f"""
-                    SELECT id, collection_id, part_index,
-                           ST_XMin(geometry) AS xmin, ST_YMin(geometry) AS ymin,
-                           ST_XMax(geometry) AS xmax, ST_YMax(geometry) AS ymax,
+                    SELECT id, collection_id,
+                           ST_XMin(ext) AS xmin, ST_YMin(ext) AS ymin,
+                           ST_XMax(ext) AS xmax, ST_YMax(ext) AS ymax,
                            properties, created_at, updated_at
-                    FROM features
-                    WHERE collection_id = :cid AND id = ANY(:ids){phase2_shadow}
-                    ORDER BY id, part_index
+                    FROM (
+                        SELECT id, collection_id,
+                               ST_Extent(geometry) AS ext,
+                               (array_agg(properties ORDER BY part_index))[1] AS properties,
+                               min(created_at) AS created_at,
+                               max(updated_at) AS updated_at
+                        FROM features
+                        WHERE collection_id = :cid AND id = ANY(:ids){phase2_shadow}
+                        GROUP BY id, collection_id
+                    ) sub
                 """),
                 {"cid": collection_id, "ids": page_ids, **shadow_params},
             )
-            rows = r.fetchall()
-            by_id: dict[str, list[Any]] = {}
-            for row in rows:
-                by_id.setdefault(row.id, []).append(row)
+            by_id = {row.id: row for row in r.fetchall()}
             features = []
             for pid in page_ids:
-                parts = by_id.get(pid)
-                if not parts:
+                row = by_id.get(pid)
+                if not row:
                     continue
-                sorted_parts = sorted(parts, key=lambda p: getattr(p, "part_index", 0))
-                first = sorted_parts[0]
-                xs = [float(p.xmin) for p in sorted_parts if p.xmin is not None]
-                ys = [float(p.ymin) for p in sorted_parts if p.ymin is not None]
-                xmaxs = [float(p.xmax) for p in sorted_parts if p.xmax is not None]
-                ymaxs = [float(p.ymax) for p in sorted_parts if p.ymax is not None]
                 bbox_list = None
-                if xs and ys and xmaxs and ymaxs:
-                    bbox_list = [min(xs), min(ys), max(xmaxs), max(ymaxs)]
+                if row.xmin is not None and row.ymin is not None and row.xmax is not None and row.ymax is not None:
+                    bbox_list = [float(row.xmin), float(row.ymin), float(row.xmax), float(row.ymax)]
                 f = Feature(
-                    id=first.id,
-                    collection_id=first.collection_id,
+                    id=row.id,
+                    collection_id=row.collection_id,
                     part_index=0,
                     geometry=None,
-                    properties=first.properties,
-                    created_at=min(p.created_at for p in sorted_parts),
-                    updated_at=max(p.updated_at for p in sorted_parts),
+                    properties=row.properties,
+                    created_at=row.created_at,
+                    updated_at=row.updated_at,
                 )
                 f.bbox = bbox_list  # type: ignore[attr-defined]
                 features.append(f)
