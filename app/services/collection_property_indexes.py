@@ -51,15 +51,49 @@ def property_index_name(collection_id: str, field: str) -> str:
 
 def _create_index_sql(collection_id: str, field: str) -> tuple[Any, dict[str, str]]:
     idx = property_index_name(collection_id, field)
-    # Partial btree on expression; scoped to one collection for partition pruning.
+    # CONCURRENTLY: does not take AccessExclusiveLock; must run outside a transaction (AUTOCOMMIT).
     sql = text(
         f"""
-        CREATE INDEX IF NOT EXISTS "{idx}"
+        CREATE INDEX CONCURRENTLY IF NOT EXISTS "{idx}"
         ON features ((properties->>:field_key))
         WHERE collection_id = :cid AND properties ? :field_key
         """
     )
     return sql, {"cid": collection_id, "field_key": field}
+
+
+def _drop_invalid_index_if_any(conn, index_name: str) -> bool:
+    """Drop leftover INVALID indexes from a failed CONCURRENTLY build. Returns True if dropped."""
+    row = conn.execute(
+        text(
+            """
+            SELECT NOT i.indisvalid AS invalid
+            FROM pg_class c
+            JOIN pg_index i ON i.indexrelid = c.oid
+            WHERE c.relname = :name
+            LIMIT 1
+            """
+        ),
+        {"name": index_name},
+    ).first()
+    if row and row.invalid:
+        conn.execute(text(f'DROP INDEX CONCURRENTLY IF EXISTS "{index_name}"'))
+        return True
+    return False
+
+
+def _autocommit_engine(engine: Engine | None) -> tuple[Engine, bool]:
+    """
+    CREATE/DROP INDEX CONCURRENTLY cannot run inside a transaction.
+    Always use AUTOCOMMIT; dispose only engines we create.
+    """
+    if engine is None:
+        settings = get_settings()
+        return create_engine(settings.database_sync_url, isolation_level="AUTOCOMMIT"), True
+    # Caller may pass a pooled engine still in READ COMMITTED; open a dedicated
+    # AUTOCOMMIT engine against the same URL so CONCURRENTLY never fails / locks.
+    url = engine.url
+    return create_engine(url, isolation_level="AUTOCOMMIT"), True
 
 
 def sync_collection_property_indexes_sync(
@@ -72,6 +106,10 @@ def sync_collection_property_indexes_sync(
 ) -> dict[str, list[str]]:
     """
     Create indexes for new_fields and drop indexes for fields removed since old_fields.
+
+    Uses CREATE/DROP INDEX CONCURRENTLY so SELECT/INSERT/UPDATE/DELETE (and
+    property filter searches) are not blocked by AccessExclusiveLock.
+
     Returns {"created": [...], "dropped": [...]} field names.
     """
     old_norm = normalize_property_index_fields(old_fields)
@@ -85,26 +123,28 @@ def sync_collection_property_indexes_sync(
         if on_progress:
             on_progress(msg)
 
-    owned = engine
-    close = False
-    if owned is None:
-        settings = get_settings()
-        owned = create_engine(settings.database_sync_url, isolation_level="AUTOCOMMIT")
-        close = True
+    owned, close = _autocommit_engine(engine)
     try:
         with owned.connect() as conn:
             for i, field in enumerate(to_create, start=1):
+                idx = property_index_name(collection_id, field)
                 _progress(
-                    f"Creating index {i}/{len(to_create)} on {collection_id}.{field}…"
+                    f"Creating index CONCURRENTLY {i}/{len(to_create)} "
+                    f"on {collection_id}.{field} ({idx})…"
                 )
+                if _drop_invalid_index_if_any(conn, idx):
+                    _progress(
+                        f"Dropped INVALID prior index {idx}; rebuilding {collection_id}.{field}…"
+                    )
                 sql, params = _create_index_sql(collection_id, field)
                 conn.execute(sql, params)
             for i, field in enumerate(to_drop, start=1):
                 _progress(
-                    f"Dropping index {i}/{len(to_drop)} on {collection_id}.{field}…"
+                    f"Dropping index CONCURRENTLY {i}/{len(to_drop)} "
+                    f"on {collection_id}.{field}…"
                 )
                 idx = property_index_name(collection_id, field)
-                conn.execute(text(f'DROP INDEX IF EXISTS "{idx}"'))
+                conn.execute(text(f'DROP INDEX CONCURRENTLY IF EXISTS "{idx}"'))
     finally:
         if close and owned is not None:
             owned.dispose()

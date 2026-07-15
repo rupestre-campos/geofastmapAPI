@@ -57,8 +57,8 @@ def _redis():
 
 
 def property_index_queue_enabled() -> bool:
-    settings = get_settings()
-    return settings.process_queue_type == "redis" or settings.bulk_queue_type == "redis"
+    """Only enqueue when process_worker will consume (PROCESS_QUEUE_TYPE=redis)."""
+    return get_settings().process_queue_type == "redis"
 
 
 def enqueue_property_index_job(payload: PropertyIndexPayload) -> bool:

@@ -138,6 +138,8 @@ class Settings(BaseSettings):
 
     # OGC API - Processes: geometric operations (intersection, erase) between collections.
     process_queue_type: str = "redis"  # redis | memory (memory = no separate worker)
+    # Parallel CREATE INDEX CONCURRENTLY jobs handled by process_worker (property-index queue).
+    property_index_worker_max_concurrent: int = 2
     # Stream A in batches by memory size. Keep low to limit worker RAM (each batch + B in bbox held in memory).
     process_batch_max_bytes: int = 256 * 1024  # max bytes of geometry (A) per batch (default 256 KiB)
     process_batch_max_rows: int = 0  # optional cap: max rows per batch (0 = only byte limit)
