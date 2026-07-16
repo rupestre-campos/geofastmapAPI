@@ -100,6 +100,10 @@ class Settings(BaseSettings):
     bulk_replace_shadow_import: bool = False
     # Per-collection Redis mutex TTL while a bulk import mutates features (refreshed during long jobs).
     bulk_collection_mutex_ttl_seconds: int = 86400 * 2
+    # Partition swap DDL (DETACH/ATTACH on parent `features`): fail fast instead of queueing
+    # behind long reads (a waiting ACCESS EXCLUSIVE blocks every new query on ALL collections).
+    bulk_swap_lock_timeout_seconds: float = 5.0
+    bulk_swap_lock_max_wait_seconds: float = 600.0
 
     # Bulk storage: where uploaded files go (shared path for API and worker). Future: s3.
     bulk_storage_type: str = "filesystem"  # filesystem | s3 (s3 reserved)

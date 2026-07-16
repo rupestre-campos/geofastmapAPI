@@ -138,10 +138,18 @@ def cleanup_failed_staging_import_sync(engine: Engine, job_id: str, collection_i
     Drop staging table (detach first if attached) and ensure an empty live partition exists.
     Safe when replace swap failed after dropping the old partition.
     """
+    from app.core.config import get_settings
+
     staging = _staging_table(job_id)
+    lock_ms = int(
+        max(1.0, float(getattr(get_settings(), "bulk_swap_lock_timeout_seconds", 5.0) or 5.0)) * 1000
+    )
     with engine.begin() as conn:
         if _table_exists_conn(conn, staging):
             if _partition_is_attached_conn(conn, staging):
+                # DETACH takes ACCESS EXCLUSIVE on parent `features`; never queue indefinitely
+                # (a waiting DDL blocks every new query on all collections).
+                conn.execute(text(f"SET LOCAL lock_timeout = {lock_ms}"))
                 conn.execute(text(f'ALTER TABLE features DETACH PARTITION "{staging}"'))
             conn.execute(text(f'DROP TABLE IF EXISTS "{staging}"'))
     ensure_features_partition_sync(engine, collection_id)

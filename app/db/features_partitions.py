@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -277,6 +279,55 @@ async def _partition_exists_for(db: AsyncSession, collection_id: str) -> bool:
     return False
 
 
+def _is_lock_timeout_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    orig = getattr(exc, "orig", None)
+    if orig is not None and orig is not exc:
+        msg = f"{msg} {orig}".lower()
+    return "lock timeout" in msg or "locknotavailable" in msg or "55p03" in msg
+
+
+def _staging_is_unlogged_conn(conn, relname: str) -> bool:
+    row = conn.execute(
+        text("SELECT relpersistence FROM pg_class WHERE relname = :name LIMIT 1"),
+        {"name": relname},
+    ).first()
+    return bool(row and row[0] == "u")
+
+
+def _prepare_staging_for_attach_sync(engine: Engine, collection_id: str, staging_table: str) -> None:
+    """
+    Heavy prep BEFORE any lock on parent `features`:
+    - SET LOGGED (full table rewrite — minutes for large layers; staging is not attached,
+      so nothing else reads it and no parent lock is needed).
+    - Add a bound CHECK constraint so ATTACH PARTITION skips its validation scan
+      (collection_id is NOT NULL in staging DDL, so the planner can prove the bound).
+    Idempotent.
+    """
+    cid_escaped = collection_id.replace("'", "''")
+    check_name = f"chk_bound_{staging_table}"[:63]
+    with engine.begin() as conn:
+        if _staging_is_unlogged_conn(conn, staging_table):
+            conn.execute(text(f'ALTER TABLE "{staging_table}" SET LOGGED'))
+        has_check = conn.execute(
+            text(
+                """
+                SELECT 1 FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid
+                WHERE t.relname = :rel AND c.conname = :con
+                """
+            ),
+            {"rel": staging_table, "con": check_name},
+        ).first()
+        if not has_check:
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{staging_table}" ADD CONSTRAINT "{check_name}" '
+                    f"CHECK (collection_id = '{cid_escaped}')"
+                )
+            )
+
+
 def swap_staging_into_collection_partition_sync(
     engine: Engine,
     collection_id: str,
@@ -285,53 +336,78 @@ def swap_staging_into_collection_partition_sync(
     """
     Replace a collection's dedicated partition by detaching the old child and attaching staging.
     Staging must include the same columns as features (including generated properties_flat).
+
+    The parent-locking window (DETACH/ATTACH need ACCESS EXCLUSIVE / strong locks on `features`,
+    blocking ALL collections) is kept to catalog-only statements and guarded by a short
+    lock_timeout with retries: a waiting DDL otherwise queues every new query behind it.
     """
     cid_escaped = collection_id.replace("'", "''")
     settings = get_settings()
     skip_touch = bool(getattr(settings, "bulk_skip_features_touch_trigger", True))
     canonical_old = _safe_partition_name(collection_id)
 
-    with engine.begin() as conn:
-        # Global + per-collection locks: serialize swap DDL and prevent deadlocks between workers.
-        conn.execute(
-            text("SELECT pg_advisory_xact_lock(:k)"),
-            {"k": _FEATURES_SWAP_ADVISORY_LOCK_KEY},
-        )
-        _advisory_lock_partition(conn, collection_id)
-        if skip_touch:
-            conn.execute(text("SET LOCAL geofast.bulk_skip_features_touch = 'on'"))
-        conn.execute(
-            text("DELETE FROM features_default WHERE collection_id = :cid"),
-            {"cid": collection_id},
-        )
+    # Phase 1 (no parent locks): rewrite staging to LOGGED + add bound CHECK so the
+    # locked window below is catalog-only (no table rewrite / validation scan).
+    _prepare_staging_for_attach_sync(engine, collection_id, staging_table)
 
-        if _partition_is_attached_conn(conn, staging_table):
-            _drop_orphan_detached_partition_conn(conn, collection_id, staging_table, canonical_old)
-            if skip_touch:
-                conn.execute(text("RESET geofast.bulk_skip_features_touch"))
-            return
+    lock_timeout_s = max(1.0, float(getattr(settings, "bulk_swap_lock_timeout_seconds", 5.0) or 5.0))
+    max_wait_s = max(lock_timeout_s, float(getattr(settings, "bulk_swap_lock_max_wait_seconds", 600.0) or 600.0))
+    deadline = time.monotonic() + max_wait_s
+    attempt = 0
 
-        old_part = _resolve_features_partition_relname_conn(conn, collection_id)
-        if old_part == staging_table:
-            _drop_orphan_detached_partition_conn(conn, collection_id, staging_table, canonical_old)
-            if skip_touch:
-                conn.execute(text("RESET geofast.bulk_skip_features_touch"))
-            return
+    while True:
+        attempt += 1
+        try:
+            with engine.begin() as conn:
+                # Global + per-collection locks: serialize swap DDL and prevent deadlocks between workers.
+                conn.execute(
+                    text("SELECT pg_advisory_xact_lock(:k)"),
+                    {"k": _FEATURES_SWAP_ADVISORY_LOCK_KEY},
+                )
+                _advisory_lock_partition(conn, collection_id)
+                # Fail fast instead of queueing behind long reads while blocking all new queries.
+                conn.execute(text(f"SET LOCAL lock_timeout = {int(lock_timeout_s * 1000)}"))
+                if skip_touch:
+                    conn.execute(text("SET LOCAL geofast.bulk_skip_features_touch = 'on'"))
+                conn.execute(
+                    text("DELETE FROM features_default WHERE collection_id = :cid"),
+                    {"cid": collection_id},
+                )
 
-        if old_part and old_part != staging_table:
-            conn.execute(text(f'ALTER TABLE features DETACH PARTITION "{old_part}"'))
-            conn.execute(text(f'DROP TABLE "{old_part}"'))
-        _drop_orphan_detached_partition_conn(conn, collection_id, staging_table, canonical_old)
+                if _partition_is_attached_conn(conn, staging_table):
+                    _drop_orphan_detached_partition_conn(conn, collection_id, staging_table, canonical_old)
+                    return
 
-        conn.execute(text(f'ALTER TABLE "{staging_table}" SET LOGGED'))
-        conn.execute(
-            text(
-                f"ALTER TABLE features ATTACH PARTITION \"{staging_table}\" "
-                f"FOR VALUES IN ('{cid_escaped}')"
+                old_part = _resolve_features_partition_relname_conn(conn, collection_id)
+                if old_part == staging_table:
+                    _drop_orphan_detached_partition_conn(conn, collection_id, staging_table, canonical_old)
+                    return
+
+                if old_part and old_part != staging_table:
+                    conn.execute(text(f'ALTER TABLE features DETACH PARTITION "{old_part}"'))
+                    conn.execute(text(f'DROP TABLE "{old_part}"'))
+                _drop_orphan_detached_partition_conn(conn, collection_id, staging_table, canonical_old)
+
+                conn.execute(
+                    text(
+                        f"ALTER TABLE features ATTACH PARTITION \"{staging_table}\" "
+                        f"FOR VALUES IN ('{cid_escaped}')"
+                    )
+                )
+                return
+        except (OperationalError, DBAPIError) as exc:
+            if not _is_lock_timeout_error(exc):
+                raise
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Partition swap for {collection_id!r} could not acquire locks on `features` "
+                    f"within {max_wait_s:.0f}s ({attempt} attempts); busy readers kept the parent locked."
+                ) from exc
+            print(
+                f"[partition-swap] lock timeout (attempt {attempt}) collection={collection_id}; retrying…",
+                flush=True,
             )
-        )
-        if skip_touch:
-            conn.execute(text("RESET geofast.bulk_skip_features_touch"))
+            time.sleep(min(5.0, 0.5 * attempt))
 
 
 async def ensure_features_partition(db: AsyncSession, collection_id: str) -> None:
