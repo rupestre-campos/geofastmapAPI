@@ -339,16 +339,47 @@ def _list_jobs_for_collection_redis(collection_id: str, limit: int) -> list[JobI
     return jobs[:limit]
 
 
-def list_all_jobs(limit: int = 100, owner_id: int | None = None) -> list[JobInfo]:
-    """Return recent jobs. If owner_id is set, only that user's jobs; if None (admin), all. Legacy (owner_id None) only when admin."""
+def list_all_jobs(
+    limit: int = 100,
+    owner_id: int | None = None,
+    *,
+    offset: int = 0,
+) -> list[JobInfo]:
+    """
+    Return recent jobs (newest updated_at first).
+    If owner_id is set, only that user's jobs; if None (admin), all.
+    Legacy jobs (owner_id None) only when admin (owner_id is None).
+    """
     settings = get_settings()
-    if settings.bulk_queue_type == "redis":
-        raw = _list_all_jobs_redis(limit=limit * 2 if owner_id is not None else limit)
+    # Fetch enough rows to cover offset+limit (and owner filter oversampling).
+    fetch = max(limit + offset, 1)
+    if owner_id is not None:
+        fetch = min(max(fetch * 2, fetch + 50), 10_000)
     else:
-        raw = _list_all_jobs_memory(limit=limit * 2 if owner_id is not None else limit)
+        fetch = min(fetch, 10_000)
+    if settings.bulk_queue_type == "redis":
+        raw = _list_all_jobs_redis(limit=fetch)
+    else:
+        raw = _list_all_jobs_memory(limit=fetch)
     if owner_id is not None:
         raw = [j for j in raw if j.owner_id == owner_id]
-    return raw[:limit]
+    return raw[offset : offset + limit]
+
+
+def list_all_jobs_unpaginated(owner_id: int | None = None, *, max_jobs: int = 5000) -> list[JobInfo]:
+    """
+    Load up to max_jobs (newest first) for filter-then-paginate UIs.
+    Prefer this when applying status/collection/time filters client- or route-side.
+    """
+    settings = get_settings()
+    cap = max(1, min(int(max_jobs), 10_000))
+    if settings.bulk_queue_type == "redis":
+        raw = _list_all_jobs_redis(limit=cap)
+    else:
+        raw = _list_all_jobs_memory(limit=cap)
+    if owner_id is not None:
+        raw = [j for j in raw if j.owner_id == owner_id]
+    return raw[:cap]
 
 
 def _list_all_jobs_memory(limit: int) -> list[JobInfo]:

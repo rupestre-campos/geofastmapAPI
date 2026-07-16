@@ -9,20 +9,26 @@
     [data-theme="dark"] .jobs-table tr:hover td { background: rgba(255,255,255,0.02); }
     .jobs-table .status-badge { display: inline-block; padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.8rem; font-weight: 600; text-transform: capitalize; }
     .jobs-table .status-pending { background: rgba(174, 124, 0, 0.2); color: #9e6a03; }
-    .jobs-table .status-running { background: rgba(47, 129, 247, 0.2); color: var(--accent); }
-    .jobs-table .status-replacing { background: rgba(47, 129, 247, 0.2); color: var(--accent); }
+    .jobs-table .status-running,
+    .jobs-table .status-replacing,
+    .jobs-table .status-finalizing,
+    .jobs-table .status-cancelling { background: rgba(47, 129, 247, 0.2); color: var(--accent); }
     .jobs-table .status-completed { background: rgba(63, 185, 80, 0.2); color: var(--success); }
     .jobs-table .status-failed, .jobs-table .status-cancelled { background: rgba(248, 81, 73, 0.15); color: var(--danger); }
     [data-theme="dark"] .jobs-table .status-pending { background: rgba(210, 153, 34, 0.2); color: #d4a72c; }
     [data-theme="dark"] .jobs-table .status-running,
-    [data-theme="dark"] .jobs-table .status-replacing { background: rgba(88, 166, 255, 0.2); color: #58a6ff; }
+    [data-theme="dark"] .jobs-table .status-replacing,
+    [data-theme="dark"] .jobs-table .status-finalizing,
+    [data-theme="dark"] .jobs-table .status-cancelling { background: rgba(88, 166, 255, 0.2); color: #58a6ff; }
     .jobs-table .result-link { font-weight: 500; }
     .jobs-table .meta { color: var(--text-secondary); font-size: 0.85rem; }
     .jobs-table .job-cat { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); }
     .jobs-table th.col-input,
     .jobs-table td.col-input { min-width: 11rem; max-width: 24rem; width: 18%; vertical-align: top; }
+    .jobs-table th.col-actions,
+    .jobs-table td.col-actions { white-space: nowrap; vertical-align: middle; }
     .jobs-table th.col-details,
-    .jobs-table td.col-details { min-width: 16rem; max-width: 36rem; width: 28%; vertical-align: top; }
+    .jobs-table td.col-details { min-width: 10rem; max-width: 22rem; width: 16%; vertical-align: top; }
     .jobs-table details.job-json-details { max-width: 100%; }
     .jobs-table details.job-json-details summary { cursor: pointer; font-size: 0.8rem; color: var(--accent); user-select: none; }
     .jobs-table details.job-json-details pre {
@@ -41,24 +47,93 @@
     .jobs-loading { color: var(--text-secondary); }
     .jobs-empty { color: var(--text-secondary); font-size: 0.9rem; padding: var(--space-lg); text-align: center; }
     #jobs-wrap { max-height: 60vh; overflow-y: auto; overflow-x: auto; }
+    .jobs-filters .grid-jobs-filters {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+      gap: var(--space);
+      margin-bottom: var(--space);
+    }
+    .jobs-filters .form-row { margin: 0; }
+    .jobs-filters .form-row label { display: block; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.25rem; }
+    .jobs-filters .form-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+    .jobs-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space); margin-top: var(--space); }
+    .jobs-pagination .pagination-info { color: var(--text-secondary); font-size: 0.9rem; }
   </style>
 {% endblock %}
 {% block content %}
   <header class="page-header">
     <h1>Jobs</h1>
     <p class="breadcrumb"><a href="{{ base }}/?f=html">Home</a> › Jobs</p>
+    <p class="meta" id="jobs-summary">{{ number_matched }} matched, {{ number_returned }} shown</p>
   </header>
+
+  <div class="card jobs-filters">
+    <div class="card-header">
+      <h2 class="card-title">Filters</h2>
+    </div>
+    <form id="jobs-filter-form" method="get" action="{{ base }}/jobs">
+      <input type="hidden" name="f" value="html">
+      <input type="hidden" name="offset" value="0">
+      <div class="grid-jobs-filters">
+        <div class="form-row">
+          <label for="jobs-status">Status</label>
+          <select id="jobs-status" name="status">
+            <option value="" {{ 'selected' if not status_filter else '' }}>All</option>
+            <option value="active" {{ 'selected' if status_filter == 'active' else '' }}>Active</option>
+            <option value="pending" {{ 'selected' if status_filter == 'pending' else '' }}>Pending</option>
+            <option value="running" {{ 'selected' if status_filter == 'running' else '' }}>Running</option>
+            <option value="replacing" {{ 'selected' if status_filter == 'replacing' else '' }}>Replacing</option>
+            <option value="finalizing" {{ 'selected' if status_filter == 'finalizing' else '' }}>Finalizing</option>
+            <option value="completed" {{ 'selected' if status_filter == 'completed' else '' }}>Completed</option>
+            <option value="failed" {{ 'selected' if status_filter == 'failed' else '' }}>Failed</option>
+            <option value="cancelled" {{ 'selected' if status_filter == 'cancelled' else '' }}>Cancelled</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="jobs-operation">Operation</label>
+          <select id="jobs-operation" name="operation">
+            <option value="" {{ 'selected' if not operation else '' }}>All</option>
+            {% for value, label in operation_choices %}
+            <option value="{{ value }}" {{ 'selected' if operation == value else '' }}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="jobs-collection">Collection</label>
+          <input id="jobs-collection" type="text" name="collection" value="{{ collection_q or '' }}" placeholder="e.g. car-apps-mg" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label for="jobs-since">Since <span class="meta">(UTC)</span></label>
+          <input id="jobs-since" type="date" name="since" value="{{ since or '' }}">
+        </div>
+        <div class="form-row">
+          <label for="jobs-until">Until <span class="meta">(UTC)</span></label>
+          <input id="jobs-until" type="date" name="until" value="{{ until or '' }}">
+        </div>
+        <div class="form-row">
+          <label for="jobs-limit">Page size</label>
+          <input id="jobs-limit" type="number" name="limit" value="{{ limit }}" min="1" max="200">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn">Apply</button>
+        <a class="btn btn-secondary" href="{{ base }}/jobs?f=html">Clear</a>
+      </div>
+    </form>
+  </div>
 
   <div class="card">
     <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space); margin-bottom: var(--space);">
-      <h2 class="card-title" style="margin: 0;">All jobs</h2>
+      <h2 class="card-title" style="margin: 0;">Jobs</h2>
       <button type="button" class="btn btn-danger" id="btn-cancel-all-active" title="Cancel every pending, running, or replacing job">Cancel all active</button>
     </div>
-    <p class="meta" style="margin-bottom: var(--space);">Bulk import, static tile build, property index, and geoprocessing jobs. Newest first; refreshes while jobs are active.</p>
+    <p class="meta" style="margin-bottom: var(--space);">Bulk import, static tile build, property index, and geoprocessing. Newest first; auto-refreshes while the current page has active jobs.</p>
     <div id="jobs-wrap" style="{{ 'display: none;' if not jobs else '' }}">
       <table class="jobs-table" id="jobs-table">
         <thead>
           <tr>
+            <th class="col-actions">Actions</th>
+            <th class="col-details">Details</th>
             <th>Status</th>
             <th>Type</th>
             {% if is_admin %}<th>Owner</th>{% endif %}
@@ -68,13 +143,28 @@
             <th>Started</th>
             <th>Updated</th>
             <th>Finished</th>
-            <th class="col-details">Details</th>
-            <th class="col-actions"></th>
           </tr>
         </thead>
         <tbody id="jobs-tbody">
           {% for j in jobs %}
           <tr data-job-id="{{ j.job_id }}">
+            <td class="col-actions">
+              <a href="{{ base }}/jobs/{{ j.job_id }}?f=html" class="btn">View</a>
+              {% if j.status == 'pending' or (j.status in ('running', 'replacing') and (j.is_tile_build or j.process_id or j.job_category == 'bulk_import' or j.job_category == 'property_index')) %}
+              <button type="button" class="btn btn-danger btn-cancel" data-job-id="{{ j.job_id }}" data-collection-id="{{ j.collection_id or '' }}" data-is-tile-build="{{ '1' if j.is_tile_build else '' }}">Cancel</button>
+              {% endif %}
+            </td>
+            <td class="col-details">
+              {% if j.details %}
+              <details class="job-json-details">
+                <summary>JSON</summary>
+                <pre class="job-json-pre">{{ j.details | tojson }}</pre>
+                <button type="button" class="btn btn-sm btn-copy-json">Copy</button>
+              </details>
+              {% else %}
+              <span class="meta">—</span>
+              {% endif %}
+            </td>
             <td><span class="status-badge status-{{ j.status }}">{{ j.status }}</span></td>
             <td>
               <div>{{ j.job_type_label | default('Job') }}</div>
@@ -103,29 +193,27 @@
             <td class="meta"><span data-job-time="{{ j.created_at | e if j.created_at else '' }}"></span></td>
             <td class="meta"><span data-job-time="{{ j.updated_at | e if j.updated_at else '' }}"></span></td>
             <td class="meta"><span data-job-time="{{ j.finished_at | e if j.finished_at else '' }}"></span></td>
-            <td class="col-details">
-              {% if j.details %}
-              <details class="job-json-details">
-                <summary>JSON</summary>
-                <pre class="job-json-pre">{{ j.details | tojson }}</pre>
-                <button type="button" class="btn btn-sm btn-copy-json">Copy</button>
-              </details>
-              {% else %}
-              <span class="meta">—</span>
-              {% endif %}
-            </td>
-            <td class="col-actions">
-              <a href="{{ base }}/jobs/{{ j.job_id }}?f=html" class="btn">View</a>
-              {% if j.status == 'pending' or (j.status in ('running', 'replacing') and (j.is_tile_build or j.process_id or j.job_category == 'bulk_import')) %}
-              <button type="button" class="btn btn-danger btn-cancel" data-job-id="{{ j.job_id }}" data-collection-id="{{ j.collection_id or '' }}" data-is-tile-build="{{ '1' if j.is_tile_build else '' }}">Cancel</button>
-              {% endif %}
-            </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
-    <p class="jobs-empty" id="jobs-empty" style="display: {{ 'none' if jobs else 'block' }};">No jobs yet.</p>
+    <p class="jobs-empty" id="jobs-empty" style="display: {{ 'none' if jobs else 'block' }};">No jobs match these filters.</p>
+    <div class="jobs-pagination" id="jobs-pagination" style="{{ '' if number_matched else 'display: none;' }}">
+      {% if prev_page_url %}
+      <a href="{{ prev_page_url }}" class="btn pagination-prev">← Previous</a>
+      {% else %}
+      <span class="btn btn-disabled" aria-disabled="true">← Previous</span>
+      {% endif %}
+      <span class="pagination-info" id="jobs-pagination-info">
+        {% if number_returned %}{{ offset + 1 }}–{{ offset + number_returned }} of {{ number_matched }}{% else %}0 of {{ number_matched }}{% endif %}
+      </span>
+      {% if next_page_url %}
+      <a href="{{ next_page_url }}" class="btn pagination-next">Next →</a>
+      {% else %}
+      <span class="btn btn-disabled" aria-disabled="true">Next →</span>
+      {% endif %}
+    </div>
   </div>
   {% include '_confirm_cancel_job_modal.html' %}
 {% endblock %}
@@ -135,6 +223,8 @@
 (function() {
   var base = {{ base | tojson }};
   var is_admin = {{ is_admin | tojson }};
+  var initialLimit = {{ limit | tojson }};
+  var initialOffset = {{ offset | tojson }};
   var REFRESH_MS = 4000;
   var OPEN_JSON_KEY = 'geofastmap-jobs-json-open';
   var tbody = document.getElementById('jobs-tbody');
@@ -144,6 +234,12 @@
   };
   var jobsEmpty = document.getElementById('jobs-empty');
   var jobsWrap = document.getElementById('jobs-wrap');
+  var jobsSummary = document.getElementById('jobs-summary');
+  var jobsPagination = document.getElementById('jobs-pagination');
+  var jobsPaginationInfo = document.getElementById('jobs-pagination-info');
+  var currentOffset = initialOffset;
+  var currentLimit = initialLimit;
+  var currentMatched = {{ number_matched | tojson }};
 
   var cancelModal = document.getElementById('confirm-cancel-job-modal');
   var cancelMsg = document.getElementById('confirm-cancel-job-message');
@@ -182,7 +278,6 @@
     } catch (e) {}
   }
 
-  /** Merge currently expanded JSON rows into storage before DOM is replaced (auto-refresh). */
   function mergeOpenJsonFromDom() {
     var ids = new Set(getOpenJsonJobIds());
     tbody.querySelectorAll('tr[data-job-id] details.job-json-details[open]').forEach(function(det) {
@@ -224,7 +319,7 @@
   function statusClass(s) {
     s = (s || '').toLowerCase();
     if (s === 'pending') return 'status-pending';
-    if (s === 'running' || s === 'replacing') return 'status-running';
+    if (s === 'running' || s === 'replacing' || s === 'finalizing' || s === 'cancelling') return 'status-running';
     if (s === 'completed') return 'status-completed';
     if (s === 'failed' || s === 'cancelled') return 'status-failed';
     return '';
@@ -267,37 +362,53 @@
     return '<span class="meta">—</span>';
   }
 
-  function renderJobs(jobs) {
-    if (!jobs || jobs.length === 0) {
-      if (jobsWrap) jobsWrap.style.display = 'none';
-      if (jobsEmpty) { jobsEmpty.style.display = 'block'; jobsEmpty.textContent = 'No jobs yet.'; }
+  function filterQueryParams() {
+    var form = document.getElementById('jobs-filter-form');
+    var params = new URLSearchParams();
+    if (!form) return params;
+    var fd = new FormData(form);
+    fd.forEach(function(value, key) {
+      if (key === 'f' || key === 'offset') return;
+      if (value == null || String(value).trim() === '') return;
+      params.set(key, String(value).trim());
+    });
+    return params;
+  }
+
+  function updatePagination(matched, returned, offset, limit) {
+    currentMatched = matched;
+    currentOffset = offset;
+    currentLimit = limit;
+    if (jobsSummary) jobsSummary.textContent = matched + ' matched, ' + returned + ' shown';
+    if (!jobsPagination) return;
+    if (!matched) {
+      jobsPagination.style.display = 'none';
       return;
     }
-    if (jobsWrap) jobsWrap.style.display = 'block';
-    if (jobsEmpty) jobsEmpty.style.display = 'none';
-    mergeOpenJsonFromDom();
-    var showOwner = (typeof is_admin !== 'undefined' && is_admin) || (jobs.length && jobs[0].owner_username !== undefined);
-    tbody.innerHTML = jobs.map(function(j) {
-      var showCancel = j.status === 'pending' || ((j.status === 'running' || j.status === 'replacing') && (j.is_tile_build || j.process_id || j.job_category === 'bulk_import' || j.job_category === 'property_index'));
-      var cancelBtn = showCancel
-        ? '<button type="button" class="btn btn-danger btn-cancel" data-job-id="' + esc(j.job_id) + '" data-collection-id="' + esc(j.collection_id || '') + '" data-is-tile-build="' + (j.is_tile_build ? '1' : '') + '">Cancel</button>'
-        : '';
-      var ownerCell = showOwner ? '<td class="meta">' + esc(j.owner_username || '—') + '</td>' : '';
-      var cat = j.job_category ? '<div class="job-cat">' + esc(j.job_category) + '</div>' : '';
-      return '<tr data-job-id="' + esc(j.job_id) + '">' +
-        '<td><span class="status-badge ' + statusClass(j.status) + '">' + esc(j.status) + '</span></td>' +
-        '<td><div>' + esc(typeLabel(j)) + '</div>' + cat + '</td>' +
-        ownerCell +
-        '<td class="col-input">' + cellInput(j) + '</td>' +
-        '<td>' + cellResult(j) + '</td>' +
-        '<td>' + esc((j.items_in || 0) + ' → ' + (j.items_created || 0)) + '</td>' +
-        '<td class="meta">' + esc(fmtTs(j.created_at)) + '</td>' +
-        '<td class="meta">' + esc(fmtTs(j.updated_at)) + '</td>' +
-        '<td class="meta">' + esc(fmtTs(j.finished_at)) + '</td>' +
-        '<td class="col-details">' + cellDetails(j) + '</td>' +
-        '<td class="col-actions"><a href="' + base + '/jobs/' + encodeURIComponent(j.job_id) + '?f=html" class="btn">View</a> ' + cancelBtn + '</td>' +
-        '</tr>';
-    });
+    jobsPagination.style.display = '';
+    var params = filterQueryParams();
+    params.set('f', 'html');
+    params.set('limit', String(limit));
+    var prevHtml = offset > 0
+      ? (function() {
+          var p = new URLSearchParams(params);
+          p.set('offset', String(Math.max(0, offset - limit)));
+          return '<a href="' + base + '/jobs?' + p.toString() + '" class="btn pagination-prev">← Previous</a>';
+        })()
+      : '<span class="btn btn-disabled" aria-disabled="true">← Previous</span>';
+    var nextHtml = offset + returned < matched
+      ? (function() {
+          var p = new URLSearchParams(params);
+          p.set('offset', String(offset + limit));
+          return '<a href="' + base + '/jobs?' + p.toString() + '" class="btn pagination-next">Next →</a>';
+        })()
+      : '<span class="btn btn-disabled" aria-disabled="true">Next →</span>';
+    var info = returned ? ((offset + 1) + '–' + (offset + returned) + ' of ' + matched) : ('0 of ' + matched);
+    jobsPagination.innerHTML = prevHtml + '<span class="pagination-info" id="jobs-pagination-info">' + esc(info) + '</span>' + nextHtml;
+    jobsPaginationInfo = document.getElementById('jobs-pagination-info');
+  }
+
+  function bindCancelButtons() {
     document.querySelectorAll('.btn-cancel').forEach(function(btn) {
       btn.addEventListener('click', function() {
         var jobId = btn.getAttribute('data-job-id');
@@ -316,14 +427,66 @@
         });
       });
     });
+  }
+
+  function renderJobs(jobs, meta) {
+    meta = meta || {};
+    var matched = meta.numberMatched != null ? meta.numberMatched : (jobs ? jobs.length : 0);
+    var offset = meta.offset != null ? meta.offset : currentOffset;
+    var limit = meta.limit != null ? meta.limit : currentLimit;
+    var returned = meta.numberReturned != null ? meta.numberReturned : (jobs ? jobs.length : 0);
+    updatePagination(matched, returned, offset, limit);
+    if (!jobs || jobs.length === 0) {
+      if (jobsWrap) jobsWrap.style.display = 'none';
+      if (jobsEmpty) { jobsEmpty.style.display = 'block'; jobsEmpty.textContent = 'No jobs match these filters.'; }
+      return;
+    }
+    if (jobsWrap) jobsWrap.style.display = 'block';
+    if (jobsEmpty) jobsEmpty.style.display = 'none';
+    mergeOpenJsonFromDom();
+    var showOwner = (typeof is_admin !== 'undefined' && is_admin) || (jobs.length && jobs[0].owner_username !== undefined);
+    tbody.innerHTML = jobs.map(function(j) {
+      var showCancel = j.status === 'pending' || ((j.status === 'running' || j.status === 'replacing') && (j.is_tile_build || j.process_id || j.job_category === 'bulk_import' || j.job_category === 'property_index'));
+      var cancelBtn = showCancel
+        ? '<button type="button" class="btn btn-danger btn-cancel" data-job-id="' + esc(j.job_id) + '" data-collection-id="' + esc(j.collection_id || '') + '" data-is-tile-build="' + (j.is_tile_build ? '1' : '') + '">Cancel</button>'
+        : '';
+      var ownerCell = showOwner ? '<td class="meta">' + esc(j.owner_username || '—') + '</td>' : '';
+      var cat = j.job_category ? '<div class="job-cat">' + esc(j.job_category) + '</div>' : '';
+      return '<tr data-job-id="' + esc(j.job_id) + '">' +
+        '<td class="col-actions"><a href="' + base + '/jobs/' + encodeURIComponent(j.job_id) + '?f=html" class="btn">View</a> ' + cancelBtn + '</td>' +
+        '<td class="col-details">' + cellDetails(j) + '</td>' +
+        '<td><span class="status-badge ' + statusClass(j.status) + '">' + esc(j.status) + '</span></td>' +
+        '<td><div>' + esc(typeLabel(j)) + '</div>' + cat + '</td>' +
+        ownerCell +
+        '<td class="col-input">' + cellInput(j) + '</td>' +
+        '<td>' + cellResult(j) + '</td>' +
+        '<td>' + esc((j.items_in || 0) + ' → ' + (j.items_created || 0)) + '</td>' +
+        '<td class="meta">' + esc(fmtTs(j.created_at)) + '</td>' +
+        '<td class="meta">' + esc(fmtTs(j.updated_at)) + '</td>' +
+        '<td class="meta">' + esc(fmtTs(j.finished_at)) + '</td>' +
+        '</tr>';
+    }).join('');
+    bindCancelButtons();
     restoreJsonOpenState();
   }
 
   function loadJobs() {
-    fetch(base + '/jobs?limit=100', { headers: { 'Accept': 'application/json' } })
+    var params = filterQueryParams();
+    params.set('limit', String(currentLimit || initialLimit || 25));
+    params.set('offset', String(currentOffset || 0));
+    fetch(base + '/jobs?' + params.toString(), { headers: { 'Accept': 'application/json' } })
       .then(function(r) { return r.json(); })
-      .then(function(d) { renderJobs(d.jobs || []); })
-      .catch(function() { if (jobsEmpty) { jobsEmpty.textContent = 'Failed to load jobs.'; jobsEmpty.style.display = 'block'; } });
+      .then(function(d) {
+        renderJobs(d.jobs || [], {
+          numberMatched: d.numberMatched,
+          numberReturned: d.numberReturned,
+          limit: d.limit,
+          offset: d.offset
+        });
+      })
+      .catch(function() {
+        if (jobsEmpty) { jobsEmpty.textContent = 'Failed to load jobs.'; jobsEmpty.style.display = 'block'; }
+      });
   }
 
   var hasRunning = false;
@@ -331,12 +494,12 @@
     if (hasRunning) loadJobs();
   }
   setInterval(function() {
-    hasRunning = !!document.querySelector('.status-badge.status-pending, .status-badge.status-running, .status-badge.status-replacing');
+    hasRunning = !!document.querySelector('.status-badge.status-pending, .status-badge.status-running, .status-badge.status-replacing, .status-badge.status-finalizing');
     maybeRefresh();
   }, REFRESH_MS);
 
   if (window.GeofastmapApplyJobTimes) window.GeofastmapApplyJobTimes(document.getElementById('jobs-table'));
-  loadJobs();
+  bindCancelButtons();
 
   var cancelAllBtn = document.getElementById('btn-cancel-all-active');
   if (cancelAllBtn) {
@@ -375,6 +538,31 @@
         setTimeout(function() { btn.textContent = old; }, 1500);
       });
     }
+  });
+
+  if (jobsPagination) {
+    jobsPagination.addEventListener('click', function(e) {
+      var link = e.target && e.target.closest && e.target.closest('a.pagination-prev, a.pagination-next');
+      if (!link || !link.href) return;
+      e.preventDefault();
+      try {
+        var u = new URL(link.href, window.location.origin);
+        currentOffset = parseInt(u.searchParams.get('offset') || '0', 10) || 0;
+        currentLimit = parseInt(u.searchParams.get('limit') || String(initialLimit), 10) || initialLimit;
+        history.pushState({}, '', link.href);
+        loadJobs();
+      } catch (err) {
+        window.location.href = link.href;
+      }
+    });
+  }
+  window.addEventListener('popstate', function() {
+    try {
+      var u = new URL(window.location.href);
+      currentOffset = parseInt(u.searchParams.get('offset') || '0', 10) || 0;
+      currentLimit = parseInt(u.searchParams.get('limit') || String(initialLimit), 10) || initialLimit;
+      loadJobs();
+    } catch (e) {}
   });
 })();
 </script>
