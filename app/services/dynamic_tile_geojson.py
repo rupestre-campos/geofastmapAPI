@@ -313,6 +313,21 @@ async def get_search_result_geojson(
         if not feature_ids:
             return json.dumps({"type": "FeatureCollection", "features": []}).encode("utf-8")
 
+    # filter=key:eq:value — resolve via indexed properties->>'key' (same as items list).
+    if not feature_ids and structured_filters and not fulltext_q and not property_filters:
+        resolved_eq = await features_crud.resolve_structured_eq_feature_ids(
+            db,
+            collection_id,
+            structured_filters,
+            limit=min(limit, 50),
+            exclude_bulk_job_ids=exclude_bulk_job_ids or None,
+        )
+        if resolved_eq is not None:
+            feature_ids = resolved_eq
+            structured_filters = []
+            if not feature_ids:
+                return json.dumps({"type": "FeatureCollection", "features": []}).encode("utf-8")
+
     if is_composite_collection(collection):
         member_ids = await composite_member_ids(db, collection)
         rows, _ = await list_composite_features_paginated(

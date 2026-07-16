@@ -307,6 +307,29 @@ async def list_items(
         if wants_html(request) and not is_raster and geometry is None:
             include_geometry = True
 
+    # filter=car_code:eq:… (filter builder / other apps): same indexed equality path as exact q=.
+    # Without this, DISTINCT over properties->>'car_code' on a huge partition can hit statement_timeout
+    # and surface the misleading "bulk import" busy page.
+    if (
+        exact_feature_ids is None
+        and structured_filters
+        and not is_composite
+        and not fulltext_q
+        and not property_filters
+    ):
+        resolved_eq = await features_crud.resolve_structured_eq_feature_ids(
+            db,
+            collection_id,
+            structured_filters,
+            limit=max(limit, 50),
+            exclude_bulk_job_ids=exclude_bulk_job_ids or None,
+        )
+        if resolved_eq is not None:
+            exact_feature_ids = resolved_eq
+            structured_filters = []
+            if wants_html(request) and not is_raster and geometry is None:
+                include_geometry = True
+
     try:
         from app.services.db_load_gate import DbLoadOverloaded, run_items_list_db
 

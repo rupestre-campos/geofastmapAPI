@@ -538,6 +538,71 @@ async def resolve_exact_search_feature_ids(
     return [row[0] for row in r.fetchall()]
 
 
+async def resolve_structured_eq_feature_ids(
+    db: AsyncSession,
+    collection_id: str,
+    filters: Sequence[PropertyFilter] | None,
+    *,
+    limit: int = 50,
+    exclude_bulk_job_ids: Sequence[str] | None = None,
+) -> list[str] | None:
+    """
+    Fast path for filter=key:eq:value (and AND of several eqs).
+
+    Uses properties->>'key' = value so btree property indexes can match.
+    Returns None when filters are missing or not all simple EQ (caller keeps ORM path).
+    Returns [] when no rows match.
+    """
+    from app.services.collection_property_indexes import validate_property_index_field
+    from app.utils.property_filters import PropertyOp
+
+    if not filters:
+        return None
+    eq_filters: list[PropertyFilter] = []
+    for pf in filters:
+        if pf.op != PropertyOp.EQ:
+            return None
+        key = (pf.key or "").strip()
+        if not key:
+            return None
+        try:
+            validate_property_index_field(key)
+        except Exception:
+            return None
+        eq_filters.append(pf)
+    if not eq_filters:
+        return None
+
+    shadow_jobs = [j for j in (exclude_bulk_job_ids or []) if j]
+    shadow_sql = ""
+    params: dict = {"cid": collection_id, "lim": max(1, int(limit))}
+    if shadow_jobs:
+        shadow_sql = " AND (bulk_import_job_id IS NULL OR bulk_import_job_id != ALL(:shadow_exclude_jobs))"
+        params["shadow_exclude_jobs"] = shadow_jobs
+
+    and_parts: list[str] = []
+    for i, pf in enumerate(eq_filters):
+        pk = f"pk{i}"
+        pv = f"pv{i}"
+        and_parts.append(f"(properties ? :{pk} AND properties ->> :{pk} = :{pv})")
+        params[pk] = pf.key.strip()
+        params[pv] = pf.value
+    and_sql = " AND ".join(and_parts)
+    r = await db.execute(
+        text(
+            f"""
+            SELECT DISTINCT id
+            FROM features
+            WHERE collection_id = :cid{shadow_sql}
+              AND ({and_sql})
+            LIMIT :lim
+            """
+        ),
+        params,
+    )
+    return [row[0] for row in r.fetchall()]
+
+
 async def list_features_paginated(
     db: AsyncSession,
     collection_id: str,
