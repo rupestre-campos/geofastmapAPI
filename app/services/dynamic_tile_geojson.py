@@ -294,6 +294,25 @@ async def get_search_result_geojson(
     fulltext_q = q.strip() if q and q.strip() else None
     exclude_bulk_job_ids = active_shadow_exclude_job_ids(collection_id)
 
+    # Exact tokens: resolve to ids once (equality on id / property indexes) — never ILIKE for CAR codes.
+    feature_ids = list(ids) if ids else None
+    if fulltext_q and not feature_ids and features_crud.is_exact_search_token(fulltext_q):
+        from app.services.collection_property_indexes import normalize_property_index_fields
+
+        feature_ids = await features_crud.resolve_exact_search_feature_ids(
+            db,
+            collection_id,
+            fulltext_q,
+            property_keys=normalize_property_index_fields(
+                getattr(collection, "property_index_fields", None)
+            ),
+            limit=min(limit, 50),
+            exclude_bulk_job_ids=exclude_bulk_job_ids or None,
+        )
+        fulltext_q = None
+        if not feature_ids:
+            return json.dumps({"type": "FeatureCollection", "features": []}).encode("utf-8")
+
     if is_composite_collection(collection):
         member_ids = await composite_member_ids(db, collection)
         rows, _ = await list_composite_features_paginated(
@@ -309,7 +328,7 @@ async def get_search_result_geojson(
             property_filters=property_filters or None,
             structured_filters=structured_filters or None,
             fulltext_q=fulltext_q,
-            feature_ids=ids,
+            feature_ids=feature_ids,
             include_geometry=True,
             skip_count=True,
         )
@@ -333,8 +352,10 @@ async def get_search_result_geojson(
         property_filters=property_filters or None,
         structured_filters=structured_filters or None,
         fulltext_q=fulltext_q,
-        feature_ids=ids,
+        feature_ids=feature_ids,
         collection_feature_count=collection.feature_count,
+        include_geometry=True,
+        skip_count=True,
         exclude_bulk_job_ids=exclude_bulk_job_ids or None,
     )
 

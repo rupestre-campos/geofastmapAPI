@@ -942,12 +942,18 @@ async def _get_tiles_dynamic_impl(
     props_include: list[str] | None = None
     if properties:
         props_include = [p.strip() for p in properties.split(",") if p.strip()]
+    # Preserve original query params for cache keys so items list warm + tile URLs with ?q=
+    # share the same Redis entry (exact-token rewrite below must not change the key).
+    orig_q = q
+    orig_ids = ids
+
     # Full-text search (q) requires at least 4 characters; ignore short q to avoid slow queries.
     if q and q.strip() and len(q.strip()) < 4:
         q = None
+        orig_q = None
 
-    # Exact tokens (CAR codes, etc.): resolve once to ids and never put ILIKE into per-tile SQL.
-    # This is why single-item (?ids=) was fast while search (?q=) hung on every tile.
+    # Exact tokens (CAR codes, etc.): resolve once to ids for SQL/MVT fallback paths.
+    # Search-cache path still keys on original ?q= (showcase contract for other apps).
     if q and q.strip() and not feature_ids:
         from app.crud import features as features_crud
         from app.services.collection_property_indexes import normalize_property_index_fields
@@ -975,8 +981,9 @@ async def _get_tiles_dynamic_impl(
         or (bbox is not None and bbox.strip())
         or (datetime_param is not None and datetime_param.strip())
         or bool(filter_param)
-        or (q is not None and q.strip())
+        or (orig_q is not None and orig_q.strip())
         or bool(feature_ids)
+        or (orig_ids is not None and orig_ids.strip())
         or bool(props_include)
     )
 
@@ -996,8 +1003,8 @@ async def _get_tiles_dynamic_impl(
             bbox=bbox,
             datetime_param=datetime_param,
             filter_param=filter_param,
-            q=q,
-            ids=ids,
+            q=orig_q,
+            ids=orig_ids,
             properties=properties,
         )
         return await _serve_composite_filtered_dynamic_tile(
@@ -1014,8 +1021,8 @@ async def _get_tiles_dynamic_impl(
             bbox=bbox,
             datetime_param=datetime_param,
             filter_param=filter_param,
-            q=q,
-            ids=ids,
+            q=orig_q,
+            ids=orig_ids or ids,
             properties=properties,
             params_key=params_key,
             cache_headers=cache_headers,
@@ -1031,7 +1038,8 @@ async def _get_tiles_dynamic_impl(
                 headers=cache_hit_headers,
             )
 
-    # Compute params_key whenever we have query params (needed for queue mode + param tile cache)
+    # Compute params_key from the *client* query (orig_q / orig_ids) so the same URL
+    # used by GET items warms the cache other apps hit via /tiles/dynamic?...&q=...
     params_key: str | None = None
     if has_query_params:
         params_key = _params_key_from_query(
@@ -1042,8 +1050,8 @@ async def _get_tiles_dynamic_impl(
             bbox=bbox,
             datetime_param=datetime_param,
             filter_param=filter_param,
-            q=q,
-            ids=ids,
+            q=orig_q,
+            ids=orig_ids,
             properties=properties,
         )
         if settings.tiles_dynamic_cache_with_params:
@@ -1067,6 +1075,7 @@ async def _get_tiles_dynamic_impl(
         from app.services.mvt_encode import encode_geojson_to_mvt
 
         async def _cache_search() -> bool:
+            # Fill with original client params (exact q resolved inside get_search_result_geojson).
             return await ensure_search_result_cached(
                 db,
                 collection_id,
@@ -1078,8 +1087,8 @@ async def _get_tiles_dynamic_impl(
                 bbox=bbox,
                 datetime_param=datetime_param,
                 filter_param=filter_param,
-                q=q,
-                ids=ids,
+                q=orig_q,
+                ids=orig_ids,
             )
 
         async def _cache_miss() -> bool:

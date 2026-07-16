@@ -452,8 +452,14 @@ async def list_items(
             content=json.dumps({"bbox": extent_bbox, "numberMatched": number_matched}),
             media_type="application/json",
         )
-    # Warm search result cache for dynamic tiler (queue mode); only when we have geometry (not bbox-only)
-    if get_settings().tiles_dynamic_use_queue and include_geometry:
+    # Warm search-result cache so /tiles/dynamic with the same params can encode MVT
+    # without re-running the items query (showcase path for other apps).
+    _settings = get_settings()
+    if (
+        include_geometry
+        and getattr(_settings, "tiles_search_result_cache_ttl_seconds", 0) > 0
+        and any(f.get("geometry") for f in features_geojson)
+    ):
         from app.services.dynamic_tile_cache import _params_key_from_query, set_search_result
         params_key = _params_key_from_query(
             limit=limit,

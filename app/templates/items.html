@@ -366,6 +366,9 @@
     const collectionType = {{ (collection_type or 'vector') | tojson }};
     const isRaster = collectionType === 'raster';
     var __itemsRasterTileUrl = null;
+    // Current items query string (kept in sync on AJAX pagination for dynamic tile URLs).
+    var currentItemsSearch = window.location.search || '';
+    var ITEMS_TILE_DROP_PARAMS = { f: 1, geometry: 1, skip_count: 1, bbox_only: 1, force: 1 };
     const copyBtnSvg = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
     (function() {
       var form = document.getElementById('search-form');
@@ -418,6 +421,9 @@
       var n = data.numberMatched != null ? data.numberMatched : 0;
       var r = data.numberReturned != null ? data.numberReturned : (data.features ? data.features.length : 0);
       features = data.features || [];
+      try {
+        currentItemsSearch = new URL(newUrl, window.location.origin).search || '';
+      } catch (e) {}
       if (document.getElementById('items-summary')) document.getElementById('items-summary').textContent = n + ' matched, ' + r + ' shown';
       if (document.getElementById('results-count')) document.getElementById('results-count').textContent = '(' + r + ' rows — click row to focus on map)';
       var limit = parseInt(paginationEl.getAttribute('data-limit'), 10) || 100;
@@ -460,6 +466,35 @@
       // Full-layer dynamic tiles for "Add to map" — never attach limit/offset (that forced a
       // PARTITION-wide GROUP BY ST_Union per tile and made View items unusable at scale).
       return apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/dynamic/{z}/{x}/{y}.pbf';
+    }
+    function hasActiveSearch() {
+      var p = new URLSearchParams(currentItemsSearch);
+      if ((p.get('q') || '').trim()) return true;
+      if ((p.get('bbox') || '').trim()) return true;
+      if ((p.get('datetime') || '').trim()) return true;
+      var filters = p.getAll('filter');
+      for (var i = 0; i < filters.length; i++) {
+        if ((filters[i] || '').trim()) return true;
+      }
+      var reserved = {
+        limit: 1, offset: 1, sortby: 1, sortdesc: 1, bbox: 1, datetime: 1, filter: 1, q: 1,
+        properties: 1, ids: 1, f: 1, geometry: 1, skip_count: 1, bbox_only: 1, force: 1
+      };
+      var keys = Array.from(p.keys());
+      for (var j = 0; j < keys.length; j++) {
+        if (!reserved[keys[j].toLowerCase()] && (p.get(keys[j]) || '').trim()) return true;
+      }
+      return false;
+    }
+    function getSearchDynamicTileUrl() {
+      // Showcase: same search params as GET items → /tiles/dynamic (query-once cache → MVT).
+      var params = new URLSearchParams(currentItemsSearch);
+      Object.keys(ITEMS_TILE_DROP_PARAMS).forEach(function(k) { params.delete(k); });
+      if (!params.has('limit')) params.set('limit', String(initialLimit || 10));
+      if (!params.has('offset')) params.set('offset', String(initialOffset || 0));
+      var qs = params.toString();
+      return apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) +
+        '/tiles/dynamic/{z}/{x}/{y}.pbf' + (qs ? ('?' + qs) : '');
     }
     function overlayBeforeLayerId() {
       if (map.getLayer('results-fill')) return 'results-fill';
@@ -577,16 +612,8 @@
         if (!s.pointEnabled) map.setLayoutProperty('results-circle', 'visibility', 'none');
       }
 
-      // 1) Best: real geometries from the items response (small search pages).
-      if (featuresHaveRealGeometry()) {
-        paintVectorFromGeoJson(footprintFeatureCollection({ allowBbox: false }));
-        return;
-      }
-
-      // 2) Fast precise path: ids-only dynamic tiles (same as single-item view).
-      var pageIds = (features || []).map(function(f) { return f.id; }).filter(Boolean).slice(0, 50);
-      if (pageIds.length) {
-        // Thin bbox outline while tiles load (no fill — avoids the "big square" look).
+      function paintVectorFromSearchTiles() {
+        // Optional thin bbox outline while the first search tiles arrive.
         var outline = footprintFeatureCollection({ allowBbox: true });
         if (outline.features.length) {
           map.addSource('results-geojson', { type: 'geojson', data: outline });
@@ -597,19 +624,28 @@
             paint: { 'line-color': s.lineColor, 'line-width': 1, 'line-opacity': 0.35, 'line-dasharray': [2, 2] }
           });
         }
-        var idsTileUrl = apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) +
-          '/tiles/dynamic/{z}/{x}/{y}.pbf?ids=' + encodeURIComponent(pageIds.join(','));
-        map.addSource('results-tiles', { type: 'vector', tiles: [idsTileUrl], minzoom: 0, maxzoom: 22 });
+        var tileUrl = getSearchDynamicTileUrl();
+        map.addSource('results-tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 22 });
         map.addLayer({ id: 'results-fill', type: 'fill', source: 'results-tiles', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
         map.addLayer({ id: 'results-line', type: 'line', source: 'results-tiles', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
         map.addLayer({ id: 'results-circle', type: 'circle', source: 'results-tiles', 'source-layer': tileLayerId, filter: pointFilter, paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity } });
         if (!s.fillEnabled) map.setLayoutProperty('results-fill', 'visibility', 'none');
         if (!s.lineEnabled) map.setLayoutProperty('results-line', 'visibility', 'none');
         if (!s.pointEnabled) map.setLayoutProperty('results-circle', 'visibility', 'none');
+      }
+
+      // Showcase: filtered/search pages drive dynamic tiles with the same query params
+      // (q, filter, bbox, limit, offset, …) that other apps should copy.
+      if (hasActiveSearch()) {
+        paintVectorFromSearchTiles();
         return;
       }
 
-      // 3) Last resort: bbox rectangles (unfiltered mega-layers without ids).
+      // Unfiltered browse: page footprints / SSR geometry only (never limit/offset on full-layer tiles).
+      if (featuresHaveRealGeometry()) {
+        paintVectorFromGeoJson(footprintFeatureCollection({ allowBbox: false }));
+        return;
+      }
       paintVectorFromGeoJson(footprintFeatureCollection({ allowBbox: true }));
     }
     function applyBasemapFromSelect() {
@@ -800,13 +836,8 @@
       var jsonUrl = new URL(url, window.location.origin);
       jsonUrl.searchParams.delete('f');
       // Keep pagination light for huge unfiltered browses; for filtered/search keep geometry
-      // so the map shows real shapes (not bbox squares).
-      var hasSearch = !!(
-        (searchBbox && String(searchBbox).trim()) ||
-        (searchDatetime && String(searchDatetime).trim()) ||
-        (searchFilter && String(searchFilter).trim()) ||
-        (searchQ && String(searchQ).trim())
-      );
+      // so the items response can warm the dynamic-tile search cache.
+      var hasSearch = hasActiveSearch();
       var lim = parseInt(jsonUrl.searchParams.get('limit') || String(initialLimit || 10), 10) || 10;
       if (hasSearch && lim <= 25) {
         jsonUrl.searchParams.set('geometry', 'true');
