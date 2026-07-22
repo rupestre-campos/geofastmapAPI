@@ -1,0 +1,209 @@
+{% extends "project_docs/_layout.html" %}
+{% block title %}Zonal statistics – Documentation – GeoFastMap API{% endblock %}
+
+{% block docs_content %}
+  <div class="card">
+    <h2 class="card-title">Zonal statistics (raster × feature)</h2>
+    <p class="meta">
+      Compute summary statistics of a registered raster (or STAC asset) inside a
+      polygon / multipolygon feature. Zone geometry is loaded from the database by
+      feature id and sent to Titiler <code>POST /cog/statistics</code> or
+      <code>POST /stac/statistics</code>.
+    </p>
+
+    <h3>What we want</h3>
+    <ul>
+      <li><strong>Zone</strong>: a feature geometry already in the API (vector collection item), or inline GeoJSON.</li>
+      <li><strong>Raster</strong>: a local COG item (<code>collection_type=raster</code>) or a STAC item asset.</li>
+      <li><strong>Stats</strong>: <code>min</code>, <code>max</code>, <code>mean</code>, <code>count</code>, <code>std</code> (and optional percentiles).</li>
+      <li><strong>Optional categorical</strong>: unique pixel values and their counts (land cover, classes).</li>
+    </ul>
+
+    <div class="callout">
+      <strong>Important:</strong> a raster item’s own geometry is only its <em>footprint</em>.
+      Zonal stats need a <em>separate</em> zone feature (or GeoJSON body) plus a raster source.
+      Do not use the raster feature id as the zone unless you intentionally want whole-raster stats.
+    </div>
+
+    <h3>Building blocks already in GeoFastMap</h3>
+    <ul>
+      <li><strong>Feature geometry</strong>: <code>GET /collections/{collection_id}/items/{feature_id}</code> → GeoJSON Feature (<code>features_crud.get_feature</code> + <code>geometry_to_geojson</code>).</li>
+      <li><strong>Local COG</strong>: stored at <code>{RASTER_STORAGE_PATH}/{collection_id}/{feature_id}.tif</code>; exposed to Titiler via <code>file://</code> or <code>/internal/.../cog?token=…</code>.</li>
+      <li><strong>Point sample</strong>: <code>GET …/rasters/point</code>, mosaic/STAC <code>…/titiler/point/{lon},{lat}</code> — same Titiler HTTP stack (client, retry, gate).</li>
+      <li><strong>Full-raster statistics (no zone)</strong>: STAC <code>…/titiler/suggest-rescale</code> already calls Titiler <code>GET /cog/statistics</code> or <code>GET /stac/statistics</code> for percentiles only.</li>
+      <li><strong>Auth pattern to copy</strong>: coverage / items routes (<code>can_see_collection</code>), not the open <code>/rasters/tiles|point</code> routes.</li>
+    </ul>
+
+    <h3>Titiler capability (the right lever)</h3>
+    <p class="meta">
+      Titiler (rio-tiler) already supports <strong>zonal</strong> stats via <strong>POST</strong> (not GET).
+      Geometry goes in the JSON body; the raster is identified by query <code>url</code>.
+    </p>
+    <ul>
+      <li><code>POST {TITILER_INTERNAL_URL}/cog/statistics?url=&lt;cog&gt;&amp;bidx=1&amp;…</code> — local / single COG.</li>
+      <li><code>POST {TITILER_INTERNAL_URL}/stac/statistics?url=&lt;item&gt;&amp;assets=&lt;key&gt;&amp;…</code> — STAC item assets.</li>
+      <li>Body: GeoJSON <code>Feature</code> or <code>FeatureCollection</code> (EPSG:4326 by default; override with <code>coord_crs</code>).</li>
+      <li>Default band stats include min / max / mean / count / std / histogram / percentiles.</li>
+      <li><code>categorical=true</code> (and optional <code>c=</code> category values) returns per-class counts — use this for unique values.</li>
+      <li><code>max_size</code> / <code>width</code> / <code>height</code> control rasterization resolution (trade accuracy vs latency).</li>
+      <li><code>nodata</code>, <code>expression</code>, <code>resampling</code> mirror tile/point options.</li>
+    </ul>
+    <p class="meta">
+      MosaicJSON Titiler routes do <strong>not</strong> expose the same POST statistics endpoint.
+      For a whole raster collection mosaic, either pick one item COG, or add a dedicated mosaic path later (in-process or custom).
+    </p>
+
+    <h3>OGC API patterns (how this maps)</h3>
+    <ul>
+      <li><strong>OGC API - Features</strong>: resolve the zone (<code>/collections/…/items/…</code>). Already implemented.</li>
+      <li><strong>OGC API - Coverages</strong>: we already expose lightweight “coverages” as download + tiles under
+        <code>/collections/{id}/coverages/{feature_id}</code>. Statistics is a natural <em>derived</em> operation on that resource,
+        but full OGC Coverages “range subsetting by polygon” is not standardized the same way as Features CRUD.</li>
+      <li><strong>OGC API - Processes</strong>: best formal fit for “compute X from inputs A and B” and for
+        <em>large / long-running</em> jobs (<code>202</code> + <code>/jobs/{id}</code>), matching existing vector processes.
+        Prefer Processes when polygons are huge or categorical unique-value scans are expensive.</li>
+      <li><strong>Practical GeoFastMap split</strong> (same as tiles vs jobs):
+        sync Titiler proxy for interactive UI; optional process later for batch / heavy work.</li>
+    </ul>
+
+    <h3>Public API (sync, Titiler-backed)</h3>
+    <p class="meta">Implemented. Auth follows coverage/items patterns (<code>can_see_collection</code> on zone and raster).</p>
+
+    <h3>1) Local raster item × zone (by feature ids)</h3>
+    <pre><code>GET /collections/{raster_collection_id}/coverages/{raster_feature_id}/statistics
+  ?zone_collection_id=parcels
+  &amp;zone_feature_id=123
+  &amp;bidx=1
+  &amp;categorical=false
+  &amp;max_size=1024
+  &amp;nodata=-9999
+</code></pre>
+    <ul>
+      <li>API loads the zone GeoJSON from Postgres and POSTs it to Titiler <code>/cog/statistics</code>.</li>
+      <li>COG URL uses internal HTTP fetch when configured, else <code>file://</code>.</li>
+      <li>Extra query params (bidx, nodata, max_size, p, expression, …) are forwarded to Titiler.</li>
+      <li>Auth: <code>can_see_collection</code> on <strong>both</strong> raster and zone collections.</li>
+    </ul>
+
+    <h3>2) STAC item × zone</h3>
+    <pre><code>GET /stac/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}/titiler/statistics
+  ?zone_collection_id=parcels
+  &amp;zone_feature_id=123
+  &amp;asset=B04
+# or repeated assets=… (+ asset_as_band=true for multi-asset RGB)
+  &amp;categorical=true
+</code></pre>
+    <ul>
+      <li>Single <code>asset</code> → Titiler <code>/cog/statistics</code> with asset HTTPS href (SSRF rules already in STAC client).</li>
+      <li>Repeated <code>assets</code> → Titiler <code>/stac/statistics</code> with item self URL + <code>assets=</code>.</li>
+      <li>STAC access uses the same session / public-tile-grant rules as other Titiler STAC routes; the zone collection still requires view permission.</li>
+    </ul>
+
+    <h3>3) Zone-centric convenience</h3>
+    <pre><code>GET /collections/{zone_collection_id}/items/{zone_feature_id}/raster-statistics
+  ?raster_collection_id=dem&amp;raster_feature_id=abc
+# or
+  ?catalog_id=…&amp;stac_collection_id=…&amp;stac_item_id=…&amp;asset=B04
+</code></pre>
+    <p class="meta">
+      Same Titiler call; useful when the map selection is the vector feature and the raster/STAC source is chosen separately.
+    </p>
+
+    <h3>Response shape</h3>
+    <p class="meta">
+      Returns a GeoJSON Feature with normalized band stats under <code>properties.statistics</code>,
+      plus <code>raster</code> / <code>zone</code> metadata.
+    </p>
+    <pre><code>{
+  "type": "Feature",
+  "geometry": { "…zone…" },
+  "properties": {
+    "raster": {
+      "collection_id": "dem",
+      "feature_id": "abc",
+      "bidx": [1]
+    },
+    "zone": {
+      "collection_id": "parcels",
+      "feature_id": "123"
+    },
+    "statistics": {
+      "b1": {
+        "min": 12.0,
+        "max": 880.5,
+        "mean": 214.3,
+        "count": 15234,
+        "std": 91.2,
+        "sum": null,
+        "percentile_2": 30.1,
+        "percentile_98": 710.0,
+        "histogram": [ /* Titiler histogram */ ],
+        "unique_values": [
+          { "value": 1, "count": 400 },
+          { "value": 2, "count": 1200 }
+        ]
+      }
+    }
+  }
+}
+</code></pre>
+    <ul>
+      <li><code>unique_values</code> only when <code>categorical=true</code> (derived from Titiler categorical / histogram output).</li>
+      <li>Multi-band → one entry per band (<code>b1</code>, <code>b2</code>, …) or per asset name for STAC multi-asset.</li>
+      <li>Empty intersection / all nodata → <code>count: 0</code> and null aggregates (document clearly; do not 500).</li>
+    </ul>
+
+    <h3>Future: OGC process (async)</h3>
+    <pre><code>POST /processes/zonal-statistics/execution
+{
+  "inputs": {
+    "raster": { "type": "reference", "collection_id": "dem", "feature_id": "abc" },
+    "zone":   { "type": "reference", "collection_id": "parcels", "feature_id": "123" },
+    "categorical": false,
+    "bidx": [1],
+    "max_size": 2048
+  }
+}
+→ 202 { "jobID": "…", "status_url": "/jobs/…" }
+</code></pre>
+    <p class="meta">
+      Same input reference style as existing vector processes. Worker calls Titiler (or in-process
+      <code>rio_tiler</code> on shared storage) and stores the JSON result on the job. Use when sync timeouts
+      become common.
+    </p>
+
+    <h3>Implementation</h3>
+    <ul>
+      <li><code>app/services/zonal_statistics.py</code> — zone load, COG URL, Titiler POST, response normalize.</li>
+      <li>Routes: <code>titiler_proxy.py</code> (local coverage), <code>stac_items.py</code> (STAC), <code>items.py</code> (zone-centric).</li>
+      <li>Tests: <code>tests/test_zonal_statistics.py</code>.</li>
+    </ul>
+
+    <h3>Limits &amp; footguns</h3>
+    <ul>
+      <li><strong>Resolution</strong>: default <code>max_size</code> undersamples large zones — document and allow override.</li>
+      <li><strong>Timeouts</strong>: zonal POST is heavier than point; raise Titiler read timeout and/or force async process.</li>
+      <li><strong>Unique values</strong>: catastrophic on float continuous rasters — only enable categorical for integer / classified data; optionally cap distinct values.</li>
+      <li><strong>CRS</strong>: features are EPSG:4326 in API; pass <code>coord_crs=epsg:4326</code> explicitly to Titiler.</li>
+      <li><strong>Permissions</strong>: check both collections; STAC follows existing catalog/item grant rules.</li>
+      <li><strong>SSRF</strong>: STAC assets must remain HTTPS + host allow rules.</li>
+      <li><strong>Mosaics</strong>: not in v1 — pick one COG or add later.</li>
+    </ul>
+
+    <h3>Env vars (existing)</h3>
+    <ul>
+      <li><code>TITILER_INTERNAL_URL</code> — required.</li>
+      <li><code>TITILER_INTERNAL_SECRET</code> + <code>RASTER_INTERNAL_FETCH_BASE_URL</code> — preferred COG URL for Titiler.</li>
+      <li><code>RASTER_STORAGE_PATH</code> — local COG root (file:// fallback when Titiler shares the volume).</li>
+      <li>Titiler HTTP timeouts / concurrency / retry settings — reuse; consider longer read timeout for statistics.</li>
+    </ul>
+
+    <h3>Related pages</h3>
+    <ul>
+      <li><a href="{{ base }}/project-docs/collections-items?f=html">Collections &amp; items</a> — feature fetch.</li>
+      <li><a href="{{ base }}/project-docs/processing?f=html">Processing</a> — async job pattern for a future process.</li>
+      <li><a href="{{ base }}/project-docs/tiles?f=html">Tiles</a> — raster/Titiler serving context.</li>
+      <li>OpenAPI interactive docs: <a href="{{ base }}/docs">/docs</a> (once routes ship).</li>
+    </ul>
+  </div>
+{% endblock %}

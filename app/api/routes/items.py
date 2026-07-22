@@ -1115,6 +1115,168 @@ async def download_items_data(
 
 
 @router.get(
+    "/{collection_id}/items/{feature_id}/raster-statistics",
+    summary="Zonal statistics using this feature as the zone",
+    description=(
+        "Loads this feature's Polygon/MultiPolygon from the database and computes "
+        "Titiler zonal statistics against a registered raster coverage "
+        "(`raster_collection_id` + `raster_feature_id`) or a STAC item "
+        "(`catalog_id` + `stac_collection_id` + `stac_item_id` + `asset`/`assets`). "
+        "Set `categorical=true` for unique value counts."
+    ),
+)
+async def item_raster_statistics(
+    request: Request,
+    collection_id: str,
+    feature_id: str = Path(..., description="Zone feature id"),
+    raster_collection_id: str | None = Query(None, description="Raster collection id"),
+    raster_feature_id: str | None = Query(None, description="Raster coverage feature id"),
+    catalog_id: str | None = Query(None, description="STAC catalog id"),
+    stac_collection_id: str | None = Query(None, description="STAC collection id"),
+    stac_item_id: str | None = Query(None, description="STAC item id"),
+    asset: str | None = Query(None, description="Single STAC asset key"),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    from fastapi.responses import JSONResponse
+
+    from app.api.routes.stac_items import (
+        _get_enabled_catalog_ref_for_tiles,
+        _titiler_session_or_public_grant,
+    )
+    from app.services.stac_item_client import get_asset_href, get_stac_item_cached
+    from app.services.zonal_statistics import (
+        ensure_raster_coverage_feature,
+        load_zone_feature_geojson,
+        normalize_titiler_statistics_payload,
+        post_titiler_zonal_statistics,
+        query_flag_true,
+        resolve_local_cog_url_for_titiler,
+    )
+
+    use_local = bool(raster_collection_id and raster_feature_id)
+    use_stac = bool(catalog_id and stac_collection_id and stac_item_id)
+    if use_local == use_stac:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Provide either raster_collection_id+raster_feature_id "
+                "or catalog_id+stac_collection_id+stac_item_id"
+            ),
+        )
+
+    geojson_feature, zone_meta = await load_zone_feature_geojson(
+        db, collection_id, feature_id, current_user, require_auth_user=use_local
+    )
+    query_pairs = list(request.query_params.multi_items())
+    categorical = query_flag_true(query_pairs, "categorical")
+
+    if use_local:
+        feature = await ensure_raster_coverage_feature(
+            db, raster_collection_id, raster_feature_id, current_user
+        )
+        cog_url = resolve_local_cog_url_for_titiler(
+            collection_id=raster_collection_id,
+            feature_id=raster_feature_id,
+            feature=feature,
+        )
+        await db.close()
+        raw = await post_titiler_zonal_statistics(
+            forward_path="/cog/statistics",
+            url=cog_url,
+            geojson_feature=geojson_feature,
+            query_pairs=query_pairs,
+        )
+        bidx = [v for k, v in query_pairs if k == "bidx" and v]
+        payload = normalize_titiler_statistics_payload(
+            raw,
+            categorical=categorical,
+            raster_meta={
+                "collection_id": raster_collection_id,
+                "feature_id": raster_feature_id,
+                "bidx": [int(x) for x in bidx if str(x).isdigit()] or None,
+            },
+            zone_meta=zone_meta,
+        )
+        return JSONResponse(content=payload)
+
+    await _titiler_session_or_public_grant(
+        db, catalog_id, stac_collection_id, stac_item_id, current_user
+    )
+    catalog_ref = await _get_enabled_catalog_ref_for_tiles(db, catalog_id)
+    try:
+        item = await get_stac_item_cached(catalog_ref, stac_collection_id, stac_item_id)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown or invalid asset key")
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not load STAC item: {e!s}",
+        ) from e
+    await db.close()
+
+    requested_assets = [v for (k, v) in query_pairs if k == "assets" and v]
+    if requested_assets:
+        item_url = None
+        try:
+            for L in item.get("links") or []:
+                if isinstance(L, dict) and L.get("rel") == "self" and L.get("href"):
+                    item_url = str(L["href"])
+                    break
+        except Exception:
+            item_url = None
+        if not item_url:
+            item_url = (
+                f"{catalog_ref.stac_api_root_url.rstrip('/')}"
+                f"/collections/{stac_collection_id}/items/{stac_item_id}"
+            )
+        forward_path = "/stac/statistics"
+        url = item_url
+        raster_meta = {
+            "catalog_id": catalog_id,
+            "collection_id": stac_collection_id,
+            "item_id": stac_item_id,
+            "assets": requested_assets,
+        }
+    else:
+        if not asset or not str(asset).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Query param `asset` (or repeated `assets`) is required for STAC",
+            )
+        try:
+            url = get_asset_href(item, str(asset).strip())
+        except KeyError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown or invalid asset key")
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        forward_path = "/cog/statistics"
+        raster_meta = {
+            "catalog_id": catalog_id,
+            "collection_id": stac_collection_id,
+            "item_id": stac_item_id,
+            "asset": str(asset).strip(),
+        }
+
+    raw = await post_titiler_zonal_statistics(
+        forward_path=forward_path,
+        url=url,
+        geojson_feature=geojson_feature,
+        query_pairs=query_pairs,
+        drop_keys=frozenset({"asset"}),
+    )
+    payload = normalize_titiler_statistics_payload(
+        raw,
+        categorical=categorical,
+        raster_meta=raster_meta,
+        zone_meta=zone_meta,
+    )
+    return JSONResponse(content=payload)
+
+
+@router.get(
     "/{collection_id}/items/{feature_id}",
     summary="Get a feature by id (GeoJSON). Use ?f=html for HTML (map, edit, delete).",
 )

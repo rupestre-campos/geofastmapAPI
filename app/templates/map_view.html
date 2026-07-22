@@ -36,8 +36,11 @@
   <style>
     .geofastmap-inline-edit-toolbar .btn { margin-bottom: 0; }
     .map-view-container .map-wrapper { position: relative; min-height: 70vh; height: 70vh; }
-    .map-view-container .map-container { min-height: 70vh; height: 70vh; width: 100%; box-sizing: border-box; }
+    .map-view-container .map-container { position: relative; min-height: 70vh; height: 70vh; width: 100%; box-sizing: border-box; overflow: hidden; }
     .map-view-container .map-controls { position: absolute; top: 8px; left: 8px; z-index: 10; }
+    /* Compass lives in map-wrapper (not page) — top-left of map, below basemap controls */
+    .map-view-container .map-compass { position: absolute; top: 48px; left: 8px; z-index: 10; pointer-events: none; }
+    .map-view-container .map-compass .maplibregl-ctrl { pointer-events: auto; margin: 0; }
     .map-view-container .map-legend { position: absolute; bottom: 52px; left: 8px; z-index: 10; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 0.8rem; max-height: 40vh; overflow-y: auto; box-shadow: 0 1px 4px rgba(0,0,0,0.15); min-width: 210px; }
     .map-view-container .map-legend-title { font-weight: 600; margin-bottom: 6px; color: var(--text); display:flex; align-items:center; justify-content: space-between; gap: 8px; }
     .map-view-container .map-legend-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
@@ -264,6 +267,7 @@
         <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
         <button type="button" class="btn btn-sm" id="btn-terrain-toggle" title="Toggle 3D terrain" style="display:none;">3D: Off</button>
       </div>
+      <div id="map-compass" class="map-compass" aria-hidden="true"></div>
       <button type="button" class="btn btn-sm btn-legend-icon map-legend-fab" id="map-legend-toggle" title="Layers">
         <span aria-hidden="true">☰</span>
         <span class="sr-only">Layers</span>
@@ -454,6 +458,20 @@
         return Math.round(n * 2) / 2;
       }
 
+      /** Keep the north compass anchored to the map wrapper (not the page). */
+      function mountMapCompassOnWrapper() {
+        if (!map) return;
+        var slot = document.getElementById('map-compass');
+        if (!slot) return;
+        var corner = map.getContainer().querySelector('.maplibregl-ctrl-top-left');
+        if (corner) {
+          var groups = corner.querySelectorAll('.maplibregl-ctrl-group');
+          for (var i = 0; i < groups.length; i++) slot.appendChild(groups[i]);
+          if (!corner.childElementCount) corner.remove();
+        }
+        slot.setAttribute('aria-hidden', slot.childElementCount ? 'false' : 'true');
+      }
+
       function initMapView() {
         var sel = document.getElementById('map-basemap');
         GeofastmapUtils.populateBasemapSelect(sel, basemapList, BASEMAPS);
@@ -479,7 +497,8 @@
           renderWorldCopies: false
         });
         // Built-in compass: shows north and resets bearing to north on click.
-        map.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: false }), 'top-right');
+        map.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: false }), 'top-left');
+        map.once('load', mountMapCompassOnWrapper);
         GeofastmapUtils.setBasemapTransformRequest(map, initial.maxZoom, initial.tiles);
         if (mapBasemap && BASEMAPS[mapBasemap]) sel.value = mapBasemap; else sel.value = initialId;
         function applyBasemap(key) {
