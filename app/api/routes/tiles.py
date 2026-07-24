@@ -131,10 +131,15 @@ async def _execute_mvt_sql(
                 return b""
             raise
 
-    async def _empty() -> bytes:
-        return b""
+    async def _busy() -> bytes:
+        # Never return/cache an empty tile on overload — MapLibre would keep a
+        # permanent hole until cache TTL. 503 makes the client retry.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dynamic tile backend busy; retry",
+        )
 
-    return await run_dynamic_tile_db(req, _run, on_overload=_empty)
+    return await run_dynamic_tile_db(req, _run, on_overload=_busy)
 
 
 async def _serve_composite_static_tile(
@@ -1096,11 +1101,10 @@ async def _get_tiles_dynamic_impl(
                     headers=cache_hit_headers,
                 )
 
-    # Query-once path: ensure search result in Redis (single-flight), build tiles from cache.
-    # ONLY for items-table sync (limit/offset/q/ids/sort). Pure property filters such as
-    # filter=car_code:eq:… must use PostGIS ST_AsMVTGeom — the search-cache path paginates
-    # (~50–100 features) and drops the rest, which shows up as missing pieces and hard
-    # vertical/horizontal crops at tile edges.
+    # Query-once path: cache matching GeoJSON once, encode each tile in-process (or via
+    # tile workers when tiles_dynamic_use_queue is on). Used for items-table sync AND for
+    # property filters (car_code:eq) so we do not run heavy per-tile ST_Union under the
+    # concurrency gate (which returned empty tiles that Redis then cached as holes).
     use_queue = getattr(settings, "tiles_dynamic_use_queue", False)
     search_cache_ttl = getattr(settings, "tiles_search_result_cache_ttl_seconds", 300)
     list_sync_mode = (
@@ -1110,11 +1114,12 @@ async def _get_tiles_dynamic_impl(
         or (orig_q is not None and str(orig_q).strip())
         or (orig_ids is not None and str(orig_ids).strip())
     )
+    filter_only_mode = bool(filter_param) and not list_sync_mode and not bool(feature_ids)
     use_search_cache = (
         has_query_params
         and params_key is not None
         and search_cache_ttl > 0
-        and list_sync_mode
+        and (list_sync_mode or filter_only_mode)
     )
     if use_search_cache:
         from app.services.search_result_cache import ensure_search_result_cached
@@ -1123,13 +1128,22 @@ async def _get_tiles_dynamic_impl(
         from app.services.db_load_gate import run_dynamic_tile_db
         from app.services.mvt_encode import encode_geojson_to_mvt
 
+        # Farm / property filters: pull all matching features (not the items default page of 100).
+        if filter_only_mode:
+            search_limit = int(
+                getattr(settings, "tiles_filter_max_features", 0)
+                or max(int(settings.tiles_mvt_max_features), int(settings.items_max_limit), 10000)
+            )
+        else:
+            search_limit = limit or settings.items_default_limit
+
         async def _cache_search() -> bool:
             # Fill with original client params (exact q resolved inside get_search_result_geojson).
             return await ensure_search_result_cached(
                 db,
                 collection_id,
                 params_key,
-                limit=limit or settings.items_default_limit,
+                limit=search_limit,
                 offset=offset,
                 sortby=sortby,
                 sortdesc=sortdesc,
@@ -1145,8 +1159,11 @@ async def _get_tiles_dynamic_impl(
 
         ok = await run_dynamic_tile_db(request, _cache_search, on_overload=_cache_miss)
         if not ok:
-            # Overloaded or cache fill failed — empty tile beats pinning the pool.
-            return Response(content=b"", media_type="application/x-protobuf", headers=cache_headers)
+            # Overloaded while filling search cache — ask client to retry (do not cache hole).
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Dynamic tile search cache busy; retry",
+            )
         # Re-check tile cache (another request may have built it)
         payload = get_tile_with_params(collection_id, z, x, y, params_key)
         if payload is not None:

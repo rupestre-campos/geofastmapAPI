@@ -287,7 +287,10 @@ async def get_search_result_geojson(
         raise ValueError(f"Collection not found: {collection_id}")
 
     settings = get_settings()
-    limit = min(limit, settings.items_max_limit)
+    # Allow tile filter fetches above items_max_limit (farm layers can exceed 1k parts).
+    filter_cap = int(getattr(settings, "tiles_filter_max_features", 0) or 0)
+    max_limit = max(int(settings.items_max_limit), filter_cap) if filter_cap else int(settings.items_max_limit)
+    limit = min(limit, max_limit)
 
     dt_start, dt_end = None, None
     if datetime_param:
@@ -324,7 +327,7 @@ async def get_search_result_geojson(
             db,
             collection_id,
             structured_filters,
-            limit=min(limit, 50),
+            limit=limit,
             exclude_bulk_job_ids=exclude_bulk_job_ids or None,
         )
         if resolved_eq is not None:
