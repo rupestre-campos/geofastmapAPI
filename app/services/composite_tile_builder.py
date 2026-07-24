@@ -23,8 +23,11 @@ from app.utils.geo import mvt_layer_name
 
 
 def _composite_consumer(queue: Queue, file_handle, member_id: str) -> None:
-    """GeoJSONSeq writer that tags each feature with composite item id and member metadata."""
+    """GeoJSONSeq writer that tags each feature with composite item id and member metadata.
+    Skips empty/invalid geometries so tippecanoe does not abort the whole build.
+    """
     feature_index = 0
+    skipped = 0
     while True:
         chunk = queue.get()
         if chunk is None:
@@ -32,7 +35,22 @@ def _composite_consumer(queue: Queue, file_handle, member_id: str) -> None:
             break
         lines: list[bytes] = []
         for fid, geom_str, props in chunk:
-            geom_dict = json.loads(geom_str) if geom_str else None
+            if not geom_str:
+                skipped += 1
+                continue
+            try:
+                geom_dict = json.loads(geom_str)
+            except Exception:
+                skipped += 1
+                continue
+            if not isinstance(geom_dict, dict) or not geom_dict.get("type"):
+                skipped += 1
+                continue
+            if not geom_dict.get("coordinates") and not (
+                geom_dict.get("type") == "GeometryCollection" and geom_dict.get("geometries")
+            ):
+                skipped += 1
+                continue
             props_dict = dict(props) if props else {}
             if "id" in props_dict and props_dict.get("id") != fid:
                 key = "id_source"
@@ -54,6 +72,13 @@ def _composite_consumer(queue: Queue, file_handle, member_id: str) -> None:
         if lines:
             file_handle.write(b"".join(lines))
         queue.task_done()
+    if skipped:
+        print(
+            f"[composite_tile_builder] skipped {skipped} feature(s) with empty/invalid geometry "
+            f"(member={member_id})",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def build_composite_pmtiles_sync(
@@ -133,9 +158,10 @@ def build_composite_pmtiles_sync(
                 with SessionLocal() as session:
                     result = session.execute(
                         text(
-                            "SELECT id, ST_AsGeoJSON(ST_Union(geometry))::text AS geometry, "
+                            "SELECT id, ST_AsGeoJSON(ST_MakeValid(ST_Union(ST_MakeValid(geometry))))::text AS geometry, "
                             "(array_agg(properties ORDER BY part_index))[1] AS properties "
-                            "FROM features WHERE collection_id = :cid GROUP BY id ORDER BY id"
+                            "FROM features WHERE collection_id = :cid AND geometry IS NOT NULL "
+                            "GROUP BY id ORDER BY id"
                         ),
                         {"cid": member_id},
                         execution_options={"stream_results": True},
@@ -175,6 +201,7 @@ def build_composite_pmtiles_sync(
             f"-Z{minz}",
             "--force",
             "--detect-shared-borders",
+            "--buffer=64",
             "--full-detail=12",
             "--low-detail=10",
             "--minimum-detail=8",

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import logging
 import os
 import re
 from contextvars import ContextVar
@@ -68,6 +69,7 @@ from app.services.static_tiles_path import (
 )
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 # Bound for the duration of get_tiles_dynamic so nested MVT helpers can gate/cancel.
 _tile_request_ctx: ContextVar[Request | None] = ContextVar("tile_request_ctx", default=None)
@@ -99,8 +101,34 @@ async def _execute_mvt_sql(
             row = result.first()
             mvt = row.mvt if row and row.mvt else None
             return bytes(mvt) if mvt else b""
-        except Exception:
+        except Exception as e:
             await db.rollback()
+            # Invalid / self-intersecting geoms can abort the whole tile query.
+            # Prefer an empty tile over 500 so the map keeps rendering other tiles.
+            msg = str(e).lower()
+            if any(
+                token in msg
+                for token in (
+                    "geom",
+                    "geometry",
+                    "topology",
+                    "invalid",
+                    "noding",
+                    "self-intersection",
+                    "self intersection",
+                    "non-noded",
+                    "cwring",
+                    "isvalid",
+                )
+            ):
+                log.warning(
+                    "Dynamic MVT query failed (returning empty tile): z=%s x=%s y=%s err=%s",
+                    params.get("z"),
+                    params.get("x"),
+                    params.get("y"),
+                    e,
+                )
+                return b""
             raise
 
     async def _empty() -> bytes:
@@ -178,14 +206,14 @@ async def _dynamic_mvt_bytes_for_member(
                 SELECT
                     feat.id{prop_select_feat},
                     ST_AsMVTGeom(
-                        ST_Transform(ST_CurveToLine(feat.geometry::geometry), 3857),
+                        ST_Transform(ST_MakeValid(ST_CurveToLine(ST_MakeValid(feat.geometry::geometry))), 3857),
                         ST_TileEnvelope(:z, :x, :y),
                         4096,
                         256,
                         true
                     ) AS geom
                 FROM (
-                    SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
+                    SELECT id, ST_MakeValid(ST_Union(ST_MakeValid(geometry))) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
                     FROM features
                     WHERE collection_id = :cid AND geometry IS NOT NULL
                       AND ST_Intersects(geometry, {tile_env})
@@ -1271,7 +1299,7 @@ async def _get_tiles_dynamic_impl(
         WITH {page_ids_cte},
         page AS (
             SELECT f.id,
-                   ST_Union(f.geometry) AS geometry,
+                   ST_MakeValid(ST_Union(ST_MakeValid(f.geometry))) AS geometry,
                    (array_agg(f.properties ORDER BY f.part_index))[1] AS properties
             FROM features f
             JOIN page_ids p ON p.id = f.id
@@ -1283,7 +1311,7 @@ async def _get_tiles_dynamic_impl(
             SELECT
                 page.id{prop_select.replace("(properties ", "(page.properties ") if prop_cols else ""},
                 ST_AsMVTGeom(
-                    ST_Transform(ST_CurveToLine(page.geometry::geometry), 3857),
+                    ST_Transform(ST_MakeValid(ST_CurveToLine(ST_MakeValid(page.geometry::geometry))), 3857),
                     ST_TileEnvelope(:z, :x, :y),
                     4096,
                     256,
@@ -1322,7 +1350,7 @@ async def _get_tiles_dynamic_impl(
         )
         sql = f"""
         WITH by_id AS MATERIALIZED (
-            SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
+            SELECT id, ST_MakeValid(ST_Union(ST_MakeValid(geometry))) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
             FROM features
             WHERE collection_id = :cid AND id = ANY(:ids) AND geometry IS NOT NULL
               {extra_where}
@@ -1333,7 +1361,7 @@ async def _get_tiles_dynamic_impl(
             SELECT
                 by_id.id{prop_select_by_id},
                 ST_AsMVTGeom(
-                    ST_Transform(ST_CurveToLine(by_id.geometry::geometry), 3857),
+                    ST_Transform(ST_MakeValid(ST_CurveToLine(ST_MakeValid(by_id.geometry::geometry))), 3857),
                     ST_TileEnvelope(:z, :x, :y),
                     4096,
                     256,
@@ -1372,14 +1400,14 @@ async def _get_tiles_dynamic_impl(
             SELECT
                 feat.id{prop_select_feat},
                 ST_AsMVTGeom(
-                    ST_Transform(ST_CurveToLine(feat.geometry::geometry), 3857),
+                    ST_Transform(ST_MakeValid(ST_CurveToLine(ST_MakeValid(feat.geometry::geometry))), 3857),
                     ST_TileEnvelope(:z, :x, :y),
                     4096,
                     256,
                     true
                 ) AS geom
             FROM (
-                SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
+                SELECT id, ST_MakeValid(ST_Union(ST_MakeValid(geometry))) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
                 FROM features
                 WHERE collection_id = :cid AND geometry IS NOT NULL
                   AND ST_Intersects(geometry, {tile_env})

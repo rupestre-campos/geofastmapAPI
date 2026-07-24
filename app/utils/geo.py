@@ -75,3 +75,23 @@ def geometry_to_geojson(geom: Any) -> dict[str, Any] | None:
         # Driver may return a bytes-like that isn't bytes/memoryview (e.g. buffer)
         shp = wkb.loads(bytes(geom))
         return mapping(shp)
+
+
+def ensure_valid_shapely(shp: Any) -> Any:
+    """Return a valid Shapely geometry; empty/None unchanged. Used by tile encode/filter paths."""
+    if shp is None:
+        return None
+    try:
+        if getattr(shp, "is_empty", False):
+            return shp
+        if getattr(shp, "is_valid", True):
+            return shp
+    except Exception:
+        pass
+    try:
+        from shapely.validation import make_valid
+
+        fixed = make_valid(shp)
+        return fixed if fixed is not None else shp
+    except Exception:
+        return shp

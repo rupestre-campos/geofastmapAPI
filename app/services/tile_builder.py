@@ -48,8 +48,11 @@ def _stream_pipe(pipe, target, capture: list[str] | None = None) -> None:
 
 def _consumer(queue: Queue, file_handle) -> None:
     """Consume (id, geometry_geojson_str, properties) chunks; build GeoJSONSeq lines; batch-write to file.
-    Uses numeric feature ids (Mapbox tippecanoe requirement); original id kept in properties."""
+    Uses numeric feature ids (Mapbox tippecanoe requirement); original id kept in properties.
+    Skips features with missing/empty geometry so tippecanoe does not abort the whole build.
+    """
     feature_index = 0
+    skipped = 0
     while True:
         chunk = queue.get()
         if chunk is None:
@@ -57,7 +60,19 @@ def _consumer(queue: Queue, file_handle) -> None:
             break
         lines: list[bytes] = []
         for fid, geom_str, props in chunk:
-            geom_dict = json.loads(geom_str) if geom_str else None
+            if not geom_str:
+                skipped += 1
+                continue
+            try:
+                geom_dict = json.loads(geom_str)
+            except Exception:
+                skipped += 1
+                continue
+            if not isinstance(geom_dict, dict) or not geom_dict.get("type") or not geom_dict.get("coordinates"):
+                # Empty / null / GeometryCollection without usable coords after MakeValid
+                if not (isinstance(geom_dict, dict) and geom_dict.get("type") == "GeometryCollection" and geom_dict.get("geometries")):
+                    skipped += 1
+                    continue
             props_dict = dict(props) if props else {}
             # Reserve "id" for our API feature id (UUID/string) so popups link correctly.
             # If source data already has a property named "id", move it aside to avoid conflicts.
@@ -79,6 +94,8 @@ def _consumer(queue: Queue, file_handle) -> None:
         if lines:
             file_handle.write(b"".join(lines))
         queue.task_done()
+    if skipped:
+        print(f"[tile_builder] skipped {skipped} feature(s) with empty/invalid geometry", file=sys.stderr, flush=True)
 
 
 def build_pmtiles_sync(
@@ -174,9 +191,10 @@ def build_pmtiles_sync(
             with SessionLocal() as session:
                 result = session.execute(
                     text(
-                        "SELECT id, ST_AsGeoJSON(ST_Union(geometry))::text AS geometry, "
+                        "SELECT id, ST_AsGeoJSON(ST_MakeValid(ST_Union(ST_MakeValid(geometry))))::text AS geometry, "
                         "(array_agg(properties ORDER BY part_index))[1] AS properties "
-                        "FROM features WHERE collection_id = :cid GROUP BY id ORDER BY id"
+                        "FROM features WHERE collection_id = :cid AND geometry IS NOT NULL "
+                        "GROUP BY id ORDER BY id"
                     ),
                     {"cid": collection_id},
                     execution_options={"stream_results": True},
@@ -214,6 +232,8 @@ def build_pmtiles_sync(
             f"-Z{minz}",
             "--force",
             "--detect-shared-borders",
+            # Match dynamic MVT buffer enough to avoid cropping polygons at tile edges.
+            "--buffer=64",
             "--full-detail=12",
             "--low-detail=10",
             "--minimum-detail=8",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from shapely.geometry import shape
+from shapely.geometry import shape, mapping
 from shapely.geometry import box as shapely_box
 from geoalchemy2.shape import to_shape
 from shapely.geometry import box
@@ -22,7 +22,7 @@ from app.services.composite_items import (
 )
 from app.utils.datetime_parse import parse_datetime_param
 from app.utils.property_filters import parse_filter_param
-from app.utils.geo import geometry_to_geojson
+from app.utils.geo import ensure_valid_shapely, geometry_to_geojson
 from app.utils.tile_bbox import tile_bbox_wgs84
 
 
@@ -32,14 +32,18 @@ def _feature_intersects_bbox(feature, minx: float, miny: float, maxx: float, max
     geom_geojson = getattr(feature, "geometry_geojson", None)
     if geom_geojson is not None:
         try:
-            shp = shape(geom_geojson)
+            shp = ensure_valid_shapely(shape(geom_geojson))
+            if shp is None or shp.is_empty:
+                return False
             return shp.intersects(box(minx, miny, maxx, maxy))
         except Exception:
             return False
     if feature.geometry is None:
         return False
     try:
-        shp = to_shape(feature.geometry)
+        shp = ensure_valid_shapely(to_shape(feature.geometry))
+        if shp is None or shp.is_empty:
+            return False
         return shp.intersects(box(minx, miny, maxx, maxy))
     except Exception:
         return False
@@ -249,8 +253,13 @@ def filter_geojson_to_tile_bbox(geojson_bytes: bytes, z: int, x: int, y: int) ->
         if not geom:
             continue
         try:
-            shp = shape(geom)
+            shp = ensure_valid_shapely(shape(geom))
+            if shp is None or shp.is_empty:
+                continue
             if shp.intersects(box):
+                # Persist repaired geometry so downstream MVT encode does not skip it.
+                if geom != mapping(shp):
+                    f = {**f, "geometry": mapping(shp)}
                 out.append(f)
         except Exception:
             continue
