@@ -232,8 +232,8 @@ def build_pmtiles_sync(
             f"-Z{minz}",
             "--force",
             "--detect-shared-borders",
-            # Match dynamic MVT buffer enough to avoid cropping polygons at tile edges.
-            "--buffer=64",
+            # Match dynamic MVT / ST_AsMVTGeom buffer (hides clip edges under overhang).
+            "--buffer=256",
             "--full-detail=12",
             "--low-detail=10",
             "--minimum-detail=8",

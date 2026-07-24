@@ -25,7 +25,7 @@ from app.core.config import get_settings
 from app.core.html import html_response, wants_html
 from app.core.permissions import can_edit_collection, can_see_collection
 from app.utils.datetime_parse import parse_datetime_param
-from app.utils.geo import mvt_layer_name
+from app.utils.geo import mvt_layer_name, mvt_tile_env_sql
 from app.utils.property_filters import PropertyFilter, parse_filter_param
 from app.crud import collection_tiles as tiles_crud
 from app.crud import collections as collections_crud
@@ -186,7 +186,7 @@ async def _dynamic_mvt_bytes_for_member(
     settings = get_settings()
     layer_name = mvt_layer_name(member_id)
     max_features = settings.tiles_mvt_max_features
-    tile_env = "ST_Transform(ST_TileEnvelope(:z, :x, :y), 4326)"
+    tile_env = mvt_tile_env_sql()
     extra_where, extra_params = _build_dynamic_tile_where(
         bbox_tuple=None,
         dt_start=None,
@@ -1218,7 +1218,7 @@ async def _get_tiles_dynamic_impl(
         property_keys = await _get_property_keys(db, collection_id, feature_ids)
     prop_cols = _mvt_property_select_fragment(property_keys)
 
-    tile_env = "ST_Transform(ST_TileEnvelope(:z, :x, :y), 4326)"
+    tile_env = mvt_tile_env_sql()
     prop_select = f", {prop_cols}" if prop_cols else ""
 
     only_ids_filter = bool(feature_ids)

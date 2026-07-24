@@ -12,6 +12,28 @@ def mvt_layer_name(collection_id: str) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_]", "_", collection_id)
     return safe if safe else "default"
 
+
+# Match ST_AsMVTGeom / tippecanoe / mvt_encode buffer (tile coordinate units).
+MVT_BUFFER_PX = 256
+
+
+def mvt_tile_env_sql(buffer_px: int = MVT_BUFFER_PX) -> str:
+    """WGS84 envelope for tile feature selection, expanded by the MVT buffer.
+
+    Selecting only the exact tile bbox misses geometries that sit just outside
+    the tile but must be included so the buffer overhang can hide seams.
+    Uses bind params ``:z``, ``:x``, ``:y``.
+    """
+    return (
+        "ST_Transform("
+        "ST_Expand("
+        "ST_TileEnvelope(:z, :x, :y), "
+        f"(ST_XMax(ST_TileEnvelope(:z, :x, :y)) - ST_XMin(ST_TileEnvelope(:z, :x, :y))) "
+        f"* ({int(buffer_px)}::double precision / 4096.0)"
+        "), "
+        "4326)"
+    )
+
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.shape import to_shape
 from shapely.geometry import mapping, shape

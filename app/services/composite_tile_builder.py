@@ -201,7 +201,7 @@ def build_composite_pmtiles_sync(
             f"-Z{minz}",
             "--force",
             "--detect-shared-borders",
-            "--buffer=64",
+            "--buffer=256",
             "--full-detail=12",
             "--low-detail=10",
             "--minimum-detail=8",
