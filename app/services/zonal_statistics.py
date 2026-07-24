@@ -318,6 +318,7 @@ async def post_titiler_zonal_statistics(
     geojson_feature: dict[str, Any],
     query_pairs: list[tuple[str, str]],
     drop_keys: frozenset[str] | None = None,
+    request: Any | None = None,
 ) -> Any:
     """POST GeoJSON zone to Titiler statistics; return parsed JSON."""
     base = titiler_base_url()
@@ -335,7 +336,7 @@ async def post_titiler_zonal_statistics(
                 headers={"Accept": "application/json", "Content-Type": "application/json"},
             )
 
-        return await titiler_upstream_gate_run(_request)
+        return await titiler_upstream_gate_run(request, _request)
 
     try:
         resp, _attempts = await titiler_execute_with_retry(_do_post)

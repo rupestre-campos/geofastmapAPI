@@ -1186,6 +1186,7 @@ async def item_raster_statistics(
             url=cog_url,
             geojson_feature=geojson_feature,
             query_pairs=query_pairs,
+            request=request,
         )
         bidx = [v for k, v in query_pairs if k == "bidx" and v]
         payload = normalize_titiler_statistics_payload(
@@ -1266,6 +1267,7 @@ async def item_raster_statistics(
         geojson_feature=geojson_feature,
         query_pairs=query_pairs,
         drop_keys=frozenset({"asset"}),
+        request=request,
     )
     payload = normalize_titiler_statistics_payload(
         raw,
