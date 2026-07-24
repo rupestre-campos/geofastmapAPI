@@ -7,8 +7,8 @@ import json
 
 from app.core.config import get_settings
 
-DYNAMIC_TILE_CACHE_PREFIX = "geofastmap:dynamic_tile:"
-DYNAMIC_TILE_CACHE_PARAMS_PREFIX = "geofastmap:dynamic_tile_p:"
+DYNAMIC_TILE_CACHE_PREFIX = "geofastmap:dynamic_tile:v3:"
+DYNAMIC_TILE_CACHE_PARAMS_PREFIX = "geofastmap:dynamic_tile_p:v3:"
 SEARCH_RESULT_PREFIX = "geofastmap:search_result:"
 ITEMS_LIST_PREFIX = "geofastmap:items_list:"
 TILE_JOBS_QUEUE_KEY = "geofastmap:tile_jobs"

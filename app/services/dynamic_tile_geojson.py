@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from shapely.geometry import shape, mapping
+from shapely.geometry import shape
 from shapely.geometry import box as shapely_box
 from geoalchemy2.shape import to_shape
 from shapely.geometry import box
@@ -22,7 +22,7 @@ from app.services.composite_items import (
 )
 from app.utils.datetime_parse import parse_datetime_param
 from app.utils.property_filters import parse_filter_param
-from app.utils.geo import ensure_valid_shapely, geometry_to_geojson
+from app.utils.geo import geometry_to_geojson
 from app.utils.tile_bbox import tile_bbox_wgs84
 
 
@@ -32,18 +32,14 @@ def _feature_intersects_bbox(feature, minx: float, miny: float, maxx: float, max
     geom_geojson = getattr(feature, "geometry_geojson", None)
     if geom_geojson is not None:
         try:
-            shp = ensure_valid_shapely(shape(geom_geojson))
-            if shp is None or shp.is_empty:
-                return False
+            shp = shape(geom_geojson)
             return shp.intersects(box(minx, miny, maxx, maxy))
         except Exception:
             return False
     if feature.geometry is None:
         return False
     try:
-        shp = ensure_valid_shapely(to_shape(feature.geometry))
-        if shp is None or shp.is_empty:
-            return False
+        shp = to_shape(feature.geometry)
         return shp.intersects(box(minx, miny, maxx, maxy))
     except Exception:
         return False
@@ -239,12 +235,17 @@ async def get_geojson_for_tile(
 def filter_geojson_to_tile_bbox(geojson_bytes: bytes, z: int, x: int, y: int) -> bytes:
     """
     Given a GeoJSON FeatureCollection (full search page), return a FeatureCollection
-    containing only features whose geometry intersects the tile bbox (z, x, y).
-    Used by queue workers that read cached search result and build one tile.
+    containing only features whose geometry intersects the *buffered* tile bbox.
+    Buffer matches MVT encode overhang so edge features are not dropped before encode.
     """
+    from app.utils.geo import MVT_BUFFER_PX
+
     tile_bbox = tile_bbox_wgs84(z, x, y)
     minx, miny, maxx, maxy = tile_bbox
-    box = shapely_box(minx, miny, maxx, maxy)
+    # Expand in lon/lat by the same fraction tippecanoe/MVT uses (approx; fine for filter).
+    pad_x = (maxx - minx) * (MVT_BUFFER_PX / 4096.0)
+    pad_y = (maxy - miny) * (MVT_BUFFER_PX / 4096.0)
+    box = shapely_box(minx - pad_x, miny - pad_y, maxx + pad_x, maxy + pad_y)
     data = json.loads(geojson_bytes.decode("utf-8"))
     features = data.get("features") or []
     out = []
@@ -253,13 +254,8 @@ def filter_geojson_to_tile_bbox(geojson_bytes: bytes, z: int, x: int, y: int) ->
         if not geom:
             continue
         try:
-            shp = ensure_valid_shapely(shape(geom))
-            if shp is None or shp.is_empty:
-                continue
+            shp = shape(geom)
             if shp.intersects(box):
-                # Persist repaired geometry so downstream MVT encode does not skip it.
-                if geom != mapping(shp):
-                    f = {**f, "geometry": mapping(shp)}
                 out.append(f)
         except Exception:
             continue

@@ -216,8 +216,13 @@ async def _dynamic_mvt_bytes_for_member(
                     SELECT id, ST_MakeValid(ST_Union(ST_MakeValid(geometry))) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
                     FROM features
                     WHERE collection_id = :cid AND geometry IS NOT NULL
-                      AND ST_Intersects(geometry, {tile_env})
-                      {extra_where}
+                      AND id IN (
+                        SELECT DISTINCT id
+                        FROM features
+                        WHERE collection_id = :cid AND geometry IS NOT NULL
+                          AND ST_Intersects(geometry, {tile_env})
+                          {extra_where}
+                      )
                     GROUP BY id, collection_id
                 ) AS feat
                 LIMIT :max_features
@@ -1091,10 +1096,26 @@ async def _get_tiles_dynamic_impl(
                     headers=cache_hit_headers,
                 )
 
-    # Query-once path: ensure search result in Redis (single-flight), build tiles from cache. No repeated DB.
+    # Query-once path: ensure search result in Redis (single-flight), build tiles from cache.
+    # ONLY for items-table sync (limit/offset/q/ids/sort). Pure property filters such as
+    # filter=car_code:eq:… must use PostGIS ST_AsMVTGeom — the search-cache path paginates
+    # (~50–100 features) and drops the rest, which shows up as missing pieces and hard
+    # vertical/horizontal crops at tile edges.
     use_queue = getattr(settings, "tiles_dynamic_use_queue", False)
     search_cache_ttl = getattr(settings, "tiles_search_result_cache_ttl_seconds", 300)
-    use_search_cache = has_query_params and params_key is not None and search_cache_ttl > 0
+    list_sync_mode = (
+        limit is not None
+        or offset != 0
+        or (sortby is not None and str(sortby).strip())
+        or (orig_q is not None and str(orig_q).strip())
+        or (orig_ids is not None and str(orig_ids).strip())
+    )
+    use_search_cache = (
+        has_query_params
+        and params_key is not None
+        and search_cache_ttl > 0
+        and list_sync_mode
+    )
     if use_search_cache:
         from app.services.search_result_cache import ensure_search_result_cached
         from app.services.dynamic_tile_cache import get_search_result
@@ -1220,6 +1241,9 @@ async def _get_tiles_dynamic_impl(
 
     tile_env = mvt_tile_env_sql()
     prop_select = f", {prop_cols}" if prop_cols else ""
+
+    filter_list = [x for s in (filter_param or []) for x in s.strip().split("\n") if x.strip()]
+    structured_filters = parse_filter_param(filter_list) if filter_list else []
 
     only_ids_filter = bool(feature_ids)
     # Search pages pass limit/offset, but once we have concrete ids the ids-only MVT path
@@ -1389,7 +1413,7 @@ async def _get_tiles_dynamic_impl(
             dt_start=None,
             dt_end=None,
             feature_ids=feature_ids,
-            structured_filters=[],
+            structured_filters=structured_filters,
             fulltext_q=None,
         )
         extra_where, extra_params = _merge_shadow_tile_filter(collection_id, extra_where, extra_params)
@@ -1410,8 +1434,13 @@ async def _get_tiles_dynamic_impl(
                 SELECT id, ST_MakeValid(ST_Union(ST_MakeValid(geometry))) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
                 FROM features
                 WHERE collection_id = :cid AND geometry IS NOT NULL
-                  AND ST_Intersects(geometry, {tile_env})
-                  {extra_where}
+                  AND id IN (
+                    SELECT DISTINCT id
+                    FROM features
+                    WHERE collection_id = :cid AND geometry IS NOT NULL
+                      AND ST_Intersects(geometry, {tile_env})
+                      {extra_where}
+                  )
                 GROUP BY id, collection_id
             ) AS feat
             LIMIT :max_features
