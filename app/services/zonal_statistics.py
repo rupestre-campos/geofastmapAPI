@@ -14,7 +14,6 @@ from app.crud import collections as collections_crud
 from app.crud import features as features_crud
 from app.models.user import User
 from app.services.coverages import CogPathOutsideStorageError, resolve_stored_cog_path
-from app.services.raster_collection_mosaic import internal_cog_http_url
 from app.services.titiler_error_sanitize import sanitize_titiler_upstream_error_text
 from app.services.titiler_gate import titiler_upstream_gate_run
 from app.services.titiler_http import get_titiler_http_client
@@ -257,7 +256,13 @@ def resolve_local_cog_url_for_titiler(
     feature_id: str,
     feature: Any,
 ) -> str:
-    """Build Titiler `url` for a registered raster coverage (HTTP internal or file://)."""
+    """Build Titiler `url` for a registered raster coverage (HTTP internal or file://).
+
+    Prefer ``file://`` when the COG exists on shared storage. The internal HTTP COG
+    endpoint does not support Range requests, which Titiler needs for
+    ``/cog/statistics`` — that path yields upstream errors like
+    "Range downloading not supported by this server!".
+    """
     settings = get_settings()
     cog_path = _cog_path_from_feature(feature)
     if not cog_path:
@@ -269,9 +274,7 @@ def resolve_local_cog_url_for_titiler(
     if not p.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="COG file missing on disk")
 
-    http_u = internal_cog_http_url(settings, collection_id, feature_id)
-    if http_u:
-        return http_u
+    # Shared volume with Titiler (same default as mosaic tiles): file:// works.
     return f"file://{p.resolve()}"
 
 
