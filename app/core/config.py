@@ -108,6 +108,18 @@ class Settings(BaseSettings):
     # Bulk storage: where uploaded files go (shared path for API and worker). Future: s3.
     bulk_storage_type: str = "filesystem"  # filesystem | s3 (s3 reserved)
     bulk_storage_path: str = "/data/bulk-uploads"  # for filesystem; create if missing
+    # Disk self-heal on workers: drop orphan bulk files, `_uploads/` parts, tippecanoe `*.tmp`.
+    # Only deletes names not referenced by Redis (queue / import meta / upload sessions / tile pending).
+    storage_self_heal_enabled: bool = True
+    storage_self_heal_interval_seconds: float = 300.0
+    # After Redis no longer references a file, keep it this long before delete (outages / long jobs).
+    storage_self_heal_bulk_grace_seconds: float = 86400.0  # 24h
+    # Same grace for tippecanoe `*.mbtiles.*.tmp` with no pending lease (large layers can run for hours).
+    storage_self_heal_tile_tmp_grace_seconds: float = 86400.0  # 24h
+    # Admin storage-usage dashboard: Redis snapshot + daily recompute (UTC).
+    storage_usage_daily_recompute: bool = True
+    storage_usage_daily_hour_utc: int = 0  # midnight UTC
+    storage_usage_snapshot_ttl_seconds: int = 86400 * 8
 
     # Bulk queue: memory = in-process consumer; redis = separate worker(s), scalable.
     bulk_queue_type: str = "redis"  # memory | redis

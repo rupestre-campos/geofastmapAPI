@@ -22,6 +22,8 @@ from app.services.bulk_watchdog import run_bulk_watchdog_pass
 from app.services.bulk_worker import cleanup_orphan_bulk_uploads, process_bulk_job
 from app.services.redis_client import make_redis_client
 from app.services.redis_resilience import retry_wait_seconds
+from app.services.storage_self_heal import log_self_heal_stats, run_storage_self_heal
+from app.services.storage_usage import maybe_daily_storage_usage_recompute
 
 WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 
@@ -77,7 +79,11 @@ def main() -> None:
 
     futures: set[Future[None]] = set()
     last_watchdog = time.monotonic()
+    last_self_heal = time.monotonic()
     watchdog_interval = max(60.0, float(getattr(settings, "bulk_watchdog_interval_seconds", 300.0) or 300.0))
+    self_heal_interval = max(
+        60.0, float(getattr(settings, "storage_self_heal_interval_seconds", 300.0) or 300.0)
+    )
 
     def _reap_done() -> None:
         nonlocal futures
@@ -97,6 +103,20 @@ def main() -> None:
                 except Exception as e:
                     print(f"[bulk-worker] watchdog error: {e}", file=sys.stderr, flush=True)
                 last_watchdog = time.monotonic()
+            if time.monotonic() - last_self_heal >= self_heal_interval:
+                try:
+                    log_self_heal_stats(
+                        "bulk-worker",
+                        run_storage_self_heal(bulk=True, tiles=False),
+                    )
+                except Exception as e:
+                    print(f"[bulk-worker] storage self-heal error: {e}", file=sys.stderr, flush=True)
+                try:
+                    if maybe_daily_storage_usage_recompute():
+                        print("[bulk-worker] started daily storage-usage recompute", flush=True)
+                except Exception as e:
+                    print(f"[bulk-worker] storage-usage schedule error: {e}", file=sys.stderr, flush=True)
+                last_self_heal = time.monotonic()
             _reap_done()
             in_flight = len(futures)
             slots = max_workers - in_flight

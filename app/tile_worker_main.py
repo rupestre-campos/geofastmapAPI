@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 
 from app.core.config import get_settings
 from app.services.dynamic_tile_cache import invalidate_collection_cache
@@ -20,6 +21,7 @@ from app.services.tile_build_queue import (
     update_tile_build_job,
 )
 from app.services.bulk_collection_activity import wait_until_collection_bulk_idle
+from app.services.storage_self_heal import log_self_heal_stats, run_storage_self_heal
 from app.services.tile_build_verify import format_build_success_message, verify_mbtiles_artifact
 from app.services.tile_builder import BUILD_CANCELLED, build_pmtiles_sync
 from app.services.composite_tile_builder import build_composite_pmtiles_sync
@@ -152,6 +154,11 @@ def main() -> None:
         print("Set BULK_QUEUE_TYPE=redis for tile worker.", file=sys.stderr)
         sys.exit(1)
     _recover_orphaned_tile_builds()
+    try:
+        log_self_heal_stats("tile-worker", run_storage_self_heal(bulk=False, tiles=True))
+    except Exception as e:
+        print(f"[tile-worker] storage self-heal error: {e}", file=sys.stderr, flush=True)
+
     from redis.exceptions import ConnectionError as RedisConnectionError
     from redis.exceptions import TimeoutError as RedisTimeoutError
 
@@ -159,8 +166,18 @@ def main() -> None:
 
     brpop_timeout = 5
     r = make_redis_client(for_brpop=True, brpop_timeout=brpop_timeout)
+    last_self_heal = time.monotonic()
+    self_heal_interval = max(
+        60.0, float(getattr(settings, "storage_self_heal_interval_seconds", 300.0) or 300.0)
+    )
     print("Tile worker started. Waiting for build jobs...", flush=True)
     while True:
+        if time.monotonic() - last_self_heal >= self_heal_interval:
+            try:
+                log_self_heal_stats("tile-worker", run_storage_self_heal(bulk=False, tiles=True))
+            except Exception as e:
+                print(f"[tile-worker] storage self-heal error: {e}", file=sys.stderr, flush=True)
+            last_self_heal = time.monotonic()
         try:
             result = r.brpop(TILE_BUILD_QUEUE_KEY, timeout=brpop_timeout)
         except (RedisTimeoutError, RedisConnectionError, TimeoutError, OSError) as e:

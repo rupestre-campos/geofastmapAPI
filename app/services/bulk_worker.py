@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 import time
 from typing import Callable
@@ -24,7 +23,6 @@ from app.services.bulk_collection_activity import (
     try_acquire_collection_bulk_mutex,
 )
 from app.services.bulk_queue import (
-    QUEUE_KEY,
     BulkJobPayload,
     enqueue,
     unregister_bulk_import_job,
@@ -62,7 +60,9 @@ def _queue_tile_build_if_requested(collection_id: str, owner_id: int | None, que
 
 
 def cleanup_orphan_bulk_uploads() -> None:
-    """At startup, delete orphan upload files, reclaim stale mutexes, drop orphan staging."""
+    """At startup: reclaim mutexes, watchdog, then Redis-safe disk self-heal for bulk uploads."""
+    from app.services.storage_self_heal import log_self_heal_stats, run_storage_self_heal
+
     reclaimed = reclaim_all_stale_bulk_mutexes()
     for collection_id, holder in reclaimed:
         print(
@@ -70,37 +70,11 @@ def cleanup_orphan_bulk_uploads() -> None:
             flush=True,
         )
     run_bulk_watchdog_pass()
-    settings = get_settings()
-    if settings.bulk_queue_type != "redis":
-        return
     try:
-        import redis
-        r = redis.from_url(settings.redis_url, decode_responses=True)
-        payloads = r.lrange(QUEUE_KEY, 0, -1) or []
-    except Exception:
-        return
-    pending_storage_keys: set[str] = set()
-    for s in payloads:
-        try:
-            payload = BulkJobPayload.from_json(s)
-            pending_storage_keys.add(payload.storage_key)
-        except Exception:
-            continue
-    base = (settings.bulk_storage_path or "").rstrip("/")
-    if not base or not os.path.isdir(base):
-        return
-    storage = get_bulk_storage()
-    for name in os.listdir(base):
-        if name.startswith(".") or ".." in name:
-            continue
-        path = os.path.join(base, name)
-        if not os.path.isfile(path):
-            continue
-        if name not in pending_storage_keys:
-            try:
-                storage.delete(name)
-            except Exception:
-                pass
+        stats = run_storage_self_heal(bulk=True, tiles=False)
+        log_self_heal_stats("bulk-worker", stats)
+    except Exception as e:
+        print(f"[bulk-worker] storage self-heal error: {e}", flush=True)
 
 
 def _defer_bulk_job_for_collection_mutex(payload: BulkJobPayload) -> bool:
