@@ -532,13 +532,8 @@ def maybe_daily_storage_usage_recompute() -> bool:
     return start_recompute_background()
 
 
-def remove_row_from_snapshot(kind: str, item_id: str) -> None:
-    snap = get_snapshot()
-    if not snap:
-        return
-    rows = [r for r in (snap.get("rows") or []) if not (r.get("kind") == kind and r.get("id") == item_id)]
-    snap["rows"] = rows
-    snap["row_count"] = len(rows)
+def _refresh_snapshot_totals(snap: dict) -> None:
+    rows = snap.get("rows") or []
     totals = {
         "db_bytes": sum(int(r["db_bytes"]) for r in rows),
         "tiles_bytes": sum(int(r["tiles_bytes"]) for r in rows),
@@ -548,12 +543,19 @@ def remove_row_from_snapshot(kind: str, item_id: str) -> None:
     totals["total_bytes"] = (
         totals["db_bytes"] + totals["tiles_bytes"] + totals["raster_bytes"] + totals["other_bytes"]
     )
-    totals["db_h"] = format_bytes(totals["db_bytes"])
-    totals["tiles_h"] = format_bytes(totals["tiles_bytes"])
-    totals["raster_h"] = format_bytes(totals["raster_bytes"])
-    totals["other_h"] = format_bytes(totals["other_bytes"])
-    totals["total_h"] = format_bytes(totals["total_bytes"])
+    for key in ("db", "tiles", "raster", "other", "total"):
+        totals[f"{key}_h"] = format_bytes(totals[f"{key}_bytes"])
     snap["totals"] = totals
+
+
+def remove_row_from_snapshot(kind: str, item_id: str) -> None:
+    snap = get_snapshot()
+    if not snap:
+        return
+    rows = [r for r in (snap.get("rows") or []) if not (r.get("kind") == kind and r.get("id") == item_id)]
+    snap["rows"] = rows
+    snap["row_count"] = len(rows)
+    _refresh_snapshot_totals(snap)
     save_snapshot(snap)
 
 
@@ -575,24 +577,51 @@ def patch_row_tiles_cleared(collection_id: str) -> None:
             r["can_delete_tiles"] = False
             changed = True
             break
-        if r.get("kind") == "orphan_tiles" and r.get("id") == collection_id:
-            # will be removed entirely
-            pass
     if changed:
-        rows = snap["rows"]
-        rows.sort(key=lambda x: (-int(x["total_bytes"]), str(x["id"])))
-        totals = {
-            "db_bytes": sum(int(r["db_bytes"]) for r in rows),
-            "tiles_bytes": sum(int(r["tiles_bytes"]) for r in rows),
-            "raster_bytes": sum(int(r["raster_bytes"]) for r in rows),
-            "other_bytes": sum(int(r["other_bytes"]) for r in rows),
-        }
-        totals["total_bytes"] = (
-            totals["db_bytes"] + totals["tiles_bytes"] + totals["raster_bytes"] + totals["other_bytes"]
-        )
-        for key in ("db", "tiles", "raster", "other", "total"):
-            totals[f"{key}_h"] = format_bytes(totals[f"{key}_bytes"])
-        snap["totals"] = totals
+        snap["rows"].sort(key=lambda x: (-int(x["total_bytes"]), str(x["id"])))
+        _refresh_snapshot_totals(snap)
+        save_snapshot(snap)
+
+
+def patch_row_tiles_and_rasters_cleared(collection_id: str) -> None:
+    """After disk phase of collection delete — DB row may still exist briefly."""
+    snap = get_snapshot()
+    if not snap:
+        return
+    changed = False
+    for r in snap.get("rows") or []:
+        if r.get("kind") == "collection" and r.get("id") == collection_id:
+            r["tiles_bytes"] = 0
+            r["tiles_h"] = format_bytes(0)
+            r["raster_bytes"] = 0
+            r["raster_h"] = format_bytes(0)
+            r["total_bytes"] = int(r.get("db_bytes") or 0) + int(r.get("other_bytes") or 0)
+            r["total_h"] = format_bytes(r["total_bytes"])
+            r["can_delete_tiles"] = False
+            changed = True
+            break
+    if changed:
+        snap["rows"].sort(key=lambda x: (-int(x["total_bytes"]), str(x["id"])))
+        _refresh_snapshot_totals(snap)
+        save_snapshot(snap)
+
+
+def patch_mosaic_file_cleared(view_id: str) -> None:
+    snap = get_snapshot()
+    if not snap:
+        return
+    changed = False
+    for r in snap.get("rows") or []:
+        if r.get("kind") == "mosaic" and r.get("id") == view_id:
+            r["other_bytes"] = 0
+            r["other_h"] = format_bytes(0)
+            r["total_bytes"] = 0
+            r["total_h"] = format_bytes(0)
+            changed = True
+            break
+    if changed:
+        snap["rows"].sort(key=lambda x: (-int(x["total_bytes"]), str(x["id"])))
+        _refresh_snapshot_totals(snap)
         save_snapshot(snap)
 
 

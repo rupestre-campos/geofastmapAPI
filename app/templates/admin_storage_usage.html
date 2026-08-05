@@ -6,6 +6,10 @@
     <p class="meta">Admin only. Disk and database size per collection, mosaic, and known orphans. Snapshot refreshes daily at midnight UTC; use Refresh anytime.</p>
   </header>
 
+  <div id="queuedBanner" class="card" style="display:none; border-color: rgba(46,160,67,0.5);">
+    <p class="meta" id="queuedBannerText"></p>
+  </div>
+
   <div class="card">
     <div class="card-header">
       <h2 class="card-title">Snapshot</h2>
@@ -26,7 +30,7 @@
         <input type="search" id="filterInput" placeholder="Filter by id, title, owner…" style="min-width:14rem;">
       </div>
     </div>
-    <div class="table-scroll-wrap">
+    <div class="storage-usage-table-scroll">
       <table class="collections-table" id="usageTable">
         <thead>
           <tr>
@@ -51,11 +55,32 @@
   </div>
 
   <style>
+    .storage-usage-table-scroll {
+      overflow: auto;
+      max-width: 100%;
+      max-height: min(70vh, 640px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      -webkit-overflow-scrolling: touch;
+    }
+    .storage-usage-table-scroll table {
+      margin: 0;
+      min-width: 1100px;
+      width: max-content;
+      max-width: none;
+    }
+    .storage-usage-table-scroll thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--card);
+      box-shadow: 0 1px 0 var(--border);
+    }
     th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
     th.sortable:hover { text-decoration: underline; }
     th.sortable.sort-asc::after { content: " ▲"; font-size: 0.75em; }
     th.sortable.sort-desc::after { content: " ▼"; font-size: 0.75em; }
-    .usage-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .usage-actions { display: flex; gap: 6px; flex-wrap: nowrap; white-space: nowrap; }
     .usage-actions form { display: inline; margin: 0; }
   </style>
 
@@ -106,13 +131,13 @@
         if (r.can_delete_tiles) {
           html += '<form method="post" action="' + esc(base) + '/admin/storage-usage/collections/' + encodeURIComponent(r.id) + '/delete-tiles">' +
             '<input type="hidden" name="csrf_token" value="' + esc(csrf) + '">' +
-            '<button type="submit" class="btn btn-sm" onclick="return confirm(\'Delete tiles file for ' + esc(r.id) + '?\');">Delete tiles</button></form>';
+            '<button type="submit" class="btn btn-sm" onclick="return confirm(\'Queue tiles delete for ' + esc(r.id) + '? Disk is cleared first in a background job.\');">Delete tiles</button></form>';
         }
         if (r.can_delete_all) {
           html += '<form method="post" action="' + esc(base) + '/admin/storage-usage/collections/' + encodeURIComponent(r.id) + '/delete">' +
             '<input type="hidden" name="csrf_token" value="' + esc(csrf) + '">' +
             '<button type="submit" class="btn btn-sm" style="border-color: rgba(248,81,73,0.6); color: var(--danger);" ' +
-            'onclick="return confirm(\'DELETE collection ' + esc(r.id) + ' and all its data?\');">Delete all</button></form>';
+            'onclick="return confirm(\'Queue DELETE for ' + esc(r.id) + '? Tiles and rasters are removed from disk first, then the database.\');">Delete all</button></form>';
         }
       } else if (r.kind === "mosaic" && r.can_delete_all) {
         html += '<form method="post" action="' + esc(base) + '/admin/storage-usage/mosaics/' + encodeURIComponent(r.id) + '/delete">' +
@@ -208,6 +233,18 @@
         });
     }
 
+    function showQueuedBanner() {
+      var params = new URLSearchParams(window.location.search);
+      var jobId = params.get("job_id");
+      var banner = document.getElementById("queuedBanner");
+      var text = document.getElementById("queuedBannerText");
+      if (!jobId || !banner || !text) return;
+      banner.style.display = "block";
+      text.innerHTML = 'Delete queued as job <a href="' + esc(base) + '/jobs/' + encodeURIComponent(jobId) + '?f=html"><code>' + esc(jobId) + '</code></a>. '
+        + 'Tiles/rasters are removed from disk first; refresh this page to see updated sizes.';
+      if (params.get("queued") === "1") schedulePoll();
+    }
+
     function schedulePoll() {
       if (pollTimer) return;
       pollTimer = setInterval(load, 2000);
@@ -249,6 +286,7 @@
     });
 
     load();
+    showQueuedBanner();
   })();
   </script>
 {% endblock %}

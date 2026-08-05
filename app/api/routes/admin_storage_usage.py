@@ -10,14 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin
 from app.core.html import html_response, wants_html
-from app.crud import collection_tiles as tiles_crud
 from app.crud import collections as collections_crud
 from app.crud import raster_views as raster_views_crud
 from app.db.session import get_db
 from app.models.user import User
 from app.services import storage_usage as su
-from app.services.dynamic_tile_cache import invalidate_collection_cache
-from app.services.static_tiles_path import default_mbtiles_path
+from app.services.job_store import create_job
+from app.services.storage_delete_queue import StorageDeletePayload, enqueue_storage_delete
 
 router = APIRouter()
 
@@ -46,6 +45,38 @@ def _check_csrf(request: Request, token: str | None) -> None:
     expected = request.session.get("admin_storage_csrf")
     if not expected or not token or not secrets.compare_digest(str(token), str(expected)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+
+
+def _redirect_storage(request: Request, *, job_id: str | None = None, error: str | None = None) -> RedirectResponse:
+    base = _base_url(request)
+    params = "f=html"
+    if job_id:
+        params += f"&job_id={job_id}&queued=1"
+    if error:
+        params += f"&error={error}"
+    return RedirectResponse(url=f"{base}/admin/storage-usage?{params}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+def _enqueue_delete(
+    *,
+    action: str,
+    target_id: str,
+    owner_id: int | None,
+    orphan_kind: str | None = None,
+    mosaic_json_path: str | None = None,
+) -> str:
+    job = create_job(target_id, owner_id=owner_id, job_label="storage_delete")
+    enqueue_storage_delete(
+        StorageDeletePayload(
+            job_id=job.job_id,
+            action=action,
+            target_id=target_id,
+            owner_id=owner_id,
+            orphan_kind=orphan_kind,
+            mosaic_json_path=mosaic_json_path,
+        )
+    )
+    return job.job_id
 
 
 @router.get("/storage-usage", summary="Admin storage usage dashboard")
@@ -105,29 +136,6 @@ async def storage_usage_refresh(
     return {"ok": True, "started": started, "status": su.get_status()}
 
 
-async def _delete_collection_tiles(db: AsyncSession, collection_id: str) -> None:
-    rec = await tiles_crud.get_collection_tiles(db, collection_id)
-    paths = []
-    if rec and rec.pmtiles_path:
-        paths.append(rec.pmtiles_path)
-    paths.append(str(default_mbtiles_path(collection_id)))
-    seen: set[str] = set()
-    for p in paths:
-        if p in seen:
-            continue
-        seen.add(p)
-        try:
-            from pathlib import Path
-
-            path = Path(p)
-            if path.is_file():
-                path.unlink()
-        except OSError:
-            pass
-    await tiles_crud.clear_static_tiles(db, collection_id)
-    invalidate_collection_cache(collection_id)
-
-
 @router.post("/storage-usage/collections/{collection_id}/delete-tiles")
 async def storage_usage_delete_tiles(
     collection_id: str,
@@ -140,14 +148,19 @@ async def storage_usage_delete_tiles(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=404, detail="Collection not found")
-    await _delete_collection_tiles(db, collection_id)
-    su.patch_row_tiles_cleared(collection_id)
-    if wants_html(request):
-        return RedirectResponse(
-            url=f"{_base_url(request)}/admin/storage-usage?f=html&deleted=tiles",
-            status_code=status.HTTP_303_SEE_OTHER,
+    try:
+        job_id = _enqueue_delete(
+            action="delete_tiles",
+            target_id=collection_id,
+            owner_id=current_user.id,
         )
-    return {"ok": True}
+    except RuntimeError as e:
+        if wants_html(request):
+            return _redirect_storage(request, error="queue_unavailable")
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    if wants_html(request):
+        return _redirect_storage(request, job_id=job_id)
+    return {"ok": True, "job_id": job_id}
 
 
 @router.post("/storage-usage/collections/{collection_id}/delete")
@@ -162,23 +175,19 @@ async def storage_usage_delete_collection(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=404, detail="Collection not found")
-    await collections_crud.delete_collection(db, collection_id)
-    su.delete_collection_raster_dir(collection_id)
-    # Ensure canonical mbtiles gone even if DB path was empty
     try:
-        p = default_mbtiles_path(collection_id)
-        if p.is_file():
-            p.unlink()
-    except OSError:
-        pass
-    invalidate_collection_cache(collection_id)
-    su.remove_row_from_snapshot("collection", collection_id)
-    if wants_html(request):
-        return RedirectResponse(
-            url=f"{_base_url(request)}/admin/storage-usage?f=html&deleted=collection",
-            status_code=status.HTTP_303_SEE_OTHER,
+        job_id = _enqueue_delete(
+            action="delete_collection",
+            target_id=collection_id,
+            owner_id=current_user.id,
         )
-    return {"ok": True}
+    except RuntimeError as e:
+        if wants_html(request):
+            return _redirect_storage(request, error="queue_unavailable")
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    if wants_html(request):
+        return _redirect_storage(request, job_id=job_id)
+    return {"ok": True, "job_id": job_id}
 
 
 @router.post("/storage-usage/mosaics/{view_id}/delete")
@@ -193,15 +202,20 @@ async def storage_usage_delete_mosaic(
     row = await raster_views_crud.get_view(db, view_id)
     if not row:
         raise HTTPException(status_code=404, detail="Mosaic not found")
-    su.delete_mosaic_files(row.json_relative_path)
-    await raster_views_crud.delete_view(db, view_id)
-    su.remove_row_from_snapshot("mosaic", view_id)
-    if wants_html(request):
-        return RedirectResponse(
-            url=f"{_base_url(request)}/admin/storage-usage?f=html&deleted=mosaic",
-            status_code=status.HTTP_303_SEE_OTHER,
+    try:
+        job_id = _enqueue_delete(
+            action="delete_mosaic",
+            target_id=view_id,
+            owner_id=current_user.id,
+            mosaic_json_path=row.json_relative_path,
         )
-    return {"ok": True}
+    except RuntimeError as e:
+        if wants_html(request):
+            return _redirect_storage(request, error="queue_unavailable")
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    if wants_html(request):
+        return _redirect_storage(request, job_id=job_id)
+    return {"ok": True, "job_id": job_id}
 
 
 @router.post("/storage-usage/orphans/{kind}/delete")
@@ -215,21 +229,19 @@ async def storage_usage_delete_orphan(
     item_id = str(form.get("id") or "")
     if not item_id:
         raise HTTPException(status_code=400, detail="Missing id")
-    ok = False
-    if kind == "orphan_tiles":
-        ok = su.delete_orphan_tiles_file(item_id)
-    elif kind == "orphan_rasters":
-        ok = su.delete_orphan_raster_dir(item_id)
-    elif kind == "orphan_mosaic":
-        ok = su.delete_orphan_mosaic_file(item_id)
-    else:
+    if kind not in ("orphan_tiles", "orphan_rasters", "orphan_mosaic"):
         raise HTTPException(status_code=400, detail="Unknown orphan kind")
-    if not ok:
-        raise HTTPException(status_code=404, detail="Orphan not found or could not delete")
-    su.remove_row_from_snapshot(kind, item_id)
-    if wants_html(request):
-        return RedirectResponse(
-            url=f"{_base_url(request)}/admin/storage-usage?f=html&deleted=orphan",
-            status_code=status.HTTP_303_SEE_OTHER,
+    try:
+        job_id = _enqueue_delete(
+            action="delete_orphan",
+            target_id=item_id,
+            owner_id=current_user.id,
+            orphan_kind=kind,
         )
-    return {"ok": True}
+    except RuntimeError as e:
+        if wants_html(request):
+            return _redirect_storage(request, error="queue_unavailable")
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    if wants_html(request):
+        return _redirect_storage(request, job_id=job_id)
+    return {"ok": True, "job_id": job_id}

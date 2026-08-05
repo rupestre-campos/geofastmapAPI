@@ -115,6 +115,17 @@ def build_job_view_dict(
         d["details"] = details
         return d
 
+    if jl == "storage_delete":
+        d["job_category"] = "storage_delete"
+        d["job_type_label"] = "Storage delete"
+        d["input_summary"] = job.collection_id
+        details["storage_delete"] = {
+            "target_id": job.collection_id,
+            "note": "Removes disk files first (tiles/rasters), then database records.",
+        }
+        d["details"] = details
+        return d
+
     if meta and meta.get("process_id"):
         pid = str(meta["process_id"])
         d["job_category"] = "process"

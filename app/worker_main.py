@@ -22,6 +22,8 @@ from app.services.bulk_watchdog import run_bulk_watchdog_pass
 from app.services.bulk_worker import cleanup_orphan_bulk_uploads, process_bulk_job
 from app.services.redis_client import make_redis_client
 from app.services.redis_resilience import retry_wait_seconds
+from app.services.storage_delete_queue import STORAGE_DELETE_QUEUE_KEY, StorageDeletePayload
+from app.services.storage_delete_worker import process_storage_delete
 from app.services.storage_self_heal import log_self_heal_stats, run_storage_self_heal
 from app.services.storage_usage import maybe_daily_storage_usage_recompute
 
@@ -38,6 +40,18 @@ def _process_payload_json(payload_json: str) -> None:
         process_bulk_job(payload)
     except Exception as e:
         print(f"Job {payload.job_id} error: {e}", file=sys.stderr, flush=True)
+
+
+def _process_storage_delete_json(payload_json: str) -> None:
+    try:
+        payload = StorageDeletePayload.from_json(payload_json)
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Invalid storage delete payload: {e}", file=sys.stderr, flush=True)
+        return
+    try:
+        process_storage_delete(payload)
+    except Exception as e:
+        print(f"Storage delete job {payload.job_id} error: {e}", file=sys.stderr, flush=True)
 
 
 def main() -> None:
@@ -133,7 +147,7 @@ def main() -> None:
 
             brpop_timeout = 1 if in_flight > 0 else 5
             try:
-                result = r.brpop(QUEUE_KEY, timeout=brpop_timeout)
+                result = r.brpop([STORAGE_DELETE_QUEUE_KEY, QUEUE_KEY], timeout=brpop_timeout)
                 redis_failures = 0
             except Exception as e:
                 redis_failures += 1
@@ -166,17 +180,30 @@ def main() -> None:
                 continue
 
             _key, payload_json = result
-            try:
-                _claimed = BulkJobPayload.from_json(payload_json)
-                print(
-                    f"[bulk-worker] claimed job_id={_claimed.job_id} "
-                    f"collection={_claimed.collection_id} worker={WORKER_ID} "
-                    f"in_flight={in_flight + 1}/{max_workers}",
-                    flush=True,
-                )
-            except Exception:
-                pass
-            futures.add(executor.submit(_process_payload_json, payload_json))
+            if _key == STORAGE_DELETE_QUEUE_KEY:
+                try:
+                    _claimed = StorageDeletePayload.from_json(payload_json)
+                    print(
+                        f"[bulk-worker] claimed storage_delete job_id={_claimed.job_id} "
+                        f"action={_claimed.action} target={_claimed.target_id} worker={WORKER_ID} "
+                        f"in_flight={in_flight + 1}/{max_workers}",
+                        flush=True,
+                    )
+                except Exception:
+                    pass
+                futures.add(executor.submit(_process_storage_delete_json, payload_json))
+            else:
+                try:
+                    _claimed = BulkJobPayload.from_json(payload_json)
+                    print(
+                        f"[bulk-worker] claimed job_id={_claimed.job_id} "
+                        f"collection={_claimed.collection_id} worker={WORKER_ID} "
+                        f"in_flight={in_flight + 1}/{max_workers}",
+                        flush=True,
+                    )
+                except Exception:
+                    pass
+                futures.add(executor.submit(_process_payload_json, payload_json))
 
             # Fair dispatch: if this host still has free slots, pause briefly so an idle
             # worker machine can claim the next queued job before we grab it ourselves.

@@ -26,12 +26,6 @@ def test_compute_includes_collection_and_tiles(monkeypatch, tmp_path: Path):
     (rasters / "layer-a" / "f1.tif").write_bytes(b"y" * 500)
     (tiles / "orphan.mbtiles").write_bytes(b"z" * 200)
 
-    engine = create_engine("sqlite:///:memory:", future=True)
-    with engine.begin() as conn:
-        # Minimal stubs — features partition query returns empty on SQLite without pg catalog.
-        # We only assert filesystem orphans + empty collections path doesn't crash.
-        pass
-
     monkeypatch.setattr(
         su,
         "get_settings",
