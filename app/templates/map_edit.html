@@ -333,6 +333,13 @@
       function layerRasterTrue(l) {
         return !!(l && (l.raster_tiles === true || l.rasterTiles === true));
       }
+      /** DEM layers with terrain: default to also showing the styled raster overlay. */
+      function normalizeTerrainRasterOverlay(layer) {
+        if (!layer || !layerRasterTrue(layer)) return;
+        if (layer.terrain_enabled === true && layer.terrain_raster_overlay !== true && layer.terrain_raster_overlay !== false) {
+          layer.terrain_raster_overlay = true;
+        }
+      }
       function mosaicRasterTilesUrlTemplateWithV(baseUrl, viewId, revision) {
         var u = baseUrl + '/raster-views/' + encodeURIComponent(String(viewId)) + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png';
         if (revision) u += '?v=' + encodeURIComponent(revision);
@@ -658,12 +665,6 @@
         if (!layer) return true;
         if (layer.terrain_raster_overlay === false) return false;
         return true;
-      }
-      function normalizeTerrainRasterOverlay(layer) {
-        if (!layer || !layerRasterTrue(layer)) return;
-        if (layer.terrain_enabled === true && layer.terrain_raster_overlay !== true && layer.terrain_raster_overlay !== false) {
-          layer.terrain_raster_overlay = true;
-        }
       }
 
       var _syncRunId = 0;

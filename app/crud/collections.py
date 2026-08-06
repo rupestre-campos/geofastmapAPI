@@ -479,13 +479,49 @@ async def delete_collection(db: AsyncSession, collection_id: str) -> bool:
     collection = await get_collection(db, collection_id)
     if collection is None:
         return False
+    # Drop the LIST partition (DETACH + DROP TABLE) before deleting the collections row.
+    # ON DELETE CASCADE would otherwise delete features row-by-row and can run for days
+    # on large layers.
+    from sqlalchemy import create_engine
+
+    from app.core.config import get_settings
+    from app.db.features_partitions import drop_collection_features_data_sync
+
+    settings = get_settings()
+
+    def _drop_features() -> str | None:
+        engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+        try:
+            return drop_collection_features_data_sync(engine, collection_id)
+        finally:
+            engine.dispose()
+
+    try:
+        await asyncio.to_thread(_drop_features)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Failed to drop features partition for collection %s; aborting delete",
+            collection_id,
+        )
+        raise
+
+    # Indexes lived on the partition and were dropped with it; still clear any leftover
+    # expression indexes if the collection only used features_default.
     index_fields = normalize_property_index_fields(collection.property_index_fields)
     if index_fields:
-        await asyncio.to_thread(
-            drop_all_collection_property_indexes_sync,
-            collection_id,
-            index_fields,
-        )
+        try:
+            await asyncio.to_thread(
+                drop_all_collection_property_indexes_sync,
+                collection_id,
+                index_fields,
+            )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Property index cleanup failed for %s (continuing delete)",
+                collection_id,
+                exc_info=True,
+            )
+
     # Delete static MBTiles file if present (before collection_tiles row is CASCADE-deleted)
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     if rec and rec.pmtiles_path:

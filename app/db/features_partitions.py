@@ -231,6 +231,69 @@ def resolve_features_partition_relname_sync(engine: Engine, collection_id: str) 
         return _resolve_features_partition_relname_conn(conn, collection_id)
 
 
+def drop_collection_features_data_sync(engine: Engine, collection_id: str) -> str | None:
+    """
+    Fast-path wipe of feature rows for a collection before deleting the collections row.
+
+    LIST partitions must not be cleared via ON DELETE CASCADE (row-by-row). Detach + DROP
+    TABLE is near-instant even for huge layers. Also clears features_default stragglers and
+    any detached canonical leftover.
+    Returns the dropped partition relname (if any).
+    """
+    if not collection_id or ".." in collection_id:
+        raise ValueError("invalid collection_id")
+
+    settings = get_settings()
+    lock_timeout_s = max(1.0, float(getattr(settings, "bulk_swap_lock_timeout_seconds", 5.0) or 5.0))
+    max_wait_s = max(lock_timeout_s, float(getattr(settings, "bulk_swap_lock_max_wait_seconds", 600.0) or 600.0))
+    deadline = time.monotonic() + max_wait_s
+    attempt = 0
+    dropped: str | None = None
+    canonical = _safe_partition_name(collection_id)
+
+    while True:
+        attempt += 1
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("SELECT pg_advisory_xact_lock(:k)"),
+                    {"k": _FEATURES_SWAP_ADVISORY_LOCK_KEY},
+                )
+                _advisory_lock_partition(conn, collection_id)
+                conn.execute(text(f"SET LOCAL lock_timeout = {int(lock_timeout_s * 1000)}"))
+                # Avoid trigger work while clearing default / detaching.
+                if bool(getattr(settings, "bulk_skip_features_touch_trigger", True)):
+                    conn.execute(text("SET LOCAL geofast.bulk_skip_features_touch = 'on'"))
+
+                part = _resolve_features_partition_relname_conn(conn, collection_id)
+                if part:
+                    conn.execute(text(f'ALTER TABLE features DETACH PARTITION "{part}"'))
+                    conn.execute(text(f'DROP TABLE IF EXISTS "{part}"'))
+                    dropped = part
+
+                conn.execute(
+                    text("DELETE FROM features_default WHERE collection_id = :cid"),
+                    {"cid": collection_id},
+                )
+
+                # Detached leftover from a failed replace swap (canonical name, not attached).
+                if _table_exists_conn(conn, canonical) and not _partition_is_attached_conn(conn, canonical):
+                    conn.execute(text(f'DROP TABLE IF EXISTS "{canonical}"'))
+                    if not dropped:
+                        dropped = canonical
+            return dropped
+        except (OperationalError, DBAPIError) as e:
+            if not _is_lock_timeout_error(e):
+                raise
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out dropping features partition for {collection_id!r} "
+                    f"after {max_wait_s:.0f}s (lock contention)"
+                ) from e
+            # Brief backoff before retrying ACCESS EXCLUSIVE on parent `features`.
+            time.sleep(min(2.0, 0.25 * attempt))
+
+
 def list_attached_feature_partitions_sync(engine: Engine) -> list[tuple[str, str]]:
     """Return (relname, collection_id) for each non-default features partition."""
     out: list[tuple[str, str]] = []

@@ -1,4 +1,4 @@
-"""Worker-side storage deletes: free disk first, then slow DB cleanup."""
+"""Worker-side storage deletes: free disk first, then fast DB cleanup (DROP partition)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.crud import collection_tiles as tiles_crud
 from app.crud import collections as collections_crud
 from app.crud import raster_views as raster_views_crud
+from app.db.features_partitions import drop_collection_features_data_sync
 from app.db.session import AsyncSessionLocal
 from app.services import storage_usage as su
 from app.services.dynamic_tile_cache import invalidate_collection_cache
@@ -72,9 +73,18 @@ def delete_collection_tiles_disk_sync(collection_id: str) -> None:
 
 
 def delete_collection_disk_sync(collection_id: str) -> None:
-    """Remove MBTiles files and raster directory (before slow DB delete)."""
+    """Remove MBTiles files and raster directory (before DB delete)."""
     delete_collection_tiles_disk_sync(collection_id)
     su.delete_collection_raster_dir(collection_id)
+
+
+def _drop_features_partition_sync(collection_id: str) -> str | None:
+    settings = get_settings()
+    engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+    try:
+        return drop_collection_features_data_sync(engine, collection_id)
+    finally:
+        engine.dispose()
 
 
 def process_storage_delete(payload: StorageDeletePayload) -> None:
@@ -96,13 +106,32 @@ def process_storage_delete(payload: StorageDeletePayload) -> None:
             update_job(job_id, message="Removing tiles and rasters from disk…")
             delete_collection_disk_sync(target)
             su.patch_row_tiles_and_rasters_cleared(target)
-            update_job(job_id, message="Disk freed; removing database records…")
+            update_job(
+                job_id,
+                message="Disk freed; dropping features partition (DETACH + DROP TABLE)…",
+            )
+            dropped = _drop_features_partition_sync(target)
+            update_job(
+                job_id,
+                message=(
+                    f"Partition dropped ({dropped or 'none'}); removing collection metadata…"
+                ),
+            )
+            # Features already gone; delete_collection will no-op the drop and remove the row.
             ok = asyncio.run(_delete_collection_async(target))
             if not ok:
-                update_job(job_id, status="failed", message=f"Collection {target} not found in database.")
+                update_job(
+                    job_id,
+                    status="failed",
+                    message=f"Collection {target} not found in database.",
+                )
                 return
             su.remove_row_from_snapshot("collection", target)
-            update_job(job_id, status="completed", message=f"Collection {target} deleted (disk + database).")
+            update_job(
+                job_id,
+                status="completed",
+                message=f"Collection {target} deleted (disk + DROP partition + metadata).",
+            )
             return
 
         if action == "delete_mosaic":
@@ -112,7 +141,11 @@ def process_storage_delete(payload: StorageDeletePayload) -> None:
             update_job(job_id, message="Removing mosaic database record…")
             ok = asyncio.run(_delete_mosaic_async(target, payload.mosaic_json_path))
             if not ok:
-                update_job(job_id, status="failed", message=f"Mosaic {target} not found in database.")
+                update_job(
+                    job_id,
+                    status="failed",
+                    message=f"Mosaic {target} not found in database.",
+                )
                 return
             su.remove_row_from_snapshot("mosaic", target)
             update_job(job_id, status="completed", message=f"Mosaic {target} deleted.")
@@ -129,7 +162,11 @@ def process_storage_delete(payload: StorageDeletePayload) -> None:
             elif kind == "orphan_mosaic":
                 ok = su.delete_orphan_mosaic_file(target)
             if not ok:
-                update_job(job_id, status="failed", message=f"Could not delete orphan {target}.")
+                update_job(
+                    job_id,
+                    status="failed",
+                    message=f"Could not delete orphan {target}.",
+                )
                 return
             su.remove_row_from_snapshot(kind, target)
             update_job(job_id, status="completed", message=f"Orphan {target} deleted.")
@@ -137,5 +174,9 @@ def process_storage_delete(payload: StorageDeletePayload) -> None:
 
         update_job(job_id, status="failed", message=f"Unknown storage delete action: {action}")
     except Exception as e:
-        update_job(job_id, status="failed", message=f"Storage delete failed: {type(e).__name__}: {e}")
+        update_job(
+            job_id,
+            status="failed",
+            message=f"Storage delete failed: {type(e).__name__}: {e}",
+        )
         raise
