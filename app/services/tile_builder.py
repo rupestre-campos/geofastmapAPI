@@ -232,8 +232,7 @@ def build_pmtiles_sync(
             f"-Z{minz}",
             "--force",
             "--detect-shared-borders",
-            # Match dynamic MVT / ST_AsMVTGeom buffer (hides clip edges under overhang).
-            "--buffer=256",
+            # Tippecanoe default --buffer=5 (large values crash big national builds).
             "--full-detail=12",
             "--low-detail=10",
             "--minimum-detail=8",

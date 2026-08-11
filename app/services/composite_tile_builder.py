@@ -201,7 +201,7 @@ def build_composite_pmtiles_sync(
             f"-Z{minz}",
             "--force",
             "--detect-shared-borders",
-            "--buffer=256",
+            # Tippecanoe default --buffer=5 (large values crash big national builds).
             "--full-detail=12",
             "--low-detail=10",
             "--minimum-detail=8",

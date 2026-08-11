@@ -35,7 +35,7 @@
     <ul>
       <li>Invalid / self-intersecting geometries can make PostGIS clip/MVT encoding fail or drop features at tile edges (looks like cropping).</li>
       <li>Dynamic MVT SQL and tippecanoe export apply <code>ST_MakeValid</code> around unions; in-process encode uses Shapely <code>make_valid</code>.</li>
-      <li>Static tippecanoe builds use <code>--buffer=64</code> (and skip empty/broken features) so one bad geom does not abort the whole job.</li>
+      <li>Static tippecanoe builds use the default buffer (<code>--buffer=5</code>) and skip empty/broken features so one bad geom does not abort the whole job.</li>
       <li>If a dynamic tile query still fails on geometry errors, the API returns an empty tile for that z/x/y instead of failing the whole map.</li>
       <li>For a permanent data fix, run the existing <strong>make_valid</strong> process on the collection.</li>
     </ul>
