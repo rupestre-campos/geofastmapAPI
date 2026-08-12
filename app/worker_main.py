@@ -25,7 +25,6 @@ from app.services.redis_resilience import retry_wait_seconds
 from app.services.storage_delete_queue import STORAGE_DELETE_QUEUE_KEY, StorageDeletePayload
 from app.services.storage_delete_worker import process_storage_delete
 from app.services.storage_self_heal import log_self_heal_stats, run_storage_self_heal
-from app.services.storage_usage import maybe_daily_storage_usage_recompute
 
 WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 
@@ -125,11 +124,6 @@ def main() -> None:
                     )
                 except Exception as e:
                     print(f"[bulk-worker] storage self-heal error: {e}", file=sys.stderr, flush=True)
-                try:
-                    if maybe_daily_storage_usage_recompute():
-                        print("[bulk-worker] started daily storage-usage recompute", flush=True)
-                except Exception as e:
-                    print(f"[bulk-worker] storage-usage schedule error: {e}", file=sys.stderr, flush=True)
                 last_self_heal = time.monotonic()
             _reap_done()
             in_flight = len(futures)

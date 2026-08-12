@@ -86,3 +86,96 @@ def test_delete_orphan_tiles_rejects_path_traversal(tmp_path: Path, monkeypatch)
     )
     assert su.delete_orphan_tiles_file("../etc/passwd") is False
     assert su.delete_orphan_tiles_file("a/b.mbtiles") is False
+    missing = "gone.mbtiles"
+    assert su.delete_orphan_tiles_file(missing) is True
+    live = tiles / "keep.mbtiles"
+    live.write_bytes(b"x")
+    assert su.delete_orphan_tiles_file("keep.mbtiles") is True
+    assert not live.exists()
+
+
+def test_collection_mbtiles_falls_back_when_db_path_missing(tmp_path: Path):
+    tiles = tmp_path / "tiles"
+    tiles.mkdir()
+    live = tiles / "car_area_imovel.mbtiles"
+    live.write_bytes(b"x" * 4096)
+    stale = Path("/srv/geofast/tiles/car_area_imovel.mbtiles")
+    found = su.collection_mbtiles_path(tiles, "car_area_imovel", str(stale))
+    assert found == live
+    assert su._file_size_bytes(found) == 4096
+
+
+def test_compute_uses_canonical_mbtiles_when_pmtiles_path_stale(monkeypatch, tmp_path: Path):
+    tiles = tmp_path / "tiles"
+    rasters = tmp_path / "rasters"
+    bulk = tmp_path / "bulk"
+    tiles.mkdir()
+    rasters.mkdir()
+    bulk.mkdir()
+    (tiles / "layer-a.mbtiles").write_bytes(b"x" * 1000)
+
+    monkeypatch.setattr(
+        su,
+        "get_settings",
+        lambda: type(
+            "S",
+            (),
+            {
+                "tiles_storage_path": str(tiles),
+                "raster_storage_path": str(rasters),
+                "bulk_storage_path": str(bulk),
+                "database_sync_url": "sqlite:///:memory:",
+                "bulk_queue_type": "redis",
+                "redis_url": "redis://x",
+            },
+        )(),
+    )
+
+    coll = type(
+        "Row",
+        (),
+        {
+            "id": "layer-a",
+            "title": "Layer A",
+            "collection_type": "vector",
+            "feature_count": 10,
+            "owner_id": 1,
+            "owner_username": "admin",
+            "pmtiles_path": "/host/wrong/layer-a.mbtiles",
+        },
+    )()
+
+    calls = {"n": 0}
+
+    class _Conn:
+        def execute(self, *_a, **_k):
+            calls["n"] += 1
+
+            class _R:
+                def fetchall(self_inner):
+                    if calls["n"] == 1:
+                        return []
+                    if calls["n"] == 2:
+                        return [coll]
+                    return []
+
+            return _R()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Eng:
+        def connect(self):
+            return _Conn()
+
+        def dispose(self):
+            pass
+
+    snap = su.compute_storage_usage_sync(engine=_Eng())
+    row = next(r for r in snap["rows"] if r["id"] == "layer-a" and r["kind"] == "collection")
+    assert row["tiles_bytes"] == 1000
+    assert snap["tiles_root_available"] is True
+    assert not any(r["kind"] == "orphan_tiles" for r in snap["rows"])

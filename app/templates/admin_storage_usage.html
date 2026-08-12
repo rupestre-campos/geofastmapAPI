@@ -200,6 +200,9 @@
       var line = "Computed at: " + computed + " · Status: " + state;
       if (msg) line += " (" + msg + ")";
       if (data && data.has_snapshot === false) line += " · No snapshot yet — click Refresh now.";
+      if (data && data.tiles_root_available === false) {
+        line += " · Tiles directory not visible on the host that scanned (sizes may be 0). Refresh from the API or tile worker.";
+      }
       document.getElementById("statusLine").textContent = line;
       var t = (data && data.totals) || {};
       document.getElementById("totalsLine").textContent =
@@ -235,10 +238,24 @@
 
     function showQueuedBanner() {
       var params = new URLSearchParams(window.location.search);
-      var jobId = params.get("job_id");
       var banner = document.getElementById("queuedBanner");
       var text = document.getElementById("queuedBannerText");
-      if (!jobId || !banner || !text) return;
+      if (!banner || !text) return;
+      var jobId = params.get("job_id");
+      var deleted = params.get("deleted");
+      var err = params.get("error");
+      if (err === "orphan_not_found") {
+        banner.style.display = "block";
+        text.textContent = "Could not delete that file on this host. Check that the API container mounts TILES_STORAGE_PATH.";
+        return;
+      }
+      if (deleted === "orphan" || deleted === "tiles") {
+        banner.style.display = "block";
+        text.textContent = deleted === "tiles" ? "Tiles file removed." : "Orphan file removed.";
+        load();
+        return;
+      }
+      if (!jobId) return;
       banner.style.display = "block";
       text.innerHTML = 'Delete queued as job <a href="' + esc(base) + '/jobs/' + encodeURIComponent(jobId) + '?f=html"><code>' + esc(jobId) + '</code></a>. '
         + 'Tiles/rasters are removed from disk first; refresh this page to see updated sizes.';

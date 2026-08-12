@@ -10,11 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin
 from app.core.html import html_response, wants_html
+from app.crud import collection_tiles as tiles_crud
 from app.crud import collections as collections_crud
 from app.crud import raster_views as raster_views_crud
 from app.db.session import get_db
 from app.models.user import User
 from app.services import storage_usage as su
+from app.services.dynamic_tile_cache import invalidate_collection_cache
 from app.services.job_store import create_job
 from app.services.storage_delete_queue import StorageDeletePayload, enqueue_storage_delete
 
@@ -47,13 +49,21 @@ def _check_csrf(request: Request, token: str | None) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
 
 
-def _redirect_storage(request: Request, *, job_id: str | None = None, error: str | None = None) -> RedirectResponse:
+def _redirect_storage(
+    request: Request,
+    *,
+    job_id: str | None = None,
+    error: str | None = None,
+    deleted: str | None = None,
+) -> RedirectResponse:
     base = _base_url(request)
     params = "f=html"
     if job_id:
         params += f"&job_id={job_id}&queued=1"
     if error:
         params += f"&error={error}"
+    if deleted:
+        params += f"&deleted={deleted}"
     return RedirectResponse(url=f"{base}/admin/storage-usage?{params}", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -148,19 +158,16 @@ async def storage_usage_delete_tiles(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=404, detail="Collection not found")
-    try:
-        job_id = _enqueue_delete(
-            action="delete_tiles",
-            target_id=collection_id,
-            owner_id=current_user.id,
-        )
-    except RuntimeError as e:
-        if wants_html(request):
-            return _redirect_storage(request, error="queue_unavailable")
-        raise HTTPException(status_code=503, detail=str(e)) from e
+    rec = await tiles_crud.get_collection_tiles(db, collection_id)
+    stored = rec.pmtiles_path if rec else None
+    # Unlink on this process (API has the tiles volume). Bulk workers often do not.
+    su.unlink_collection_tile_files(collection_id, stored)
+    await tiles_crud.clear_static_tiles(db, collection_id)
+    invalidate_collection_cache(collection_id)
+    su.patch_row_tiles_cleared(collection_id)
     if wants_html(request):
-        return _redirect_storage(request, job_id=job_id)
-    return {"ok": True, "job_id": job_id}
+        return _redirect_storage(request, deleted="tiles")
+    return {"ok": True}
 
 
 @router.post("/storage-usage/collections/{collection_id}/delete")
@@ -175,6 +182,11 @@ async def storage_usage_delete_collection(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=404, detail="Collection not found")
+    rec = await tiles_crud.get_collection_tiles(db, collection_id)
+    stored = rec.pmtiles_path if rec else None
+    su.unlink_collection_tile_files(collection_id, stored)
+    su.delete_collection_raster_dir(collection_id)
+    su.patch_row_tiles_and_rasters_cleared(collection_id)
     try:
         job_id = _enqueue_delete(
             action="delete_collection",
@@ -231,17 +243,22 @@ async def storage_usage_delete_orphan(
         raise HTTPException(status_code=400, detail="Missing id")
     if kind not in ("orphan_tiles", "orphan_rasters", "orphan_mosaic"):
         raise HTTPException(status_code=400, detail="Unknown orphan kind")
-    try:
-        job_id = _enqueue_delete(
-            action="delete_orphan",
-            target_id=item_id,
-            owner_id=current_user.id,
-            orphan_kind=kind,
-        )
-    except RuntimeError as e:
+    # File deletes must run here: bulk workers typically do not mount tiles/rasters.
+    ok = False
+    if kind == "orphan_tiles":
+        ok = su.delete_orphan_tiles_file(item_id)
+    elif kind == "orphan_rasters":
+        ok = su.delete_orphan_raster_dir(item_id)
+    elif kind == "orphan_mosaic":
+        ok = su.delete_orphan_mosaic_file(item_id)
+    if not ok:
         if wants_html(request):
-            return _redirect_storage(request, error="queue_unavailable")
-        raise HTTPException(status_code=503, detail=str(e)) from e
+            return _redirect_storage(request, error="orphan_not_found")
+        raise HTTPException(
+            status_code=404,
+            detail="Orphan file not found on this host (check TILES_STORAGE_PATH / RASTER_STORAGE_PATH mounts).",
+        )
+    su.remove_row_from_snapshot(kind, item_id)
     if wants_html(request):
-        return _redirect_storage(request, job_id=job_id)
-    return {"ok": True, "job_id": job_id}
+        return _redirect_storage(request, deleted="orphan")
+    return {"ok": True}

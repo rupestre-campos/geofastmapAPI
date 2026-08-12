@@ -22,6 +22,7 @@ from app.services.tile_build_queue import (
 )
 from app.services.bulk_collection_activity import wait_until_collection_bulk_idle
 from app.services.storage_self_heal import log_self_heal_stats, run_storage_self_heal
+from app.services.storage_usage import maybe_daily_storage_usage_recompute
 from app.services.tile_build_verify import format_build_success_message, verify_mbtiles_artifact
 from app.services.tile_builder import BUILD_CANCELLED, build_pmtiles_sync
 from app.services.composite_tile_builder import build_composite_pmtiles_sync
@@ -177,6 +178,11 @@ def main() -> None:
                 log_self_heal_stats("tile-worker", run_storage_self_heal(bulk=False, tiles=True))
             except Exception as e:
                 print(f"[tile-worker] storage self-heal error: {e}", file=sys.stderr, flush=True)
+            try:
+                if maybe_daily_storage_usage_recompute():
+                    print("[tile-worker] started daily storage-usage recompute", flush=True)
+            except Exception as e:
+                print(f"[tile-worker] storage-usage schedule error: {e}", file=sys.stderr, flush=True)
             last_self_heal = time.monotonic()
         try:
             result = r.brpop(TILE_BUILD_QUEUE_KEY, timeout=brpop_timeout)

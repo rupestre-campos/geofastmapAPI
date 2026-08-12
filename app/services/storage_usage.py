@@ -72,6 +72,39 @@ def _file_size_bytes(path: Path | str | None) -> int:
     return 0
 
 
+def collection_mbtiles_path(
+    tiles_root: Path,
+    collection_id: str,
+    pmtiles_path: str | None,
+) -> Path | None:
+    """Find the MBTiles file for a collection.
+
+    DB ``pmtiles_path`` may be a stale host path from another machine. Always
+    fall back to ``{tiles_root}/{collection_id}.mbtiles`` and the basename of
+    the stored path under the configured tiles root.
+    """
+    candidates: list[Path] = []
+    if pmtiles_path:
+        stored = Path(str(pmtiles_path))
+        candidates.append(stored)
+        if stored.name:
+            candidates.append(tiles_root / stored.name)
+    if collection_id:
+        candidates.append(tiles_root / f"{collection_id}.mbtiles")
+    seen: set[str] = set()
+    for cand in candidates:
+        key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if cand.is_file():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
 def _features_partition_sizes(conn) -> dict[str, tuple[str, int]]:
     """collection_id -> (partition_relname, pg_total_relation_size)."""
     rows = conn.execute(
@@ -191,13 +224,10 @@ def compute_storage_usage_sync(engine: Engine | None = None) -> dict[str, Any]:
             cid = str(c.id)
             part = part_sizes.get(cid)
             db_bytes = int(part[1]) if part else 0
-            tiles_path = None
-            if c.pmtiles_path:
-                tiles_path = Path(str(c.pmtiles_path))
-            else:
-                tiles_path = tiles_root / f"{cid}.mbtiles"
+            stored_path = str(c.pmtiles_path) if c.pmtiles_path else None
+            tiles_path = collection_mbtiles_path(tiles_root, cid, stored_path)
             tiles_bytes = _file_size_bytes(tiles_path)
-            if tiles_path and tiles_path.is_file():
+            if tiles_path is not None:
                 known_tile_files.add(tiles_path.name)
 
             raster_bytes = 0
@@ -358,6 +388,8 @@ def compute_storage_usage_sync(engine: Engine | None = None) -> dict[str, Any]:
             "row_count": len(rows),
             "rows": rows,
             "totals": totals,
+            "tiles_root": str(tiles_root),
+            "tiles_root_available": tiles_root.is_dir(),
         }
     finally:
         if own_engine:
@@ -476,6 +508,12 @@ def recompute_and_store(*, force: bool = False) -> dict[str, Any]:
         _release_lock()
 
 
+def tiles_storage_visible() -> bool:
+    """True when this process can list the shared MBTiles directory."""
+    root = (get_settings().tiles_storage_path or "").rstrip("/")
+    return bool(root) and os.path.isdir(root)
+
+
 def start_recompute_background() -> bool:
     """Start recompute in a daemon thread. Returns False if already computing."""
     if not _try_acquire_lock():
@@ -505,6 +543,9 @@ def maybe_daily_storage_usage_recompute() -> bool:
     """
     settings = get_settings()
     if not bool(getattr(settings, "storage_usage_daily_recompute", True)):
+        return False
+    # Bulk workers often do not mount tiles; a scan there would zero every tiles_bytes.
+    if not tiles_storage_visible():
         return False
     now = datetime.now(timezone.utc)
     hour = int(getattr(settings, "storage_usage_daily_hour_utc", 0) or 0)
@@ -626,6 +667,7 @@ def patch_mosaic_file_cleared(view_id: str) -> None:
 
 
 def delete_orphan_tiles_file(name: str) -> bool:
+    """Unlink an orphan MBTiles file. True if gone (deleted or already missing)."""
     settings = get_settings()
     if ".." in name or "/" in name or not name.endswith(".mbtiles"):
         return False
@@ -633,10 +675,9 @@ def delete_orphan_tiles_file(name: str) -> bool:
     try:
         if path.is_file():
             path.unlink()
-            return True
+        return not path.exists()
     except OSError:
         return False
-    return False
 
 
 def delete_orphan_raster_dir(name: str) -> bool:
@@ -661,10 +702,26 @@ def delete_orphan_mosaic_file(rel: str) -> bool:
     try:
         if path.is_file():
             path.unlink()
-            return True
+        return not path.exists()
     except OSError:
         return False
     return False
+
+
+def unlink_collection_tile_files(collection_id: str, pmtiles_path: str | None = None) -> bool:
+    """Remove MBTiles for a collection from the configured tiles root (and stored path if local)."""
+    settings = get_settings()
+    tiles_root = Path(settings.tiles_storage_path)
+    found = collection_mbtiles_path(tiles_root, collection_id, pmtiles_path)
+    removed = False
+    for path in {p for p in (found, tiles_root / f"{collection_id}.mbtiles") if p is not None}:
+        try:
+            if path.is_file():
+                path.unlink()
+                removed = True
+        except OSError:
+            pass
+    return removed or not (tiles_root / f"{collection_id}.mbtiles").exists()
 
 
 def delete_collection_raster_dir(collection_id: str) -> None:
