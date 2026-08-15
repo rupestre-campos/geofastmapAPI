@@ -13,6 +13,7 @@ from app.models.collection import COLLECTION_TYPE_COMPOSITE, VISIBILITY_PRIVATE,
 from app.models.feature import Feature
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
 from app.schemas.feature import FeatureCreate, FeaturePatch, FeatureReplace
+from app.crud.features import is_exact_search_token
 from app.utils.geo import geojson_to_wkt_element, geometry_to_geojson
 from app.utils.property_filter import property_value_to_like_pattern
 from app.utils.property_filters import PropertyFilter, PropertyOp
@@ -315,8 +316,39 @@ class FakeCollectionsCrud:
 class FakeFeaturesCrud:
     """CRUD for features backed by Store. Same async interface as app.crud.features."""
 
+    is_exact_search_token = staticmethod(is_exact_search_token)
+
     def __init__(self, store: Store) -> None:
         self._store = store
+
+    async def resolve_exact_search_feature_ids(
+        self,
+        db: Any,
+        collection_id: str,
+        token: str,
+        *,
+        property_keys: Sequence[str] | None = None,
+        limit: int = 50,
+        exclude_bulk_job_ids: Sequence[str] | None = None,
+    ) -> list[str]:
+        tok = (token or "").strip()
+        if not tok:
+            return []
+        ids: list[str] = []
+        for (cid, fid), f in self._store.features.items():
+            if cid != collection_id:
+                continue
+            if fid == tok:
+                ids.append(fid)
+                continue
+            props = f.properties or {}
+            if any(str(v) == tok for v in props.values()):
+                ids.append(fid)
+                continue
+            blob = str(props)
+            if tok in blob:
+                ids.append(fid)
+        return ids[: max(1, int(limit))]
 
     def _sort_key(self, f: Feature, sortby: str | None, sortdesc: bool) -> Any:
         if not sortby:
@@ -350,6 +382,7 @@ class FakeFeaturesCrud:
         property_filters: dict[str, str] | None = None,
         structured_filters: Sequence[PropertyFilter] | None = None,
         fulltext_q: str | None = None,
+        feature_ids: Sequence[str] | None = None,
         collection_feature_count: int | None = None,
         include_geometry: bool = True,
         skip_count: bool = False,
@@ -359,6 +392,9 @@ class FakeFeaturesCrud:
             f for (cid, _), f in self._store.features.items()
             if cid == collection_id
         ]
+        if feature_ids is not None:
+            idset = set(feature_ids)
+            items = [f for f in items if f.id in idset]
         if bbox:
             items = [f for f in items if self._store._feature_in_bbox(f, bbox)]
         if property_filters:
@@ -376,7 +412,13 @@ class FakeFeaturesCrud:
         if datetime_end is not None:
             items = [f for f in items if (f.created_at or datetime.max.replace(tzinfo=timezone.utc)) <= datetime_end]
         has_filters = bool(
-            bbox or property_filters or structured_filters or fulltext_q or datetime_start or datetime_end
+            bbox
+            or property_filters
+            or structured_filters
+            or fulltext_q
+            or datetime_start
+            or datetime_end
+            or feature_ids is not None
         )
         if skip_count and not has_filters and collection_feature_count is not None:
             total = int(collection_feature_count)

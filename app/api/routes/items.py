@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path as PathLib
+from typing import Any
 from urllib.parse import urlencode
 
 import orjson
@@ -91,6 +92,34 @@ ITEMS_RESERVED_PARAMS = {
 }
 
 
+def _geometry_model(geom_dict: Any) -> Geometry | None:
+    """Parse GeoJSON geometry for API responses. GeometryCollection has ``geometries``, not ``coordinates``."""
+    if not geom_dict:
+        return None
+    if isinstance(geom_dict, str):
+        try:
+            geom_dict = json.loads(geom_dict)
+        except Exception:
+            return None
+    if not isinstance(geom_dict, dict):
+        return None
+    if geom_dict.get("type") == "GeometryCollection" and not geom_dict.get("coordinates"):
+        try:
+            from shapely.geometry import shape as shp_shape
+
+            from app.utils.geo import shapely_to_api_geojson
+
+            homogenized = shapely_to_api_geojson(shp_shape(geom_dict))
+            if homogenized:
+                geom_dict = homogenized
+        except Exception:
+            pass
+    try:
+        return Geometry.model_validate(geom_dict)
+    except Exception:
+        return None
+
+
 def _feature_to_read(
     feature: Feature,
     properties_include: set[str] | None = None,
@@ -109,7 +138,7 @@ def _feature_to_read(
         id=feature.id,
         collection_id=feature.collection_id,
         type="Feature",
-        geometry=Geometry(**geom_dict) if geom_dict else None,
+        geometry=_geometry_model(geom_dict),
         properties=props,
         created_at=feature.created_at,
         updated_at=feature.updated_at,
@@ -1325,7 +1354,7 @@ async def get_item(
     feat_geojson = FeatureGeoJSON(
         type="Feature",
         id=composite_item_id if is_composite_collection(collection) else feature.id,
-        geometry=Geometry(**geom_dict) if geom_dict else None,
+        geometry=_geometry_model(geom_dict),
         properties=props,
         links=[
             Link(href=f"{base}/collections/{collection_id}/items/{composite_item_id}", rel="self", type="application/geo+json"),
@@ -1392,7 +1421,7 @@ async def get_item_edit(
     feat_geojson = FeatureGeoJSON(
         type="Feature",
         id=feature.id,
-        geometry=Geometry(**geom_dict) if geom_dict else None,
+        geometry=_geometry_model(geom_dict),
         properties=feature.properties,
         links=[
             Link(href=f"{base}/collections/{collection_id}/items/{feature_id}", rel="self", type="application/geo+json"),
@@ -1496,7 +1525,7 @@ async def patch_item(
     return FeatureGeoJSON(
         type="Feature",
         id=feature.id,
-        geometry=Geometry(**geom_dict) if geom_dict else None,
+        geometry=_geometry_model(geom_dict),
         properties=feature.properties,
         links=[
             Link(href=f"{base}/collections/{collection_id}/items/{feature_id}", rel="self", type="application/geo+json"),

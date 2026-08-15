@@ -1,15 +1,25 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 from pydantic.config import ConfigDict
 
 from app.schemas.ogc import Link
 
 
 class Geometry(BaseModel):
+    """GeoJSON geometry. GeometryCollection uses ``geometries`` (no ``coordinates``)."""
+
     type: str
-    coordinates: Any
+    coordinates: Any = None
+    geometries: Any = None
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_serializer(mode="wrap")
+    def _drop_nulls(self, handler):
+        data = handler(self)
+        return {k: v for k, v in data.items() if v is not None}
 
 
 class FeatureBase(BaseModel):

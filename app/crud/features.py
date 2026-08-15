@@ -10,7 +10,7 @@ from typing import Any, Tuple
 
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_Intersects, ST_MakeEnvelope, ST_MakePoint, ST_SetSRID
-from shapely.geometry import mapping, shape
+from shapely.geometry import shape
 from shapely.ops import unary_union
 from sqlalchemy import Float, and_, cast, func, literal_column, or_, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
@@ -21,7 +21,7 @@ from app.core.config import get_settings
 from app.models.collection import Collection
 from app.models.feature import Feature
 from app.schemas.feature import FeatureCreate, FeaturePatch, FeatureReplace
-from app.utils.geo import geojson_to_wkt_element
+from app.utils.geo import geojson_to_wkt_element, shapely_to_api_geojson
 from app.utils.geometry_limits import check_geometry_size_limit
 from app.utils.feature_subdivide import (
     MAX_COORDS_FOR_DB_SUBDIVIDE,
@@ -103,7 +103,7 @@ def _parts_to_logical_feature(parts: list[Any]) -> Feature:
                 except Exception:
                     continue
             union_geom = unary_union(fixed) if fixed else None
-        geometry_geojson = mapping(union_geom) if union_geom and not union_geom.is_empty else None
+        geometry_geojson = shapely_to_api_geojson(union_geom) if union_geom is not None else None
     else:
         geometry_geojson = None
     created_at = min(getattr(p, "created_at", None) for p in sorted_parts)
@@ -443,6 +443,17 @@ def _structured_filter_clause(f: PropertyFilter):
 
 # Exact CAR / parcel-style tokens: prefer equality over trigram %token% (much faster on huge layers).
 _EXACT_SEARCH_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+# Always union these with collection property_index_fields. SICAR / CAR dumps use several names.
+_DEFAULT_EXACT_SEARCH_PROPERTY_KEYS = (
+    "car_code",
+    "cod_imovel",
+    "COD_IMOVEL",
+    "codigo",
+    "code",
+    "cod_car",
+    "COD_CAR",
+    "car",
+)
 
 
 def is_exact_search_token(q: str | None) -> bool:
@@ -453,6 +464,26 @@ def is_exact_search_token(q: str | None) -> bool:
     if not s or any(ch in s for ch in ("*", "%", " ", "\t", "\n")):
         return False
     return bool(_EXACT_SEARCH_TOKEN_RE.match(s))
+
+
+def exact_search_property_keys(property_keys: Sequence[str] | None) -> list[str]:
+    """Indexed-equality keys: collection config plus common CAR/parcel aliases."""
+    from app.services.collection_property_indexes import validate_property_index_field
+
+    safe: list[str] = []
+    seen: set[str] = set()
+    for k in list(property_keys or []) + list(_DEFAULT_EXACT_SEARCH_PROPERTY_KEYS):
+        try:
+            name = validate_property_index_field(k)
+        except Exception:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        safe.append(name)
+        if len(safe) >= 16:
+            break
+    return safe
 
 
 async def resolve_exact_search_feature_ids(
@@ -467,29 +498,14 @@ async def resolve_exact_search_feature_ids(
     """
     Resolve an exact search token to feature ids via:
     1) feature id equality
-    2) equality on known property keys (e.g. car_code / property_index_fields)
-    Returns [] when nothing matches (caller should not fall back to slow ILIKE for exact tokens).
+    2) equality on known property keys (config + CAR aliases)
+    3) trigram contains on properties_flat (any property key / nested JSON text)
     """
-    from app.services.collection_property_indexes import validate_property_index_field
-
     tok = (token or "").strip()
     if not tok:
         return []
 
-    safe_keys: list[str] = []
-    for k in property_keys or []:
-        try:
-            safe_keys.append(validate_property_index_field(k))
-        except Exception:
-            continue
-    safe_keys = list(dict.fromkeys(safe_keys))[:12]
-    if not safe_keys:
-        # Fallbacks when collection has no property_index_fields configured.
-        for k in ("car_code", "cod_imovel", "codigo", "code"):
-            try:
-                safe_keys.append(validate_property_index_field(k))
-            except Exception:
-                continue
+    safe_keys = exact_search_property_keys(property_keys)
 
     shadow_jobs = [j for j in (exclude_bulk_job_ids or []) if j]
     shadow_sql = ""
@@ -514,22 +530,40 @@ async def resolve_exact_search_feature_ids(
     if ids:
         return ids
 
-    if not safe_keys:
-        return []
+    if safe_keys:
+        or_parts = []
+        for i, key in enumerate(safe_keys):
+            p = f"pk{i}"
+            or_parts.append(f"(properties ? :{p} AND properties ->> :{p} = :tok)")
+            params[p] = key
+        or_sql = " OR ".join(or_parts)
+        r = await db.execute(
+            text(
+                f"""
+                SELECT DISTINCT id
+                FROM features
+                WHERE collection_id = :cid{shadow_sql}
+                  AND ({or_sql})
+                LIMIT :lim
+                """
+            ),
+            params,
+        )
+        ids = [row[0] for row in r.fetchall()]
+        if ids:
+            return ids
 
-    or_parts = []
-    for i, key in enumerate(safe_keys):
-        p = f"pk{i}"
-        or_parts.append(f"(properties ? :{p} AND properties ->> :{p} = :tok)")
-        params[p] = key
-    or_sql = " OR ".join(or_parts)
+    # Token is unique-looking (CAR/UUID). Find it in any property without knowing the key.
+    like = tok.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    params["tok_like"] = f"%{like}%"
     r = await db.execute(
         text(
             f"""
             SELECT DISTINCT id
             FROM features
             WHERE collection_id = :cid{shadow_sql}
-              AND ({or_sql})
+              AND properties_flat IS NOT NULL
+              AND properties_flat ILIKE :tok_like ESCAPE '\\\\'
             LIMIT :lim
             """
         ),
