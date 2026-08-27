@@ -1,6 +1,7 @@
 """CRUD for collections."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from app.crud import styles as styles_crud
 from app.db.features_partitions import ensure_features_partition
 from app.models.collection import (
     Collection,
+    COLLECTION_TYPE_COMPOSITE,
     COLLECTION_TYPE_RASTER,
     COLLECTION_TYPE_VECTOR,
     VISIBILITY_LOGGED,
@@ -23,6 +25,47 @@ from app.models.collection import (
 )
 from app.models.collection_tiles import CollectionTiles
 from app.models.resource_share import ResourceShare
+from app.services.collection_property_indexes import (
+    drop_all_collection_property_indexes_sync,
+    normalize_property_index_fields,
+)
+from app.services.property_index_queue import schedule_property_index_job
+
+
+async def schedule_property_index_resync_for_collection(
+    db: AsyncSession,
+    collection_id: str,
+) -> str | None:
+    """
+    Queue an ensure-sync for the collection's currently configured property_index_fields.
+    Returns job_id, or None if nothing to index.
+    """
+    collection = await get_collection(db, collection_id)
+    if collection is None:
+        return None
+    fields = normalize_property_index_fields(collection.property_index_fields)
+    if not fields:
+        return None
+    ctype = getattr(collection, "collection_type", COLLECTION_TYPE_VECTOR)
+    if ctype == COLLECTION_TYPE_VECTOR:
+        job = schedule_property_index_job(
+            collection_id,
+            [],  # pure ensure: do not drop anything based on "old"
+            fields,
+            owner_id=collection.owner_id,
+        )
+        return job.job_id
+    if ctype == COLLECTION_TYPE_COMPOSITE:
+        job = schedule_property_index_job(
+            collection_id,
+            [],
+            fields,
+            is_composite=True,
+            composite_members=collection.composite_members,
+            owner_id=collection.owner_id,
+        )
+        return job.job_id
+    return None
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
 
 if TYPE_CHECKING:
@@ -78,7 +121,7 @@ async def list_collections(
         )
         base = base.where(Collection.id.in_(static_ids))
         count_base = count_base.where(Collection.id.in_(static_ids))
-    if collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER):
+    if collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER, COLLECTION_TYPE_COMPOSITE):
         base = base.where(Collection.collection_type == collection_type)
         count_base = count_base.where(Collection.collection_type == collection_type)
 
@@ -259,6 +302,23 @@ async def get_collections_bboxes(db: AsyncSession) -> dict[str, Extent]:
     return {row.collection_id: _row_to_extent(row) for row in rows}
 
 
+def _composite_members_json(members: list | None) -> list[dict[str, str]] | None:
+    if not members:
+        return None
+    out: list[dict[str, str]] = []
+    for m in members:
+        cid = m.collection_id if hasattr(m, "collection_id") else m.get("collection_id")
+        if cid:
+            out.append({"collection_id": str(cid).strip()})
+    return out or None
+
+
+def _normalize_collection_type(value: str | None) -> str:
+    if value in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER, COLLECTION_TYPE_COMPOSITE):
+        return value
+    return COLLECTION_TYPE_VECTOR
+
+
 async def create_collection(
     db: AsyncSession,
     data: CollectionCreate,
@@ -266,6 +326,11 @@ async def create_collection(
     owner_id: int | None = None,
     visibility: str = "private",
 ) -> Collection:
+    ctype = _normalize_collection_type(data.collection_type)
+    members_json = _composite_members_json(data.composite_members) if ctype == COLLECTION_TYPE_COMPOSITE else None
+    index_fields = None
+    if ctype == COLLECTION_TYPE_VECTOR and data.property_index_fields:
+        index_fields = normalize_property_index_fields(data.property_index_fields) or None
     collection = Collection(
         id=data.id,
         title=data.title,
@@ -275,12 +340,22 @@ async def create_collection(
         raster_settings=data.raster_settings,
         owner_id=owner_id,
         visibility=visibility,
-        collection_type=data.collection_type if data.collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER) else COLLECTION_TYPE_VECTOR,
+        collection_type=ctype,
+        composite_members=members_json,
+        property_index_fields=index_fields,
     )
     db.add(collection)
     await db.commit()
     await db.refresh(collection)
-    await ensure_features_partition(db, data.id)
+    if ctype != COLLECTION_TYPE_COMPOSITE:
+        await ensure_features_partition(db, data.id)
+    if index_fields:
+        schedule_property_index_job(
+            data.id,
+            [],
+            index_fields,
+            owner_id=owner_id,
+        )
     return collection
 
 
@@ -290,23 +365,50 @@ async def replace_collection(
     collection = await get_collection(db, collection_id)
     if collection is None:
         return None
+    old_index_fields = normalize_property_index_fields(collection.property_index_fields)
     collection.title = data.title
     collection.description = data.description
     collection.extent = data.extent.model_dump() if data.extent else None
     collection.stac_source = data.stac_source
     collection.raster_settings = data.raster_settings
-    collection.collection_type = data.collection_type if data.collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER) else COLLECTION_TYPE_VECTOR
+    collection.collection_type = _normalize_collection_type(data.collection_type)
+    if collection.collection_type == COLLECTION_TYPE_COMPOSITE:
+        collection.composite_members = _composite_members_json(data.composite_members)
+    else:
+        collection.composite_members = None
+    if collection.collection_type == COLLECTION_TYPE_VECTOR:
+        collection.property_index_fields = (
+            normalize_property_index_fields(data.property_index_fields) or None
+        )
+    else:
+        collection.property_index_fields = None
     await db.commit()
     await db.refresh(collection)
+    if collection.collection_type == COLLECTION_TYPE_VECTOR:
+        schedule_property_index_job(
+            collection_id,
+            old_index_fields,
+            normalize_property_index_fields(collection.property_index_fields),
+            owner_id=collection.owner_id,
+        )
+    elif old_index_fields:
+        await asyncio.to_thread(
+            drop_all_collection_property_indexes_sync,
+            collection_id,
+            old_index_fields,
+        )
     return collection
 
 
 async def patch_collection(
     db: AsyncSession, collection_id: str, data: CollectionPatch
-) -> Collection | None:
+) -> tuple[Collection | None, str | None]:
+    """Returns (collection, property_index_job_id or None)."""
     collection = await get_collection(db, collection_id)
     if collection is None:
-        return None
+        return None, None
+    old_index_fields = normalize_property_index_fields(collection.property_index_fields)
+    sync_indexes = False
     if "title" in data.model_fields_set:
         collection.title = data.title
     if "description" in data.model_fields_set:
@@ -323,17 +425,103 @@ async def patch_collection(
         collection.stac_source = data.stac_source
     if "raster_settings" in data.model_fields_set:
         collection.raster_settings = data.raster_settings
-    if "collection_type" in data.model_fields_set and data.collection_type in (COLLECTION_TYPE_VECTOR, COLLECTION_TYPE_RASTER):
-        collection.collection_type = data.collection_type
+    if "collection_type" in data.model_fields_set and data.collection_type:
+        collection.collection_type = _normalize_collection_type(data.collection_type)
+    if "composite_members" in data.model_fields_set:
+        collection.composite_members = _composite_members_json(data.composite_members)
+    if collection.collection_type != COLLECTION_TYPE_COMPOSITE:
+        collection.composite_members = None
+    if "property_index_fields" in data.model_fields_set:
+        sync_indexes = True
+        if collection.collection_type == COLLECTION_TYPE_VECTOR:
+            collection.property_index_fields = (
+                normalize_property_index_fields(data.property_index_fields) or None
+            )
+        elif collection.collection_type == COLLECTION_TYPE_COMPOSITE:
+            collection.property_index_fields = (
+                normalize_property_index_fields(data.property_index_fields) or None
+            )
+        else:
+            collection.property_index_fields = None
     await db.commit()
     await db.refresh(collection)
-    return collection
+    index_job_id: str | None = None
+    if sync_indexes:
+        new_fields = normalize_property_index_fields(collection.property_index_fields)
+        if collection.collection_type == COLLECTION_TYPE_VECTOR:
+            job = schedule_property_index_job(
+                collection_id,
+                old_index_fields,
+                new_fields,
+                owner_id=collection.owner_id,
+            )
+            index_job_id = job.job_id
+        elif collection.collection_type == COLLECTION_TYPE_COMPOSITE:
+            job = schedule_property_index_job(
+                collection_id,
+                old_index_fields,
+                new_fields,
+                is_composite=True,
+                composite_members=collection.composite_members,
+                owner_id=collection.owner_id,
+            )
+            index_job_id = job.job_id
+        elif old_index_fields:
+            await asyncio.to_thread(
+                drop_all_collection_property_indexes_sync,
+                collection_id,
+                old_index_fields,
+            )
+    return collection, index_job_id
 
 
 async def delete_collection(db: AsyncSession, collection_id: str) -> bool:
     collection = await get_collection(db, collection_id)
     if collection is None:
         return False
+    # Drop the LIST partition (DETACH + DROP TABLE) before deleting the collections row.
+    # ON DELETE CASCADE would otherwise delete features row-by-row and can run for days
+    # on large layers.
+    from sqlalchemy import create_engine
+
+    from app.core.config import get_settings
+    from app.db.features_partitions import drop_collection_features_data_sync
+
+    settings = get_settings()
+
+    def _drop_features() -> str | None:
+        engine = create_engine(settings.database_sync_url, pool_pre_ping=True, future=True)
+        try:
+            return drop_collection_features_data_sync(engine, collection_id)
+        finally:
+            engine.dispose()
+
+    try:
+        await asyncio.to_thread(_drop_features)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Failed to drop features partition for collection %s; aborting delete",
+            collection_id,
+        )
+        raise
+
+    # Indexes lived on the partition and were dropped with it; still clear any leftover
+    # expression indexes if the collection only used features_default.
+    index_fields = normalize_property_index_fields(collection.property_index_fields)
+    if index_fields:
+        try:
+            await asyncio.to_thread(
+                drop_all_collection_property_indexes_sync,
+                collection_id,
+                index_fields,
+            )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Property index cleanup failed for %s (continuing delete)",
+                collection_id,
+                exc_info=True,
+            )
+
     # Delete static MBTiles file if present (before collection_tiles row is CASCADE-deleted)
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
     if rec and rec.pmtiles_path:

@@ -135,6 +135,16 @@ async def docs_processing(
     return html_response("project_docs/processing.html", **_ctx(request, current_user))
 
 
+@router.get("/project-docs/zonal-statistics", summary="Docs: zonal statistics (raster × feature)")
+async def docs_zonal_statistics(
+    request: Request,
+    current_user=Depends(get_current_user_optional),
+):
+    if not wants_html(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Use ?f=html")
+    return html_response("project_docs/zonal_statistics.html", **_ctx(request, current_user))
+
+
 @router.get("/project-docs/deploy-cloudflare", summary="Docs: deploy from home (Cloudflare Tunnel)")
 async def docs_deploy_cloudflare(
     request: Request,

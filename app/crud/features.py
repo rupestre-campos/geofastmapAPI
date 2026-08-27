@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence, AsyncGenerator
 import json
+import re
+from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Tuple
 
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_Intersects, ST_MakeEnvelope, ST_MakePoint, ST_SetSRID
-from shapely.geometry import mapping, shape
+from shapely.geometry import shape
 from shapely.ops import unary_union
 from sqlalchemy import Float, and_, cast, func, literal_column, or_, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
@@ -20,7 +21,7 @@ from app.core.config import get_settings
 from app.models.collection import Collection
 from app.models.feature import Feature
 from app.schemas.feature import FeatureCreate, FeaturePatch, FeatureReplace
-from app.utils.geo import geojson_to_wkt_element
+from app.utils.geo import geojson_to_wkt_element, shapely_to_api_geojson
 from app.utils.geometry_limits import check_geometry_size_limit
 from app.utils.feature_subdivide import (
     MAX_COORDS_FOR_DB_SUBDIVIDE,
@@ -102,7 +103,7 @@ def _parts_to_logical_feature(parts: list[Any]) -> Feature:
                 except Exception:
                     continue
             union_geom = unary_union(fixed) if fixed else None
-        geometry_geojson = mapping(union_geom) if union_geom and not union_geom.is_empty else None
+        geometry_geojson = shapely_to_api_geojson(union_geom) if union_geom is not None else None
     else:
         geometry_geojson = None
     created_at = min(getattr(p, "created_at", None) for p in sorted_parts)
@@ -146,19 +147,32 @@ def _row_to_logical_feature(row, geometry_geojson: bool = False) -> Feature:
 
 # Max property keys to return for queryables (UI filter builder)
 QUERYABLES_KEYS_LIMIT = 500
+# Sample logical features instead of scanning the whole collection (car_area_imovel scale).
+QUERYABLES_SAMPLE_FEATURES = 100
 
 
 async def get_collection_property_keys(db: AsyncSession, collection_id: str) -> list[str]:
-    """Return distinct top-level keys from features.properties for a collection (for filter builder / queryables)."""
+    """Return top-level property keys from a sample of features (for filter builder / queryables)."""
     r = await db.execute(
         text("""
-            SELECT DISTINCT key
-            FROM features, jsonb_object_keys(properties) AS key
-            WHERE collection_id = :cid
+            SELECT DISTINCT k.key
+            FROM (
+                SELECT DISTINCT ON (id) properties
+                FROM features
+                WHERE collection_id = :cid
+                  AND properties IS NOT NULL
+                ORDER BY id
+                LIMIT :sample_limit
+            ) AS sample
+            CROSS JOIN LATERAL jsonb_object_keys(sample.properties) AS k(key)
             ORDER BY 1
             LIMIT :limit
         """),
-        {"cid": collection_id, "limit": QUERYABLES_KEYS_LIMIT},
+        {
+            "cid": collection_id,
+            "sample_limit": QUERYABLES_SAMPLE_FEATURES,
+            "limit": QUERYABLES_KEYS_LIMIT,
+        },
     )
     return [row[0] for row in r.fetchall()]
 
@@ -427,6 +441,202 @@ def _structured_filter_clause(f: PropertyFilter):
     return structured_filter_clause(f)
 
 
+# Exact CAR / parcel-style tokens: prefer equality over trigram %token% (much faster on huge layers).
+_EXACT_SEARCH_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+# Always union these with collection property_index_fields. SICAR / CAR dumps use several names.
+_DEFAULT_EXACT_SEARCH_PROPERTY_KEYS = (
+    "car_code",
+    "cod_imovel",
+    "COD_IMOVEL",
+    "codigo",
+    "code",
+    "cod_car",
+    "COD_CAR",
+    "car",
+)
+
+
+def is_exact_search_token(q: str | None) -> bool:
+    """True when q looks like an exact id/code (not free-text)."""
+    if not q:
+        return False
+    s = q.strip()
+    if not s or any(ch in s for ch in ("*", "%", " ", "\t", "\n")):
+        return False
+    return bool(_EXACT_SEARCH_TOKEN_RE.match(s))
+
+
+def exact_search_property_keys(property_keys: Sequence[str] | None) -> list[str]:
+    """Indexed-equality keys: collection config plus common CAR/parcel aliases."""
+    from app.services.collection_property_indexes import validate_property_index_field
+
+    safe: list[str] = []
+    seen: set[str] = set()
+    for k in list(property_keys or []) + list(_DEFAULT_EXACT_SEARCH_PROPERTY_KEYS):
+        try:
+            name = validate_property_index_field(k)
+        except Exception:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        safe.append(name)
+        if len(safe) >= 16:
+            break
+    return safe
+
+
+async def resolve_exact_search_feature_ids(
+    db: AsyncSession,
+    collection_id: str,
+    token: str,
+    *,
+    property_keys: Sequence[str] | None = None,
+    limit: int = 50,
+    exclude_bulk_job_ids: Sequence[str] | None = None,
+) -> list[str]:
+    """
+    Resolve an exact search token to feature ids via:
+    1) feature id equality
+    2) equality on known property keys (config + CAR aliases)
+    3) trigram contains on properties_flat (any property key / nested JSON text)
+    """
+    tok = (token or "").strip()
+    if not tok:
+        return []
+
+    safe_keys = exact_search_property_keys(property_keys)
+
+    shadow_jobs = [j for j in (exclude_bulk_job_ids or []) if j]
+    shadow_sql = ""
+    params: dict = {"cid": collection_id, "tok": tok, "lim": max(1, int(limit))}
+    if shadow_jobs:
+        shadow_sql = " AND (bulk_import_job_id IS NULL OR bulk_import_job_id != ALL(:shadow_exclude_jobs))"
+        params["shadow_exclude_jobs"] = shadow_jobs
+
+    # Fast: id equals token (common when pasting a feature id into q).
+    r = await db.execute(
+        text(
+            f"""
+            SELECT DISTINCT id
+            FROM features
+            WHERE collection_id = :cid AND id = :tok{shadow_sql}
+            LIMIT :lim
+            """
+        ),
+        params,
+    )
+    ids = [row[0] for row in r.fetchall()]
+    if ids:
+        return ids
+
+    if safe_keys:
+        or_parts = []
+        for i, key in enumerate(safe_keys):
+            p = f"pk{i}"
+            or_parts.append(f"(properties ? :{p} AND properties ->> :{p} = :tok)")
+            params[p] = key
+        or_sql = " OR ".join(or_parts)
+        r = await db.execute(
+            text(
+                f"""
+                SELECT DISTINCT id
+                FROM features
+                WHERE collection_id = :cid{shadow_sql}
+                  AND ({or_sql})
+                LIMIT :lim
+                """
+            ),
+            params,
+        )
+        ids = [row[0] for row in r.fetchall()]
+        if ids:
+            return ids
+
+    # Token is unique-looking (CAR/UUID). Find it in any property without knowing the key.
+    like = tok.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    params["tok_like"] = f"%{like}%"
+    r = await db.execute(
+        text(
+            f"""
+            SELECT DISTINCT id
+            FROM features
+            WHERE collection_id = :cid{shadow_sql}
+              AND properties_flat IS NOT NULL
+              AND properties_flat ILIKE :tok_like ESCAPE '\\\\'
+            LIMIT :lim
+            """
+        ),
+        params,
+    )
+    return [row[0] for row in r.fetchall()]
+
+
+async def resolve_structured_eq_feature_ids(
+    db: AsyncSession,
+    collection_id: str,
+    filters: Sequence[PropertyFilter] | None,
+    *,
+    limit: int = 50,
+    exclude_bulk_job_ids: Sequence[str] | None = None,
+) -> list[str] | None:
+    """
+    Fast path for filter=key:eq:value (and AND of several eqs).
+
+    Uses properties->>'key' = value so btree property indexes can match.
+    Returns None when filters are missing or not all simple EQ (caller keeps ORM path).
+    Returns [] when no rows match.
+    """
+    from app.services.collection_property_indexes import validate_property_index_field
+    from app.utils.property_filters import PropertyOp
+
+    if not filters:
+        return None
+    eq_filters: list[PropertyFilter] = []
+    for pf in filters:
+        if pf.op != PropertyOp.EQ:
+            return None
+        key = (pf.key or "").strip()
+        if not key:
+            return None
+        try:
+            validate_property_index_field(key)
+        except Exception:
+            return None
+        eq_filters.append(pf)
+    if not eq_filters:
+        return None
+
+    shadow_jobs = [j for j in (exclude_bulk_job_ids or []) if j]
+    shadow_sql = ""
+    params: dict = {"cid": collection_id, "lim": max(1, int(limit))}
+    if shadow_jobs:
+        shadow_sql = " AND (bulk_import_job_id IS NULL OR bulk_import_job_id != ALL(:shadow_exclude_jobs))"
+        params["shadow_exclude_jobs"] = shadow_jobs
+
+    and_parts: list[str] = []
+    for i, pf in enumerate(eq_filters):
+        pk = f"pk{i}"
+        pv = f"pv{i}"
+        and_parts.append(f"(properties ? :{pk} AND properties ->> :{pk} = :{pv})")
+        params[pk] = pf.key.strip()
+        params[pv] = pf.value
+    and_sql = " AND ".join(and_parts)
+    r = await db.execute(
+        text(
+            f"""
+            SELECT DISTINCT id
+            FROM features
+            WHERE collection_id = :cid{shadow_sql}
+              AND ({and_sql})
+            LIMIT :lim
+            """
+        ),
+        params,
+    )
+    return [row[0] for row in r.fetchall()]
+
+
 async def list_features_paginated(
     db: AsyncSession,
     collection_id: str,
@@ -450,7 +660,8 @@ async def list_features_paginated(
     """
     List features with OGC query params. Returns (features, numberMatched).
     include_geometry=False: return features with bbox only (no geometry) for fast list/HTML view with large layers.
-    skip_count=True: do not run COUNT query; use collection_feature_count when no filters, else 0. Speeds up HTML view.
+    skip_count=True: do not run COUNT(DISTINCT id). Unfiltered uses collection_feature_count; filtered uses an
+    approximate total after the page fetch (offset+returned, or offset+returned+1 when a full page is returned).
     property_filters: legacy name=value (* partial). structured_filters: key:op:value (eq, ne, gt, gte, lt, lte, like, ilike).
     fulltext_q: search term across all properties (uses properties_flat trigram index).
     feature_ids: when set, only return features with id in this list (e.g. for single-item tile).
@@ -510,12 +721,15 @@ async def list_features_paginated(
         pattern = f"%{q}%"
         count_distinct = count_distinct.where(Feature.properties_flat.isnot(None) & Feature.properties_flat.ilike(pattern, escape="\\"))
 
+    # skip_count: never pay for COUNT(DISTINCT id) on million-row partitions.
+    # Unfiltered → cached collection.feature_count. Filtered → approximate after the page fetch
+    # so the list UI can still show "has more" without scanning the full match set.
+    deferred_total = False
     if skip_count and not has_filters and collection_feature_count is not None:
         total = int(collection_feature_count)
-    elif skip_count and has_filters:
-        total = (await db.execute(count_distinct)).scalar() or 0
     elif skip_count:
         total = 0
+        deferred_total = True
     elif has_filters:
         total = (await db.execute(count_distinct)).scalar() or 0
     elif collection_feature_count is not None:
@@ -667,11 +881,18 @@ async def list_features_paginated(
             page_ids = [r.id for r in page_rows]
 
         if not page_ids:
+            if deferred_total:
+                total = offset
             return ([], int(total))
 
+        if deferred_total:
+            n = len(page_ids)
+            # Exact when short page; otherwise advertise at least one more page (has_more).
+            total = offset + n if n < limit else offset + n + 1
+
         if not include_geometry:
-            # Fast path: fetch per-part bbox only (no GROUP BY, no ST_Extent in DB — minimal work per row).
-            # Aggregate bbox/properties in Python so DB does a simple index scan and releases quickly.
+            # Fast path: one row per logical id — ST_Extent over parts (avoids shipping every
+            # subdivided part to Python). Still no ST_AsGeoJSON / ST_Union of full rings.
             phase2_shadow = (
                 " AND (bulk_import_job_id IS NULL OR bulk_import_job_id != ALL(:shadow_exclude_jobs))"
                 if shadow_jobs
@@ -679,42 +900,40 @@ async def list_features_paginated(
             )
             r = await db.execute(
                 text(f"""
-                    SELECT id, collection_id, part_index,
-                           ST_XMin(geometry) AS xmin, ST_YMin(geometry) AS ymin,
-                           ST_XMax(geometry) AS xmax, ST_YMax(geometry) AS ymax,
+                    SELECT id, collection_id,
+                           ST_XMin(ext) AS xmin, ST_YMin(ext) AS ymin,
+                           ST_XMax(ext) AS xmax, ST_YMax(ext) AS ymax,
                            properties, created_at, updated_at
-                    FROM features
-                    WHERE collection_id = :cid AND id = ANY(:ids){phase2_shadow}
-                    ORDER BY id, part_index
+                    FROM (
+                        SELECT id, collection_id,
+                               ST_Extent(geometry) AS ext,
+                               (array_agg(properties ORDER BY part_index))[1] AS properties,
+                               min(created_at) AS created_at,
+                               max(updated_at) AS updated_at
+                        FROM features
+                        WHERE collection_id = :cid AND id = ANY(:ids){phase2_shadow}
+                        GROUP BY id, collection_id
+                    ) sub
                 """),
                 {"cid": collection_id, "ids": page_ids, **shadow_params},
             )
-            rows = r.fetchall()
-            by_id: dict[str, list[Any]] = {}
-            for row in rows:
-                by_id.setdefault(row.id, []).append(row)
+            by_id = {row.id: row for row in r.fetchall()}
             features = []
             for pid in page_ids:
-                parts = by_id.get(pid)
-                if not parts:
+                row = by_id.get(pid)
+                if not row:
                     continue
-                sorted_parts = sorted(parts, key=lambda p: getattr(p, "part_index", 0))
-                first = sorted_parts[0]
-                xs = [float(p.xmin) for p in sorted_parts if p.xmin is not None]
-                ys = [float(p.ymin) for p in sorted_parts if p.ymin is not None]
-                xmaxs = [float(p.xmax) for p in sorted_parts if p.xmax is not None]
-                ymaxs = [float(p.ymax) for p in sorted_parts if p.ymax is not None]
                 bbox_list = None
-                if xs and ys and xmaxs and ymaxs:
-                    bbox_list = [min(xs), min(ys), max(xmaxs), max(ymaxs)]
+                if row.xmin is not None and row.ymin is not None and row.xmax is not None and row.ymax is not None:
+                    bbox_list = [float(row.xmin), float(row.ymin), float(row.xmax), float(row.ymax)]
                 f = Feature(
-                    id=first.id,
-                    collection_id=first.collection_id,
+                    id=row.id,
+                    collection_id=row.collection_id,
                     part_index=0,
                     geometry=None,
-                    properties=first.properties,
-                    created_at=min(p.created_at for p in sorted_parts),
-                    updated_at=max(p.updated_at for p in sorted_parts),
+                    properties=row.properties,
+                    created_at=row.created_at,
+                    updated_at=row.updated_at,
                 )
                 f.bbox = bbox_list  # type: ignore[attr-defined]
                 features.append(f)

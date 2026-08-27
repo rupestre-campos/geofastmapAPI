@@ -155,8 +155,11 @@ Key settings (env vars or `.env`; see `app/core/config.py`):
 
 Optional:
 
-- **TILES_DYNAMIC_USE_QUEUE** — Use Redis search cache + tile job queue for dynamic tiles (workers read from cache).
-- **TILES_DYNAMIC_WORKER_URL** — Offload dynamic tiles to another service (e.g. tippecanoe worker).
+- **TILES_DYNAMIC_USE_QUEUE** — Use Redis search cache + **LIFO** tile job queue for dynamic tiles (workers encode only; no DB).
+- **TILES_DYNAMIC_QUEUE_CONCURRENCY** — Encode processes per `dynamic_tile_worker` container (`0` = auto, up to 8 cores).
+- **TILES_DYNAMIC_QUEUE_MAX_JOBS** / **TILES_DYNAMIC_QUEUE_JOB_MAX_AGE_SECONDS** — Cap backlog and drop stale pan/zoom jobs.
+- **TILES_DYNAMIC_WORKER_URL** — Optional HTTP dynamic tiler (DB fetch + off-loop MVT encode).
+- **TILES_MVT_MAX_FEATURES** — Max features retrieved per dynamic tile (default 50000); encode is always in Python / workers, never PostGIS `ST_AsMVT`.
 - **process_batch_max_bytes**, **process_batch_workers**, etc. — Tune process worker memory and parallelism.
 
 ---

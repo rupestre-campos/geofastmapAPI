@@ -59,6 +59,10 @@ class ExtentRecomputeResponse(BaseModel):
     )
 
 
+class CompositeMember(BaseModel):
+    collection_id: str = Field(..., description="Member vector collection id")
+
+
 class CollectionBase(BaseModel):
     id: str = Field(..., description="Identifier of the collection.")
     title: str | None = None
@@ -72,7 +76,15 @@ class CollectionBase(BaseModel):
         default=None,
         description="Raster collection settings, e.g. is_dem and dem_encoding.",
     )
-    collection_type: str = Field(default="vector", description="Collection type: vector or raster.")
+    collection_type: str = Field(default="vector", description="Collection type: vector, raster, or composite.")
+    composite_members: list[CompositeMember] | None = Field(
+        default=None,
+        description="For composite collections: ordered member vector collection ids.",
+    )
+    property_index_fields: list[str] | None = Field(
+        default=None,
+        description="Property keys with per-collection expression indexes on features.properties.",
+    )
 
 
 class CollectionCreate(CollectionBase):
@@ -88,6 +100,8 @@ class CollectionReplace(BaseModel):
     stac_source: dict[str, Any] | None = None
     raster_settings: dict[str, Any] | None = None
     collection_type: str = "vector"
+    composite_members: list[CompositeMember] | None = None
+    property_index_fields: list[str] | None = None
 
 
 class CollectionPatch(BaseModel):
@@ -100,7 +114,20 @@ class CollectionPatch(BaseModel):
     raster_settings: dict[str, Any] | None = None
     visibility: str | None = None  # private | logged | public
     viewer_can_edit: bool | None = None  # when True, everyone who can view can edit
-    collection_type: str | None = None  # vector | raster
+    collection_type: str | None = None  # vector | raster | composite
+    composite_members: list[CompositeMember] | None = None
+    property_index_fields: list[str] | None = None
+
+
+class CompositeMemberStatus(BaseModel):
+    collection_id: str
+    title: str | None = None
+    feature_count: int = 0
+    has_static_tiles: bool = False
+    tiles_revision: str | None = None
+    minzoom: int | None = None
+    maxzoom: int | None = None
+    built_at: str | None = None
 
 
 class CollectionRead(CollectionBase):
@@ -115,7 +142,15 @@ class CollectionRead(CollectionBase):
         description="Latest feature row update in this collection (geometries and attributes). "
         "Stored on the collection row and kept in sync by database triggers; distinct from updated_at (metadata only).",
     )
+    member_status: list[CompositeMemberStatus] | None = Field(
+        default=None,
+        description="For composite collections: per-member tile and feature status.",
+    )
     links: list[Link] | None = Field(default=None, description="OGC links (self, items).")
+    property_index_job_id: str | None = Field(
+        default=None,
+        description="When property indexes were queued, job id to poll at GET /jobs/{id}.",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

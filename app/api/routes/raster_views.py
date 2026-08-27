@@ -419,6 +419,11 @@ async def titiler_mosaic_tile(
     if etag is None:
         raise HTTPException(status_code=404, detail="Mosaic JSON missing on disk")
 
+    # Release the pooled DB connection before the slow upstream tile fetch. A large mosaic
+    # fires many tile requests at once; holding the connection through the Titiler call would
+    # exhaust the DB pool and stall unrelated page requests (e.g. navigating back to /maps).
+    await db.close()
+
     etag_hdr = _etag_header_value(etag)
     v_q = request.query_params.get("v")
     use_versioned_cache = v_q is not None and v_q == etag
@@ -626,6 +631,9 @@ async def titiler_mosaic_point(
     path = Path(settings.raster_storage_path) / row.json_relative_path
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Mosaic JSON missing on disk")
+
+    # Release the pooled DB connection before the upstream Titiler call (see titiler_mosaic_tile).
+    await db.close()
 
     secret = settings.titiler_internal_secret
     fetch_base = settings.raster_internal_fetch_base_url.rstrip("/")

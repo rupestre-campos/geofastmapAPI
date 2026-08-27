@@ -8,13 +8,13 @@ from app.services.bulk_queue import BulkJobPayload
 from app.utils.property_filters import PropertyOp
 
 
-def test_validate_replace_filtered_requires_filters():
+def test_validate_replace_filtered_requires_filters(copy_ingest_disabled):
     with pytest.raises(HTTPException) as exc:
         validate_bulk_import_mode_and_filters("replace_filtered", [])
     assert exc.value.status_code == 400
 
 
-def test_validate_replace_filtered_parses_lines():
+def test_validate_replace_filtered_parses_lines(copy_ingest_disabled):
     mode, lines = validate_bulk_import_mode_and_filters(
         "replace_filtered",
         ["state_id:eq:12", "date:lt:2026-07-12"],
@@ -29,7 +29,7 @@ def test_validate_replace_filters_forbidden_on_append():
     assert exc.value.status_code == 400
 
 
-def test_validate_replace_filters_newline_string():
+def test_validate_replace_filters_newline_string(copy_ingest_disabled):
     mode, lines = validate_bulk_import_mode_and_filters(
         "replace_filtered",
         "state_id:eq:12\ndate:lt:2026-07-12",
@@ -92,35 +92,51 @@ def test_bulk_session_replace_filtered_stores_filters(monkeypatch):
     assert got["replace_filters"] == ["state_id:eq:12"]
 
 
-def test_parent_job_replace_filtered_calls_prestage(monkeypatch, tmp_path):
+@pytest.fixture
+def copy_ingest_disabled(monkeypatch):
+    from app.services import bulk_import_params as bip
+
+    monkeypatch.setattr(
+        bip,
+        "get_settings",
+        lambda: type("S", (), {"bulk_copy_ingest_enabled": False})(),
+    )
+
+
+def test_process_bulk_job_rejects_replace_filtered_copy_path(monkeypatch, tmp_path):
     from app.services import bulk_worker as bw
-    from app.services.bulk_queue import BulkJobPayload
 
-    prestage_calls = []
+    monkeypatch.setattr(bw, "get_settings", lambda: type("S", (), {"bulk_copy_ingest_enabled": True})())
+    monkeypatch.setattr(bw, "_defer_bulk_job_for_collection_mutex", lambda _p: False)
+    monkeypatch.setattr(bw, "get_job", lambda _j: None)
 
-    def fake_prestage(collection_id, replace_filters=None, **_kwargs):
-        prestage_calls.append((collection_id, replace_filters))
+    updates = []
+    monkeypatch.setattr(bw, "update_job", lambda *_a, **kw: updates.append(kw))
+    monkeypatch.setattr(bw, "_release_bulk_collection_mutex", lambda _p: None)
+    monkeypatch.setattr(bw, "_queue_tile_build_if_requested", lambda *_a, **_k: None)
 
-    monkeypatch.setattr(bw, "replace_collection_prestage_sync", fake_prestage)
-    monkeypatch.setattr(bw, "get_settings", lambda: type("S", (), {"bulk_sharded_ingest_enabled": False})())
-    monkeypatch.setattr(bw, "run_bulk_import_sync", lambda *a, **k: (1, 0, None))
-    monkeypatch.setattr(bw, "update_job", lambda *a, **k: None)
-    monkeypatch.setattr(bw, "_queue_tile_build_if_requested", lambda *a, **k: None)
+    storage = tmp_path / "upload.geojsonl"
+    storage.write_text("{}\n")
 
-    geojson = tmp_path / "data.geojson"
-    geojson.write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
+    class _Storage:
+        def get_path_or_uri(self, key):
+            return str(storage)
+
+        def delete(self, _key):
+            pass
+
+    monkeypatch.setattr(bw, "get_bulk_storage", lambda: _Storage())
+    monkeypatch.setattr(bw, "unregister_bulk_import_job", lambda _j: None)
 
     payload = BulkJobPayload(
         job_id="parent-1",
         collection_id="c-filter",
-        storage_key=str(geojson),
+        storage_key="upload.geojsonl",
         mode="replace_filtered",
         batch_size=100,
         replace_filters=["state_id:eq:12"],
         job_kind="parent",
     )
-    bw._process_parent_bulk_job(payload, str(geojson))
-    assert len(prestage_calls) == 1
-    assert prestage_calls[0][0] == "c-filter"
-    assert len(prestage_calls[0][1]) == 1
-    assert prestage_calls[0][1][0].key == "state_id"
+    bw.process_bulk_job(payload)
+    assert any(u.get("status") == "failed" for u in updates)
+    assert any("replace_filtered" in (u.get("message") or "") for u in updates)

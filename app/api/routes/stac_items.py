@@ -587,3 +587,116 @@ async def stac_item_titiler_suggest_rescale(
     if hi <= lo:
         return {"suggested": "", "detail": "Invalid percentile range"}
     return {"suggested": f"{lo:.0f},{hi:.0f}", "p2": lo, "p98": hi}
+
+
+@router.get(
+    "/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}/titiler/statistics",
+    summary="Zonal statistics for a STAC item asset inside a zone feature",
+    description=(
+        "Loads the zone from the database (`zone_collection_id` + `zone_feature_id`) and "
+        "POSTs it to Titiler. Use `asset` for a single COG asset (`/cog/statistics`) or "
+        "repeated `assets` for multi-asset (`/stac/statistics`). Set `categorical=true` for "
+        "unique value counts."
+    ),
+)
+async def stac_item_titiler_statistics(
+    request: Request,
+    catalog_id: str,
+    collection_id: str,
+    item_id: str,
+    zone_collection_id: str = Query(..., description="Vector collection containing the zone feature"),
+    zone_feature_id: str = Query(..., description="Feature id whose geometry is the analysis zone"),
+    asset: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
+):
+    from app.services.zonal_statistics import (
+        load_zone_feature_geojson,
+        normalize_titiler_statistics_payload,
+        post_titiler_zonal_statistics,
+        query_flag_true,
+    )
+
+    await _titiler_session_or_public_grant(db, catalog_id, collection_id, item_id, current_user)
+    # Zone always requires permission on the zone collection (logged-in or public zone).
+    geojson_feature, zone_meta = await load_zone_feature_geojson(
+        db, zone_collection_id, zone_feature_id, current_user, require_auth_user=False
+    )
+
+    catalog_ref = await _get_enabled_catalog_ref_for_tiles(db, catalog_id)
+    try:
+        item = await get_stac_item_cached(catalog_ref, collection_id, item_id)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown or invalid asset key")
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not load STAC item: {e!s}",
+        ) from e
+
+    await db.close()
+
+    query_pairs = list(request.query_params.multi_items())
+    categorical = query_flag_true(query_pairs, "categorical")
+    requested_assets = [v for (k, v) in query_pairs if k == "assets" and v]
+
+    if requested_assets:
+        item_url = None
+        try:
+            for L in item.get("links") or []:
+                if isinstance(L, dict) and L.get("rel") == "self" and L.get("href"):
+                    item_url = str(L["href"])
+                    break
+        except Exception:
+            item_url = None
+        if not item_url:
+            item_url = (
+                f"{catalog_ref.stac_api_root_url.rstrip('/')}/collections/{collection_id}/items/{item_id}"
+            )
+        forward_path = "/stac/statistics"
+        url = item_url
+        raster_meta = {
+            "catalog_id": catalog_id,
+            "collection_id": collection_id,
+            "item_id": item_id,
+            "assets": requested_assets,
+        }
+        drop_extra = frozenset({"asset"})
+    else:
+        if not asset or not str(asset).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Query param `asset` (or repeated `assets`) is required",
+            )
+        try:
+            cog_url = get_asset_href(item, str(asset).strip())
+        except KeyError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown or invalid asset key")
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        forward_path = "/cog/statistics"
+        url = cog_url
+        raster_meta = {
+            "catalog_id": catalog_id,
+            "collection_id": collection_id,
+            "item_id": item_id,
+            "asset": str(asset).strip(),
+        }
+        drop_extra = frozenset({"asset"})
+
+    raw = await post_titiler_zonal_statistics(
+        forward_path=forward_path,
+        url=url,
+        geojson_feature=geojson_feature,
+        query_pairs=query_pairs,
+        drop_keys=drop_extra,
+    )
+    payload = normalize_titiler_statistics_payload(
+        raw,
+        categorical=categorical,
+        raster_meta=raster_meta,
+        zone_meta=zone_meta,
+    )
+    return JSONResponse(content=payload)

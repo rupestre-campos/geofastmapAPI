@@ -253,6 +253,25 @@
     </div>
   </div>
 
+  {% if (collection.collection_type or 'vector') == 'vector' %}
+  <div class="card" id="property-indexes-card">
+    <h2 class="card-title">Property indexes</h2>
+    <p class="meta">Create a Postgres index per selected property on <strong>this collection only</strong>. Speeds up item filters, queries, and <code>replace_filtered</code> bulk deletes (e.g. <code>state_code:eq:BA</code>). Saving queues a background job (watch status under Jobs); large collections can take minutes to build the first index.</p>
+    <div id="property-index-checkboxes" class="form-row" style="display:flex;flex-wrap:wrap;gap:10px 16px;max-height:12rem;overflow:auto;"></div>
+    <div class="form-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+      <label for="property-index-custom" class="meta" style="margin:0;">Custom field</label>
+      <input type="text" id="property-index-custom" placeholder="state_code" style="width:12rem;">
+      <button type="button" class="btn btn-sm" id="btn-property-index-add">Add</button>
+    </div>
+    <p class="meta" style="margin-top:8px;">Selected: <span id="property-index-selected-label">—</span></p>
+    <div class="btn-group" style="margin-top: var(--space);">
+      <button type="button" class="btn btn-primary" id="btn-save-property-indexes">Save property indexes</button>
+      <button type="button" class="btn" id="btn-resync-property-indexes" title="Re-queue ensure job without changing saved fields">Re-sync indexes</button>
+    </div>
+    <p id="property-index-msg" class="meta" style="margin-top:0.5rem;"></p>
+  </div>
+  {% endif %}
+
   {% if (collection.collection_type or 'vector') == 'raster' %}
   <div class="card" id="dem-panel">
     <h2 class="card-title">DEM terrain</h2>
@@ -354,16 +373,8 @@
         <label>Import mode</label>
         <div class="radio-group">
           <label><input type="radio" name="mode" value="append" checked> Append to existing</label>
-          <label><input type="radio" name="mode" value="replace"> Replace all (delete then import)</label>
-          <label><input type="radio" name="mode" value="replace_filtered"> Replace matching filter</label>
+          <label><input type="radio" name="mode" value="replace"> Replace all (staging swap)</label>
         </div>
-      </div>
-      <div class="form-row" id="bulk-replace-filters-wrap" style="display:none;">
-        <label for="bulk-replace-filters">Replace filters <span class="meta">(key:op:value per line, ANDed)</span></label>
-        <textarea id="bulk-replace-filters" name="replace_filters" rows="3" placeholder="state_id:eq:12&#10;date:lt:2026-07-12"></textarea>
-        {% from "components/filter_builder.html" import filter_builder %}
-        {{ filter_builder('bulk-replace-filters', base, collection_id, 'bulk-replace-filter-builder') }}
-        <p class="meta" style="margin-top:6px;">Deletes only features matching all filters, then imports the file. Canceling the import job does not restore deleted rows. Verify filters on the <a href="{{ base }}/collections/{{ collection_id }}/items?f=html">items page</a> first.</p>
       </div>
       {% endif %}
       <div class="form-row">
@@ -408,7 +419,7 @@
 
   <div class="card">
     <h2 class="card-title">Jobs for this collection</h2>
-    <p class="meta">Recent jobs for this collection (bulk import, tile build, geoprocessing). <a href="{{ base }}/jobs?f=html">All jobs →</a></p>
+    <p class="meta">Recent jobs for this collection (bulk import, tile build, property index, geoprocessing). <a href="{{ base }}/jobs?f=html">All jobs →</a></p>
     <div id="jobs-table-wrap">
       <p id="jobs-loading" class="meta">Loading…</p>
       <table id="jobs-table" style="display:none">
@@ -1768,6 +1779,7 @@
         }
       function jobTypeLabel(j) {
         if (j.job_type_label) return j.job_type_label;
+        if (j.job_category === 'property_index') return 'Property index sync';
         if (j.job_category === 'raster_import') return 'Raster import (COG)';
         if (j.job_category === 'tile_build') return 'Static tile build';
         if (j.process_id) return String(j.process_id).replace(/_/g, ' ');
@@ -2142,6 +2154,145 @@
           submitBtn.disabled = false;
         });
     };
+    const propertyIndexFieldsInitial = {{ (collection.property_index_fields or []) | tojson }};
+
+    (function initPropertyIndexes() {
+      var card = document.getElementById('property-indexes-card');
+      if (!card || collectionType !== 'vector') return;
+      var selected = propertyIndexFieldsInitial.slice();
+      var box = document.getElementById('property-index-checkboxes');
+      var labelEl = document.getElementById('property-index-selected-label');
+      var msgEl = document.getElementById('property-index-msg');
+
+      function renderSelected() {
+        labelEl.textContent = selected.length ? selected.join(', ') : '—';
+        if (!box) return;
+        box.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
+          cb.checked = selected.indexOf(cb.value) >= 0;
+        });
+      }
+
+      msgEl.textContent = 'Loading property keys…';
+
+      function toggleField(name, on) {
+        var i = selected.indexOf(name);
+        if (on && i < 0) selected.push(name);
+        if (!on && i >= 0) selected.splice(i, 1);
+        renderSelected();
+      }
+
+      function addCheckbox(name) {
+        if (!name || box.querySelector('input[value="' + name.replace(/"/g, '') + '"]')) return;
+        var lbl = document.createElement('label');
+        lbl.className = 'checkbox-inline';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = name;
+        cb.checked = selected.indexOf(name) >= 0;
+        cb.onchange = function() { toggleField(name, cb.checked); };
+        lbl.appendChild(cb);
+        lbl.appendChild(document.createTextNode(' ' + name));
+        box.appendChild(lbl);
+      }
+
+      fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/queryables', {
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' }
+      }).then(function(r) { return r.ok ? r.json() : { properties: [] }; })
+        .then(function(data) {
+          var keys = (data && data.properties) ? data.properties : [];
+          keys.forEach(addCheckbox);
+          selected.forEach(function(k) { addCheckbox(k); });
+          renderSelected();
+          msgEl.textContent = keys.length
+            ? ''
+            : 'No property keys found in sample — use Custom field or import data first.';
+        }).catch(function() {
+          selected.forEach(addCheckbox);
+          renderSelected();
+          msgEl.textContent = 'Could not load property keys — use Custom field or retry.';
+        });
+
+      document.getElementById('btn-property-index-add').onclick = function() {
+        var raw = document.getElementById('property-index-custom').value.trim();
+        if (!raw || !/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(raw)) {
+          alert('Invalid field name (letters, digits, underscore; max 64 chars).');
+          return;
+        }
+        addCheckbox(raw);
+        toggleField(raw, true);
+        document.getElementById('property-index-custom').value = '';
+      };
+
+      document.getElementById('btn-save-property-indexes').onclick = function() {
+        msgEl.textContent = 'Queueing index job…';
+        fetch(base + '/collections/' + encodeURIComponent(collectionId), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ property_index_fields: selected })
+        }).then(function(r) {
+          if (!r.ok) return r.json().then(function(j) { throw j; });
+          return r.json();
+        }).then(function(data) {
+          var jobId = data && data.property_index_job_id;
+          if (!jobId) {
+            msgEl.textContent = 'Indexes saved.';
+            return;
+          }
+          msgEl.innerHTML = 'Index job queued. <a href="' + base + '/jobs/' + encodeURIComponent(jobId) + '?f=html">Watch job</a>';
+          function poll() {
+            fetch(base + '/jobs/' + encodeURIComponent(jobId), { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+              .then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(job) {
+                if (!job) return;
+                var st = job.status || '';
+                var msg = job.message || '';
+                msgEl.textContent = st + (msg ? ': ' + msg : '');
+                if (st === 'pending' || st === 'running') {
+                  setTimeout(poll, 2000);
+                } else if (st === 'completed') {
+                  msgEl.innerHTML = 'Done. <a href="' + base + '/jobs/' + encodeURIComponent(jobId) + '?f=html">Job details</a>';
+                }
+              }).catch(function() {});
+          }
+          poll();
+        }).catch(function(e) {
+          msgEl.textContent = '';
+          alert('Error: ' + (e.detail || e.message || JSON.stringify(e)));
+        });
+      };
+
+      var resyncBtn = document.getElementById('btn-resync-property-indexes');
+      if (resyncBtn) {
+        resyncBtn.onclick = function() {
+          if (!selected.length) {
+            alert('No property index fields saved yet. Select fields and Save first.');
+            return;
+          }
+          msgEl.textContent = 'Re-queueing index ensure…';
+          fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/property-indexes/sync', {
+            method: 'POST',
+            headers: { 'Accept': 'application/json' },
+            credentials: 'same-origin'
+          }).then(function(r) {
+            if (!r.ok) return r.json().then(function(j) { throw j; });
+            return r.json();
+          }).then(function(data) {
+            var jobId = data && data.job_id;
+            if (!jobId) {
+              msgEl.textContent = 'Queued.';
+              return;
+            }
+            msgEl.innerHTML = 'Index ensure queued. <a href="' + base + '/jobs/' + encodeURIComponent(jobId) + '?f=html">Watch job</a>';
+            if (window.refreshCollectionJobs) window.refreshCollectionJobs();
+          }).catch(function(e) {
+            msgEl.textContent = '';
+            alert('Error: ' + (e.detail || e.message || JSON.stringify(e)));
+          });
+        };
+      }
+    })();
+
     if (collectionType === 'raster') refreshRasterDemPanel();
   </script>
 {% endblock %}

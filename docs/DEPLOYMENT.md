@@ -99,18 +99,35 @@ That sum must stay **below** PostgreSQL `max_connections` (minus superuser / mon
 
 For multi-GB uploads, tune API + worker envs together (same Redis settings on every host):
 
-- `BULK_IMPORT_BATCH_SIZE` (start `2000`, adjust by DB CPU/IO)
-- `BULK_INSERT_PARTS_BATCH_SIZE` (start `160`, controls batched SQL VALUES when one feature splits)
+- `DATABASE_POOL_SIZE`, `DATABASE_POOL_MAX_OVERFLOW` (Phase 1 default `4` / `4` per process; lower if not using PgBouncer)
+- `BULK_IMPORT_BATCH_SIZE` (Phase 1 default `3000`, adjust by DB CPU/IO)
+- `BULK_INSERT_PARTS_BATCH_SIZE` (Phase 1 default `200`, controls batched SQL VALUES when one feature splits)
 - `BULK_PROGRESS_HEARTBEAT_SECONDS` (e.g. `5`, emits progress while a large batch is still running)
-- `BULK_EXTENT_UPDATE_MODE` = `best_effort` or `deferred` for very large layers (reduces end-of-job tail latency)
+- `BULK_EXTENT_UPDATE_MODE` = `deferred` for very large layers (reduces end-of-job tail latency); use `immediate` only when bbox must refresh synchronously after each import
 - `BULK_DB_RETRY_MAX_ATTEMPTS`, `BULK_DB_RETRY_BASE_SECONDS`, `BULK_DB_RETRY_MAX_SECONDS`
 - `REDIS_RETRY_BASE_SECONDS`, `REDIS_RETRY_MAX_SECONDS`, `REDIS_RETRY_ENQUEUE_MAX_ATTEMPTS`
-- `REDIS_RETRY_READ_MAX_ATTEMPTS` (default `15`): retries for frequent Redis reads during bulk import (cancel checks via `get_job`) and parent shard aggregation. On unstable residential LANs, keep backoff caps and consider raising this before raising parallel worker load.
-- `BULK_UPLOAD_SESSION_TTL_SECONDS`, `BULK_UPLOAD_CHUNK_SIZE_BYTES` (resumable uploads)
-- `BULK_SHARDED_INGEST_ENABLED`, `BULK_SHARD_LINES_PER_PART` (single-file sharded ingest)
-- `BULK_WORKER_MAX_CONCURRENT` (default `2`): standalone bulk worker threads per process; increase for more parallel shard imports on one machine (watch Postgres `max_connections` and RAM).
+- `REDIS_RETRY_READ_MAX_ATTEMPTS` (Phase 1 default `20`): retries for frequent Redis reads during bulk import (cancel checks via `get_job`) and parent shard aggregation. On unstable residential LANs, keep backoff caps and consider raising this before raising parallel worker load.
+- `BULK_UPLOAD_SESSION_TTL_SECONDS`, `BULK_UPLOAD_CHUNK_SIZE_BYTES` (resumable uploads; Phase 1 default `67108864` = 64 MiB)
+- `BULK_SHARDED_INGEST_ENABLED`, `BULK_SHARD_LINES_PER_PART` (single-file sharded ingest; Phase 1 default `100000` lines per part)
+- `BULK_WORKER_MAX_CONCURRENT` (Phase 1 default `3`): standalone bulk worker threads per process; increase for more parallel shard imports on one machine (watch Postgres `max_connections` and RAM).
 
-Recommended starting point for multi-GB browser uploads: `BULK_UPLOAD_CHUNK_SIZE_BYTES=33554432` (32 MiB). This cuts request count significantly (about 147 parts for a 5GB file, vs ~589 with 8 MiB parts).
+**Phase 1 recommended starting point** (root [`docker-compose.yml`](../docker-compose.yml) and [`deploy/env/workers.sample`](../deploy/env/workers.sample)):
+
+| Variable | Value |
+|----------|-------|
+| `BULK_WORKER_MAX_CONCURRENT` | `3` |
+| `BULK_IMPORT_BATCH_SIZE` | `3000` |
+| `BULK_INSERT_PARTS_BATCH_SIZE` | `200` |
+| `BULK_SHARD_LINES_PER_PART` | `100000` |
+| `BULK_EXTENT_UPDATE_MODE` | `deferred` |
+| `BULK_UPLOAD_CHUNK_SIZE_BYTES` | `67108864` (64 MiB) |
+| `REDIS_RETRY_READ_MAX_ATTEMPTS` | `20` |
+| `DATABASE_POOL_SIZE` | `4` |
+| `DATABASE_POOL_MAX_OVERFLOW` | `4` |
+
+Recommended starting point for multi-GB browser uploads: `BULK_UPLOAD_CHUNK_SIZE_BYTES=67108864` (64 MiB). This cuts request count significantly (about 74 parts for a 5GB file, vs ~147 with 32 MiB parts).
+
+**Backfill profile** (one-time or offline re-import into an existing collection): use the Phase 1 table above, but set **`BULK_REPLACE_SHADOW_IMPORT=false`** so the worker does not shadow-replace the live collection during ingest. Keep `BULK_REPLACE_SHADOW_IMPORT=true` for interactive replace flows where users expect the old layer to stay visible until the new import completes.
 
 For Cloudflare-proxied deployments, prefer the resumable bulk upload session flow:
 

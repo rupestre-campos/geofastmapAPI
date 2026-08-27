@@ -14,6 +14,12 @@ from app.core.config import get_settings
 from app.services.shadow_import import active_shadow_exclude_job_ids
 from app.crud import collections as collections_crud
 from app.crud import features as features_crud
+from app.services.composite_collections import is_composite_collection
+from app.services.composite_items import (
+    composite_feature_to_geojson,
+    composite_member_ids,
+    list_composite_features_paginated,
+)
 from app.utils.datetime_parse import parse_datetime_param
 from app.utils.property_filters import parse_filter_param
 from app.utils.geo import geometry_to_geojson
@@ -97,9 +103,76 @@ async def get_geojson_for_tile(
     structured_filters = parse_filter_param(filter_list) if filter_list else []
     fulltext_q = q.strip() if q and q.strip() else None
     exclude_bulk_job_ids = active_shadow_exclude_job_ids(collection_id)
-
-    # Pagination mode: limit/offset define the search result page (same as items table)
     use_page_mode = limit is not None or offset != 0
+
+    if is_composite_collection(collection):
+        member_ids = await composite_member_ids(db, collection)
+        if use_page_mode:
+            if limit is None:
+                limit = min(settings.items_default_limit, settings.items_max_limit)
+            limit = min(limit, settings.items_max_limit)
+            rows, _ = await list_composite_features_paginated(
+                db,
+                member_ids,
+                limit=limit,
+                offset=offset,
+                bbox=bbox_user,
+                datetime_start=dt_start,
+                datetime_end=dt_end,
+                sortby=sortby,
+                sortdesc=sortdesc,
+                property_filters=property_filters or None,
+                structured_filters=structured_filters or None,
+                fulltext_q=fulltext_q,
+                feature_ids=ids,
+                include_geometry=True,
+                skip_count=True,
+            )
+            geojson_features = [
+                composite_feature_to_geojson(mid, f, composite_collection_id=collection_id)
+                for mid, f in rows
+                if _feature_intersects_bbox(f, tile_minx, tile_miny, tile_maxx, tile_maxy)
+            ]
+        else:
+            if bbox_user is not None:
+                minx = max(tile_bbox[0], bbox_user[0])
+                miny = max(tile_bbox[1], bbox_user[1])
+                maxx = min(tile_bbox[2], bbox_user[2])
+                maxy = min(tile_bbox[3], bbox_user[3])
+                if minx >= maxx or miny >= maxy:
+                    fc = {"type": "FeatureCollection", "features": []}
+                    return json.dumps(fc).encode("utf-8")
+                bbox = (minx, miny, maxx, maxy)
+            else:
+                bbox = tile_bbox
+            # Tile browse: allow up to tiles_mvt_max_features (not items page size).
+            limit = max(
+                1,
+                int(getattr(settings, "tiles_mvt_max_features", 0) or settings.items_max_limit),
+            )
+            rows, _ = await list_composite_features_paginated(
+                db,
+                member_ids,
+                limit=limit,
+                offset=0,
+                bbox=bbox,
+                datetime_start=dt_start,
+                datetime_end=dt_end,
+                sortby=sortby,
+                sortdesc=sortdesc,
+                property_filters=property_filters or None,
+                structured_filters=structured_filters or None,
+                fulltext_q=fulltext_q,
+                feature_ids=ids,
+                include_geometry=True,
+                skip_count=True,
+            )
+            geojson_features = [
+                composite_feature_to_geojson(mid, f, composite_collection_id=collection_id)
+                for mid, f in rows
+            ]
+        fc = {"type": "FeatureCollection", "features": geojson_features}
+        return json.dumps(fc).encode("utf-8")
 
     if use_page_mode:
         # Fetch the exact same page as GET items: user bbox only, no tile bbox
@@ -139,7 +212,11 @@ async def get_geojson_for_tile(
         else:
             bbox = tile_bbox
 
-        limit = min(settings.items_max_limit, getattr(settings, "tiles_mvt_max_features", 10_000))
+        # Tile browse: allow up to tiles_mvt_max_features (not items page size).
+        limit = max(
+            1,
+            int(getattr(settings, "tiles_mvt_max_features", 0) or settings.items_max_limit),
+        )
         features, _ = await features_crud.list_features_paginated(
             db,
             collection_id,
@@ -166,12 +243,17 @@ async def get_geojson_for_tile(
 def filter_geojson_to_tile_bbox(geojson_bytes: bytes, z: int, x: int, y: int) -> bytes:
     """
     Given a GeoJSON FeatureCollection (full search page), return a FeatureCollection
-    containing only features whose geometry intersects the tile bbox (z, x, y).
-    Used by queue workers that read cached search result and build one tile.
+    containing only features whose geometry intersects the *buffered* tile bbox.
+    Buffer matches MVT encode overhang so edge features are not dropped before encode.
     """
+    from app.utils.geo import MVT_BUFFER_PX
+
     tile_bbox = tile_bbox_wgs84(z, x, y)
     minx, miny, maxx, maxy = tile_bbox
-    box = shapely_box(minx, miny, maxx, maxy)
+    # Expand in lon/lat by the same fraction tippecanoe/MVT uses (approx; fine for filter).
+    pad_x = (maxx - minx) * (MVT_BUFFER_PX / 4096.0)
+    pad_y = (maxy - miny) * (MVT_BUFFER_PX / 4096.0)
+    box = shapely_box(minx - pad_x, miny - pad_y, maxx + pad_x, maxy + pad_y)
     data = json.loads(geojson_bytes.decode("utf-8"))
     features = data.get("features") or []
     out = []
@@ -213,7 +295,10 @@ async def get_search_result_geojson(
         raise ValueError(f"Collection not found: {collection_id}")
 
     settings = get_settings()
-    limit = min(limit, settings.items_max_limit)
+    # Allow tile filter fetches above items_max_limit (farm layers can exceed 1k parts).
+    filter_cap = int(getattr(settings, "tiles_filter_max_features", 0) or 0)
+    max_limit = max(int(settings.items_max_limit), filter_cap) if filter_cap else int(settings.items_max_limit)
+    limit = min(limit, max_limit)
 
     dt_start, dt_end = None, None
     if datetime_param:
@@ -224,6 +309,66 @@ async def get_search_result_geojson(
     structured_filters = parse_filter_param(filter_list) if filter_list else []
     fulltext_q = q.strip() if q and q.strip() else None
     exclude_bulk_job_ids = active_shadow_exclude_job_ids(collection_id)
+
+    # Exact tokens: resolve to ids once (equality on id / property indexes) — never ILIKE for CAR codes.
+    feature_ids = list(ids) if ids else None
+    if fulltext_q and not feature_ids and features_crud.is_exact_search_token(fulltext_q):
+        from app.services.collection_property_indexes import normalize_property_index_fields
+
+        feature_ids = await features_crud.resolve_exact_search_feature_ids(
+            db,
+            collection_id,
+            fulltext_q,
+            property_keys=normalize_property_index_fields(
+                getattr(collection, "property_index_fields", None)
+            ),
+            limit=min(limit, 50),
+            exclude_bulk_job_ids=exclude_bulk_job_ids or None,
+        )
+        fulltext_q = None
+        if not feature_ids:
+            return json.dumps({"type": "FeatureCollection", "features": []}).encode("utf-8")
+
+    # filter=key:eq:value — resolve via indexed properties->>'key' (same as items list).
+    if not feature_ids and structured_filters and not fulltext_q and not property_filters:
+        resolved_eq = await features_crud.resolve_structured_eq_feature_ids(
+            db,
+            collection_id,
+            structured_filters,
+            limit=limit,
+            exclude_bulk_job_ids=exclude_bulk_job_ids or None,
+        )
+        if resolved_eq is not None:
+            feature_ids = resolved_eq
+            structured_filters = []
+            if not feature_ids:
+                return json.dumps({"type": "FeatureCollection", "features": []}).encode("utf-8")
+
+    if is_composite_collection(collection):
+        member_ids = await composite_member_ids(db, collection)
+        rows, _ = await list_composite_features_paginated(
+            db,
+            member_ids,
+            limit=limit,
+            offset=offset,
+            bbox=bbox_user,
+            datetime_start=dt_start,
+            datetime_end=dt_end,
+            sortby=sortby,
+            sortdesc=sortdesc,
+            property_filters=property_filters or None,
+            structured_filters=structured_filters or None,
+            fulltext_q=fulltext_q,
+            feature_ids=feature_ids,
+            include_geometry=True,
+            skip_count=True,
+        )
+        geojson_features = [
+            composite_feature_to_geojson(mid, f, composite_collection_id=collection_id)
+            for mid, f in rows
+        ]
+        fc = {"type": "FeatureCollection", "features": geojson_features}
+        return json.dumps(fc).encode("utf-8")
 
     features, _ = await features_crud.list_features_paginated(
         db,
@@ -238,8 +383,10 @@ async def get_search_result_geojson(
         property_filters=property_filters or None,
         structured_filters=structured_filters or None,
         fulltext_q=fulltext_q,
-        feature_ids=ids,
+        feature_ids=feature_ids,
         collection_feature_count=collection.feature_count,
+        include_geometry=True,
+        skip_count=True,
         exclude_bulk_job_ids=exclude_bulk_job_ids or None,
     )
 

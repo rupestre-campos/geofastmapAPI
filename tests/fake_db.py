@@ -9,10 +9,11 @@ from datetime import datetime, timezone
 from typing import Any, Tuple
 from uuid import uuid4
 
-from app.models.collection import VISIBILITY_PRIVATE, Collection
+from app.models.collection import COLLECTION_TYPE_COMPOSITE, VISIBILITY_PRIVATE, Collection
 from app.models.feature import Feature
 from app.schemas.collection import CollectionCreate, Extent, CollectionPatch, CollectionReplace
 from app.schemas.feature import FeatureCreate, FeaturePatch, FeatureReplace
+from app.crud.features import is_exact_search_token
 from app.utils.geo import geojson_to_wkt_element, geometry_to_geojson
 from app.utils.property_filter import property_value_to_like_pattern
 from app.utils.property_filters import PropertyFilter, PropertyOp
@@ -178,14 +179,45 @@ class FakeCollectionTilesCrud:
         return f"tiles_{safe}" if safe else "tiles_unnamed"
 
 
+def _composite_members_json(members: list | None) -> list[dict[str, str]] | None:
+    if not members:
+        return None
+    out: list[dict[str, str]] = []
+    for m in members:
+        cid = m.collection_id if hasattr(m, "collection_id") else m.get("collection_id")
+        if cid:
+            out.append({"collection_id": str(cid).strip()})
+    return out or None
+
+
 class FakeCollectionsCrud:
     """CRUD for collections backed by Store. Same async interface as app.crud.collections."""
 
     def __init__(self, store: Store) -> None:
         self._store = store
 
-    async def list_collections(self, db: Any) -> Sequence[Collection]:
-        return sorted(self._store.collections.values(), key=lambda c: c.id)
+    async def list_collections(self, db: Any, **kwargs: Any) -> Tuple[Sequence[Collection], int]:
+        items = sorted(self._store.collections.values(), key=lambda c: c.id)
+        ctype = kwargs.get("collection_type")
+        if ctype:
+            items = [c for c in items if getattr(c, "collection_type", "vector") == ctype]
+        q = kwargs.get("q")
+        if q:
+            q_lower = q.lower()
+            items = [
+                c for c in items
+                if q_lower in c.id.lower()
+                or (c.title and q_lower in c.title.lower())
+                or (c.description and q_lower in c.description.lower())
+            ]
+        total = len(items)
+        offset = int(kwargs.get("offset") or 0)
+        limit = kwargs.get("limit")
+        if limit is not None:
+            items = items[offset : offset + int(limit)]
+        else:
+            items = items[offset:]
+        return items, total
 
     async def get_collection(self, db: Any, collection_id: str) -> Collection | None:
         return self._store.collections.get(collection_id)
@@ -212,8 +244,11 @@ class FakeCollectionsCrud:
         c.updated_at = _now()
         return extent
 
-    async def create_collection(self, db: Any, data: CollectionCreate) -> Collection:
+    async def create_collection(self, db: Any, data: CollectionCreate, **kwargs: Any) -> Collection:
         now = _now()
+        ctype = data.collection_type or "vector"
+        owner_id = kwargs.get("owner_id")
+        visibility = kwargs.get("visibility", VISIBILITY_PRIVATE)
         collection = Collection(
             id=data.id,
             title=data.title,
@@ -223,9 +258,13 @@ class FakeCollectionsCrud:
             raster_settings=data.raster_settings,
             created_at=now,
             updated_at=now,
-            visibility=VISIBILITY_PRIVATE,
+            owner_id=owner_id,
+            visibility=visibility,
             viewer_can_edit=False,
-            collection_type=data.collection_type or "vector",
+            collection_type=ctype,
+            composite_members=_composite_members_json(data.composite_members)
+            if ctype == COLLECTION_TYPE_COMPOSITE
+            else None,
         )
         self._store.collections[data.id] = collection
         return collection
@@ -244,18 +283,24 @@ class FakeCollectionsCrud:
 
     async def patch_collection(
         self, db: Any, collection_id: str, data: CollectionPatch
-    ) -> Collection | None:
+    ) -> tuple[Collection | None, str | None]:
         c = self._store.collections.get(collection_id)
         if c is None:
-            return None
+            return None, None
         if "title" in data.model_fields_set:
             c.title = data.title
         if "description" in data.model_fields_set:
             c.description = data.description
         if "extent" in data.model_fields_set:
             c.extent = data.extent.model_dump() if data.extent else None
+        if "collection_type" in data.model_fields_set and data.collection_type:
+            c.collection_type = data.collection_type
+        if "composite_members" in data.model_fields_set:
+            c.composite_members = _composite_members_json(data.composite_members)
+        if getattr(c, "collection_type", "vector") != COLLECTION_TYPE_COMPOSITE:
+            c.composite_members = None
         c.updated_at = _now()
-        return c
+        return c, None
 
     async def delete_collection(self, db: Any, collection_id: str) -> bool:
         if collection_id not in self._store.collections:
@@ -271,8 +316,39 @@ class FakeCollectionsCrud:
 class FakeFeaturesCrud:
     """CRUD for features backed by Store. Same async interface as app.crud.features."""
 
+    is_exact_search_token = staticmethod(is_exact_search_token)
+
     def __init__(self, store: Store) -> None:
         self._store = store
+
+    async def resolve_exact_search_feature_ids(
+        self,
+        db: Any,
+        collection_id: str,
+        token: str,
+        *,
+        property_keys: Sequence[str] | None = None,
+        limit: int = 50,
+        exclude_bulk_job_ids: Sequence[str] | None = None,
+    ) -> list[str]:
+        tok = (token or "").strip()
+        if not tok:
+            return []
+        ids: list[str] = []
+        for (cid, fid), f in self._store.features.items():
+            if cid != collection_id:
+                continue
+            if fid == tok:
+                ids.append(fid)
+                continue
+            props = f.properties or {}
+            if any(str(v) == tok for v in props.values()):
+                ids.append(fid)
+                continue
+            blob = str(props)
+            if tok in blob:
+                ids.append(fid)
+        return ids[: max(1, int(limit))]
 
     def _sort_key(self, f: Feature, sortby: str | None, sortdesc: bool) -> Any:
         if not sortby:
@@ -306,6 +382,7 @@ class FakeFeaturesCrud:
         property_filters: dict[str, str] | None = None,
         structured_filters: Sequence[PropertyFilter] | None = None,
         fulltext_q: str | None = None,
+        feature_ids: Sequence[str] | None = None,
         collection_feature_count: int | None = None,
         include_geometry: bool = True,
         skip_count: bool = False,
@@ -315,6 +392,9 @@ class FakeFeaturesCrud:
             f for (cid, _), f in self._store.features.items()
             if cid == collection_id
         ]
+        if feature_ids is not None:
+            idset = set(feature_ids)
+            items = [f for f in items if f.id in idset]
         if bbox:
             items = [f for f in items if self._store._feature_in_bbox(f, bbox)]
         if property_filters:
@@ -332,7 +412,13 @@ class FakeFeaturesCrud:
         if datetime_end is not None:
             items = [f for f in items if (f.created_at or datetime.max.replace(tzinfo=timezone.utc)) <= datetime_end]
         has_filters = bool(
-            bbox or property_filters or structured_filters or fulltext_q or datetime_start or datetime_end
+            bbox
+            or property_filters
+            or structured_filters
+            or fulltext_q
+            or datetime_start
+            or datetime_end
+            or feature_ids is not None
         )
         if skip_count and not has_filters and collection_feature_count is not None:
             total = int(collection_feature_count)

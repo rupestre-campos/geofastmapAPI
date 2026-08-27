@@ -35,6 +35,7 @@ from app.schemas.resource_share import ShareAdd, ShareRead
 from app.services.map_gallery_meta import build_map_gallery_item, format_map_created_at, owner_display_name
 from app.services.raster_mosaic_version import compute_mosaic_version_id
 from app.utils.thumbnail import image_to_thumbnail
+from app.utils.tile_urls import rewrite_tiles_url_to_base
 
 router = APIRouter()
 
@@ -108,6 +109,12 @@ def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
+def _rewrite_layer_tiles_url(lyr: dict, base: str) -> None:
+    tu = lyr.get("tiles_url")
+    if isinstance(tu, str) and tu:
+        lyr["tiles_url"] = rewrite_tiles_url_to_base(tu, base)
+
+
 def _thumbnail_url(base: str, map_id: uuid.UUID) -> str:
     return f"{base}/maps/{map_id}/thumbnail"
 
@@ -171,12 +178,14 @@ async def _definition_with_mosaic_tile_revision_urls(
                     if sv:
                         tile_url += f"&sv={sv}"
                     lyr["tiles_url"] = tile_url
+            _rewrite_layer_tiles_url(lyr, base)
             new_layers.append(lyr)
             continue
         if lyr.get("mosaic_view_id") is None and lyr.get("mosaicViewId") is None:
             lyr["mosaic_view_id"] = mid
         row = await raster_views_crud.get_view(db, str(mid))
         if row is None:
+            _rewrite_layer_tiles_url(lyr, base)
             new_layers.append(lyr)
             continue
         rev = compute_mosaic_tiles_revision(settings, str(mid), row.json_relative_path)
@@ -184,6 +193,7 @@ async def _definition_with_mosaic_tile_revision_urls(
         ext = "png"
         path_part = f"{base}/raster-views/{mid}/titiler/tiles/{tm}/{{z}}/{{x}}/{{y}}.{ext}"
         lyr["tiles_url"] = f"{path_part}?v={rev}" if rev else path_part
+        _rewrite_layer_tiles_url(lyr, base)
         new_layers.append(lyr)
     d["layers"] = new_layers
     return d

@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Composites – GeoFastMap API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Composite collections</h1>
+    <p class="meta">Merged vector mosaics built from member collections. Tiles are served at a stable URL and merged from underlying layers.</p>
+  </header>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Actions</h2>
+      <div class="card-actions">
+        <a href="{{ base }}/composites/new?f=html" class="btn btn-primary">New composite</a>
+      </div>
+    </div>
+    <p class="meta">API: <code>POST /composites</code> or <code>POST /collections</code> with <code>collection_type: "composite"</code>.</p>
+  </div>
+
+  <div class="card collections-table-card">
+    <div class="card-header">
+      <h2 class="card-title">Composites <span class="meta">({{ number_returned | default(0) }} of {{ number_matched | default(0) }})</span></h2>
+    </div>
+    {% if composites %}
+    <div class="table-scroll-wrap">
+      <table class="collections-table">
+        <thead>
+          <tr>
+            <th class="col-actions"></th>
+            <th>ID</th>
+            <th>Title</th>
+            <th>Members</th>
+            <th>Merged tiles</th>
+            <th class="col-actions">Edit</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in composites %}
+          <tr>
+            <td class="col-actions"><a href="{{ base }}/collections/{{ c.id }}?f=html" class="btn btn-sm">Open</a></td>
+            <td class="col-id"><a href="{{ base }}/collections/{{ c.id }}?f=html"><code>{{ c.id }}</code></a></td>
+            <td>{{ c.title or '—' }}</td>
+            <td>{{ c.member_count }}</td>
+            <td>{% if c.has_merged_tiles %}<span class="meta">available</span>{% else %}<span class="meta">build member tiles</span>{% endif %}</td>
+            <td class="col-actions">{% if c.can_edit %}<a href="{{ base }}/composites/{{ c.id }}/edit?f=html" class="btn btn-sm">Edit</a>{% else %}—{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if prev_page_url or next_page_url %}
+    <div class="pagination" style="margin-top: 1rem;">
+      {% if prev_page_url %}
+      <a href="{{ prev_page_url }}" class="btn pagination-prev">← Previous</a>
+      {% else %}
+      <span class="btn btn-disabled" aria-disabled="true">← Previous</span>
+      {% endif %}
+      <span class="pagination-info">{% if number_returned %}{{ offset + 1 }}–{{ offset + number_returned }} of {{ number_matched }}{% else %}0 of {{ number_matched }}{% endif %}</span>
+      {% if next_page_url %}
+      <a href="{{ next_page_url }}" class="btn pagination-next">Next →</a>
+      {% else %}
+      <span class="btn btn-disabled" aria-disabled="true">Next →</span>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    <p class="meta">No composite collections yet. <a href="{{ base }}/composites/new?f=html">Create one</a>.</p>
+    {% endif %}
+  </div>
+{% endblock %}

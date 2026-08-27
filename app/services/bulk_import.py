@@ -30,12 +30,17 @@ from app.models.feature import Feature
 from app.utils.property_filters import PropertyFilter
 from app.utils.feature_subdivide import (
     MAX_COORDS_FOR_DB_SUBDIVIDE,
+    FeatureInsertBuffer,
     _coord_count,
     insert_feature_parts_batched,
     insert_feature_subdivided_sql,
     subdivide_geometry_by_vertices,
 )
 from app.utils.geometry_limits import geometry_exceeds_limit
+from app.services.bulk_triggers import (
+    bulk_import_features_trigger_disabled,
+    refresh_collection_features_last_updated_sync,
+)
 from app.services.bulk_collection_activity import (
     decr_collection_bulk_activity,
     decr_collection_destructive_bulk_activity,
@@ -71,6 +76,7 @@ def _is_retryable_db_error(err: Exception) -> bool:
             "terminating connection",
             "connection is closed",
             "ssl syscall error",
+            "deadlock detected",
         )
     )
 
@@ -293,7 +299,50 @@ def _update_feature_count_sync(engine: Engine, collection_id: str) -> None:
 
 
 def _sync_delete_bulk_import_rows_and_refresh(engine: Engine, collection_id: str, job_id: str) -> None:
-    """Remove rows tagged with this bulk job and refresh cached count + extent."""
+    """Remove rows tagged with this bulk job and refresh cached count + extent.
+
+    Uses TRUNCATE on the collection partition when every row belongs to this job
+    (typical after full ``replace`` prestage). Otherwise deletes by ``bulk_import_job_id``.
+    """
+
+    def _row_counts() -> tuple[int, int]:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT
+                      COUNT(*) FILTER (WHERE bulk_import_job_id = :jid) AS tagged,
+                      COUNT(*) FILTER (
+                        WHERE bulk_import_job_id IS DISTINCT FROM :jid
+                      ) AS other
+                    FROM features
+                    WHERE collection_id = :cid
+                    """
+                ),
+                {"cid": collection_id, "jid": job_id},
+            ).first()
+            if not row:
+                return 0, 0
+            return int(row.tagged or 0), int(row.other or 0)
+
+    tagged, other = _row_counts()
+    if tagged <= 0:
+        _update_feature_count_sync(engine, collection_id)
+        try:
+            collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id)
+        except Exception:
+            pass
+        return
+
+    if other == 0:
+        _truncate_collection_features_sync(engine, collection_id, bulk_import_job_id=None)
+        _update_feature_count_sync(engine, collection_id)
+        try:
+            collections_crud.recompute_and_update_collection_extent_sync(engine, collection_id)
+        except Exception:
+            pass
+        return
+
     def _delete_rows() -> None:
         with engine.connect() as conn:
             conn.execute(
@@ -401,6 +450,171 @@ def _explode_to_simple_parts(geom) -> list:
     except Exception:
         pass
     return [geom]
+
+
+def _use_geojsonl_fast_path(driver: str) -> bool:
+    s = get_settings()
+    if not getattr(s, "bulk_geojsonl_fast_path", True):
+        return False
+    return driver in ("GeoJSONSeq", "GeoJSON")
+
+
+def _queue_one_geometry(
+    session: Session,
+    buffer: FeatureInsertBuffer,
+    *,
+    collection_id: str,
+    props: dict,
+    geom,
+    now: datetime,
+    max_vertices: int,
+    insert_parts_batch_size: int,
+    bulk_import_job_id: str | None,
+    use_savepoint: bool,
+) -> tuple[bool, bool]:
+    """Queue one geometry part for insert. Returns (created, failed_skip)."""
+    if geometry_exceeds_limit(geom):
+        return False, True
+
+    def _do() -> None:
+        fid = str(uuid7())
+        if (
+            geom is not None
+            and not geom.is_empty
+            and _coord_count(geom) > MAX_COORDS_FOR_DB_SUBDIVIDE
+        ):
+            parts = subdivide_geometry_by_vertices(geom, max_vertices)
+            wkt_list = []
+            for p in parts:
+                if p is None or p.is_empty:
+                    continue
+                if geometry_exceeds_limit(p):
+                    continue
+                wkt_list.append(p.wkt)
+            if not wkt_list:
+                raise ValueError("empty parts")
+            buffer.add(fid, None, props if props else None, wkt_list=wkt_list)
+        else:
+            wkt = geom.wkt if (geom is not None and not geom.is_empty) else None
+            buffer.add(fid, wkt, props if props else None)
+
+    try:
+        if use_savepoint:
+            with session.begin_nested():
+                _do()
+        else:
+            _do()
+        return True, False
+    except Exception:
+        return False, True
+
+
+def _import_geojsonl_source(
+    session: Session,
+    file_path: str,
+    collection_id: str,
+    batch_size: int,
+    on_progress: Callable[[str, int, int | None], None] | None,
+    created_so_far: int,
+    now: datetime,
+    heartbeat_seconds: float,
+    commit_with_retry: Callable[[Session], Session],
+    bulk_import_job_id: str | None = None,
+) -> tuple[int, int, Session]:
+    """Fast GeoJSONL reader (orjson) with batched INSERT buffer."""
+    import orjson
+
+    created = 0
+    failed = 0
+    s = get_settings()
+    max_vertices = max(1, int(s.features_subdivide_max_vertices or 256))
+    insert_parts_batch_size = max(1, int(getattr(s, "bulk_insert_parts_batch_size", 200) or 200))
+    features_per_insert = max(1, int(getattr(s, "bulk_features_per_insert", 32) or 32))
+    use_savepoint = bool(getattr(s, "bulk_per_feature_savepoint", False))
+    last_heartbeat = time.monotonic()
+    buffer = FeatureInsertBuffer(
+        collection_id=collection_id,
+        now=now,
+        max_vertices=max_vertices,
+        bulk_import_job_id=bulk_import_job_id,
+        insert_parts_batch_size=insert_parts_batch_size,
+    )
+
+    with open(file_path, "rb") as f:
+        for raw_line in f:
+            _raise_if_bulk_cancelled(bulk_import_job_id)
+            if on_progress and heartbeat_seconds > 0:
+                elapsed = time.monotonic() - last_heartbeat
+                if elapsed >= heartbeat_seconds:
+                    on_progress("running", created_so_far + created, None)
+                    last_heartbeat = time.monotonic()
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                rec = orjson.loads(line)
+            except Exception:
+                failed += 1
+                continue
+            if not isinstance(rec, dict):
+                failed += 1
+                continue
+            geom_dict = rec.get("geometry")
+            props = dict(rec.get("properties") or {})
+            if geom_dict:
+                try:
+                    base_geom = shape(geom_dict)
+                    geoms = _explode_to_simple_parts(base_geom)
+                    if not geoms:
+                        failed += 1
+                        continue
+                except Exception:
+                    failed += 1
+                    continue
+            else:
+                geoms = [None]
+
+            feature_ok = False
+            for geom in geoms:
+                _raise_if_bulk_cancelled(bulk_import_job_id)
+                ok, fail = _queue_one_geometry(
+                    session,
+                    buffer,
+                    collection_id=collection_id,
+                    props=props,
+                    geom=geom,
+                    now=now,
+                    max_vertices=max_vertices,
+                    insert_parts_batch_size=insert_parts_batch_size,
+                    bulk_import_job_id=bulk_import_job_id,
+                    use_savepoint=use_savepoint,
+                )
+                if fail:
+                    failed += 1
+                elif ok:
+                    feature_ok = True
+
+            if feature_ok:
+                created += 1
+
+            if len(buffer) >= features_per_insert:
+                buffer.flush(session)
+
+            if created > 0 and created % batch_size == 0:
+                buffer.flush(session)
+                session = commit_with_retry(session)
+                _raise_if_bulk_cancelled(bulk_import_job_id)
+                if on_progress:
+                    on_progress("running", created_so_far + created, None)
+                    last_heartbeat = time.monotonic()
+
+    if len(buffer) > 0:
+        buffer.flush(session)
+    if created > 0 and created % batch_size != 0:
+        session = commit_with_retry(session)
+        if on_progress:
+            last_heartbeat = time.monotonic()
+    return created, failed, session
 
 
 def _import_one_source(
@@ -720,24 +934,45 @@ def run_bulk_import_sync(
                 total_created = 0
                 total_failed = 0
                 now = datetime.utcnow()
-    
-                for open_path, driver in sources:
-                    _raise_if_bulk_cancelled(bulk_import_job_id)
-                    created, failed, session = _import_one_source(
-                        session,
-                        open_path,
-                        driver,
-                        collection_id,
-                        batch_size,
-                        on_progress,
-                        total_created,
-                        now,
-                        heartbeat_seconds,
-                        _commit_with_retry,
-                        bulk_import_job_id=bulk_import_job_id,
-                    )
-                    total_created += created
-                    total_failed += failed
+
+                with bulk_import_features_trigger_disabled(engine, session):
+                    for open_path, driver in sources:
+                        _raise_if_bulk_cancelled(bulk_import_job_id)
+                        if _use_geojsonl_fast_path(driver) and not open_path.startswith("/vsizip/"):
+                            created, failed, session = _import_geojsonl_source(
+                                session,
+                                open_path,
+                                collection_id,
+                                batch_size,
+                                on_progress,
+                                total_created,
+                                now,
+                                heartbeat_seconds,
+                                _commit_with_retry,
+                                bulk_import_job_id=bulk_import_job_id,
+                            )
+                        else:
+                            created, failed, session = _import_one_source(
+                                session,
+                                open_path,
+                                driver,
+                                collection_id,
+                                batch_size,
+                                on_progress,
+                                total_created,
+                                now,
+                                heartbeat_seconds,
+                                _commit_with_retry,
+                                bulk_import_job_id=bulk_import_job_id,
+                            )
+                        total_created += created
+                        total_failed += failed
+
+                if getattr(settings, "bulk_skip_features_touch_trigger", True):
+                    try:
+                        refresh_collection_features_last_updated_sync(engine, collection_id)
+                    except Exception:
+                        pass
     
                 if finalize_collection:
                     if shadow and mode in ("replace", "replace_filtered") and bulk_import_job_id:

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 # When geometry has more coords than this, subdivide in Python first to avoid huge WKT/alloc in DB.
 MAX_COORDS_FOR_DB_SUBDIVIDE = 35_000
@@ -165,3 +167,76 @@ def insert_feature_parts_batched(
             VALUES """
         sql += ", ".join(values_parts)
         yield sql, params
+
+
+@dataclass
+class PendingFeatureInsert:
+    """One logical feature queued for batched INSERT."""
+
+    feature_id: str
+    wkt: str | None
+    properties: dict | None
+    wkt_list: list[str] | None = None
+
+
+@dataclass
+class FeatureInsertBuffer:
+    """Accumulate logical features; flush as multi-statement batches."""
+
+    collection_id: str
+    now: Any
+    max_vertices: int = 256
+    bulk_import_job_id: str | None = None
+    insert_parts_batch_size: int = 200
+    _pending: list[PendingFeatureInsert] = field(default_factory=list)
+
+    def add(
+        self,
+        feature_id: str,
+        wkt: str | None,
+        properties: dict | None,
+        *,
+        wkt_list: list[str] | None = None,
+    ) -> None:
+        self._pending.append(
+            PendingFeatureInsert(
+                feature_id=feature_id,
+                wkt=wkt,
+                properties=properties,
+                wkt_list=wkt_list,
+            )
+        )
+
+    def __len__(self) -> int:
+        return len(self._pending)
+
+    def flush(self, session: Session) -> int:
+        """Execute pending inserts; return number of logical features flushed."""
+        if not self._pending:
+            return 0
+        count = len(self._pending)
+        for item in self._pending:
+            if item.wkt_list:
+                for sql, params in insert_feature_parts_batched(
+                    item.feature_id,
+                    self.collection_id,
+                    item.wkt_list,
+                    item.properties,
+                    self.now,
+                    batch_size=self.insert_parts_batch_size,
+                    bulk_import_job_id=self.bulk_import_job_id,
+                ):
+                    session.execute(text(sql), params)
+            else:
+                sql, params = insert_feature_subdivided_sql(
+                    item.feature_id,
+                    self.collection_id,
+                    item.wkt,
+                    item.properties,
+                    self.now,
+                    self.max_vertices,
+                    bulk_import_job_id=self.bulk_import_job_id,
+                )
+                session.execute(text(sql), params)
+        self._pending.clear()
+        return count

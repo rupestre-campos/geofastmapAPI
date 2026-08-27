@@ -1,0 +1,385 @@
+{% extends "base.html" %}
+{% block title %}Edit composite {{ collection_id }} – GeoFastMap API{% endblock %}
+{% block head %}
+  <link href="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.css" rel="stylesheet" crossorigin="">
+  {% include '_map_popup_css.html' %}
+{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Composite: {{ collection_title }}</h1>
+    <p class="breadcrumb">
+      <a href="{{ base }}/composites?f=html">Composites</a> ›
+      <a href="{{ base }}/collections/{{ collection_id }}?f=html">{{ collection_id }}</a> ›
+      Edit
+    </p>
+  </header>
+
+  <div class="card">
+    <h2 class="card-title">Metadata</h2>
+    <div class="form-row">
+      <label for="edit-title">Title</label>
+      <input type="text" id="edit-title" value="{{ collection_title }}">
+    </div>
+    <div class="form-row">
+      <label for="edit-description">Description</label>
+      <input type="text" id="edit-description" value="{{ collection_description }}">
+    </div>
+    <div class="btn-group">
+      <button type="button" class="btn btn-primary" id="btn-save-metadata">Save metadata</button>
+    </div>
+    <p id="metadata-msg" class="meta" style="margin-top: 0.5rem;"></p>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Composite static tiles</h2>
+    <p class="meta">Recommended: one MBTiles file merged from all members (fast map pan/zoom). Filtered views still use dynamic tiles.</p>
+    {% if has_own_static_tiles %}
+    <p class="meta">Composite tiles built{% if tiles_revision %} — revision <code>{{ tiles_revision }}</code>{% endif %}</p>
+    <a href="{{ base }}/collections/{{ collection_id }}/tiles/build?f=html" class="btn btn-sm">Rebuild composite tiles</a>
+    {% else %}
+    <p class="meta">No composite MBTiles yet{% if has_static_tiles %} (member merge fallback may apply){% endif %}.</p>
+    <a href="{{ base }}/collections/{{ collection_id }}/tiles/build?f=html" class="btn btn-sm btn-primary">Build composite tiles</a>
+    {% endif %}
+    <button type="button" class="btn btn-sm" id="btn-invalidate-cache" style="margin-left: 6px;">Invalidate tile cache</button>
+    <p id="composite-tiles-msg" class="meta" style="margin-top: 0.5rem;"></p>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Member collections</h2>
+    <p class="meta">Build <strong>composite</strong> static tiles (one tippecanoe run over all members) or per-member tiles as fallback. Tile URLs include <code>?v=</code> revision for cache pinning.</p>
+    <table class="collections-table" id="members-table">
+      <thead>
+        <tr>
+          <th>Order</th>
+          <th>Collection</th>
+          <th>Features</th>
+          <th>Static tiles</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="members-body">
+        {% for m in member_status %}
+        <tr data-cid="{{ m.collection_id }}">
+          <td class="order-cell">
+            <button type="button" class="btn btn-sm btn-move-up" title="Move up">↑</button>
+            <button type="button" class="btn btn-sm btn-move-down" title="Move down">↓</button>
+          </td>
+          <td>
+            <a href="{{ base }}/collections/{{ m.collection_id }}?f=html"><code>{{ m.collection_id }}</code></a>
+            {% if m.title %}<span class="meta"> — {{ m.title }}</span>{% endif %}
+          </td>
+          <td>{{ m.feature_count }}</td>
+          <td>
+            {% if m.has_static_tiles %}
+              <span class="meta">built{% if m.built_at %} {{ m.built_at[:10] }}{% endif %}</span>
+              <a href="{{ base }}/collections/{{ m.collection_id }}/tiles/build?f=html" class="btn btn-sm">Rebuild</a>
+            {% else %}
+              <span class="meta">missing</span>
+              <a href="{{ base }}/collections/{{ m.collection_id }}/tiles/build?f=html" class="btn btn-sm btn-primary">Build tiles</a>
+            {% endif %}
+          </td>
+          <td><button type="button" class="btn btn-sm btn-remove-member">Remove</button></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="form-row" style="margin-top: 1rem;">
+      <label for="add-member-select">Add vector collection</label>
+      <select id="add-member-select">
+        <option value="">— select —</option>
+        {% for c in vector_collections %}
+        <option value="{{ c.id }}">{{ c.id }}{% if c.title and c.title != c.id %} — {{ c.title }}{% endif %}</option>
+        {% endfor %}
+      </select>
+      <button type="button" class="btn" id="btn-add-member">Add</button>
+    </div>
+
+    <div class="btn-group" style="margin-top: 1rem;">
+      <button type="button" class="btn btn-primary" id="btn-save-members">Save members</button>
+      <a href="{{ base }}/collections/{{ collection_id }}?f=html" class="btn">View collection</a>
+      <a href="{{ base }}/composites?f=html" class="btn">Back to list</a>
+    </div>
+    <p id="members-save-msg" class="meta" style="margin-top: 0.5rem;"></p>
+  </div>
+
+  <div class="card" id="property-indexes-card">
+    <h2 class="card-title">Property indexes</h2>
+    <p class="meta">Creates expression indexes on <strong>each member</strong> collection for faster filters and queries through this composite.</p>
+    <p class="meta">Selected: <span id="property-index-selected-label">—</span></p>
+    <div id="property-index-checkboxes" class="checkbox-grid"></div>
+    <div class="form-row" style="margin-top: 0.75rem;">
+      <label for="property-index-custom">Custom field</label>
+      <input type="text" id="property-index-custom" placeholder="field_name">
+      <button type="button" class="btn btn-sm" id="btn-property-index-add">Add</button>
+    </div>
+    <div class="btn-group" style="margin-top: 0.75rem;">
+      <button type="button" class="btn btn-primary" id="btn-save-property-indexes">Save indexes on members</button>
+    </div>
+    <p id="property-index-msg" class="meta" style="margin-top: 0.5rem;"></p>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Preview map</h2>
+    {% if not has_static_tiles %}
+    <p class="meta">No static tiles yet — preview uses <strong>dynamic</strong> tiles (merged from all members).</p>
+    {% endif %}
+    <div id="map" class="map-container" style="min-height: 320px;">
+      <div class="map-controls">
+        {% include '_basemap_selector.html' %}
+      </div>
+    </div>
+  </div>
+{% endblock %}
+{% block script %}
+  <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
+  <script>
+    const base = {{ base | tojson }};
+    const collectionId = {{ collection_id | tojson }};
+    const hasStaticTiles = {{ has_static_tiles | tojson }};
+    const tilesRevision = {{ tiles_revision | tojson }};
+    const dynamicRevision = {{ dynamic_revision | tojson }};
+    const staticMinzoom = {{ static_minzoom | tojson }};
+    const staticMaxzoom = {{ static_maxzoom | tojson }};
+    const tileLayerId = {{ tile_layer_id | tojson }};
+    const extent = {{ extent_geojson | tojson if extent_geojson else 'null' }};
+    function tileUrlWithRevision(path, revision) {
+      if (!revision) return path;
+      return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'v=' + encodeURIComponent(revision);
+    }
+    const tileUrlStatic = hasStaticTiles && tilesRevision
+      ? tileUrlWithRevision(base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf', tilesRevision)
+      : (hasStaticTiles ? base + '/collections/' + collectionId + '/tiles/static/{z}/{x}/{y}.pbf' : null);
+    const tileUrlDynamic = tileUrlWithRevision(
+      base + '/collections/' + collectionId + '/tiles/dynamic/{z}/{x}/{y}.pbf',
+      dynamicRevision
+    );
+    const propertyIndexFieldsInitial = {{ (property_index_fields or []) | tojson }};
+
+    function memberIds() {
+      return Array.from(document.querySelectorAll('#members-body tr[data-cid]'))
+        .map(tr => tr.getAttribute('data-cid'));
+    }
+
+    function rebindRow(tr) {
+      tr.querySelector('.btn-remove-member').onclick = function() {
+        if (confirm('Remove ' + tr.getAttribute('data-cid') + ' from composite?')) tr.remove();
+      };
+      tr.querySelector('.btn-move-up').onclick = function() {
+        const prev = tr.previousElementSibling;
+        if (prev) tr.parentNode.insertBefore(tr, prev);
+      };
+      tr.querySelector('.btn-move-down').onclick = function() {
+        const next = tr.nextElementSibling;
+        if (next) tr.parentNode.insertBefore(next, tr);
+      };
+    }
+
+    document.querySelectorAll('#members-body tr[data-cid]').forEach(rebindRow);
+
+    document.getElementById('btn-add-member').onclick = function() {
+      const sel = document.getElementById('add-member-select');
+      const cid = sel.value;
+      if (!cid) return;
+      if (memberIds().includes(cid)) { alert('Already a member'); return; }
+      const tbody = document.getElementById('members-body');
+      const tr = document.createElement('tr');
+      tr.setAttribute('data-cid', cid);
+      tr.innerHTML = `
+        <td class="order-cell">
+          <button type="button" class="btn btn-sm btn-move-up">↑</button>
+          <button type="button" class="btn btn-sm btn-move-down">↓</button>
+        </td>
+        <td><code>${cid}</code> <span class="meta">(new)</span></td>
+        <td>—</td>
+        <td><span class="meta">check after save</span></td>
+        <td><button type="button" class="btn btn-sm btn-remove-member">Remove</button></td>`;
+      tbody.appendChild(tr);
+      rebindRow(tr);
+      sel.value = '';
+    };
+
+    document.getElementById('btn-save-metadata').onclick = function() {
+      const body = {
+        title: document.getElementById('edit-title').value.trim() || null,
+        description: document.getElementById('edit-description').value.trim() || null
+      };
+      fetch(base + '/collections/' + encodeURIComponent(collectionId), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(r => {
+        if (!r.ok) return r.json().then(j => Promise.reject(j));
+        document.getElementById('metadata-msg').textContent = 'Metadata saved.';
+      }).catch(e => alert('Error: ' + (e.detail || JSON.stringify(e))));
+    };
+
+    document.getElementById('btn-save-members').onclick = function() {
+      const ids = memberIds();
+      if (!ids.length) { alert('Add at least one member'); return; }
+      const body = { composite_members: ids.map(id => ({ collection_id: id })) };
+      fetch(base + '/collections/' + encodeURIComponent(collectionId), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(r => {
+        if (!r.ok) return r.json().then(j => Promise.reject(j));
+        return fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/composite/invalidate-tiles-cache', { method: 'POST' });
+      }).then(() => {
+        document.getElementById('members-save-msg').textContent = 'Members saved. Reloading…';
+        location.reload();
+      }).catch(e => alert('Error: ' + (e.detail || JSON.stringify(e))));
+    };
+
+    document.getElementById('btn-invalidate-cache').onclick = function() {
+      fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/composite/invalidate-tiles-cache', { method: 'POST' })
+        .then(r => {
+          if (!r.ok) return r.json().then(j => Promise.reject(j));
+          document.getElementById('composite-tiles-msg').textContent = 'Tile cache invalidated.';
+        })
+        .catch(e => alert('Error: ' + (e.detail || JSON.stringify(e))));
+    };
+
+    (function initMap() {
+      var googleKey = {{ google_maps_api_key | default('') | tojson }};
+      var BASEMAPS = GeofastmapUtils.buildBasemaps(base, googleKey);
+      var basemapList = GeofastmapUtils.basemapListFromConfig(BASEMAPS);
+      GeofastmapUtils.populateBasemapSelect(document.getElementById('map-basemap'), basemapList);
+      var map = new maplibregl.Map({
+        container: 'map',
+        style: GeofastmapUtils.emptyMapStyle(),
+        center: [0, 20],
+        zoom: 2
+      });
+      map.on('load', function() {
+        GeofastmapUtils.applyBasemapToMap(map, BASEMAPS[basemapList[0].id]);
+        if (tileUrlStatic) {
+          var s = GeofastmapUtils.specToPaint({});
+          map.addSource('tiles', { type: 'vector', tiles: [tileUrlStatic], minzoom: staticMinzoom, maxzoom: staticMaxzoom });
+          map.addLayer({
+            id: 'layer',
+            type: 'fill',
+            source: 'tiles',
+            'source-layer': tileLayerId,
+            filter: GeofastmapUtils.notPointFilter,
+            paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity }
+          });
+          map.addLayer({
+            id: 'layer-line',
+            type: 'line',
+            source: 'tiles',
+            'source-layer': tileLayerId,
+            filter: GeofastmapUtils.notPointFilter,
+            paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth }
+          });
+        } else {
+          var s2 = GeofastmapUtils.specToPaint({});
+          map.addSource('tiles', { type: 'vector', tiles: [tileUrlDynamic], minzoom: staticMinzoom, maxzoom: staticMaxzoom });
+          map.addLayer({
+            id: 'layer', type: 'fill', source: 'tiles', 'source-layer': tileLayerId,
+            filter: GeofastmapUtils.notPointFilter,
+            paint: { 'fill-color': s2.fillColor, 'fill-opacity': s2.fillOpacity }
+          });
+          map.addLayer({
+            id: 'layer-line', type: 'line', source: 'tiles', 'source-layer': tileLayerId,
+            filter: GeofastmapUtils.notPointFilter,
+            paint: { 'line-color': s2.lineColor, 'line-width': s2.lineWidth }
+          });
+        }
+        if (extent && extent.bbox && extent.bbox[0] && extent.bbox[0].length >= 4) {
+          var b = extent.bbox[0];
+          if (Math.abs(b[2] - b[0]) > 1e-9 && Math.abs(b[3] - b[1]) > 1e-9) {
+            map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40 });
+          }
+        }
+      });
+      document.getElementById('map-basemap').onchange = function() {
+        var cfg = BASEMAPS[this.value];
+        if (cfg) GeofastmapUtils.applyBasemapToMap(map, cfg);
+      };
+    })();
+
+    (function initPropertyIndexes() {
+      var selected = propertyIndexFieldsInitial.slice();
+      var box = document.getElementById('property-index-checkboxes');
+      var labelEl = document.getElementById('property-index-selected-label');
+      var msgEl = document.getElementById('property-index-msg');
+      function renderSelected() {
+        labelEl.textContent = selected.length ? selected.join(', ') : '—';
+        if (!box) return;
+        box.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
+          cb.checked = selected.indexOf(cb.value) >= 0;
+        });
+      }
+      function toggleField(name, on) {
+        var i = selected.indexOf(name);
+        if (on && i < 0) selected.push(name);
+        if (!on && i >= 0) selected.splice(i, 1);
+        renderSelected();
+      }
+      function addCheckbox(name) {
+        if (!name || box.querySelector('input[value="' + name.replace(/"/g, '') + '"]')) return;
+        var lbl = document.createElement('label');
+        lbl.className = 'checkbox-inline';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = name;
+        cb.checked = selected.indexOf(name) >= 0;
+        cb.onchange = function() { toggleField(name, cb.checked); };
+        lbl.appendChild(cb);
+        lbl.appendChild(document.createTextNode(' ' + name));
+        box.appendChild(lbl);
+      }
+      fetch(base + '/collections/' + encodeURIComponent(collectionId) + '/queryables', {
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' }
+      }).then(function(r) { return r.ok ? r.json() : { properties: [] }; })
+        .then(function(data) {
+          (data.properties || []).forEach(addCheckbox);
+          selected.forEach(addCheckbox);
+          renderSelected();
+        });
+      document.getElementById('btn-property-index-add').onclick = function() {
+        var raw = document.getElementById('property-index-custom').value.trim();
+        if (!raw || !/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(raw)) {
+          alert('Invalid field name');
+          return;
+        }
+        addCheckbox(raw);
+        toggleField(raw, true);
+        document.getElementById('property-index-custom').value = '';
+      };
+      document.getElementById('btn-save-property-indexes').onclick = function() {
+        msgEl.textContent = 'Queueing index job on members…';
+        fetch(base + '/collections/' + encodeURIComponent(collectionId), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ property_index_fields: selected })
+        }).then(function(r) {
+          if (!r.ok) return r.json().then(function(j) { throw j; });
+          return r.json();
+        }).then(function(data) {
+          var jobId = data && data.property_index_job_id;
+          if (!jobId) {
+            msgEl.textContent = 'Indexes saved.';
+            return;
+          }
+          msgEl.innerHTML = 'Index job queued. <a href="' + base + '/jobs/' + encodeURIComponent(jobId) + '?f=html">Watch job</a>';
+          function poll() {
+            fetch(base + '/jobs/' + encodeURIComponent(jobId), { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+              .then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(job) {
+                if (!job) return;
+                var st = job.status || '';
+                var msg = job.message || '';
+                msgEl.textContent = st + (msg ? ': ' + msg : '');
+                if (st === 'pending' || st === 'running') setTimeout(poll, 2000);
+              }).catch(function() {});
+          }
+          poll();
+        }).catch(function(e) { alert('Error: ' + (e.detail || JSON.stringify(e))); });
+      };
+    })();
+  </script>
+{% endblock %}

@@ -1,11 +1,13 @@
-"""OGC API Tiles: static MBTiles build + serve (ZXY and file), TileJSON with dynamic tiles (PostGIS MVT or tippecanoe worker)."""
+"""OGC API Tiles: static MBTiles build + serve (ZXY), TileJSON with dynamic tiles (DB retrieve + Python MVT)."""
 from __future__ import annotations
 
 import asyncio
 import gzip
 import json
+import logging
 import os
 import re
+from contextvars import ContextVar
 from urllib.parse import urlencode
 from datetime import datetime
 from pathlib import Path
@@ -22,9 +24,7 @@ from app.api.deps import get_current_user_optional
 from app.core.config import get_settings
 from app.core.html import html_response, wants_html
 from app.core.permissions import can_edit_collection, can_see_collection
-from app.utils.datetime_parse import parse_datetime_param
 from app.utils.geo import mvt_layer_name
-from app.utils.property_filters import PropertyFilter, parse_filter_param
 from app.crud import collection_tiles as tiles_crud
 from app.crud import collections as collections_crud
 from app.db.session import get_db
@@ -47,10 +47,148 @@ from app.services.tile_build_queue import (
     update_tile_build_job,
 )
 from app.services.collection_tiles_revision import compute_collection_tiles_revision
-from app.services.shadow_import import active_shadow_exclude_job_ids, shadow_read_where_sql
+from app.services.shadow_import import active_shadow_exclude_job_ids
 from app.services.collection_type_guard import ensure_vector_collection
+from app.models.collection import COLLECTION_TYPE_COMPOSITE
+from app.services.composite_collections import (
+    composite_dynamic_revision,
+    composite_has_static_tiles,
+    composite_members_max_feature_updated_at,
+    composite_resolved_static_revision,
+    composite_tiles_revision,
+    member_tile_status,
+    parse_composite_members,
+)
+from app.services.composite_tiles_cache import get_composite_tile, set_composite_tile
+from app.services.mvt_merge import merge_mvt_tiles, read_tile_from_mbtiles
+from app.services.static_tiles_path import (
+    read_mbtiles_zoom_range,
+    resolve_mbtiles_path,
+)
 
 router = APIRouter()
+log = logging.getLogger(__name__)
+
+# Bound for the duration of get_tiles_dynamic so nested MVT helpers can gate/cancel.
+_tile_request_ctx: ContextVar[Request | None] = ContextVar("tile_request_ctx", default=None)
+
+
+
+def _filter_geojson_properties(geojson_bytes: bytes, include: set[str]) -> bytes:
+    """Keep only selected property keys (plus id) before MVT encode."""
+    try:
+        data = json.loads(geojson_bytes.decode("utf-8"))
+    except Exception:
+        return geojson_bytes
+    keep = set(include)
+    keep.add("id")
+    for f in data.get("features") or []:
+        props = f.get("properties")
+        if isinstance(props, dict):
+            f["properties"] = {k: v for k, v in props.items() if k in keep}
+    return json.dumps(data, separators=(",", ":")).encode("utf-8")
+
+
+async def _serve_composite_static_tile(
+    db: AsyncSession,
+    composite_id: str,
+    members: list[dict[str, str]],
+    z: int,
+    x: int,
+    y: int,
+) -> bytes:
+    revision = await composite_resolved_static_revision(db, composite_id, members)
+    if not revision:
+        return b""
+    cached = get_composite_tile(composite_id, z, x, y, revision)
+    if cached is not None:
+        return cached
+    own_rec = await tiles_crud.get_collection_tiles(db, composite_id)
+    own_path = resolve_mbtiles_path(composite_id, own_rec.pmtiles_path if own_rec else None)
+    if own_path:
+        raw = await asyncio.to_thread(read_tile_from_mbtiles, own_path, z, x, y)
+        payload = raw if raw else b""
+        set_composite_tile(composite_id, z, x, y, revision, payload)
+        return payload
+    raw_tiles: list[bytes] = []
+    for m in members:
+        cid = m["collection_id"]
+        rec = await tiles_crud.get_collection_tiles(db, cid)
+        if not rec:
+            continue
+        path = resolve_mbtiles_path(cid, rec.pmtiles_path)
+        if not path:
+            continue
+        raw = await asyncio.to_thread(read_tile_from_mbtiles, path, z, x, y)
+        if raw:
+            raw_tiles.append(raw)
+    merged = merge_mvt_tiles(raw_tiles, mvt_layer_name(composite_id), z, x, y)
+    set_composite_tile(composite_id, z, x, y, revision, merged)
+    return merged
+
+
+async def _dynamic_mvt_bytes_for_member(
+    db: AsyncSession,
+    member_id: str,
+    z: int,
+    x: int,
+    y: int,
+) -> bytes:
+    """Fetch member geometries from DB, encode MVT in Python (no PostGIS ST_AsMVT)."""
+    from app.services.db_load_gate import run_dynamic_tile_db
+    from app.services.dynamic_tile_geojson import get_geojson_for_tile
+    from app.services.mvt_encode import encode_geojson_to_mvt
+
+    async def _fetch() -> bytes:
+        return await get_geojson_for_tile(db, member_id, z, x, y)
+
+    async def _busy() -> bytes:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dynamic tile backend busy; retry",
+        )
+
+    try:
+        geojson_bytes = await run_dynamic_tile_db(
+            _tile_request_ctx.get(), _fetch, on_overload=_busy
+        )
+    except ValueError:
+        return b""
+    try:
+        return await asyncio.to_thread(
+            encode_geojson_to_mvt, geojson_bytes, member_id, z, x, y
+        )
+    except Exception:
+        return b""
+
+
+async def _serve_composite_dynamic_tile(
+    db: AsyncSession,
+    composite_id: str,
+    members: list[dict[str, str]],
+    z: int,
+    x: int,
+    y: int,
+) -> bytes:
+    revision = await composite_dynamic_revision(db, members)
+    cache_revision = f"dyn:{revision}"
+    cached = get_composite_tile(composite_id, z, x, y, cache_revision)
+    if cached is not None:
+        return cached
+    raw_tiles: list[bytes] = []
+    for m in members:
+        cid = m["collection_id"]
+        try:
+            tile = await _dynamic_mvt_bytes_for_member(db, cid, z, x, y)
+        except Exception:
+            tile = b""
+        if tile:
+            raw_tiles.append(tile)
+    merged = merge_mvt_tiles(raw_tiles, mvt_layer_name(composite_id), z, x, y)
+    if not merged:
+        merged = await _serve_composite_static_tile(db, composite_id, members, z, x, y)
+    set_composite_tile(composite_id, z, x, y, cache_revision, merged)
+    return merged
 
 
 class TileBuildRequestBody(BaseModel):
@@ -97,6 +235,13 @@ def _static_tile_cache_headers(*, etag: str | None = None, versioned: bool = Fal
 
 def _tile_url_with_revision(base_url: str, collection_id: str, revision: str | None) -> str:
     path = f"{base_url}/collections/{collection_id}/tiles/static/{{z}}/{{x}}/{{y}}.pbf"
+    if not revision:
+        return path
+    return f"{path}?{urlencode({'v': revision})}"
+
+
+def _dynamic_tile_url_with_revision(base_url: str, collection_id: str, revision: str | None) -> str:
+    path = f"{base_url}/collections/{collection_id}/tiles/dynamic/{{z}}/{{x}}/{{y}}.pbf"
     if not revision:
         return path
     return f"{path}?{urlencode({'v': revision})}"
@@ -174,12 +319,9 @@ async def build_tiles(
     if pending_job_id:
         from datetime import datetime, timezone
         job = get_latest_tile_build_job(collection_id)
-        # If job stuck in "pending" or "running" for >30 min, allow re-queue (worker may have died)
-        if job and job.updated_at and job.status in ("pending", "running"):
+        if job and job.status in ("pending", "running") and job.updated_at:
             age_seconds = (datetime.now(timezone.utc) - job.updated_at).total_seconds()
-            if age_seconds > 30 * 60:  # 30 minutes
-                clear_pending(collection_id)
-            else:
+            if age_seconds <= 30 * 60:
                 update_tile_build_job(pending_job_id, message="Tile build")
                 return JSONResponse(
                     status_code=status.HTTP_202_ACCEPTED,
@@ -190,19 +332,19 @@ async def build_tiles(
                         "status_url": f"{base}/jobs/{pending_job_id}",
                     },
                 )
-        else:
-            update_tile_build_job(pending_job_id, message="Tile build")
-            return JSONResponse(
-                status_code=status.HTTP_202_ACCEPTED,
-                content={
-                    "message": "Tile build already queued or in progress.",
-                    "collection_id": collection_id,
-                    "job_id": pending_job_id,
-                    "status_url": f"{base}/jobs/{pending_job_id}",
-                },
-            )
+        clear_pending(collection_id)
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
-    max_updated = await tiles_crud.get_max_feature_updated_at(db, collection_id)
+    is_composite = getattr(collection, "collection_type", "") == COLLECTION_TYPE_COMPOSITE
+    if is_composite:
+        members = parse_composite_members(getattr(collection, "composite_members", None))
+        if not members:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Composite has no members; add members before building tiles.",
+            )
+        max_updated = await composite_members_max_feature_updated_at(db, members)
+    else:
+        max_updated = await tiles_crud.get_max_feature_updated_at(db, collection_id)
     need_build = False
     if max_updated is None and rec and rec.built_at:
         need_build = True  # clear previous build
@@ -212,12 +354,17 @@ async def build_tiles(
     if body is not None and body.force:
         need_build = True
 
+    artifact_path = resolve_mbtiles_path(collection_id, rec.pmtiles_path if rec else None)
+    if not need_build and artifact_path is None:
+        need_build = True
+
     if not need_build:
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content={
                 "message": "No build needed; tiles are up to date.",
                 "collection_id": collection_id,
+                "tiles_path": str(artifact_path) if artifact_path else None,
             },
         )
     # Build options from request body (None = use defaults in worker)
@@ -237,8 +384,18 @@ async def build_tiles(
             no_point_dropping=body.no_point_dropping,
         )
     job = create_tile_build_job(collection_id, owner_id=current_user.id if current_user else None)
-    update_tile_build_job(job.job_id, message="Tile build")
-    enqueued = enqueue_tile_build(collection_id, job.job_id, options=options)
+    start_msg = (
+        f"Queued composite tile build ({len(members)} members)"
+        if is_composite
+        else "Queued tile build"
+    )
+    update_tile_build_job(job.job_id, message=start_msg)
+    enqueued = enqueue_tile_build(
+        collection_id,
+        job.job_id,
+        options=options,
+        is_composite=is_composite,
+    )
     if not enqueued:
         # Race: another request set pending; return that job
         existing = get_pending_job_id(collection_id)
@@ -364,16 +521,48 @@ async def get_tiles_tilejson(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     base = _base_url(request)
     settings = get_settings()
-    rec = await tiles_crud.get_collection_tiles(db, collection_id)
-    has_static = bool(rec and rec.pmtiles_path and Path(rec.pmtiles_path).exists())
-    tiles_revision = compute_collection_tiles_revision(collection_id, rec.pmtiles_path if rec else None)
-    minzoom = rec.minzoom if (rec and rec.minzoom is not None) else 0
-    maxzoom = rec.maxzoom if (rec and rec.maxzoom is not None) else 14
-    # Prefer static ZXY URL when static tiles (MBTiles) exist so clients can use a single tile endpoint
-    tile_urls = [f"{base}/collections/{collection_id}/tiles/dynamic/{{z}}/{{x}}/{{y}}.pbf"]
-    if has_static:
-        tile_urls.insert(0, _tile_url_with_revision(base, collection_id, tiles_revision))
-    layer_id = mvt_layer_name(collection_id)
+    is_composite = getattr(collection, "collection_type", "") == COLLECTION_TYPE_COMPOSITE
+    if is_composite:
+        members = parse_composite_members(getattr(collection, "composite_members", None))
+        statuses = await member_tile_status(db, members)
+        has_static = await composite_has_static_tiles(db, collection_id, members)
+        tiles_revision = await composite_resolved_static_revision(db, collection_id, members)
+        own_rec = await tiles_crud.get_collection_tiles(db, collection_id)
+        own_path = resolve_mbtiles_path(collection_id, own_rec.pmtiles_path if own_rec else None)
+        if own_path:
+            if own_rec and own_rec.minzoom is not None and own_rec.maxzoom is not None:
+                minzoom = own_rec.minzoom
+                maxzoom = own_rec.maxzoom
+            else:
+                minzoom, maxzoom = read_mbtiles_zoom_range(own_path)
+        else:
+            minzoom = min((s["minzoom"] for s in statuses if s.get("minzoom") is not None), default=0)
+            maxzoom = max((s["maxzoom"] for s in statuses if s.get("maxzoom") is not None), default=14)
+        dyn_revision = await composite_dynamic_revision(db, members)
+        tile_urls = [_dynamic_tile_url_with_revision(base, collection_id, dyn_revision)]
+        if has_static:
+            tile_urls.insert(0, _tile_url_with_revision(base, collection_id, tiles_revision))
+        layer_id = mvt_layer_name(collection_id)
+    else:
+        rec = await tiles_crud.get_collection_tiles(db, collection_id)
+        resolved = resolve_mbtiles_path(collection_id, rec.pmtiles_path if rec else None)
+        has_static = resolved is not None
+        tiles_revision = (
+            (rec.tiles_revision if rec else None)
+            or compute_collection_tiles_revision(collection_id, str(resolved) if resolved else None)
+        )
+        if resolved and rec and rec.minzoom is not None and rec.maxzoom is not None:
+            minzoom = rec.minzoom
+            maxzoom = rec.maxzoom
+        elif resolved:
+            minzoom, maxzoom = read_mbtiles_zoom_range(resolved)
+        else:
+            minzoom = 0
+            maxzoom = 14
+        tile_urls = [f"{base}/collections/{collection_id}/tiles/dynamic/{{z}}/{{x}}/{{y}}.pbf"]
+        if has_static:
+            tile_urls.insert(0, _tile_url_with_revision(base, collection_id, tiles_revision))
+        layer_id = mvt_layer_name(collection_id)
     tilejson = {
         "tilejson": "2.2.0",
         "name": collection_id,
@@ -389,164 +578,95 @@ async def get_tiles_tilejson(
     return JSONResponse(content=tilejson)
 
 
-# Max property keys to expose as separate MVT attributes (avoids huge dynamic SQL)
-_MVT_MAX_PROPERTY_KEYS = 200
-
-
-def _pg_quote_identifier(name: str) -> str:
-    """Escape a string for use as PostgreSQL double-quoted identifier."""
-    return '"' + name.replace('"', '""') + '"'
-
-
-async def _get_property_keys(
-    db: AsyncSession,
-    collection_id: str,
-    feature_ids: list[str] | None = None,
-) -> list[str]:
-    """Return distinct top-level keys from features.properties.
-    When feature_ids is given, only those rows are scanned (fast for single-item/small id list).
-    """
-    if feature_ids:
-        r = await db.execute(
-            text("""
-            SELECT DISTINCT key
-            FROM features, jsonb_object_keys(properties) AS key
-            WHERE collection_id = :cid AND id = ANY(:ids)
-            ORDER BY 1
-            LIMIT :limit
-            """),
-            {"cid": collection_id, "ids": feature_ids, "limit": _MVT_MAX_PROPERTY_KEYS},
-        )
-    else:
-        r = await db.execute(
-            text("""
-            SELECT DISTINCT key
-            FROM features, jsonb_object_keys(properties) AS key
-            WHERE collection_id = :cid
-            ORDER BY 1
-            LIMIT :limit
-            """),
-            {"cid": collection_id, "limit": _MVT_MAX_PROPERTY_KEYS},
-        )
-    return [row[0] for row in r.fetchall()]
-
-
-def _mvt_property_select_fragment(keys: list[str]) -> str:
-    """Build SQL fragment: (properties ->> 'k1') AS "k1", (properties ->> 'k2') AS "k2", ..."""
-    if not keys:
-        return ""
-    parts = []
-    for k in keys:
-        # Key as literal for ->> ; alias as quoted identifier (safe for MVT tag names)
-        alias = _pg_quote_identifier(k)
-        parts.append(f"(properties ->> {repr(k)}) AS {alias}")
-    return ", ".join(parts)
-
 
 def _safe_json_key(s: str) -> str:
     """Allow only alphanumeric and underscore for JSON key (SQL injection safety)."""
     return "".join(c for c in s if c.isalnum() or c == "_")[:200]
 
 
-def _order_by_sql(
-    sortby: str | None, sortdesc: bool
-) -> tuple[str, dict]:
-    """Build ORDER BY fragment for dynamic tile (same semantics as GET items). Returns (sql_fragment, params)."""
-    if not sortby or sortby == "id":
-        return ("id DESC" if sortdesc else "id ASC", {})
-    if sortby == "created_at":
-        return ("created_at DESC" if sortdesc else "created_at ASC", {})
-    key = _safe_json_key(sortby)
-    if not key:
-        return ("id ASC", {})
-    direction = "DESC" if sortdesc else "ASC"
-    return (f"(properties ->> :order_key) {direction}", {"order_key": key})
-
-
-def _build_dynamic_tile_where(
-    *,
-    bbox_tuple: tuple[float, float, float, float] | None,
-    dt_start: datetime | None,
-    dt_end: datetime | None,
-    feature_ids: list[str] | None,
-    structured_filters: list[PropertyFilter] | None,
-    fulltext_q: str | None,
-) -> tuple[str, dict]:
-    """Build extra WHERE conditions and params for dynamic tile query. Returns (sql_fragment, params)."""
-    conditions: list[str] = []
-    params: dict = {}
-    if bbox_tuple is not None:
-        minx, miny, maxx, maxy = bbox_tuple
-        conditions.append(
-            "AND ST_Intersects(geometry, ST_MakeEnvelope(:bbox_minx, :bbox_miny, :bbox_maxx, :bbox_maxy, 4326))"
-        )
-        params["bbox_minx"] = minx
-        params["bbox_miny"] = miny
-        params["bbox_maxx"] = maxx
-        params["bbox_maxy"] = maxy
-    if dt_start is not None:
-        conditions.append("AND created_at >= :dt_start")
-        params["dt_start"] = dt_start
-    if dt_end is not None:
-        conditions.append("AND created_at <= :dt_end")
-        params["dt_end"] = dt_end
-    if feature_ids:
-        conditions.append("AND id = ANY(:ids)")
-        params["ids"] = feature_ids
-    for i, pf in enumerate(structured_filters or []):
-        key_safe = _safe_json_key(pf.key)
-        if not key_safe:
-            continue
-        op = pf.op.value
-        params[f"fk{i}"] = key_safe
-        params[f"fv{i}"] = pf.value
-        if op == "eq":
-            conditions.append(f"AND (properties ->> :fk{i}) = :fv{i}")
-        elif op == "ne":
-            conditions.append(f"AND (properties ->> :fk{i}) IS DISTINCT FROM :fv{i}")
-        elif op in ("like", "ilike"):
-            esc = "ILIKE" if op == "ilike" else "LIKE"
-            conditions.append(f"AND (properties ->> :fk{i}) IS NOT NULL AND (properties ->> :fk{i}) {esc} :fv{i} ESCAPE '\\\\'")
-        elif op in ("gt", "gte", "lt", "lte"):
-            try:
-                num_val = float(pf.value)
-            except ValueError:
-                num_val = 0.0
-            params[f"fv{i}_num"] = num_val
-            if op == "gt":
-                conditions.append(f"AND (properties ->> :fk{i}) IS NOT NULL AND (properties ->> :fk{i})::float > :fv{i}_num")
-            elif op == "gte":
-                conditions.append(f"AND (properties ->> :fk{i}) IS NOT NULL AND (properties ->> :fk{i})::float >= :fv{i}_num")
-            elif op == "lt":
-                conditions.append(f"AND (properties ->> :fk{i}) IS NOT NULL AND (properties ->> :fk{i})::float < :fv{i}_num")
-            else:  # lte
-                conditions.append(f"AND (properties ->> :fk{i}) IS NOT NULL AND (properties ->> :fk{i})::float <= :fv{i}_num")
-        else:
-            conditions.append(f"AND (properties ->> :fk{i}) = :fv{i}")
-    if fulltext_q and fulltext_q.strip():
-        q_esc = fulltext_q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        pattern = f"%{q_esc}%"
-        conditions.append("AND properties_flat IS NOT NULL AND properties_flat ILIKE :q_pattern ESCAPE '\\\\'")
-        params["q_pattern"] = pattern
-    return (" ".join(conditions), params)
-
-
-def _merge_shadow_tile_filter(
+async def _serve_composite_filtered_dynamic_tile(
+    db: AsyncSession,
     collection_id: str,
-    extra_where: str,
-    extra_params: dict,
-) -> tuple[str, dict]:
-    jobs = active_shadow_exclude_job_ids(collection_id)
-    if not jobs:
-        return extra_where, extra_params
-    clause, param = shadow_read_where_sql()
-    return extra_where + " " + clause, {**extra_params, param: jobs}
+    composite_members: list[dict[str, str]],
+    z: int,
+    x: int,
+    y: int,
+    *,
+    limit: int | None,
+    offset: int,
+    sortby: str | None,
+    sortdesc: bool,
+    bbox: str | None,
+    datetime_param: str | None,
+    filter_param: list[str] | None,
+    q: str | None,
+    ids: str | None,
+    properties: str | None,
+    params_key: str | None,
+    cache_headers: dict[str, str],
+    cache_hit_headers: dict[str, str],
+) -> Response:
+    """Filtered composite dynamic tile via search-result GeoJSON + in-process MVT encode."""
+    from app.services.dynamic_tile_geojson import get_geojson_for_tile
+    from app.services.mvt_encode import encode_geojson_to_mvt
+
+    settings = get_settings()
+    if params_key and settings.tiles_dynamic_cache_with_params:
+        cached = get_tile_with_params(collection_id, z, x, y, params_key)
+        if cached is not None:
+            return Response(
+                content=cached,
+                media_type="application/x-protobuf",
+                headers=cache_hit_headers,
+            )
+    ids_list = [i.strip() for i in ids.split(",") if i.strip()] if ids else None
+    bbox_tuple = None
+    if bbox:
+        parts = [p.strip() for p in bbox.split(",")]
+        if len(parts) == 4:
+            try:
+                bbox_tuple = (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+            except ValueError:
+                pass
+    geojson_bytes = await get_geojson_for_tile(
+        db,
+        collection_id,
+        z,
+        x,
+        y,
+        limit=limit,
+        offset=offset,
+        sortby=sortby,
+        sortdesc=sortdesc,
+        bbox_user=bbox_tuple,
+        datetime_param=datetime_param,
+        filter_param=filter_param,
+        q=q,
+        ids=ids_list,
+    )
+    try:
+        payload = await asyncio.to_thread(
+            encode_geojson_to_mvt, geojson_bytes, collection_id, z, x, y
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Composite tile build failed: {e!s}",
+        ) from e
+    if params_key is not None:
+        set_tile_with_params(collection_id, z, x, y, params_key, payload)
+    return Response(
+        content=payload,
+        media_type="application/x-protobuf",
+        headers=cache_headers,
+    )
+
 
 
 @router.get(
     "/{collection_id}/tiles/dynamic/{z:int}/{x:int}/{y:int}.pbf",
     summary="Dynamic vector tile (PostGIS MVT or tippecanoe worker)",
-    description="Returns Mapbox Vector Tile. Same query params as GET items (limit, offset, sortby, sortdesc, bbox, datetime, filter, q) plus ids and properties. When TILES_DYNAMIC_WORKER_URL is set, tiles are generated by the worker (DB + tippecanoe); otherwise in-process PostGIS MVT (ids/properties only).",
+    description="Returns Mapbox Vector Tile. Same query params as GET items. DB only retrieves geometries; MVT is encoded in Python (or LIFO queue workers when TILES_DYNAMIC_USE_QUEUE is on). Optional TILES_DYNAMIC_WORKER_URL HTTP worker.",
 )
 async def get_tiles_dynamic(
     request: Request,
@@ -567,6 +687,51 @@ async def get_tiles_dynamic(
     ids: str | None = Query(None, description="Comma-separated feature ids (e.g. single item view)."),
     properties: str | None = Query(None),
 ):
+    token = _tile_request_ctx.set(request)
+    try:
+        return await _get_tiles_dynamic_impl(
+            request,
+            collection_id,
+            z,
+            x,
+            y,
+            db,
+            current_user,
+            limit=limit,
+            offset=offset,
+            sortby=sortby,
+            sortdesc=sortdesc,
+            bbox=bbox,
+            datetime_param=datetime_param,
+            filter_param=filter_param,
+            q=q,
+            ids=ids,
+            properties=properties,
+        )
+    finally:
+        _tile_request_ctx.reset(token)
+
+
+async def _get_tiles_dynamic_impl(
+    request: Request,
+    collection_id: str,
+    z: int,
+    x: int,
+    y: int,
+    db: AsyncSession,
+    current_user,
+    *,
+    limit: int | None,
+    offset: int,
+    sortby: str | None,
+    sortdesc: bool,
+    bbox: str | None,
+    datetime_param: str | None,
+    filter_param: list[str] | None,
+    q: str | None,
+    ids: str | None,
+    properties: str | None,
+):
     if z < 0 or z > 22:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid z")
     if x < 0 or x >= (1 << z) or y < 0 or y >= (1 << z):
@@ -580,15 +745,47 @@ async def get_tiles_dynamic(
     cache_headers = _dynamic_tile_cache_headers_for_zoom(z)
     cache_hit_headers = {**cache_headers, "X-From-Cache": "true"}
 
+    is_composite = getattr(collection, "collection_type", "") == COLLECTION_TYPE_COMPOSITE
+    composite_members: list[dict[str, str]] | None = None
+    if is_composite:
+        composite_members = parse_composite_members(getattr(collection, "composite_members", None))
+
     feature_ids: list[str] | None = None
     if ids:
         feature_ids = [i.strip() for i in ids.split(",") if i.strip()]
     props_include: list[str] | None = None
     if properties:
         props_include = [p.strip() for p in properties.split(",") if p.strip()]
+    # Preserve original query params for cache keys so items list warm + tile URLs with ?q=
+    # share the same Redis entry (exact-token rewrite below must not change the key).
+    orig_q = q
+    orig_ids = ids
+
     # Full-text search (q) requires at least 4 characters; ignore short q to avoid slow queries.
     if q and q.strip() and len(q.strip()) < 4:
         q = None
+        orig_q = None
+
+    # Exact tokens (CAR codes, etc.): resolve once to ids for SQL/MVT fallback paths.
+    # Search-cache path still keys on original ?q= (showcase contract for other apps).
+    if q and q.strip() and not feature_ids:
+        from app.crud import features as features_crud
+        from app.services.collection_property_indexes import normalize_property_index_fields
+
+        if features_crud.is_exact_search_token(q):
+            resolved = await features_crud.resolve_exact_search_feature_ids(
+                db,
+                collection_id,
+                q.strip(),
+                property_keys=normalize_property_index_fields(
+                    getattr(collection, "property_index_fields", None)
+                ),
+                limit=min(limit or settings.items_default_limit, 50),
+                exclude_bulk_job_ids=active_shadow_exclude_job_ids(collection_id) or None,
+            )
+            feature_ids = resolved
+            q = None
+            ids = ",".join(feature_ids) if feature_ids else ""
 
     has_query_params = (
         limit is not None
@@ -598,10 +795,53 @@ async def get_tiles_dynamic(
         or (bbox is not None and bbox.strip())
         or (datetime_param is not None and datetime_param.strip())
         or bool(filter_param)
-        or (q is not None and q.strip())
+        or (orig_q is not None and orig_q.strip())
         or bool(feature_ids)
+        or (orig_ids is not None and orig_ids.strip())
         or bool(props_include)
     )
+
+    if is_composite and composite_members is not None:
+        if not composite_members:
+            return Response(content=b"", media_type="application/x-protobuf", headers=cache_headers)
+        if not has_query_params:
+            tile_bytes = await _serve_composite_dynamic_tile(db, collection_id, composite_members, z, x, y)
+            return Response(content=tile_bytes, media_type="application/x-protobuf", headers=cache_headers)
+        # Filtered / single-item composite tiles (e.g. ?ids=member:feature-uuid).
+        # Never fall through to the vector search-cache path — composite ids are not native feature ids.
+        params_key = _params_key_from_query(
+            limit=limit,
+            offset=offset,
+            sortby=sortby,
+            sortdesc=sortdesc,
+            bbox=bbox,
+            datetime_param=datetime_param,
+            filter_param=filter_param,
+            q=orig_q,
+            ids=orig_ids,
+            properties=properties,
+        )
+        return await _serve_composite_filtered_dynamic_tile(
+            db,
+            collection_id,
+            composite_members,
+            z,
+            x,
+            y,
+            limit=limit,
+            offset=offset,
+            sortby=sortby,
+            sortdesc=sortdesc,
+            bbox=bbox,
+            datetime_param=datetime_param,
+            filter_param=filter_param,
+            q=orig_q,
+            ids=orig_ids or ids,
+            properties=properties,
+            params_key=params_key,
+            cache_headers=cache_headers,
+            cache_hit_headers=cache_hit_headers,
+        )
 
     if not has_query_params:
         cached = get_cached_tile(collection_id, z, x, y)
@@ -612,7 +852,8 @@ async def get_tiles_dynamic(
                 headers=cache_hit_headers,
             )
 
-    # Compute params_key whenever we have query params (needed for queue mode + param tile cache)
+    # Compute params_key from the *client* query (orig_q / orig_ids) so the same URL
+    # used by GET items warms the cache other apps hit via /tiles/dynamic?...&q=...
     params_key: str | None = None
     if has_query_params:
         params_key = _params_key_from_query(
@@ -623,8 +864,8 @@ async def get_tiles_dynamic(
             bbox=bbox,
             datetime_param=datetime_param,
             filter_param=filter_param,
-            q=q,
-            ids=ids,
+            q=orig_q,
+            ids=orig_ids,
             properties=properties,
         )
         if settings.tiles_dynamic_cache_with_params:
@@ -636,34 +877,68 @@ async def get_tiles_dynamic(
                     headers=cache_hit_headers,
                 )
 
-    # Query-once path: ensure search result in Redis (single-flight), build tiles from cache. No repeated DB.
+    # Query-once path: cache matching GeoJSON once, encode each tile in-process (or via
+    # tile workers when tiles_dynamic_use_queue is on). Used for items-table sync AND for
+    # property filters (car_code:eq) so we do not run heavy per-tile ST_Union under the
+    # concurrency gate (which returned empty tiles that Redis then cached as holes).
     use_queue = getattr(settings, "tiles_dynamic_use_queue", False)
     search_cache_ttl = getattr(settings, "tiles_search_result_cache_ttl_seconds", 300)
-    use_search_cache = has_query_params and params_key is not None and search_cache_ttl > 0
+    list_sync_mode = (
+        limit is not None
+        or offset != 0
+        or (sortby is not None and str(sortby).strip())
+        or (orig_q is not None and str(orig_q).strip())
+        or (orig_ids is not None and str(orig_ids).strip())
+    )
+    filter_only_mode = bool(filter_param) and not list_sync_mode and not bool(feature_ids)
+    use_search_cache = (
+        has_query_params
+        and params_key is not None
+        and search_cache_ttl > 0
+        and (list_sync_mode or filter_only_mode)
+    )
     if use_search_cache:
         from app.services.search_result_cache import ensure_search_result_cached
         from app.services.dynamic_tile_cache import get_search_result
         from app.services.dynamic_tile_geojson import filter_geojson_to_tile_bbox
+        from app.services.db_load_gate import run_dynamic_tile_db
         from app.services.mvt_encode import encode_geojson_to_mvt
 
-        ok = await ensure_search_result_cached(
-            db,
-            collection_id,
-            params_key,
-            limit=limit or settings.items_default_limit,
-            offset=offset,
-            sortby=sortby,
-            sortdesc=sortdesc,
-            bbox=bbox,
-            datetime_param=datetime_param,
-            filter_param=filter_param,
-            q=q,
-            ids=ids,
-        )
+        # Farm / property filters: pull all matching features (not the items default page of 100).
+        if filter_only_mode:
+            search_limit = int(
+                getattr(settings, "tiles_filter_max_features", 0)
+                or max(int(settings.tiles_mvt_max_features), int(settings.items_max_limit), 10000)
+            )
+        else:
+            search_limit = limit or settings.items_default_limit
+
+        async def _cache_search() -> bool:
+            # Fill with original client params (exact q resolved inside get_search_result_geojson).
+            return await ensure_search_result_cached(
+                db,
+                collection_id,
+                params_key,
+                limit=search_limit,
+                offset=offset,
+                sortby=sortby,
+                sortdesc=sortdesc,
+                bbox=bbox,
+                datetime_param=datetime_param,
+                filter_param=filter_param,
+                q=orig_q,
+                ids=orig_ids,
+            )
+
+        async def _cache_miss() -> bool:
+            return False
+
+        ok = await run_dynamic_tile_db(request, _cache_search, on_overload=_cache_miss)
         if not ok:
+            # Overloaded while filling search cache — ask client to retry (do not cache hole).
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Search result cache unavailable",
+                detail="Dynamic tile search cache busy; retry",
             )
         # Re-check tile cache (another request may have built it)
         payload = get_tile_with_params(collection_id, z, x, y, params_key)
@@ -691,8 +966,10 @@ async def get_tiles_dynamic(
             except Exception:
                 pass
             try:
-                # In-process MVT encoding (no tippecanoe subprocess)—blazing fast
-                payload = encode_geojson_to_mvt(filtered, collection_id, z, x, y)
+                # Offload CPU encode so the event loop can serve other tile requests.
+                payload = await asyncio.to_thread(
+                    encode_geojson_to_mvt, filtered, collection_id, z, x, y
+                )
                 set_tile_with_params(collection_id, z, x, y, params_key, payload)
                 # Precompute adjacent zooms in background when queue workers are enabled
                 if use_queue:
@@ -747,192 +1024,108 @@ async def get_tiles_dynamic(
             headers=cache_headers,
         )
 
-    # Use same layer name as TileJSON and static tiles (sanitized) so source-layer matches.
-    layer_name = mvt_layer_name(collection_id)
-    max_features = settings.tiles_mvt_max_features
+    # Default path: DB retrieves GeoJSON for the tile bbox only; MVT encode is Python
+    # (no PostGIS ST_AsMVT / ST_AsMVTGeom). Same pattern as filtered search-cache tiles.
+    from app.services.db_load_gate import run_dynamic_tile_db
+    from app.services.dynamic_tile_geojson import get_geojson_for_tile
+    from app.services.mvt_encode import encode_geojson_to_mvt
+
+    bbox_tuple: tuple[float, float, float, float] | None = None
+    if bbox:
+        parts = [p.strip() for p in bbox.split(",")]
+        if len(parts) == 4:
+            try:
+                bbox_tuple = (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+            except ValueError:
+                pass
+
+    async def _fetch_geojson() -> bytes:
+        timeout_sec = getattr(settings, "tiles_dynamic_statement_timeout_seconds", 0) or 0
+        if timeout_sec > 0:
+            await db.execute(text(f"SET LOCAL statement_timeout = {int(timeout_sec * 1000)}"))
+        return await get_geojson_for_tile(
+            db,
+            collection_id,
+            z,
+            x,
+            y,
+            limit=limit,
+            offset=offset,
+            sortby=sortby,
+            sortdesc=sortdesc,
+            bbox_user=bbox_tuple,
+            datetime_param=datetime_param,
+            filter_param=filter_param or None,
+            q=q,
+            ids=feature_ids,
+        )
+
+    async def _busy() -> bytes:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dynamic tile backend busy; retry",
+        )
+
+    try:
+        geojson_bytes = await run_dynamic_tile_db(
+            request, _fetch_geojson, on_overload=_busy
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except Exception as e:
+        await db.rollback()
+        msg = str(e).lower()
+        if any(
+            token in msg
+            for token in (
+                "geom",
+                "geometry",
+                "topology",
+                "invalid",
+                "noding",
+                "self-intersection",
+                "self intersection",
+                "non-noded",
+                "cwring",
+                "isvalid",
+            )
+        ):
+            log.warning(
+                "Dynamic tile GeoJSON fetch failed (empty tile): %s %s/%s/%s err=%s",
+                collection_id,
+                z,
+                x,
+                y,
+                e,
+            )
+            geojson_bytes = b'{"type":"FeatureCollection","features":[]}'
+        else:
+            raise
 
     if props_include:
-        property_keys = [k for k in props_include if _safe_json_key(k) == k][:_MVT_MAX_PROPERTY_KEYS]
-    else:
-        property_keys = await _get_property_keys(db, collection_id, feature_ids)
-    prop_cols = _mvt_property_select_fragment(property_keys)
+        safe_props = {k for k in props_include if _safe_json_key(k) == k}
+        if safe_props:
+            geojson_bytes = _filter_geojson_properties(geojson_bytes, safe_props)
 
-    tile_env = "ST_Transform(ST_TileEnvelope(:z, :x, :y), 4326)"
-    prop_select = f", {prop_cols}" if prop_cols else ""
-
-    only_ids_filter = bool(feature_ids)
-    use_pagination = limit is not None or offset != 0
-
-    if use_pagination:
-        # Same page as GET items: apply limit/offset and item filters first, then clip to tile
-        bbox_tuple: tuple[float, float, float, float] | None = None
-        if bbox:
-            parts = [p.strip() for p in bbox.split(",")]
-            if len(parts) == 4:
-                try:
-                    bbox_tuple = (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
-                except ValueError:
-                    pass
-        dt_start, dt_end = None, None
-        if datetime_param:
-            dt_start, dt_end = parse_datetime_param(datetime_param)
-        filter_list = [x for s in (filter_param or []) for x in s.strip().split("\n") if x.strip()]
-        structured_filters = parse_filter_param(filter_list) if filter_list else []
-        fulltext_q = q.strip() if (q and q.strip() and len(q.strip()) >= 4) else None
-        page_limit = min(limit or settings.items_default_limit, settings.items_max_limit)
-        order_sql, order_params = _order_by_sql(sortby, sortdesc)
-        extra_where, extra_params = _build_dynamic_tile_where(
-            bbox_tuple=bbox_tuple,
-            dt_start=dt_start,
-            dt_end=dt_end,
-            feature_ids=feature_ids,
-            structured_filters=structured_filters,
-            fulltext_q=fulltext_q,
-        )
-        extra_where, extra_params = _merge_shadow_tile_filter(collection_id, extra_where, extra_params)
-        sql = f"""
-        WITH page AS (
-            SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
-            FROM features
-            WHERE collection_id = :cid AND geometry IS NOT NULL
-              {extra_where}
-            GROUP BY id, collection_id
-            ORDER BY {order_sql}
-            LIMIT :page_limit OFFSET :offset
-        )
-        SELECT ST_AsMVT(tile, :layer_name, 4096, 'geom') AS mvt
-        FROM (
-            SELECT
-                page.id{prop_select.replace("(properties ", "(page.properties ") if prop_cols else ""},
-                ST_AsMVTGeom(
-                    ST_Transform(ST_CurveToLine(page.geometry::geometry), 3857),
-                    ST_TileEnvelope(:z, :x, :y),
-                    4096,
-                    256,
-                    true
-                ) AS geom
-            FROM page
-            WHERE ST_Intersects(page.geometry, {tile_env})
-            LIMIT :max_features
-        ) AS tile
-        WHERE tile.geom IS NOT NULL
-        """
-        params = {
-            "layer_name": layer_name,
-            "z": z,
-            "x": x,
-            "y": y,
-            "cid": collection_id,
-            "max_features": max_features,
-            "page_limit": page_limit,
-            "offset": offset,
-            **extra_params,
-            **order_params,
-        }
-    elif only_ids_filter:
-        extra_where, extra_params = _build_dynamic_tile_where(
-            bbox_tuple=None,
-            dt_start=None,
-            dt_end=None,
-            feature_ids=feature_ids,
-            structured_filters=[],
-            fulltext_q=None,
-        )
-        extra_where, extra_params = _merge_shadow_tile_filter(collection_id, extra_where, extra_params)
-        prop_select_by_id = (
-            prop_select.replace("(properties ", "(by_id.properties ") if prop_cols else ""
-        )
-        sql = f"""
-        WITH by_id AS MATERIALIZED (
-            SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
-            FROM features
-            WHERE collection_id = :cid AND id = ANY(:ids) AND geometry IS NOT NULL
-              {extra_where}
-            GROUP BY id, collection_id
-        )
-        SELECT ST_AsMVT(tile, :layer_name, 4096, 'geom') AS mvt
-        FROM (
-            SELECT
-                by_id.id{prop_select_by_id},
-                ST_AsMVTGeom(
-                    ST_Transform(ST_CurveToLine(by_id.geometry::geometry), 3857),
-                    ST_TileEnvelope(:z, :x, :y),
-                    4096,
-                    256,
-                    true
-                ) AS geom
-            FROM by_id
-            WHERE ST_Intersects(by_id.geometry, {tile_env})
-            LIMIT :max_features
-        ) AS tile
-        WHERE tile.geom IS NOT NULL
-        """
-        params = {
-            "layer_name": layer_name,
-            "z": z,
-            "x": x,
-            "y": y,
-            "cid": collection_id,
-            "max_features": max_features,
-            "ids": feature_ids,
-            **extra_params,
-        }
-    else:
-        extra_where, extra_params = _build_dynamic_tile_where(
-            bbox_tuple=None,
-            dt_start=None,
-            dt_end=None,
-            feature_ids=feature_ids,
-            structured_filters=[],
-            fulltext_q=None,
-        )
-        extra_where, extra_params = _merge_shadow_tile_filter(collection_id, extra_where, extra_params)
-        prop_select_feat = prop_select.replace("(properties ", "(feat.properties ") if prop_cols else ""
-        sql = f"""
-        SELECT ST_AsMVT(tile, :layer_name, 4096, 'geom') AS mvt
-        FROM (
-            SELECT
-                feat.id{prop_select_feat},
-                ST_AsMVTGeom(
-                    ST_Transform(ST_CurveToLine(feat.geometry::geometry), 3857),
-                    ST_TileEnvelope(:z, :x, :y),
-                    4096,
-                    256,
-                    true
-                ) AS geom
-            FROM (
-                SELECT id, ST_Union(geometry) AS geometry, (array_agg(properties ORDER BY part_index))[1] AS properties
-                FROM features
-                WHERE collection_id = :cid AND geometry IS NOT NULL
-                  AND ST_Intersects(geometry, {tile_env})
-                  {extra_where}
-                GROUP BY id, collection_id
-            ) AS feat
-            LIMIT :max_features
-        ) AS tile
-        WHERE tile.geom IS NOT NULL
-        """
-        params = {
-            "layer_name": layer_name,
-            "z": z,
-            "x": x,
-            "y": y,
-            "cid": collection_id,
-            "max_features": max_features,
-            **extra_params,
-        }
-    timeout_sec = getattr(settings, "tiles_dynamic_statement_timeout_seconds", 0) or 0
-    if timeout_sec > 0:
-        # SET does not accept bound params; value is from config (integer ms).
-        await db.execute(text(f"SET statement_timeout = {int(timeout_sec * 1000)}"))
     try:
-        result = await db.execute(text(sql), params)
-        row = result.first()
-        mvt = row.mvt if row and row.mvt else None
-        payload = bytes(mvt) if mvt else b""
-    finally:
-        if timeout_sec > 0:
-            await db.execute(text("RESET statement_timeout"))
+        fc = json.loads(geojson_bytes.decode("utf-8"))
+        if not fc.get("features"):
+            payload = b""
+        else:
+            payload = await asyncio.to_thread(
+                encode_geojson_to_mvt, geojson_bytes, collection_id, z, x, y
+            )
+    except Exception as e:
+        log.warning(
+            "Dynamic tile MVT encode failed (empty tile): %s %s/%s/%s err=%s",
+            collection_id,
+            z,
+            x,
+            y,
+            e,
+        )
+        payload = b""
+
     if not has_query_params:
         set_cached_tile(collection_id, z, x, y, payload)
     elif params_key is not None:
@@ -995,13 +1188,52 @@ async def get_tiles_static_zxy(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    if getattr(collection, "collection_type", "") == COLLECTION_TYPE_COMPOSITE:
+        members = parse_composite_members(getattr(collection, "composite_members", None))
+        if not members:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Composite has no members.")
+        own_rec = await tiles_crud.get_collection_tiles(db, collection_id)
+        own_path = resolve_mbtiles_path(collection_id, own_rec.pmtiles_path if own_rec else None)
+        if own_path:
+            tiles_revision = (
+                (own_rec.tiles_revision if own_rec else None)
+                or compute_collection_tiles_revision(collection_id, str(own_path))
+            )
+            version_query = request.query_params.get("v")
+            pinned_version = bool(tiles_revision and version_query and version_query == tiles_revision)
+            cache_headers = _static_tile_cache_headers(etag=tiles_revision, versioned=pinned_version)
+            tile_bytes = await asyncio.to_thread(_read_tile_from_mbtiles, own_path, z, x, y)
+            if tile_bytes is None:
+                tile_bytes = b""
+            return Response(
+                content=tile_bytes,
+                media_type="application/x-protobuf",
+                headers=cache_headers,
+            )
+        statuses = await member_tile_status(db, members)
+        if not any(s.get("has_static_tiles") for s in statuses):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No static tiles built yet. POST /tiles/build on this composite or its members.",
+            )
+        tiles_revision = await composite_resolved_static_revision(db, collection_id, members)
+        version_query = request.query_params.get("v")
+        pinned_version = bool(tiles_revision and version_query and version_query == tiles_revision)
+        cache_headers = _static_tile_cache_headers(etag=tiles_revision, versioned=pinned_version)
+        tile_bytes = await _serve_composite_static_tile(db, collection_id, members, z, x, y)
+        return Response(
+            content=tile_bytes,
+            media_type="application/x-protobuf",
+            headers=cache_headers,
+        )
     rec = await tiles_crud.get_collection_tiles(db, collection_id)
-    if not rec or not rec.pmtiles_path:
+    path = resolve_mbtiles_path(collection_id, rec.pmtiles_path if rec else None)
+    if not path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tiles not built yet. POST to /tiles/build first.")
-    path = Path(rec.pmtiles_path)
-    if not path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tiles file missing.")
-    tiles_revision = compute_collection_tiles_revision(collection_id, rec.pmtiles_path)
+    tiles_revision = (
+        (rec.tiles_revision if rec else None)
+        or compute_collection_tiles_revision(collection_id, str(path))
+    )
     version_query = request.query_params.get("v")
     pinned_version = bool(tiles_revision and version_query and version_query == tiles_revision)
     cache_headers = _static_tile_cache_headers(etag=tiles_revision, versioned=pinned_version)

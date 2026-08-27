@@ -11,8 +11,10 @@ If you need a different project name on one host, run with `-p <project_name>` (
 | `docker-compose.redis.yml` | Redis only |
 | `docker-compose.api.yml` | API only (named volumes for `/data/*`) |
 | `docker-compose.api.nfs.yml` | **Override:** bind-mount host `/data/bulk-uploads`, `/data/tiles`, `/data/rasters` (use with `docker-compose.api.yml`) |
-| `docker-compose.workers.yml` | Bulk, tile, and process workers |
+| `docker-compose.workers.yml` | Bulk, tile, process, and mosaic workers (**no** finalize worker) |
 | `docker-compose.workers.nfs.yml` | **Override:** bind-mount host `/data/bulk-uploads` and `/data/tiles` (use with `docker-compose.workers.yml`) |
+| `docker-compose.finalize-worker.yml` | **API host only:** single bulk finalize consumer (partition swap queue) |
+| `docker-compose.finalize-worker.nfs.yml` | **Override:** bind-mount bulk uploads for finalize worker (use with `finalize-worker.yml`) |
 | `docker-compose.workers.process-only.example.yml` | Example: **only** `process_worker` (optional second host; copy/rename to taste) |
 | `docker-compose.titiler.yml` | TiTiler only (host port **8001**; named volume `geofastmap_rasters`) |
 | `docker-compose.titiler.nfs.yml` | **Override:** bind-mount host **`/data/rasters`** (use with `docker-compose.titiler.yml` on workers / NFS clients) |
@@ -29,6 +31,7 @@ Examples:
 docker compose -f deploy/compose/docker-compose.db.yml up -d --build
 docker compose -f deploy/compose/docker-compose.redis.yml up -d
 docker compose -f deploy/compose/docker-compose.api.yml up -d --build
+docker compose -f deploy/compose/docker-compose.finalize-worker.yml up -d --build   # same host as API only
 docker compose -f deploy/compose/docker-compose.workers.yml up -d --build
 docker compose -f deploy/compose/docker-compose.observability.yml --profile observability up -d
 ```
@@ -73,6 +76,8 @@ To add **only** queue workers on a **small worker machine**, keep Postgres, Redi
 1. Export **`/data/tiles`** and **`/data/bulk-uploads`** (or your real bind-mount paths) from the primary via **NFS** or **SMB** so the worker host mounts them at the **same** paths (e.g. `/data/tiles`).
 2. Copy [`deploy/env/workers.sample`](../env/workers.sample) → `deploy/env/.env.workers` on the worker host; set `DATABASE_URL`, `REDIS_URL`, and storage paths to match.
 3. Run `docker compose -f deploy/compose/docker-compose.workers.yml up -d --build` from the repo on that host.
+
+**Bulk finalize (partition swap):** run **`docker-compose.finalize-worker.yml` only on the API host** — one consumer fleet-wide. Do **not** run it on worker-only machines. If it was started on a worker by mistake: `docker stop geofastmap_finalize_worker && docker rm geofastmap_finalize_worker`.
 
 Use **`docker-compose.workers.process-only.example.yml`** (or your own override) if you want **only** **`process_worker`** on the second host. Full checklist and diagrams: [`docs/lab/geofast-distributed-experiment.md`](../../docs/lab/geofast-distributed-experiment.md) (Phase 2).
 

@@ -15,6 +15,8 @@ TILE_BUILD_QUEUE_KEY = "geofastmap:tile_build_queue"
 TILE_BUILD_LATEST_PREFIX = "geofastmap:tile_build_latest:"
 TILE_BUILD_PENDING_PREFIX = "geofastmap:tile_build_pending:"
 TILE_BUILD_JOB_TTL = 86400 * 7  # 7 days
+# Keep collection lock while tippecanoe / large composite exports run (heartbeats refresh).
+TILE_BUILD_PENDING_TTL = 12 * 3600  # 12 hours
 
 
 @dataclass
@@ -83,9 +85,14 @@ class TileBuildPayload:
     collection_id: str
     job_id: str
     options: TileBuildOptions = field(default_factory=TileBuildOptions)
+    is_composite: bool = False
 
     def to_json(self) -> str:
-        out = {"collection_id": self.collection_id, "job_id": self.job_id}
+        out = {
+            "collection_id": self.collection_id,
+            "job_id": self.job_id,
+            "is_composite": bool(self.is_composite),
+        }
         opts = self.options.to_dict()
         if opts:
             out["options"] = opts
@@ -95,7 +102,12 @@ class TileBuildPayload:
     def from_json(cls, s: str) -> "TileBuildPayload":
         d = json.loads(s)
         opts = TileBuildOptions.from_dict(d.get("options"))
-        return cls(collection_id=d["collection_id"], job_id=d["job_id"], options=opts)
+        return cls(
+            collection_id=d["collection_id"],
+            job_id=d["job_id"],
+            options=opts,
+            is_composite=bool(d.get("is_composite")),
+        )
 
 
 def _redis():
@@ -155,9 +167,22 @@ def get_pending_job_id(collection_id: str) -> str | None:
     return r.get(_pending_key(collection_id))
 
 
-def set_pending(collection_id: str, job_id: str) -> None:
+def set_pending(collection_id: str, job_id: str, *, ttl_seconds: int | None = None) -> None:
     r = _redis()
-    r.set(_pending_key(collection_id), job_id, ex=3600)  # 1h fallback if worker dies
+    ttl = int(ttl_seconds if ttl_seconds is not None else TILE_BUILD_PENDING_TTL)
+    r.set(_pending_key(collection_id), job_id, ex=max(60, ttl))
+
+
+def refresh_pending(collection_id: str, job_id: str, *, ttl_seconds: int | None = None) -> bool:
+    """Extend the pending lease if this job_id still owns it. Returns False if lost."""
+    r = _redis()
+    key = _pending_key(collection_id)
+    current = r.get(key)
+    if current != job_id:
+        return False
+    ttl = int(ttl_seconds if ttl_seconds is not None else TILE_BUILD_PENDING_TTL)
+    r.set(key, job_id, ex=max(60, ttl))
+    return True
 
 
 def clear_pending(collection_id: str) -> None:
@@ -169,6 +194,8 @@ def enqueue_tile_build(
     collection_id: str,
     job_id: str,
     options: TileBuildOptions | None = None,
+    *,
+    is_composite: bool = False,
 ) -> bool:
     """
     Add build job to queue. Set pending so we don't enqueue duplicate for same collection.
@@ -181,11 +208,12 @@ def enqueue_tile_build(
     pending = _pending_key(collection_id)
     if r.get(pending):
         return False  # already queued or building
-    r.set(pending, job_id, ex=3600)
+    r.set(pending, job_id, ex=TILE_BUILD_PENDING_TTL)
     payload = TileBuildPayload(
         collection_id=collection_id,
         job_id=job_id,
         options=options or TileBuildOptions(),
+        is_composite=is_composite,
     )
     r.lpush(TILE_BUILD_QUEUE_KEY, payload.to_json())
     return True

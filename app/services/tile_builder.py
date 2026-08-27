@@ -16,6 +16,7 @@ import orjson
 
 from app.core.config import get_settings
 from app.services.collection_tiles_revision import compute_collection_tiles_revision
+from app.services.tile_build_verify import verify_mbtiles_artifact
 from app.services.tile_build_queue import TileBuildOptions
 from app.utils.geo import mvt_layer_name
 
@@ -47,8 +48,11 @@ def _stream_pipe(pipe, target, capture: list[str] | None = None) -> None:
 
 def _consumer(queue: Queue, file_handle) -> None:
     """Consume (id, geometry_geojson_str, properties) chunks; build GeoJSONSeq lines; batch-write to file.
-    Uses numeric feature ids (Mapbox tippecanoe requirement); original id kept in properties."""
+    Uses numeric feature ids (Mapbox tippecanoe requirement); original id kept in properties.
+    Skips features with missing/empty geometry so tippecanoe does not abort the whole build.
+    """
     feature_index = 0
+    skipped = 0
     while True:
         chunk = queue.get()
         if chunk is None:
@@ -56,7 +60,19 @@ def _consumer(queue: Queue, file_handle) -> None:
             break
         lines: list[bytes] = []
         for fid, geom_str, props in chunk:
-            geom_dict = json.loads(geom_str) if geom_str else None
+            if not geom_str:
+                skipped += 1
+                continue
+            try:
+                geom_dict = json.loads(geom_str)
+            except Exception:
+                skipped += 1
+                continue
+            if not isinstance(geom_dict, dict) or not geom_dict.get("type") or not geom_dict.get("coordinates"):
+                # Empty / null / GeometryCollection without usable coords after MakeValid
+                if not (isinstance(geom_dict, dict) and geom_dict.get("type") == "GeometryCollection" and geom_dict.get("geometries")):
+                    skipped += 1
+                    continue
             props_dict = dict(props) if props else {}
             # Reserve "id" for our API feature id (UUID/string) so popups link correctly.
             # If source data already has a property named "id", move it aside to avoid conflicts.
@@ -78,6 +94,8 @@ def _consumer(queue: Queue, file_handle) -> None:
         if lines:
             file_handle.write(b"".join(lines))
         queue.task_done()
+    if skipped:
+        print(f"[tile_builder] skipped {skipped} feature(s) with empty/invalid geometry", file=sys.stderr, flush=True)
 
 
 def build_pmtiles_sync(
@@ -109,18 +127,32 @@ def build_pmtiles_sync(
     maxz = opts.max_zoom if opts.max_zoom is not None else settings.tippecanoe_maxzoom
 
     with SessionLocal() as session:
-        row = session.execute(
-            text("SELECT features_last_updated_at AS m FROM collections WHERE id = :cid"),
+        meta = session.execute(
+            text(
+                "SELECT features_last_updated_at AS m, collection_type, composite_members "
+                "FROM collections WHERE id = :cid"
+            ),
             {"cid": collection_id},
         ).first()
-        max_updated = row.m if row and row.m else None
+        max_updated = meta.m if meta and meta.m else None
+        ctype = str(meta.collection_type) if meta and meta.collection_type else ""
+        has_members = bool(meta.composite_members) if meta else False
         count_row = session.execute(
             text("SELECT COUNT(DISTINCT id) AS n FROM features WHERE collection_id = :cid"),
             {"cid": collection_id},
         ).first()
         feature_count = count_row.n if count_row and count_row.n else 0
 
+    # Composite collections have no rows in features under their own id — never treat as empty vector success.
+    if ctype == "composite" or has_members:
+        engine.dispose()
+        return (
+            f"Collection {collection_id} is composite; use composite tile builder "
+            "(worker must route by collection_type / composite_members)"
+        )
+
     if feature_count == 0:
+        # Do not report success: empty collections have no static tiles to serve.
         try:
             if os.path.exists(out_path_final):
                 os.unlink(out_path_final)
@@ -138,7 +170,7 @@ def build_pmtiles_sync(
             )
             s.commit()
         engine.dispose()
-        return None
+        return f"No features in collection {collection_id}; static tiles cleared"
 
     def row_data(r):
         return (r.id, r.geometry, dict(r.properties) if r.properties else None)
@@ -159,9 +191,10 @@ def build_pmtiles_sync(
             with SessionLocal() as session:
                 result = session.execute(
                     text(
-                        "SELECT id, ST_AsGeoJSON(ST_Union(geometry))::text AS geometry, "
+                        "SELECT id, ST_AsGeoJSON(ST_MakeValid(ST_Union(ST_MakeValid(geometry))))::text AS geometry, "
                         "(array_agg(properties ORDER BY part_index))[1] AS properties "
-                        "FROM features WHERE collection_id = :cid GROUP BY id ORDER BY id"
+                        "FROM features WHERE collection_id = :cid AND geometry IS NOT NULL "
+                        "GROUP BY id ORDER BY id"
                     ),
                     {"cid": collection_id},
                     execution_options={"stream_results": True},
@@ -178,6 +211,9 @@ def build_pmtiles_sync(
             consumer_thread.join()
             if export_cancelled:
                 return BUILD_CANCELLED
+
+        if total_features == 0:
+            return f"No features exported for collection {collection_id}"
 
         # Build into a temp file, then atomically replace the live MBTiles so clients never read a partial file.
         out_path_tmp = os.path.join(tiles_dir, f"{collection_id}.mbtiles.{uuid.uuid4().hex}.tmp")
@@ -196,6 +232,7 @@ def build_pmtiles_sync(
             f"-Z{minz}",
             "--force",
             "--detect-shared-borders",
+            # Tippecanoe default --buffer=5 (large values crash big national builds).
             "--full-detail=12",
             "--low-detail=10",
             "--minimum-detail=8",
@@ -302,6 +339,15 @@ def build_pmtiles_sync(
                 os.unlink(out_path_tmp)
             except OSError:
                 pass
+
+    verify_err = verify_mbtiles_artifact(out_path_final)
+    if verify_err:
+        try:
+            if os.path.exists(out_path_final):
+                os.unlink(out_path_final)
+        except OSError:
+            pass
+        return verify_err
 
     # Remove previous file if DB pointed elsewhere (e.g. legacy path); live path is out_path_final.
     tiles_revision = compute_collection_tiles_revision(collection_id, out_path_final)

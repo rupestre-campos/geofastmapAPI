@@ -11,6 +11,8 @@ from app.core.config import get_settings
 from app.services.redis_resilience import run_redis_retry
 
 _UPLOAD_SESSION_PREFIX = "geofastmap:bulk_upload_session:"
+# Public alias for disk self-heal / ops tooling (scan live sessions).
+UPLOAD_SESSION_PREFIX = _UPLOAD_SESSION_PREFIX
 
 
 def _redis():

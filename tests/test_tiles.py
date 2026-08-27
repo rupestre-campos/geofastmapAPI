@@ -1,8 +1,11 @@
 """Tests for OGC API Tiles routes (TileJSON, build, cancel, status, dynamic/static tiles)."""
+import json
 import os
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
+import pytest
+
+from app.db.session import get_db
 from app.services.collection_tiles_revision import compute_collection_tiles_revision
 
 
@@ -71,30 +74,99 @@ async def test_tiles_dynamic_invalid_x_y_400(client):
 
 
 @pytest.mark.asyncio
-async def test_tiles_dynamic_200_empty_tile(client, app):
-    """With mocked DB returning no MVT, dynamic tile returns 200 with empty body."""
-    await client.post("/collections", json={"id": "c1", "title": "C1", "description": ""})
-    # Route calls db.execute twice: property keys (fetchall), then MVT (first).
-    result_keys = MagicMock()
-    result_keys.fetchall.return_value = []
-    mock_row = MagicMock()
-    mock_row.mvt = None
-    result_mvt = MagicMock()
-    result_mvt.first.return_value = mock_row
-    mock_conn = AsyncMock()
-    mock_conn.execute = AsyncMock(side_effect=[result_keys, result_mvt])
+async def test_tiles_dynamic_200_empty_tile(client, app, store):
+    """Empty GeoJSON from DB → empty MVT (no PostGIS ST_AsMVT)."""
+    from datetime import datetime, timezone
+
+    from app.models.collection import VISIBILITY_PUBLIC, Collection
+
+    now = datetime.now(timezone.utc)
+    store.collections["c1"] = Collection(
+        id="c1",
+        title="C1",
+        description="",
+        extent=None,
+        stac_source=None,
+        raster_settings=None,
+        feature_count=0,
+        owner_id=None,
+        visibility=VISIBILITY_PUBLIC,
+        viewer_can_edit=False,
+        collection_type="vector",
+        created_at=now,
+        updated_at=now,
+    )
+    empty_fc = b'{"type":"FeatureCollection","features":[]}'
+    mock_db = AsyncMock()
 
     async def override_get_db():
-        yield mock_conn
-
-    from app.db.session import get_db
+        yield mock_db
 
     app.dependency_overrides[get_db] = override_get_db
     try:
-        resp = await client.get("/collections/c1/tiles/dynamic/0/0/0.pbf")
+        with patch(
+            "app.services.dynamic_tile_geojson.get_geojson_for_tile",
+            new=AsyncMock(return_value=empty_fc),
+        ):
+            resp = await client.get("/collections/c1/tiles/dynamic/0/0/0.pbf")
         assert resp.status_code == 200, resp.text
         assert resp.headers.get("content-type") == "application/x-protobuf"
         assert resp.content == b""
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.asyncio
+async def test_tiles_dynamic_encodes_geojson(client, app, store):
+    """DB returns a point; Python encodes a non-empty MVT tile."""
+    from datetime import datetime, timezone
+
+    from app.models.collection import VISIBILITY_PUBLIC, Collection
+
+    now = datetime.now(timezone.utc)
+    store.collections["c_enc"] = Collection(
+        id="c_enc",
+        title="C",
+        description="",
+        extent=None,
+        stac_source=None,
+        raster_settings=None,
+        feature_count=1,
+        owner_id=None,
+        visibility=VISIBILITY_PUBLIC,
+        viewer_can_edit=False,
+        collection_type="vector",
+        created_at=now,
+        updated_at=now,
+    )
+    geojson = json.dumps(
+        {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "id": "f1",
+                    "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+                    "properties": {"name": "a"},
+                }
+            ],
+        }
+    ).encode("utf-8")
+    mock_db = AsyncMock()
+
+    async def override_get_db():
+        yield mock_db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with patch(
+            "app.services.dynamic_tile_geojson.get_geojson_for_tile",
+            new=AsyncMock(return_value=geojson),
+        ):
+            resp = await client.get("/collections/c_enc/tiles/dynamic/0/0/0.pbf")
+        assert resp.status_code == 200, resp.text
+        assert resp.headers.get("content-type") == "application/x-protobuf"
+        assert len(resp.content) > 0
     finally:
         app.dependency_overrides.pop(get_db, None)
 

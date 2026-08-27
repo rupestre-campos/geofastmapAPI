@@ -366,6 +366,9 @@
     const collectionType = {{ (collection_type or 'vector') | tojson }};
     const isRaster = collectionType === 'raster';
     var __itemsRasterTileUrl = null;
+    // Current items query string (kept in sync on AJAX pagination for dynamic tile URLs).
+    var currentItemsSearch = window.location.search || '';
+    var ITEMS_TILE_DROP_PARAMS = { f: 1, geometry: 1, skip_count: 1, bbox_only: 1, force: 1 };
     const copyBtnSvg = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
     (function() {
       var form = document.getElementById('search-form');
@@ -418,6 +421,9 @@
       var n = data.numberMatched != null ? data.numberMatched : 0;
       var r = data.numberReturned != null ? data.numberReturned : (data.features ? data.features.length : 0);
       features = data.features || [];
+      try {
+        currentItemsSearch = new URL(newUrl, window.location.origin).search || '';
+      } catch (e) {}
       if (document.getElementById('items-summary')) document.getElementById('items-summary').textContent = n + ' matched, ' + r + ' shown';
       if (document.getElementById('results-count')) document.getElementById('results-count').textContent = '(' + r + ' rows — click row to focus on map)';
       var limit = parseInt(paginationEl.getAttribute('data-limit'), 10) || 100;
@@ -456,31 +462,39 @@
       var rootPath = i >= 0 ? path.substring(0, i) : '';
       return window.location.origin + rootPath;
     }
-    function getItemsPageParams() {
-      var paginationEl = document.querySelector('.pagination');
-      var limit = paginationEl ? (parseInt(paginationEl.getAttribute('data-limit'), 10) || initialLimit) : (initialLimit || 100);
-      var offset = paginationEl ? (parseInt(paginationEl.getAttribute('data-offset'), 10) || 0) : (initialOffset || 0);
-      return { limit: limit, offset: offset, sortby: initialSortby, sortdesc: initialSortdesc };
-    }
-    function buildDynamicTileQueryString() {
-      var parts = [];
-      var page = getItemsPageParams();
-      parts.push('limit=' + encodeURIComponent(String(page.limit)));
-      parts.push('offset=' + encodeURIComponent(String(page.offset)));
-      if (page.sortby) parts.push('sortby=' + encodeURIComponent(page.sortby));
-      if (page.sortdesc) parts.push('sortdesc=true');
-      if (searchBbox && String(searchBbox).trim()) parts.push('bbox=' + encodeURIComponent(String(searchBbox).trim()));
-      if (searchDatetime && String(searchDatetime).trim()) parts.push('datetime=' + encodeURIComponent(String(searchDatetime).trim()));
-      if (searchFilter && String(searchFilter).trim()) {
-        String(searchFilter).trim().split(/\r?\n/).forEach(function(line) {
-          if (line.trim()) parts.push('filter=' + encodeURIComponent(line.trim()));
-        });
-      }
-      if (searchQ && String(searchQ).trim()) parts.push('q=' + encodeURIComponent(String(searchQ).trim()));
-      return '?' + parts.join('&');
-    }
     function getDynamicTileUrl() {
-      return apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/dynamic/{z}/{x}/{y}.pbf' + buildDynamicTileQueryString();
+      // Full-layer dynamic tiles for "Add to map" — never attach limit/offset (that forced a
+      // PARTITION-wide GROUP BY ST_Union per tile and made View items unusable at scale).
+      return apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) + '/tiles/dynamic/{z}/{x}/{y}.pbf';
+    }
+    function hasActiveSearch() {
+      var p = new URLSearchParams(currentItemsSearch);
+      if ((p.get('q') || '').trim()) return true;
+      if ((p.get('bbox') || '').trim()) return true;
+      if ((p.get('datetime') || '').trim()) return true;
+      var filters = p.getAll('filter');
+      for (var i = 0; i < filters.length; i++) {
+        if ((filters[i] || '').trim()) return true;
+      }
+      var reserved = {
+        limit: 1, offset: 1, sortby: 1, sortdesc: 1, bbox: 1, datetime: 1, filter: 1, q: 1,
+        properties: 1, ids: 1, f: 1, geometry: 1, skip_count: 1, bbox_only: 1, force: 1
+      };
+      var keys = Array.from(p.keys());
+      for (var j = 0; j < keys.length; j++) {
+        if (!reserved[keys[j].toLowerCase()] && (p.get(keys[j]) || '').trim()) return true;
+      }
+      return false;
+    }
+    function getSearchDynamicTileUrl() {
+      // Showcase: same search params as GET items → /tiles/dynamic (query-once cache → MVT).
+      var params = new URLSearchParams(currentItemsSearch);
+      Object.keys(ITEMS_TILE_DROP_PARAMS).forEach(function(k) { params.delete(k); });
+      if (!params.has('limit')) params.set('limit', String(initialLimit || 10));
+      if (!params.has('offset')) params.set('offset', String(initialOffset || 0));
+      var qs = params.toString();
+      return apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) +
+        '/tiles/dynamic/{z}/{x}/{y}.pbf' + (qs ? ('?' + qs) : '');
     }
     function overlayBeforeLayerId() {
       if (map.getLayer('results-fill')) return 'results-fill';
@@ -508,7 +522,7 @@
       if (map.getSource('tiles-collection')) map.removeSource('tiles-collection');
     }
     function removeResultsLayer() {
-      ['results-line', 'results-fill', 'results-circle', 'results-raster-line', 'results-raster-fill', 'results-raster-circle'].forEach(function(lid) {
+      ['results-line', 'results-fill', 'results-circle', 'results-bbox-line', 'results-detail-line', 'results-detail-fill', 'results-detail-circle', 'results-raster-line', 'results-raster-fill', 'results-raster-circle'].forEach(function(lid) {
         if (map.getLayer(lid)) map.removeLayer(lid);
       });
       if (map.getLayer('items-raster-mosaic')) map.removeLayer('items-raster-mosaic');
@@ -516,12 +530,15 @@
       if (map.getSource('results-geojson')) map.removeSource('results-geojson');
       if (map.getSource('items-raster-mosaic')) map.removeSource('items-raster-mosaic');
     }
-    function footprintFeatureCollection() {
+    function footprintFeatureCollection(opts) {
+      opts = opts || {};
+      var allowBbox = opts.allowBbox !== false;
       return {
         type: 'FeatureCollection',
         features: (features || []).map(function(f) {
           var geom = f.geometry;
-          if (!geom && f.bbox && f.bbox.length >= 4) {
+          // Prefer real geometry from SSR; only synthesize bbox rect when allowed.
+          if (!geom && allowBbox && f.bbox && f.bbox.length >= 4) {
             var b = f.bbox;
             geom = { type: 'Polygon', coordinates: [[[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]], [b[0], b[1]]]] };
           }
@@ -531,12 +548,17 @@
         }).filter(function(f) { return f.geometry != null; })
       };
     }
+    function featuresHaveRealGeometry() {
+      return (features || []).some(function(f) {
+        return f && f.geometry && f.geometry.type && f.geometry.coordinates;
+      });
+    }
     function addOverlayLayers() {
       removeResultsLayer();
       var s = GeofastmapUtils.specToPaint(defaultStyle && defaultStyle.style_spec);
       if (isRaster) {
         function addRasterFootprintsOnly() {
-          var fc = footprintFeatureCollection();
+          var fc = footprintFeatureCollection({ allowBbox: true });
           map.addSource('results-geojson', { type: 'geojson', data: fc });
           map.addLayer({
             id: 'results-raster-fill',
@@ -579,14 +601,69 @@
           .catch(function() { addRasterFootprintsOnly(); });
         return;
       }
-      var tileUrl = getDynamicTileUrl();
-      map.addSource('results-tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 14 });
-      map.addLayer({ id: 'results-fill', type: 'fill', source: 'results-tiles', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
-      map.addLayer({ id: 'results-line', type: 'line', source: 'results-tiles', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
-      map.addLayer({ id: 'results-circle', type: 'circle', source: 'results-tiles', 'source-layer': tileLayerId, filter: pointFilter, paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity } });
-      if (!s.fillEnabled) map.setLayoutProperty('results-fill', 'visibility', 'none');
-      if (!s.lineEnabled) map.setLayoutProperty('results-line', 'visibility', 'none');
-      if (!s.pointEnabled) map.setLayoutProperty('results-circle', 'visibility', 'none');
+
+      function addOptionalBboxOutline() {
+        var outline = footprintFeatureCollection({ allowBbox: true });
+        if (!outline.features.length) return;
+        map.addSource('results-geojson', { type: 'geojson', data: outline });
+        map.addLayer({
+          id: 'results-bbox-line',
+          type: 'line',
+          source: 'results-geojson',
+          paint: { 'line-color': s.lineColor, 'line-width': 1, 'line-opacity': 0.35, 'line-dasharray': [2, 2] }
+        });
+      }
+
+      function addVectorTileResultsLayer(tileUrl) {
+        map.addSource('results-tiles', { type: 'vector', tiles: [tileUrl], minzoom: 0, maxzoom: 22 });
+        map.addLayer({ id: 'results-fill', type: 'fill', source: 'results-tiles', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
+        map.addLayer({ id: 'results-line', type: 'line', source: 'results-tiles', 'source-layer': tileLayerId, filter: notPointFilter, paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
+        map.addLayer({ id: 'results-circle', type: 'circle', source: 'results-tiles', 'source-layer': tileLayerId, filter: pointFilter, paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity } });
+        if (!s.fillEnabled) map.setLayoutProperty('results-fill', 'visibility', 'none');
+        if (!s.lineEnabled) map.setLayoutProperty('results-line', 'visibility', 'none');
+        if (!s.pointEnabled) map.setLayoutProperty('results-circle', 'visibility', 'none');
+      }
+
+      function paintVectorFromGeoJson(fc) {
+        map.addSource('results-geojson', { type: 'geojson', data: fc });
+        map.addLayer({ id: 'results-fill', type: 'fill', source: 'results-geojson', filter: ['match', ['geometry-type'], 'Polygon', true, 'MultiPolygon', true, false], paint: { 'fill-color': s.fillColor, 'fill-opacity': s.fillOpacity } });
+        map.addLayer({ id: 'results-line', type: 'line', source: 'results-geojson', filter: ['match', ['geometry-type'], 'Polygon', true, 'MultiPolygon', true, 'LineString', true, 'MultiLineString', true, false], paint: { 'line-color': s.lineColor, 'line-width': s.lineWidth, 'line-opacity': s.lineOpacity, 'line-dasharray': s.lineDash } });
+        map.addLayer({ id: 'results-circle', type: 'circle', source: 'results-geojson', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-color': s.pointColor, 'circle-radius': s.pointRadius, 'circle-opacity': s.pointOpacity } });
+        if (!s.fillEnabled) map.setLayoutProperty('results-fill', 'visibility', 'none');
+        if (!s.lineEnabled) map.setLayoutProperty('results-line', 'visibility', 'none');
+        if (!s.pointEnabled) map.setLayoutProperty('results-circle', 'visibility', 'none');
+      }
+
+      function paintVectorFromPageIdsTiles() {
+        // Unfiltered browse: bbox-only list rows → real shapes via ids= tiles (fast, no SSR geometry).
+        var pageIds = (features || []).map(function(f) { return f.id; }).filter(Boolean).slice(0, 50);
+        if (!pageIds.length) return false;
+        addOptionalBboxOutline();
+        var idsTileUrl = apiBaseUrlItems() + '/collections/' + encodeURIComponent(collectionId) +
+          '/tiles/dynamic/{z}/{x}/{y}.pbf?ids=' + encodeURIComponent(pageIds.join(','));
+        addVectorTileResultsLayer(idsTileUrl);
+        return true;
+      }
+
+      function paintVectorFromSearchTiles() {
+        addOptionalBboxOutline();
+        addVectorTileResultsLayer(getSearchDynamicTileUrl());
+      }
+
+      // Showcase: filtered/search pages drive dynamic tiles with the same query params
+      // (q, filter, bbox, limit, offset, …) that other apps should copy.
+      if (hasActiveSearch()) {
+        paintVectorFromSearchTiles();
+        return;
+      }
+
+      // Unfiltered browse: SSR geometry when present, else ids= tiles for this page (not bbox squares).
+      if (featuresHaveRealGeometry()) {
+        paintVectorFromGeoJson(footprintFeatureCollection({ allowBbox: false }));
+        return;
+      }
+      if (paintVectorFromPageIdsTiles()) return;
+      paintVectorFromGeoJson(footprintFeatureCollection({ allowBbox: true }));
     }
     function applyBasemapFromSelect() {
       var sel = document.getElementById('map-basemap');
@@ -631,7 +708,7 @@
       }
       function getItemsMapPopupLayerIds() {
         var ids = [];
-        ['results-fill', 'results-line', 'results-circle', 'results-raster-fill', 'results-raster-line', 'results-raster-circle', 'tiles-fill', 'tiles-line', 'tiles-circle'].forEach(function(id) {
+        ['results-fill', 'results-line', 'results-circle', 'results-detail-fill', 'results-detail-line', 'results-detail-circle', 'results-raster-fill', 'results-raster-line', 'results-raster-circle', 'tiles-fill', 'tiles-line', 'tiles-circle'].forEach(function(id) {
           if (map.getLayer(id)) ids.push(id);
         });
         return ids;
@@ -773,8 +850,18 @@
 
     var paginationEl = document.querySelector('.pagination');
     function loadPageAtUrl(url) {
-      var jsonUrl = new URL(url);
+      var jsonUrl = new URL(url, window.location.origin);
       jsonUrl.searchParams.delete('f');
+      // Keep pagination light for huge unfiltered browses; for filtered/search keep geometry
+      // so the items response can warm the dynamic-tile search cache.
+      var hasSearch = hasActiveSearch();
+      var lim = parseInt(jsonUrl.searchParams.get('limit') || String(initialLimit || 10), 10) || 10;
+      if (hasSearch && lim <= 25) {
+        jsonUrl.searchParams.set('geometry', 'true');
+      } else {
+        jsonUrl.searchParams.set('geometry', 'false');
+      }
+      jsonUrl.searchParams.set('skip_count', 'true');
       var newOffset = parseInt(jsonUrl.searchParams.get('offset') || '0', 10);
       return fetch(jsonUrl.toString(), { headers: { 'Accept': 'application/geo+json' } })
         .then(function(r) { return r.json(); })

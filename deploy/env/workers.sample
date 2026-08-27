@@ -1,32 +1,56 @@
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@YOUR_DB_HOST:5432/geofastmap
 # DATABASE_USE_PGBOUNCER=false  # true when DATABASE_URL targets PgBouncer (transaction pool)
-DATABASE_POOL_SIZE=5
-DATABASE_POOL_MAX_OVERFLOW=5
+DATABASE_POOL_SIZE=4
+DATABASE_POOL_MAX_OVERFLOW=4
 REDIS_URL=redis://YOUR_REDIS_HOST:6379/0
 BULK_QUEUE_TYPE=redis
 PROCESS_QUEUE_TYPE=redis
+# Parallel CREATE INDEX CONCURRENTLY jobs (property-index queue on process_worker)
+PROPERTY_INDEX_WORKER_MAX_CONCURRENT=2
 MOSAIC_QUEUE_TYPE=redis
 REDIS_RETRY_BASE_SECONDS=1
 REDIS_RETRY_MAX_SECONDS=30
 REDIS_RETRY_ENQUEUE_MAX_ATTEMPTS=5
 # Hot-path Redis reads (bulk cancel polls, parent shard aggregation). Raise on flaky LAN.
-REDIS_RETRY_READ_MAX_ATTEMPTS=15
+REDIS_RETRY_READ_MAX_ATTEMPTS=20
+# Bulk worker BRPOP: socket read timeout must exceed BRPOP wait (see app.services.redis_client).
+REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS=10
+REDIS_BRPOP_SOCKET_TIMEOUT_SECONDS=30
 ## Bulk ingest resilience/perf profile (large files)
-BULK_IMPORT_BATCH_SIZE=2000
-BULK_INSERT_PARTS_BATCH_SIZE=160
+BULK_IMPORT_BATCH_SIZE=3000
+BULK_INSERT_PARTS_BATCH_SIZE=200
 BULK_PROGRESS_HEARTBEAT_SECONDS=5
-## immediate|deferred|best_effort (workers usually run best_effort/deferred for huge layers)
-BULK_EXTENT_UPDATE_MODE=best_effort
+## immediate|deferred|best_effort (workers usually run deferred for huge layers)
+BULK_EXTENT_UPDATE_MODE=deferred
 BULK_DB_RETRY_MAX_ATTEMPTS=4
 BULK_DB_RETRY_BASE_SECONDS=1
 BULK_DB_RETRY_MAX_SECONDS=30
 BULK_UPLOAD_SESSION_TTL_SECONDS=86400
-BULK_UPLOAD_CHUNK_SIZE_BYTES=33554432
+BULK_UPLOAD_CHUNK_SIZE_BYTES=67108864
+# Disk self-heal (orphan bulk files, _uploads parts, tippecanoe *.tmp). Safe with shared NFS.
+STORAGE_SELF_HEAL_ENABLED=true
+STORAGE_SELF_HEAL_INTERVAL_SECONDS=300
+# Only delete unreferenced junk after this long (24h default; tolerates outages / long tippecanoe).
+STORAGE_SELF_HEAL_BULK_GRACE_SECONDS=86400
+STORAGE_SELF_HEAL_TILE_TMP_GRACE_SECONDS=86400
+# Admin storage usage dashboard (Redis snapshot; daily recompute at midnight UTC).
+STORAGE_USAGE_DAILY_RECOMPUTE=true
+STORAGE_USAGE_DAILY_HOUR_UTC=0
 BULK_SHARDED_INGEST_ENABLED=true
-BULK_SHARD_LINES_PER_PART=50000
+BULK_SHARD_LINES_PER_PART=100000
 # Standalone bulk worker: concurrent import threads per process (see app.worker_main). Watch Postgres max_connections.
+# With 3 worker machines, keep this low (1-2) so a burst of jobs spreads across hosts instead of
+# one host greedily filling all its slots. Raise only if you want a single host to parallelize.
 BULK_WORKER_MAX_CONCURRENT=2
-# Tile worker (app.tile_worker_main): poll interval while waiting for bulk import to finish on the same collection.
+# After claiming a job with free slots left, wait this long before claiming the next, so idle
+# worker machines can win the next queued job. 0 = greedy (one host can grab a whole burst).
+BULK_WORKER_DISPATCH_COOLDOWN_SECONDS=0.5
+# Load workers enqueue finalize jobs; the consumer runs on the API host only (not this compose stack):
+#   docker compose -f deploy/compose/docker-compose.finalize-worker.yml up -d --build
+BULK_FINALIZE_QUEUE_ENABLED=true
+BULK_WATCHDOG_FAIL_STALE_RUNNING=false
+BULK_JOB_STALE_SECONDS=14400
+REDIS_BRPOP_SOCKET_TIMEOUT_SECONDS=30
 TILE_BUILD_BULK_WAIT_POLL_SECONDS=2
 
 # --- Homogeneous mosaic workers (recommended default) ---

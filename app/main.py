@@ -15,11 +15,13 @@ from app.core.html import wants_html
 
 from app.api.routes import (
     admin_observability,
+    admin_storage_usage,
     auth,
     basemaps_api,
     basemaps_pages,
     collection_styles,
     collections,
+    composites,
     coverages,
     internal_raster,
     items,
@@ -89,6 +91,13 @@ async def lifespan(app: FastAPI):
                 must_change_password=True,
             )
     init_observability_logging()
+    try:
+        from app.services.storage_usage import maybe_daily_storage_usage_recompute
+
+        if maybe_daily_storage_usage_recompute():
+            logger.info("Started daily storage-usage recompute on API startup")
+    except Exception:
+        logger.exception("storage-usage daily schedule check failed")
     yield
     from app.services.titiler_http import close_titiler_http_client
 
@@ -196,14 +205,20 @@ def create_app() -> FastAPI:
 
     # OGC root: landing page (/) and conformance (/conformance). Must be first so GET / is landing.
     app.include_router(root.router, tags=["ogc"])
-    app.include_router(auth.router, prefix="/auth", tags=["auth"])
     app.include_router(admin_observability.router, prefix="/admin", tags=["admin-observability"])
+    app.include_router(admin_storage_usage.router, prefix="/admin", tags=["admin-storage"])
+    app.include_router(auth.router, prefix="/auth", tags=["auth"])
 
     # Collections and items (features) endpoints following OGC API - Features style.
     app.include_router(
         collections.router,
         prefix="/collections",
         tags=["collections"],
+    )
+    app.include_router(
+        composites.router,
+        prefix="/composites",
+        tags=["composites"],
     )
     app.include_router(
         items.router,

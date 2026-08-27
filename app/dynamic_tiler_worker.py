@@ -1,14 +1,20 @@
-"""Dynamic tile worker: HTTP service that fetches GeoJSON for a tile (DB + bbox), encodes MVT in-process, returns .pbf. Run with uvicorn app.dynamic_tiler_worker:app --port 8001."""
+"""Dynamic tile worker: HTTP service that fetches GeoJSON for a tile (DB + bbox), encodes MVT in a thread, returns .pbf.
+
+Run with: uvicorn app.dynamic_tiler_worker:app --port 8001 --workers 1
+Prefer multiple uvicorn workers or TILES_DYNAMIC_USE_QUEUE + tile_queue_worker for multi-core encode.
+"""
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.services.dynamic_tile_geojson import get_geojson_for_tile
 from app.services.mvt_encode import encode_geojson_to_mvt
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 app_router = APIRouter()
@@ -29,7 +35,7 @@ def _parse_bbox(bbox: str | None) -> tuple[float, float, float, float] | None:
 @app_router.get(
     "/collections/{collection_id}/tiles/dynamic/{z:int}/{x:int}/{y:int}.pbf",
     summary="Generate one vector tile (in-process MVT)",
-    description="Same query params as GET items. Fetches GeoJSON for tile bbox, encodes MVT in-process, returns single tile. No cache; API caches.",
+    description="Same query params as GET items. Fetches GeoJSON for tile bbox, encodes MVT off the event loop, returns single tile. No cache; API caches.",
 )
 async def get_tile(
     request: Request,
@@ -78,7 +84,9 @@ async def get_tile(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
     try:
-        tile_bytes = encode_geojson_to_mvt(geojson_bytes, collection_id, z, x, y)
+        tile_bytes = await asyncio.to_thread(
+            encode_geojson_to_mvt, geojson_bytes, collection_id, z, x, y
+        )
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -93,6 +101,6 @@ from fastapi import FastAPI
 
 app = FastAPI(
     title="GeoFastMap Dynamic Tiler Worker",
-    description="Generates vector tiles on demand via DB + in-process MVT encoding.",
+    description="Generates vector tiles on demand via DB retrieval + off-loop MVT encoding.",
 )
 app.include_router(app_router)

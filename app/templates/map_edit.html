@@ -284,7 +284,7 @@
 {% endblock %}
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="{{ base }}/static/js/geofastmap-utils.js?v=7"></script>
+  <script src="{{ base }}/static/js/geofastmap-utils.js?v=8"></script>
   <script src="{{ base }}/static/js/geofastmap-raster-identify.js"></script>
   {% include "_style_editor_toolbox_script.html" %}
   <script src="{{ base }}/static/js/geofastmap-inline-feature-edit.js?v=1"></script>
@@ -332,6 +332,13 @@
       }
       function layerRasterTrue(l) {
         return !!(l && (l.raster_tiles === true || l.rasterTiles === true));
+      }
+      /** DEM layers with terrain: default to also showing the styled raster overlay. */
+      function normalizeTerrainRasterOverlay(layer) {
+        if (!layer || !layerRasterTrue(layer)) return;
+        if (layer.terrain_enabled === true && layer.terrain_raster_overlay !== true && layer.terrain_raster_overlay !== false) {
+          layer.terrain_raster_overlay = true;
+        }
       }
       function mosaicRasterTilesUrlTemplateWithV(baseUrl, viewId, revision) {
         var u = baseUrl + '/raster-views/' + encodeURIComponent(String(viewId)) + '/titiler/tiles/WebMercatorQuad/{z}/{x}/{y}.png';
@@ -405,11 +412,6 @@
         if (!shouldFitStateBbox() || !map) return false;
         return GeofastmapUtils.fitMapToBbox(map, state.bbox, opts || { padding: 60 });
       }
-      function rasterSourceBounds(bbox) {
-        if (!GeofastmapUtils.isValidMapBbox(bbox)) return undefined;
-        // MapLibre raster source bounds: [west, south, east, north]
-        return [Number(bbox[0]), Number(bbox[1]), Number(bbox[2]), Number(bbox[3])];
-      }
       var styleToolboxApplySpec = null;
       var refreshMapEditRuleFields = function() {};
       // Load layers from saved map definition. Each layer's style_spec is stored with the map (map-specific, not collection/public styles).
@@ -437,7 +439,8 @@
           visible: l.visible !== false
         });
       });
-      state.layers = GeofastmapUtils.dedupeMosaicMapLayers(state.layers);
+      state.layers = GeofastmapUtils.normalizeMapLayersForHost(state.layers);
+      state.layers.forEach(normalizeTerrainRasterOverlay);
 
       var map = null;
       var BASEMAPS;
@@ -644,7 +647,7 @@
 
       function layerKey(layer) { return (layer && (layer.layer_id || layer.collectionId)) || (layer && layer.collection_id) || ''; }
       function sourceId(collectionIdOrKey) { return 'layer-' + String(collectionIdOrKey).replace(/[^a-zA-Z0-9_-]/g, '_'); }
-      /** Effective 2D raster overlay: explicit terrain_raster_overlay, else legacy (terrain-only maps hid PNG). */
+      /** Show 2D raster PNG unless terrain_raster_overlay is explicitly false. */
       function demTerrainDemv(layer) {
         if (layer && layer.dem_terrain_demv) return String(layer.dem_terrain_demv);
         return '2';
@@ -661,8 +664,6 @@
       function terrainRasterOverlayWanted(layer) {
         if (!layer) return true;
         if (layer.terrain_raster_overlay === false) return false;
-        if (layer.terrain_raster_overlay === true) return true;
-        if (layer.terrain_enabled === true) return false;
         return true;
       }
 
@@ -738,8 +739,6 @@
             if (!isFinite(ro) || ro < 0) ro = 1;
             if (overlay) {
               var rs = { type: 'raster', tiles: [rasterTU], tileSize: 256, maxzoom: 18 };
-              var rb = rasterSourceBounds(state.bbox);
-              if (rb) rs.bounds = rb;
               if (layer.stac_viewer_path || layer.stacViewerPath) rs.attribution = 'STAC / Titiler';
               map.addSource(sid, rs);
               safeAddLayer({ id: sid + '-raster', type: 'raster', source: sid, paint: { 'raster-opacity': ro } }, beforeId);
@@ -1230,6 +1229,9 @@
             var i = state.selectedLayerIndex;
             if (i == null || !state.layers[i] || !state.layers[i].raster_tiles) return;
             state.layers[i].terrain_enabled = terrainEnabled.checked === true;
+            if (state.layers[i].terrain_enabled && state.layers[i].terrain_raster_overlay !== false) {
+              state.layers[i].terrain_raster_overlay = true;
+            }
             if (state.layers[i].terrain_enabled && !isFinite(Number(state.layers[i].terrain_exaggeration))) {
               state.layers[i].terrain_exaggeration = 1.0;
             }
@@ -2181,7 +2183,13 @@
                 terrain_exaggeration: (l.terrain_exaggeration != null ? Number(l.terrain_exaggeration) : null),
                 terrain_encoding: l.terrain_encoding || null
               };
-              if (l.raster_tiles) row.terrain_raster_overlay = terrainRasterOverlayWanted(l);
+              if (l.raster_tiles) {
+                if (l.terrain_enabled === true) {
+                  row.terrain_raster_overlay = l.terrain_raster_overlay !== false;
+                } else if (l.terrain_raster_overlay === true || l.terrain_raster_overlay === false) {
+                  row.terrain_raster_overlay = l.terrain_raster_overlay;
+                }
+              }
               return row;
             }),
             bbox: state.bbox,

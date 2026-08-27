@@ -73,6 +73,66 @@ def test_geometry_to_geojson_bytearray():
     assert list(out["coordinates"]) == [5.0, 6.0]
 
 
+def test_shapely_to_api_geojson_homogenizes_polygon_collection():
+    from shapely.geometry import GeometryCollection, Polygon
+
+    from app.utils.geo import shapely_to_api_geojson
+
+    a = Polygon([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
+    b = Polygon([(2, 2), (3, 2), (3, 3), (2, 3), (2, 2)])
+    out = shapely_to_api_geojson(GeometryCollection([a, b]))
+    assert out is not None
+    assert out["type"] == "MultiPolygon"
+    assert "coordinates" in out
+
+
+def test_feature_to_read_geometry_collection():
+    from datetime import datetime, timezone
+
+    from app.api.routes.items import _feature_to_read
+    from app.models.feature import Feature
+
+    now = datetime.now(timezone.utc)
+    f = Feature(
+        id="gc-1",
+        collection_id="gc_items",
+        part_index=0,
+        geometry=None,
+        properties={"name": "gc"},
+        created_at=now,
+        updated_at=now,
+    )
+    f.geometry_geojson = {
+        "type": "GeometryCollection",
+        "geometries": [
+            {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
+            {"type": "Polygon", "coordinates": [[[2, 2], [3, 2], [3, 3], [2, 3], [2, 2]]]},
+        ],
+    }
+    read = _feature_to_read(f)
+    assert read.geometry is not None
+    assert read.geometry.type == "MultiPolygon"
+    dumped = read.geometry.model_dump()
+    assert "coordinates" in dumped
+    assert dumped.get("geometries") is None
+
+
+def test_geometry_schema_accepts_geometry_collection():
+    from app.schemas.feature import Geometry
+
+    g = Geometry.model_validate(
+        {
+            "type": "GeometryCollection",
+            "geometries": [
+                {"type": "Point", "coordinates": [-44.15, -21.43]},
+            ],
+        }
+    )
+    assert g.type == "GeometryCollection"
+    assert g.geometries
+    assert "coordinates" not in g.model_dump()
+
+
 def test_geometry_to_geojson_typeerror_fallback():
     """When to_shape raises TypeError, fallback uses bytes(geom) and wkb.loads."""
     geojson = {"type": "Point", "coordinates": [7.0, 8.0]}

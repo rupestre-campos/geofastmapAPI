@@ -1,0 +1,309 @@
+{% extends "base.html" %}
+{% block title %}Storage usage – GeoFastMap API{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Storage usage</h1>
+    <p class="meta">Admin only. Disk and database size per collection, mosaic, and known orphans. Snapshot refreshes daily at midnight UTC; use Refresh anytime.</p>
+  </header>
+
+  <div id="queuedBanner" class="card" style="display:none; border-color: rgba(46,160,67,0.5);">
+    <p class="meta" id="queuedBannerText"></p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Snapshot</h2>
+      <div class="card-actions">
+        <button type="button" class="btn btn-primary" id="refreshBtn">Refresh now</button>
+        <a href="{{ base }}/admin/observability?f=html" class="btn btn-sm">Logs</a>
+        <a href="{{ base }}/auth/users?f=html" class="btn btn-sm">Users</a>
+      </div>
+    </div>
+    <p class="meta" id="statusLine">Loading…</p>
+    <p class="meta" id="totalsLine"></p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Usage by resource</h2>
+      <div class="card-actions">
+        <input type="search" id="filterInput" placeholder="Filter by id, title, owner…" style="min-width:14rem;">
+      </div>
+    </div>
+    <div class="storage-usage-table-scroll">
+      <table class="collections-table" id="usageTable">
+        <thead>
+          <tr>
+            <th data-sort="kind" class="sortable">Kind</th>
+            <th data-sort="id" class="sortable">Name / id</th>
+            <th data-sort="owner" class="sortable">Owner</th>
+            <th data-sort="collection_type" class="sortable">Type</th>
+            <th data-sort="feature_count" class="sortable meta">Features</th>
+            <th data-sort="db_bytes" class="sortable meta">DB</th>
+            <th data-sort="tiles_bytes" class="sortable meta">Tiles</th>
+            <th data-sort="raster_bytes" class="sortable meta">Rasters</th>
+            <th data-sort="other_bytes" class="sortable meta">Other</th>
+            <th data-sort="total_bytes" class="sortable meta">Total</th>
+            <th class="col-actions">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="usageBody">
+          <tr><td colspan="11" class="meta">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <style>
+    .storage-usage-table-scroll {
+      overflow: auto;
+      max-width: 100%;
+      max-height: min(70vh, 640px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      -webkit-overflow-scrolling: touch;
+    }
+    .storage-usage-table-scroll table {
+      margin: 0;
+      min-width: 1100px;
+      width: max-content;
+      max-width: none;
+    }
+    .storage-usage-table-scroll thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--card);
+      box-shadow: 0 1px 0 var(--border);
+    }
+    th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    th.sortable:hover { text-decoration: underline; }
+    th.sortable.sort-asc::after { content: " ▲"; font-size: 0.75em; }
+    th.sortable.sort-desc::after { content: " ▼"; font-size: 0.75em; }
+    .usage-actions { display: flex; gap: 6px; flex-wrap: nowrap; white-space: nowrap; }
+    .usage-actions form { display: inline; margin: 0; }
+  </style>
+
+  <script>
+  (function () {
+    var base = {{ base | tojson }};
+    var csrf = {{ admin_storage_csrf | tojson }};
+    var rows = [];
+    var sortKey = "total_bytes";
+    var sortDesc = true;
+    var pollTimer = null;
+
+    function esc(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function compare(a, b, key) {
+      var av = a[key], bv = b[key];
+      if (typeof av === "number" && typeof bv === "number") return av - bv;
+      return String(av || "").localeCompare(String(bv || ""), undefined, { sensitivity: "base" });
+    }
+
+    function sortedFiltered() {
+      var q = (document.getElementById("filterInput").value || "").trim().toLowerCase();
+      var list = rows.slice();
+      if (q) {
+        list = list.filter(function (r) {
+          return [r.kind, r.id, r.title, r.owner, r.collection_type]
+            .join(" ")
+            .toLowerCase()
+            .indexOf(q) >= 0;
+        });
+      }
+      list.sort(function (a, b) {
+        var c = compare(a, b, sortKey);
+        return sortDesc ? -c : c;
+      });
+      return list;
+    }
+
+    function actionForms(r) {
+      var html = '<div class="usage-actions">';
+      if (r.kind === "collection") {
+        if (r.can_delete_tiles) {
+          html += '<form method="post" action="' + esc(base) + '/admin/storage-usage/collections/' + encodeURIComponent(r.id) + '/delete-tiles">' +
+            '<input type="hidden" name="csrf_token" value="' + esc(csrf) + '">' +
+            '<button type="submit" class="btn btn-sm" onclick="return confirm(\'Queue tiles delete for ' + esc(r.id) + '? Disk is cleared first in a background job.\');">Delete tiles</button></form>';
+        }
+        if (r.can_delete_all) {
+          html += '<form method="post" action="' + esc(base) + '/admin/storage-usage/collections/' + encodeURIComponent(r.id) + '/delete">' +
+            '<input type="hidden" name="csrf_token" value="' + esc(csrf) + '">' +
+            '<button type="submit" class="btn btn-sm" style="border-color: rgba(248,81,73,0.6); color: var(--danger);" ' +
+            'onclick="return confirm(\'Queue DELETE for ' + esc(r.id) + '? Tiles and rasters are removed from disk first, then the database.\');">Delete all</button></form>';
+        }
+      } else if (r.kind === "mosaic" && r.can_delete_all) {
+        html += '<form method="post" action="' + esc(base) + '/admin/storage-usage/mosaics/' + encodeURIComponent(r.id) + '/delete">' +
+          '<input type="hidden" name="csrf_token" value="' + esc(csrf) + '">' +
+          '<button type="submit" class="btn btn-sm" style="border-color: rgba(248,81,73,0.6); color: var(--danger);" ' +
+          'onclick="return confirm(\'Delete mosaic ' + esc(r.id) + '?\');">Delete</button></form>';
+      } else if ((r.kind === "orphan_tiles" || r.kind === "orphan_rasters" || r.kind === "orphan_mosaic") && r.can_delete_all) {
+        html += '<form method="post" action="' + esc(base) + '/admin/storage-usage/orphans/' + encodeURIComponent(r.kind) + '/delete">' +
+          '<input type="hidden" name="csrf_token" value="' + esc(csrf) + '">' +
+          '<input type="hidden" name="id" value="' + esc(r.id) + '">' +
+          '<button type="submit" class="btn btn-sm" style="border-color: rgba(248,81,73,0.6); color: var(--danger);" ' +
+          'onclick="return confirm(\'Delete orphan ' + esc(r.id) + '?\');">Delete</button></form>';
+      } else {
+        html += '<span class="meta">—</span>';
+      }
+      html += "</div>";
+      return html;
+    }
+
+    function render() {
+      var body = document.getElementById("usageBody");
+      var list = sortedFiltered();
+      if (!list.length) {
+        body.innerHTML = '<tr><td colspan="11" class="meta">No rows.</td></tr>';
+        return;
+      }
+      var html = "";
+      for (var i = 0; i < list.length; i++) {
+        var r = list[i];
+        var name = "<strong>" + esc(r.id) + "</strong>";
+        if (r.title) name += '<div class="meta">' + esc(r.title) + "</div>";
+        html += "<tr>" +
+          "<td>" + esc(r.kind) + "</td>" +
+          "<td>" + name + "</td>" +
+          '<td class="meta">' + esc(r.owner || "—") + "</td>" +
+          '<td class="meta">' + esc(r.collection_type || "—") + "</td>" +
+          '<td class="meta">' + esc(r.feature_count) + "</td>" +
+          '<td class="meta">' + esc(r.db_h) + "</td>" +
+          '<td class="meta">' + esc(r.tiles_h) + "</td>" +
+          '<td class="meta">' + esc(r.raster_h) + "</td>" +
+          '<td class="meta">' + esc(r.other_h) + "</td>" +
+          "<td><strong>" + esc(r.total_h) + "</strong></td>" +
+          "<td>" + actionForms(r) + "</td>" +
+          "</tr>";
+      }
+      body.innerHTML = html;
+      document.querySelectorAll("#usageTable th.sortable").forEach(function (th) {
+        th.classList.remove("sort-asc", "sort-desc");
+        if (th.getAttribute("data-sort") === sortKey) {
+          th.classList.add(sortDesc ? "sort-desc" : "sort-asc");
+        }
+      });
+    }
+
+    function setStatus(data) {
+      var st = (data && data.status) || {};
+      var computed = data && data.computed_at ? data.computed_at : "never";
+      var state = st.state || "idle";
+      var msg = st.message || "";
+      var line = "Computed at: " + computed + " · Status: " + state;
+      if (msg) line += " (" + msg + ")";
+      if (data && data.has_snapshot === false) line += " · No snapshot yet — click Refresh now.";
+      if (data && data.tiles_root_available === false) {
+        line += " · Tiles directory not visible on the host that scanned (sizes may be 0). Refresh from the API or tile worker.";
+      }
+      document.getElementById("statusLine").textContent = line;
+      var t = (data && data.totals) || {};
+      document.getElementById("totalsLine").textContent =
+        "Totals — DB: " + (t.db_h || "0 B") +
+        " · Tiles: " + (t.tiles_h || "0 B") +
+        " · Rasters: " + (t.raster_h || "0 B") +
+        " · Other: " + (t.other_h || "0 B") +
+        " · All: " + (t.total_h || "0 B") +
+        " · Rows: " + ((data && data.row_count) || 0);
+      var btn = document.getElementById("refreshBtn");
+      btn.disabled = state === "computing";
+      btn.textContent = state === "computing" ? "Refreshing…" : "Refresh now";
+    }
+
+    function load() {
+      return fetch(base + "/admin/storage-usage/api", { credentials: "same-origin" })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          rows = data.rows || [];
+          setStatus(data);
+          render();
+          if (data.status && data.status.state === "computing") {
+            schedulePoll();
+          } else if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+          }
+        })
+        .catch(function (e) {
+          document.getElementById("statusLine").textContent = "Failed to load: " + e;
+        });
+    }
+
+    function showQueuedBanner() {
+      var params = new URLSearchParams(window.location.search);
+      var banner = document.getElementById("queuedBanner");
+      var text = document.getElementById("queuedBannerText");
+      if (!banner || !text) return;
+      var jobId = params.get("job_id");
+      var deleted = params.get("deleted");
+      var err = params.get("error");
+      if (err === "orphan_not_found") {
+        banner.style.display = "block";
+        text.textContent = "Could not delete that file on this host. Check that the API container mounts TILES_STORAGE_PATH.";
+        return;
+      }
+      if (deleted === "orphan" || deleted === "tiles") {
+        banner.style.display = "block";
+        text.textContent = deleted === "tiles" ? "Tiles file removed." : "Orphan file removed.";
+        load();
+        return;
+      }
+      if (!jobId) return;
+      banner.style.display = "block";
+      text.innerHTML = 'Delete queued as job <a href="' + esc(base) + '/jobs/' + encodeURIComponent(jobId) + '?f=html"><code>' + esc(jobId) + '</code></a>. '
+        + 'Tiles/rasters are removed from disk first; refresh this page to see updated sizes.';
+      if (params.get("queued") === "1") schedulePoll();
+    }
+
+    function schedulePoll() {
+      if (pollTimer) return;
+      pollTimer = setInterval(load, 2000);
+    }
+
+    document.getElementById("refreshBtn").addEventListener("click", function () {
+      var fd = new FormData();
+      fd.append("csrf_token", csrf);
+      fetch(base + "/admin/storage-usage/refresh", {
+        method: "POST",
+        body: fd,
+        credentials: "same-origin",
+        headers: { "Accept": "application/json" }
+      })
+        .then(function (r) { return r.json(); })
+        .then(function () {
+          schedulePoll();
+          return load();
+        })
+        .catch(function (e) {
+          document.getElementById("statusLine").textContent = "Refresh failed: " + e;
+        });
+    });
+
+    document.getElementById("filterInput").addEventListener("input", render);
+
+    document.querySelectorAll("#usageTable th.sortable").forEach(function (th) {
+      th.addEventListener("click", function () {
+        var key = th.getAttribute("data-sort");
+        if (sortKey === key) sortDesc = !sortDesc;
+        else {
+          sortKey = key;
+          sortDesc = (key === "id" || key === "title" || key === "owner" || key === "kind" || key === "collection_type")
+            ? false
+            : true;
+        }
+        render();
+      });
+    });
+
+    load();
+    showQueuedBanner();
+  })();
+  </script>
+{% endblock %}

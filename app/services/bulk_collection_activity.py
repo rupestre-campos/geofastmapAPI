@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from app.core.config import get_settings
 from app.services.redis_resilience import run_redis_retry
@@ -21,6 +22,29 @@ _TERMINAL_JOB_STATUSES = frozenset(
 
 def is_terminal_job_status(status: str | None) -> bool:
     return (status or "").lower() in _TERMINAL_JOB_STATUSES
+
+
+def _pending_stale_seconds() -> float:
+    return max(
+        120.0,
+        float(getattr(get_settings(), "bulk_job_pending_stale_seconds", 600.0) or 600.0),
+    )
+
+
+def _job_age_seconds(job, *, now: datetime | None = None) -> float:
+    ref = job.updated_at or job.created_at
+    if ref is None:
+        return 0.0
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    return max(0.0, (current - ref).total_seconds())
+
+
+def _pending_mutex_holder_is_stale(job) -> bool:
+    if (job.status or "").lower() != "pending":
+        return False
+    return _job_age_seconds(job) >= _pending_stale_seconds()
 
 
 def _mutex_key(collection_id: str) -> str:
@@ -127,7 +151,7 @@ def get_active_bulk_job_ids(collection_id: str) -> list[str]:
     holder = get_collection_bulk_mutex_holder(collection_id)
     if holder:
         active.add(holder)
-    active_statuses = frozenset({"pending", "running", "replacing", "cancelling"})
+    active_statuses = frozenset({"pending", "running", "replacing", "finalizing", "cancelling"})
     for job in list_jobs_for_collection(collection_id, limit=20):
         status = (job.status or "").lower()
         if status in active_statuses and job.job_id:
@@ -251,6 +275,14 @@ def reclaim_stale_collection_bulk_mutex(collection_id: str) -> str | None:
         print(
             f"[bulk-mutex] reclaimed stale lock collection={collection_id} "
             f"holder={holder} status={getattr(job, 'status', 'missing')}",
+            flush=True,
+        )
+        return holder
+    if _pending_mutex_holder_is_stale(job):
+        release_collection_bulk_mutex(collection_id, holder)
+        print(
+            f"[bulk-mutex] reclaimed pending holder collection={collection_id} "
+            f"holder={holder} age={int(_job_age_seconds(job))}s",
             flush=True,
         )
         return holder

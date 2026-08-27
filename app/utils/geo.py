@@ -12,6 +12,28 @@ def mvt_layer_name(collection_id: str) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_]", "_", collection_id)
     return safe if safe else "default"
 
+
+# Match ST_AsMVTGeom / tippecanoe / mvt_encode buffer (tile coordinate units).
+MVT_BUFFER_PX = 256
+
+
+def mvt_tile_env_sql(buffer_px: int = MVT_BUFFER_PX) -> str:
+    """WGS84 envelope for tile feature selection, expanded by the MVT buffer.
+
+    Selecting only the exact tile bbox misses geometries that sit just outside
+    the tile but must be included so the buffer overhang can hide seams.
+    Uses bind params ``:z``, ``:x``, ``:y``.
+    """
+    return (
+        "ST_Transform("
+        "ST_Expand("
+        "ST_TileEnvelope(:z, :x, :y), "
+        f"(ST_XMax(ST_TileEnvelope(:z, :x, :y)) - ST_XMin(ST_TileEnvelope(:z, :x, :y))) "
+        f"* ({int(buffer_px)}::double precision / 4096.0)"
+        "), "
+        "4326)"
+    )
+
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.shape import to_shape
 from shapely.geometry import mapping, shape
@@ -63,15 +85,95 @@ def geometry_to_geojson(geom: Any) -> dict[str, Any] | None:
     # Raw SQL (e.g. tile_builder with stream_results): PostGIS often returns hex-encoded WKB as str
     if isinstance(geom, str):
         shp = wkb.loads(geom, hex=True)
-        return mapping(shp)
+        return shapely_to_api_geojson(shp)
     # Binary WKB from driver
     if isinstance(geom, (bytes, memoryview, bytearray)):
         shp = wkb.loads(bytes(geom))
-        return mapping(shp)
+        return shapely_to_api_geojson(shp)
     try:
         shp = to_shape(geom)
-        return mapping(shp)
+        return shapely_to_api_geojson(shp)
     except TypeError:
         # Driver may return a bytes-like that isn't bytes/memoryview (e.g. buffer)
         shp = wkb.loads(bytes(geom))
+        return shapely_to_api_geojson(shp)
+
+
+def shapely_to_api_geojson(shp: Any) -> dict[str, Any] | None:
+    """GeoJSON dict for API responses. Homogenize GeometryCollection when possible.
+
+    ``make_valid`` / ``unary_union`` often yield GeometryCollection, which many
+    clients (and our old Geometry schema) do not accept as ``coordinates``.
+    """
+    if shp is None:
+        return None
+    try:
+        if getattr(shp, "is_empty", False):
+            return None
+    except Exception:
+        pass
+    try:
+        from shapely.geometry import MultiLineString, MultiPoint, MultiPolygon
+
+        if getattr(shp, "geom_type", None) != "GeometryCollection":
+            return mapping(shp)
+
+        polys: list[Any] = []
+        lines: list[Any] = []
+        points: list[Any] = []
+
+        def _collect(g: Any) -> None:
+            if g is None or getattr(g, "is_empty", False):
+                return
+            gt = g.geom_type
+            if gt == "Polygon":
+                polys.append(g)
+            elif gt == "MultiPolygon":
+                polys.extend(list(g.geoms))
+            elif gt == "LineString":
+                lines.append(g)
+            elif gt == "MultiLineString":
+                lines.extend(list(g.geoms))
+            elif gt == "Point":
+                points.append(g)
+            elif gt == "MultiPoint":
+                points.extend(list(g.geoms))
+            elif gt == "GeometryCollection":
+                for inner in g.geoms:
+                    _collect(inner)
+
+        for g in shp.geoms:
+            _collect(g)
+        n_kinds = sum(bool(x) for x in (polys, lines, points))
+        if n_kinds == 1:
+            if polys:
+                return mapping(MultiPolygon(polys) if len(polys) > 1 else polys[0])
+            if lines:
+                return mapping(MultiLineString(lines) if len(lines) > 1 else lines[0])
+            return mapping(MultiPoint(points) if len(points) > 1 else points[0])
         return mapping(shp)
+    except Exception:
+        try:
+            return mapping(shp)
+        except Exception:
+            return None
+
+
+def ensure_valid_shapely(shp: Any) -> Any:
+    """Return a valid Shapely geometry; empty/None unchanged. Used by tile encode/filter paths."""
+    if shp is None:
+        return None
+    try:
+        if getattr(shp, "is_empty", False):
+            return shp
+        if getattr(shp, "is_valid", True):
+            return shp
+    except Exception:
+        pass
+    try:
+        from shapely.validation import make_valid
+
+        fixed = make_valid(shp)
+        return fixed if fixed is not None else shp
+    except Exception:
+        return shp

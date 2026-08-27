@@ -42,6 +42,7 @@ class JobInfo:
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     finished_at: datetime | None = None  # set when status becomes completed, failed, or cancelled
+    last_progress_at: datetime | None = None  # updated on each progress/status write during import
     owner_id: int | None = None  # user id; None = legacy (only admin can see)
     job_label: str | None = None  # e.g. raster_batch — for UI classification (optional)
 
@@ -57,6 +58,7 @@ class JobInfo:
             "created_at": self.created_at.isoformat() + "Z",
             "updated_at": self.updated_at.isoformat() + "Z",
             "finished_at": self.finished_at.isoformat() + "Z" if self.finished_at else None,
+            "last_progress_at": self.last_progress_at.isoformat() + "Z" if self.last_progress_at else None,
         }
         if self.owner_id is not None:
             out["owner_id"] = self.owner_id
@@ -121,6 +123,8 @@ def _update_job_memory(
         if finished_at is not None:
             job.finished_at = finished_at
         job.updated_at = now
+        if status is not None or items_created is not None or message is not None:
+            job.last_progress_at = now
         if status is not None:
             _release_bulk_mutex_on_terminal(job_id, job.collection_id, status)
         return job
@@ -163,6 +167,8 @@ def _create_job_redis(
     }
     if job.finished_at is not None:
         mapping["finished_at"] = job.finished_at.isoformat() + "Z"
+    if job.last_progress_at is not None:
+        mapping["last_progress_at"] = job.last_progress_at.isoformat() + "Z"
     if owner_id is not None:
         mapping["owner_id"] = str(owner_id)
     if job_label:
@@ -195,6 +201,9 @@ def _get_job_redis(job_id: str) -> JobInfo | None:
     finished_at = None
     if raw.get("finished_at"):
         finished_at = datetime.fromisoformat(raw["finished_at"].replace("Z", "+00:00"))
+    last_progress_at = None
+    if raw.get("last_progress_at"):
+        last_progress_at = datetime.fromisoformat(raw["last_progress_at"].replace("Z", "+00:00"))
     owner_id = None
     if raw.get("owner_id"):
         try:
@@ -213,6 +222,7 @@ def _get_job_redis(job_id: str) -> JobInfo | None:
         created_at=datetime.fromisoformat(raw["created_at"].replace("Z", "+00:00")),
         updated_at=datetime.fromisoformat(raw["updated_at"].replace("Z", "+00:00")),
         finished_at=finished_at,
+        last_progress_at=last_progress_at,
         owner_id=owner_id,
         job_label=str(jl) if jl else None,
     )
@@ -253,6 +263,7 @@ def _update_job_redis(
         updates["finished_at"] = finished_at.isoformat() + "Z"
     if updates:
         updates["updated_at"] = now
+        updates["last_progress_at"] = now
         run_redis_retry("update_job", lambda: r.hset(key, mapping=updates))
     if status is not None:
         _release_bulk_mutex_on_terminal(job_id, collection_id, status)
@@ -328,16 +339,47 @@ def _list_jobs_for_collection_redis(collection_id: str, limit: int) -> list[JobI
     return jobs[:limit]
 
 
-def list_all_jobs(limit: int = 100, owner_id: int | None = None) -> list[JobInfo]:
-    """Return recent jobs. If owner_id is set, only that user's jobs; if None (admin), all. Legacy (owner_id None) only when admin."""
+def list_all_jobs(
+    limit: int = 100,
+    owner_id: int | None = None,
+    *,
+    offset: int = 0,
+) -> list[JobInfo]:
+    """
+    Return recent jobs (newest updated_at first).
+    If owner_id is set, only that user's jobs; if None (admin), all.
+    Legacy jobs (owner_id None) only when admin (owner_id is None).
+    """
     settings = get_settings()
-    if settings.bulk_queue_type == "redis":
-        raw = _list_all_jobs_redis(limit=limit * 2 if owner_id is not None else limit)
+    # Fetch enough rows to cover offset+limit (and owner filter oversampling).
+    fetch = max(limit + offset, 1)
+    if owner_id is not None:
+        fetch = min(max(fetch * 2, fetch + 50), 10_000)
     else:
-        raw = _list_all_jobs_memory(limit=limit * 2 if owner_id is not None else limit)
+        fetch = min(fetch, 10_000)
+    if settings.bulk_queue_type == "redis":
+        raw = _list_all_jobs_redis(limit=fetch)
+    else:
+        raw = _list_all_jobs_memory(limit=fetch)
     if owner_id is not None:
         raw = [j for j in raw if j.owner_id == owner_id]
-    return raw[:limit]
+    return raw[offset : offset + limit]
+
+
+def list_all_jobs_unpaginated(owner_id: int | None = None, *, max_jobs: int = 5000) -> list[JobInfo]:
+    """
+    Load up to max_jobs (newest first) for filter-then-paginate UIs.
+    Prefer this when applying status/collection/time filters client- or route-side.
+    """
+    settings = get_settings()
+    cap = max(1, min(int(max_jobs), 10_000))
+    if settings.bulk_queue_type == "redis":
+        raw = _list_all_jobs_redis(limit=cap)
+    else:
+        raw = _list_all_jobs_memory(limit=cap)
+    if owner_id is not None:
+        raw = [j for j in raw if j.owner_id == owner_id]
+    return raw[:cap]
 
 
 def _list_all_jobs_memory(limit: int) -> list[JobInfo]:

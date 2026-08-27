@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from fastapi import HTTPException, status
 
+from app.core.config import get_settings
 from app.utils.property_filters import PropertyFilter, parse_filter_param
 
 BULK_IMPORT_MODES = frozenset({"append", "replace", "replace_filtered"})
+BULK_COPY_MODES = frozenset({"append", "replace"})
 
 
 def _normalize_replace_filters_raw(raw: list[str] | str | None) -> list[str]:
@@ -38,6 +40,11 @@ def validate_bulk_import_mode_and_filters(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="mode must be 'append', 'replace', or 'replace_filtered'",
+        )
+    if bool(getattr(get_settings(), "bulk_copy_ingest_enabled", True)) and mode not in BULK_COPY_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="mode must be 'append' or 'replace' for bulk file upload (replace_filtered is not supported)",
         )
     lines = _normalize_replace_filters_raw(replace_filters_raw)
     if mode == "replace_filtered":

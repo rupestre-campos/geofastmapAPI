@@ -1,0 +1,31 @@
+# Bulk finalize worker ONLY — run on the API host (single consumer for partition swap).
+# Not included in docker-compose.workers.yml (worker fleet must not run this).
+#
+#   docker compose -f deploy/compose/docker-compose.finalize-worker.yml up -d --build
+#
+# With NFS bind mounts (same paths as API):
+#   docker compose -f deploy/compose/docker-compose.finalize-worker.yml \
+#     -f deploy/compose/docker-compose.finalize-worker.nfs.yml up -d --build
+#
+# Requires deploy/env/.env.api (REDIS_URL, DATABASE_URL, BULK_QUEUE_TYPE=redis).
+name: geofastmap_api
+
+services:
+  finalize_worker:
+    restart: unless-stopped
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: geofastmap_finalize_worker
+    env_file:
+      - ../env/.env.api
+    environment:
+      BULK_FINALIZE_QUEUE_ENABLED: "true"
+      DATABASE_POOL_SIZE: 2
+      DATABASE_POOL_MAX_OVERFLOW: 2
+    volumes:
+      - geofastmap_bulk_uploads:/data/bulk-uploads
+    command: python -m app.finalize_worker_main
+
+volumes:
+  geofastmap_bulk_uploads:

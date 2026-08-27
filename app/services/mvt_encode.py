@@ -11,7 +11,7 @@ from shapely.geometry import box as shapely_box
 from shapely.geometry import shape
 from shapely.ops import transform
 
-from app.utils.geo import mvt_layer_name
+from app.utils.geo import ensure_valid_shapely, mvt_layer_name
 from app.utils.tile_bbox import tile_bbox_mercator
 
 _EARTH_RADIUS = 6378137.0
@@ -80,16 +80,19 @@ def encode_geojson_to_mvt(
         if not geom_spec:
             continue
         try:
-            shp = shape(geom_spec)
-            if shp.is_empty:
+            shp = ensure_valid_shapely(shape(geom_spec))
+            if shp is None or shp.is_empty:
                 continue
             # WGS84 -> Web Mercator
-            merc = transform(_wgs84_to_mercator, shp)
-            if merc.is_empty:
+            merc = ensure_valid_shapely(transform(_wgs84_to_mercator, shp))
+            if merc is None or merc.is_empty:
                 continue
             # Clip to buffered tile envelope (MVT buffer)
             clipped = merc.intersection(clip_box)
             if clipped.is_empty:
+                continue
+            clipped = ensure_valid_shapely(clipped)
+            if clipped is None or clipped.is_empty:
                 continue
             props = _sanitize_properties(f.get("properties") or {})
             if f.get("id") is not None and "id" not in props:

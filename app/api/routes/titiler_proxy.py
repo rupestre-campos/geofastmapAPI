@@ -6,7 +6,8 @@ import time
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_required
@@ -28,6 +29,14 @@ from app.services.titiler_tile_cache import (
     set_cached_tile,
 )
 from app.services.coverages import CogPathOutsideStorageError, resolve_stored_cog_path
+from app.services.zonal_statistics import (
+    ensure_raster_coverage_feature,
+    load_zone_feature_geojson,
+    normalize_titiler_statistics_payload,
+    post_titiler_zonal_statistics,
+    query_flag_true,
+    resolve_local_cog_url_for_titiler,
+)
 
 router = APIRouter()
 
@@ -85,6 +94,10 @@ async def titiler_proxy_tile(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item is not a coverage") from None
     if not p.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="COG file missing on disk")
+
+    # Release the pooled DB connection before the slow upstream tile fetch, so a burst of tile
+    # requests can't exhaust the DB pool and stall unrelated page requests.
+    await db.close()
 
     secret = settings.titiler_internal_secret
     fetch_base = settings.raster_internal_fetch_base_url.rstrip("/")
@@ -190,3 +203,55 @@ async def titiler_proxy_tile(
             "X-Titiler-Upstream-Attempts": att_header,
         },
     )
+
+
+@router.get(
+    "/{collection_id}/coverages/{feature_id}/statistics",
+    summary="Zonal statistics for a raster coverage inside a zone feature",
+    description=(
+        "Loads the zone Polygon/MultiPolygon from the database "
+        "(`zone_collection_id` + `zone_feature_id`) and POSTs it to Titiler "
+        "`/cog/statistics`. Returns min/max/mean/count/std (and unique values when "
+        "`categorical=true`). Extra query params (bidx, nodata, max_size, p, …) are "
+        "forwarded to Titiler."
+    ),
+    response_class=JSONResponse,
+)
+async def coverage_zonal_statistics(
+    request: Request,
+    collection_id: str,
+    feature_id: str,
+    zone_collection_id: str = Query(..., description="Vector collection containing the zone feature"),
+    zone_feature_id: str = Query(..., description="Feature id whose geometry is the analysis zone"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_required),
+):
+    feature = await ensure_raster_coverage_feature(db, collection_id, feature_id, current_user)
+    geojson_feature, zone_meta = await load_zone_feature_geojson(
+        db, zone_collection_id, zone_feature_id, current_user
+    )
+    cog_url = resolve_local_cog_url_for_titiler(
+        collection_id=collection_id, feature_id=feature_id, feature=feature
+    )
+    await db.close()
+
+    query_pairs = list(request.query_params.multi_items())
+    categorical = query_flag_true(query_pairs, "categorical")
+    raw = await post_titiler_zonal_statistics(
+        forward_path="/cog/statistics",
+        url=cog_url,
+        geojson_feature=geojson_feature,
+        query_pairs=query_pairs,
+    )
+    bidx = [v for k, v in query_pairs if k == "bidx" and v]
+    payload = normalize_titiler_statistics_payload(
+        raw,
+        categorical=categorical,
+        raster_meta={
+            "collection_id": collection_id,
+            "feature_id": feature_id,
+            "bidx": [int(x) for x in bidx if str(x).isdigit()] or None,
+        },
+        zone_meta=zone_meta,
+    )
+    return JSONResponse(content=payload)

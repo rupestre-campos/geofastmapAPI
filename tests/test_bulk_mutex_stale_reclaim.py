@@ -41,9 +41,11 @@ class _Job:
     collection_id: str
     status: str
     finished_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
-def _patch_redis(monkeypatch):
+def _patch_redis(monkeypatch, *, pending_stale_seconds: float = 600.0):
     r = _FakeRedis()
     monkeypatch.setattr(
         bca,
@@ -56,6 +58,7 @@ def _patch_redis(monkeypatch):
                 "redis_url": "redis://x",
                 "redis_retry_read_max_attempts": 3,
                 "bulk_collection_mutex_ttl_seconds": 600,
+                "bulk_job_pending_stale_seconds": pending_stale_seconds,
             },
         )(),
     )
@@ -76,6 +79,25 @@ def test_reclaim_stale_mutex_when_holder_failed(monkeypatch):
     reclaimed = bca.reclaim_stale_collection_bulk_mutex("car-area_fall-am")
     assert reclaimed == "job-old"
     assert bca.get_collection_bulk_mutex_holder("car-area_fall-am") is None
+
+
+def test_reclaim_stale_mutex_when_holder_pending_too_long(monkeypatch):
+    r = _patch_redis(monkeypatch, pending_stale_seconds=60.0)
+    r.kv[f"{bca.BULK_COLLECTION_MUTEX_PREFIX}car-native_vegetation-am"] = "job-pending"
+
+    old = datetime.utcnow().replace(year=2020)
+    pending = _Job(
+        "job-pending",
+        "car-native_vegetation-am",
+        "pending",
+        created_at=old,
+        updated_at=old,
+    )
+    monkeypatch.setattr("app.services.job_store.get_job", lambda jid: pending if jid == "job-pending" else None)
+
+    reclaimed = bca.reclaim_stale_collection_bulk_mutex("car-native_vegetation-am")
+    assert reclaimed == "job-pending"
+    assert bca.get_collection_bulk_mutex_holder("car-native_vegetation-am") is None
 
 
 def test_defer_acquires_after_reclaiming_failed_holder(monkeypatch):

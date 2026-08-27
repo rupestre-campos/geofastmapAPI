@@ -4,12 +4,12 @@
 <main class="container" style="max-width: 720px; margin: 2rem auto;">
   <h1>Items temporarily unavailable</h1>
   <p class="meta">
-    A bulk import is running on <code>{{ collection_id }}</code>.
-    Listing items is blocked or too slow while the database updates this layer
-    (replace/delete or heavy inserts). This avoids long page timeouts.
+    Listing items for <code>{{ collection_id }}</code> timed out or hit a lock wait.
+    That usually means a slow filter/search query under load — not necessarily a bulk import.
   </p>
   {% if active_jobs %}
   <h2>Active import jobs</h2>
+  <p class="meta">A destructive import may also be locking this layer:</p>
   <ul>
     {% for job in active_jobs %}
     <li>
@@ -19,6 +19,8 @@
     </li>
     {% endfor %}
   </ul>
+  {% else %}
+  <p class="meta">No active import jobs were found for this collection.</p>
   {% endif %}
   <p style="margin-top: 1.5rem;">
     <a class="btn" href="{{ retry_url }}">Retry</a>

@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     # Total server load: sum over all processes of (database_pool_size + database_pool_max_overflow), or use PgBouncer.
     database_pool_size: int = 5
     database_pool_max_overflow: int = 5
-    database_pool_timeout: float = 30.0  # seconds to wait for a connection from the pool
+    # Fail fast when the pool is saturated (slow View items / tile storms) instead of
+    # blocking every other request for half a minute.
+    database_pool_timeout: float = 8.0
     # Ephemeral engine in raster_batch (per asyncio.run job); keep small to avoid doubling many full pools.
     raster_batch_db_pool_size: int = 1
     raster_batch_db_max_overflow: int = 2
@@ -35,39 +37,98 @@ class Settings(BaseSettings):
     # Max size of one geometry (OGC WKB byte length). Rejects API writes and skips bulk-import parts over limit.
     features_max_geometry_bytes: int = 50 * 1024 * 1024  # 50 MiB; set 0 to disable
 
-    # Bulk import: batch size for DB inserts (background job)
-    bulk_import_batch_size: int = 1000
+    # Bulk import: batch size for DB commits (features per transaction).
+    bulk_import_batch_size: int = 3000
     # SQL VALUES tuples per INSERT when one source feature splits into many geometry parts.
-    bulk_insert_parts_batch_size: int = 160
+    bulk_insert_parts_batch_size: int = 200
+    # Logical features buffered before flushing multi-row INSERT statements (GeoJSONL fast path).
+    bulk_features_per_insert: int = 32
+    # GeoJSONL: orjson line reader instead of Fiona (default on for .geojsonl).
+    bulk_geojsonl_fast_path: bool = True
+    # Per-feature SAVEPOINT isolation (off on fast path for throughput).
+    bulk_per_feature_savepoint: bool = False
+    # Skip row trigger on features during bulk import; refresh collections.features_last_updated_at once at end.
+    bulk_skip_features_touch_trigger: bool = True
+    # Buffered read size when splitting large GeoJSONL into shard files.
+    bulk_shard_split_buffer_bytes: int = 8 * 1024 * 1024
     # Emit progress updates while a large batch is still in-flight (seconds). 0 = commit-bound updates only.
     bulk_progress_heartbeat_seconds: float = 5.0
     # Post-import extent update mode: immediate (blocking), deferred (skip during job), or best_effort.
-    bulk_extent_update_mode: str = "immediate"  # immediate | deferred | best_effort
+    bulk_extent_update_mode: str = "deferred"  # immediate | deferred | best_effort
     # Retry transient DB failures during bulk import/finalization.
     bulk_db_retry_max_attempts: int = 4
     bulk_db_retry_base_seconds: float = 1.0
     bulk_db_retry_max_seconds: float = 30.0
     # Resumable upload sessions (chunked upload API).
     bulk_upload_session_ttl_seconds: int = 86400
-    bulk_upload_chunk_size_bytes: int = 32 * 1024 * 1024  # 32 MiB
-    # Parent/shard ingest mode for large files.
-    bulk_sharded_ingest_enabled: bool = True
-    bulk_shard_lines_per_part: int = 50000
+    bulk_upload_chunk_size_bytes: int = 64 * 1024 * 1024  # 64 MiB
+    # Legacy parent/shard ingest (deprecated; use bulk_copy_ingest_enabled).
+    bulk_sharded_ingest_enabled: bool = False
+    bulk_shard_lines_per_part: int = 100000
+    # COPY + staging table ingest (GeoJSONSeq and shapefile via fiona).
+    bulk_copy_ingest_enabled: bool = True
+    # After COPY, enqueue partition promote to a dedicated single-consumer finalize queue.
+    bulk_finalize_queue_enabled: bool = True
+    bulk_finalize_retry_base_seconds: float = 2.0
+    bulk_finalize_retry_max_seconds: float = 120.0
+    bulk_finalize_watchdog_interval_seconds: float = 60.0
+    # Rows per COPY flush during staging load (lower = less RAM, more transactions).
+    bulk_copy_batch_rows: int = 20000
+    # Parser processes for GeoJSONSeq (0 = auto: max(1, cpu_count - 1)).
+    bulk_copy_parser_workers: int = 0
+    # Lines shipped to each parser process per task (bounds per-task RAM for millions of rows).
+    bulk_copy_parse_batch_lines: int = 8000
+    # Max parse tasks in flight (0 = auto: parser_workers * 2). Caps peak RAM independent of file size.
+    bulk_copy_max_inflight_batches: int = 0
+    # Fail running bulk jobs with no progress heartbeat after this many seconds.
+    bulk_job_stale_seconds: float = 14400.0
+    # When false (default with finalize queue), load workers only reclaim mutexes — they do not fail long COPY jobs.
+    bulk_watchdog_fail_stale_running: bool | None = None
+    # Fail finalizing jobs with no progress after this (finalize worker watchdog only).
+    bulk_finalize_stale_seconds: float = 86400.0
+    # After this many finalize attempts on duplicate-key errors, abandon staging and fail the job.
+    bulk_finalize_duplicate_give_up_attempts: int = 3
+    # Min silence before recovering running jobs that have staging rows (avoid partial COPY finalize).
+    bulk_running_recover_staging_seconds: float = 600.0
+    # Pending job still holds collection mutex (worker died before marking running): reclaim after this.
+    bulk_job_pending_stale_seconds: float = 600.0
+    # Interval between mutex/stale-job watchdog passes in the worker loop (seconds).
+    bulk_watchdog_interval_seconds: float = 300.0
     # Replace mode: delete rows in batches to avoid one long table lock blocking other work.
     bulk_replace_delete_batch_rows: int = 25000
     # Shadow replace: append tagged rows first, delete old rows at finalize (items view keeps prior data).
     bulk_replace_shadow_import: bool = False
     # Per-collection Redis mutex TTL while a bulk import mutates features (refreshed during long jobs).
     bulk_collection_mutex_ttl_seconds: int = 86400 * 2
+    # Partition swap DDL (DETACH/ATTACH on parent `features`): fail fast instead of queueing
+    # behind long reads (a waiting ACCESS EXCLUSIVE blocks every new query on ALL collections).
+    bulk_swap_lock_timeout_seconds: float = 5.0
+    bulk_swap_lock_max_wait_seconds: float = 600.0
 
     # Bulk storage: where uploaded files go (shared path for API and worker). Future: s3.
     bulk_storage_type: str = "filesystem"  # filesystem | s3 (s3 reserved)
     bulk_storage_path: str = "/data/bulk-uploads"  # for filesystem; create if missing
+    # Disk self-heal on workers: drop orphan bulk files, `_uploads/` parts, tippecanoe `*.tmp`.
+    # Only deletes names not referenced by Redis (queue / import meta / upload sessions / tile pending).
+    storage_self_heal_enabled: bool = True
+    storage_self_heal_interval_seconds: float = 300.0
+    # After Redis no longer references a file, keep it this long before delete (outages / long jobs).
+    storage_self_heal_bulk_grace_seconds: float = 86400.0  # 24h
+    # Same grace for tippecanoe `*.mbtiles.*.tmp` with no pending lease (large layers can run for hours).
+    storage_self_heal_tile_tmp_grace_seconds: float = 86400.0  # 24h
+    # Admin storage-usage dashboard: Redis snapshot + daily recompute (UTC).
+    storage_usage_daily_recompute: bool = True
+    storage_usage_daily_hour_utc: int = 0  # midnight UTC
+    storage_usage_snapshot_ttl_seconds: int = 86400 * 8
 
     # Bulk queue: memory = in-process consumer; redis = separate worker(s), scalable.
     bulk_queue_type: str = "redis"  # memory | redis
     # Standalone bulk worker (`app.worker_main`): concurrent queue jobs per process (threads). Each job holds DB + CPU; raise with Postgres max_connections in mind.
-    bulk_worker_max_concurrent: int = 2
+    bulk_worker_max_concurrent: int = 1
+    # After claiming a job while free slots remain, wait this long before claiming the next.
+    # Lets idle worker machines win the next job from the shared queue (spreads bursts across hosts).
+    # 0 = greedy (one host can grab a whole burst). Set >0 (e.g. 0.5) to favor cross-host distribution.
+    bulk_worker_dispatch_cooldown_seconds: float = 0.5
     # Comma-separated collection ids allowed to auto-queue tile build after bulk import.
     # Empty = disabled (use POST /collections/{id}/tiles/build for manual/cron rebuilds).
     bulk_auto_tile_build_collections: str = ""
@@ -75,18 +136,32 @@ class Settings(BaseSettings):
     tile_build_bulk_wait_poll_seconds: float = 2.0
     # Items list: fail fast when bulk import holds row/table locks (avoids nginx 60s timeout).
     items_list_lock_timeout_seconds: float = 3.0
-    items_list_statement_timeout_seconds: float = 30.0
-    items_list_during_bulk_statement_timeout_seconds: float = 8.0
+    # Keep items list short so one slow million-row partition cannot pin pool conns.
+    items_list_statement_timeout_seconds: float = 8.0
+    items_list_during_bulk_statement_timeout_seconds: float = 5.0
+    # Cap concurrent heavy items-list DB work per API worker (others get 503 quickly).
+    items_list_max_concurrent: int = 3
+    items_list_gate_wait_seconds: float = 2.0
     redis_url: str = "redis://localhost:6379/0"  # used when bulk_queue_type=redis
+    # TCP timeouts for redis-py (seconds). BRPOP consumer needs socket_timeout > BRPOP wait.
+    redis_socket_connect_timeout_seconds: float = 10.0
+    redis_socket_timeout_seconds: float = 0.0  # 0 = redis-py default (no read timeout)
+    redis_brpop_socket_timeout_seconds: float = 0.0  # 0 = auto: max(30, brpop_timeout + 15)
     # Generic Redis retry/backoff knobs for queue consumers and enqueue operations.
     redis_retry_base_seconds: float = 1.0
     redis_retry_max_seconds: float = 30.0
     redis_retry_enqueue_max_attempts: int = 5
     # Hot-path Redis reads (e.g. job cancel polls during bulk import, parent shard aggregation).
-    redis_retry_read_max_attempts: int = 15
+    redis_retry_read_max_attempts: int = 20
+    # Composite collection: Redis TTL for merged static MVT tiles (seconds). 0 = disabled.
+    composite_tiles_cache_ttl_seconds: int = 3600
+    # Max rows fetched per member when merging filtered composite item queries.
+    composite_items_merge_cap: int = 5000
 
     # OGC API - Processes: geometric operations (intersection, erase) between collections.
     process_queue_type: str = "redis"  # redis | memory (memory = no separate worker)
+    # Parallel CREATE INDEX CONCURRENTLY jobs handled by process_worker (property-index queue).
+    property_index_worker_max_concurrent: int = 2
     # Stream A in batches by memory size. Keep low to limit worker RAM (each batch + B in bbox held in memory).
     process_batch_max_bytes: int = 256 * 1024  # max bytes of geometry (A) per batch (default 256 KiB)
     process_batch_max_rows: int = 0  # optional cap: max rows per batch (0 = only byte limit)
@@ -101,10 +176,12 @@ class Settings(BaseSettings):
     # Statement timeout (seconds) for process worker DB connections. 0 = disabled. Helps prevent long queries from blocking API.
     process_worker_statement_timeout_seconds: int = 0  # 0 = no limit; e.g. 1800 = 30 min max per statement
 
-    # Tiles: static MBTiles storage; dynamic tiles are served by FastAPI from PostGIS.
+    # Tiles: static MBTiles storage; dynamic tiles = DB geometry query + Python MVT encode.
     tiles_storage_path: str = "/data/tiles"
-    # Max features per MVT tile to avoid overloading the database (default 200k).
-    tiles_mvt_max_features: int = items_max_limit
+    # Max features fetched per dynamic tile (DB retrieve only; encode is in-process / workers).
+    tiles_mvt_max_features: int = 50000
+    # Max features to materialize for filter=… dynamic tiles (car_code farm layers).
+    tiles_filter_max_features: int = 50000
     # Redis cache TTL for dynamic tiles (seconds). 0 = no cache.
     tiles_dynamic_cache_ttl_seconds: int = 60
     # Also cache tiles with query params (limit, offset, bbox, etc.) to reduce DB load when panning/zooming.
@@ -112,11 +189,21 @@ class Settings(BaseSettings):
     # TTL for parametrized tile cache (seconds). Max 60 to limit staleness; use invalidate button for immediate refresh.
     tiles_dynamic_cache_params_ttl_seconds: int = 60
     # Max time (seconds) for a single dynamic tile query; 0 = disabled. Helps avoid holding pool connections.
-    tiles_dynamic_statement_timeout_seconds: int = 15
-    # When set, dynamic tiles are generated by this worker (DB + tippecanoe). Empty = use in-process PostGIS MVT.
+    tiles_dynamic_statement_timeout_seconds: int = 30
+    # Cap concurrent dynamic-tile DB queries per API worker. MapLibre may request 20–50 tiles at once.
+    tiles_dynamic_max_concurrent: int = 8
+    # How long a tile request may wait for a gate slot before returning an empty tile.
+    tiles_dynamic_gate_wait_seconds: float = 5.0
+    # When set, dynamic tiles are generated by this HTTP worker (DB fetch + in-process MVT). Empty = in-API path.
     tiles_dynamic_worker_url: str = ""  # e.g. http://localhost:8001
-    # When non-empty, use Redis search cache + tile job queue (workers read from cache, no DB). e.g. "1" or "true".
+    # When true, use Redis search cache + LIFO tile job queue (workers encode only; no DB in workers).
     tiles_dynamic_use_queue: bool = False
+    # Concurrent encode processes inside one tile_queue_worker container (0 = auto: min(cpu_count, 8)).
+    tiles_dynamic_queue_concurrency: int = 0
+    # Max pending jobs in geofastmap:tile_jobs (LIFO trims oldest). 0 = unlimited.
+    tiles_dynamic_queue_max_jobs: int = 512
+    # Drop jobs older than this many seconds (stale pan/zoom). 0 = never drop by age.
+    tiles_dynamic_queue_job_max_age_seconds: float = 30.0
     # TTL for cached search result GeoJSON (seconds). Workers read from this; no DB in workers. Max 60 to limit staleness.
     tiles_search_result_cache_ttl_seconds: int = 60
     # GET /collections/{collection_id}/items server-side cache (seconds). 0 = disabled.

@@ -59,16 +59,23 @@
       .then(function(data) {
         var keys = (data && data.properties && Array.isArray(data.properties)) ? data.properties : [];
         keySelect.innerHTML = '<option value="">— column —</option>' + keys.map(function(k) { return '<option value="' + esc(k) + '">' + esc(k) + '</option>'; }).join('');
+        columnsLoaded = true;
       })
       .catch(function() {});
   }
   window.geofastmapFilterBuilderSetCollection = window.geofastmapFilterBuilderSetCollection || {};
   window.geofastmapFilterBuilderSetCollection[{{ builder_id | tojson }}] = function(collectionId) {
     root.setAttribute('data-collection-id', collectionId || '');
+    columnsLoaded = false;
     return loadColumns(collectionId || '');
   };
-  var cid = root.getAttribute('data-collection-id');
-  if (cid && baseUrl) loadColumns(cid);
+  var columnsLoaded = false;
+  // Lazy: do not hit /queryables on every View items SSR load for million-row layers.
+  keySelect.addEventListener('focus', function() {
+    if (columnsLoaded) return;
+    var cid = root.getAttribute('data-collection-id');
+    if (cid && baseUrl) loadColumns(cid);
+  }, { once: false });
 })();
 </script>
 {% endmacro %}

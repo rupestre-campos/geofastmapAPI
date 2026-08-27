@@ -31,6 +31,24 @@ services:
     cpus: "4"
     mem_limit: 8g
 
+  # Dynamic MVT encode workers (LIFO Redis jobs). DB stays on API; workers only encode.
+  # Requires TILES_DYNAMIC_USE_QUEUE=true in API and worker env.
+  dynamic_tile_worker:
+    restart: unless-stopped
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: geofastmap_dynamic_tile_worker
+    env_file:
+      - ../env/.env.workers
+    environment:
+      TILES_DYNAMIC_USE_QUEUE: "true"
+      # 0 = auto (min(cpu_count, 8)); raise on large hosts
+      TILES_DYNAMIC_QUEUE_CONCURRENCY: "0"
+    command: python -m app.tile_queue_worker
+    cpus: "4"
+    mem_limit: 4g
+
   process_worker:
     restart: unless-stopped
     build:

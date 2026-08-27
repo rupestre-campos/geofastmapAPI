@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path as PathLib
+from typing import Any
 from urllib.parse import urlencode
 
 import orjson
@@ -33,6 +34,17 @@ from app.services.bulk_upload_sessions import (
     delete_upload_session,
     get_upload_session,
 )
+from app.services.composite_collections import is_composite_collection
+from app.services.composite_items import (
+    composite_feature_to_geojson,
+    composite_member_ids,
+    format_composite_item_id,
+    get_composite_feature,
+    get_composite_property_keys,
+    list_composite_features_paginated,
+    parse_composite_item_id,
+    stream_composite_features_geojsonl,
+)
 from app.services.job_store import create_job, list_jobs_for_collection
 from app.services.items_query_guards import (
     apply_items_query_timeouts,
@@ -51,7 +63,7 @@ from app.api.responses import GeoJSONResponse
 from app.schemas.ogc import Link
 from app.utils.geo import bbox_from_geometries, geometry_to_geojson
 from app.utils.datetime_parse import parse_datetime_param
-from app.services.collection_type_guard import ensure_vector_collection
+from app.services.collection_type_guard import ensure_vector_collection, ensure_vector_data_collection
 from app.utils.property_filters import parse_filter_param
 
 router = APIRouter()
@@ -62,7 +74,50 @@ def _base_url(request: Request) -> str:
 
 
 # Reserved query params for items list (not attribute filters). Include "f" for ?f=html (HTML view).
-ITEMS_RESERVED_PARAMS = {"limit", "offset", "bbox", "datetime", "sortby", "sortdesc", "properties", "filter", "q", "f", "bbox_only", "force"}
+ITEMS_RESERVED_PARAMS = {
+    "limit",
+    "offset",
+    "bbox",
+    "datetime",
+    "sortby",
+    "sortdesc",
+    "properties",
+    "filter",
+    "q",
+    "f",
+    "bbox_only",
+    "force",
+    "geometry",
+    "skip_count",
+}
+
+
+def _geometry_model(geom_dict: Any) -> Geometry | None:
+    """Parse GeoJSON geometry for API responses. GeometryCollection has ``geometries``, not ``coordinates``."""
+    if not geom_dict:
+        return None
+    if isinstance(geom_dict, str):
+        try:
+            geom_dict = json.loads(geom_dict)
+        except Exception:
+            return None
+    if not isinstance(geom_dict, dict):
+        return None
+    if geom_dict.get("type") == "GeometryCollection" and not geom_dict.get("coordinates"):
+        try:
+            from shapely.geometry import shape as shp_shape
+
+            from app.utils.geo import shapely_to_api_geojson
+
+            homogenized = shapely_to_api_geojson(shp_shape(geom_dict))
+            if homogenized:
+                geom_dict = homogenized
+        except Exception:
+            pass
+    try:
+        return Geometry.model_validate(geom_dict)
+    except Exception:
+        return None
 
 
 def _feature_to_read(
@@ -83,7 +138,7 @@ def _feature_to_read(
         id=feature.id,
         collection_id=feature.collection_id,
         type="Feature",
-        geometry=Geometry(**geom_dict) if geom_dict else None,
+        geometry=_geometry_model(geom_dict),
         properties=props,
         created_at=feature.created_at,
         updated_at=feature.updated_at,
@@ -93,7 +148,7 @@ def _feature_to_read(
 
 def _active_bulk_import_jobs(collection_id: str) -> list:
     jobs = list_jobs_for_collection(collection_id, limit=15)
-    active_statuses = frozenset({"pending", "running", "replacing", "cancelling"})
+    active_statuses = frozenset({"pending", "running", "replacing", "finalizing", "cancelling"})
     return [j for j in jobs if (j.status or "").lower() in active_statuses]
 
 
@@ -142,6 +197,14 @@ async def list_items(
     filter_param: list[str] | None = Query(None, alias="filter", description="Structured filters: key:op:value (op: eq, ne, gt, gte, lt, lte, like, ilike). Repeat for AND."),
     q: str | None = Query(None, description="Full-text search across all property values."),
     bbox_only: bool = Query(False, description="If true, return only { bbox, numberMatched } for the same query (no features)."),
+    geometry: bool | None = Query(
+        None,
+        description="If false, omit geometries and return feature.bbox only (fast). Default: false for HTML vector, true for JSON.",
+    ),
+    skip_count: bool | None = Query(
+        None,
+        description="If true, skip expensive COUNT(DISTINCT id). Default: true for HTML. Filtered lists use an approximate total.",
+    ),
 ):
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
@@ -221,37 +284,166 @@ async def list_items(
     props_include_set: set[str] | None = None
     if properties_include:
         props_include_set = {p.strip() for p in properties_include.split(",") if p.strip()}
-    # HTML view: skip full geometry for vector (bbox only); raster needs footprints on the map.
+    # HTML vector default: bbox-only (fast for million-row browses).
+    # Small filtered/search pages (≤25): include real geometries so the map is not bbox squares.
     collection_type = getattr(collection, "collection_type", "vector") or "vector"
     is_raster = collection_type == "raster"
-    include_geometry = (wants_html(request) and is_raster) or (not wants_html(request))
-    skip_count = wants_html(request)
+    has_item_filters = bool(
+        bbox_tuple
+        or datetime_param
+        or filter_param
+        or fulltext_q
+        or property_filters
+    )
+    if geometry is None:
+        if wants_html(request) and is_raster:
+            include_geometry = True
+        elif wants_html(request) and not is_raster and has_item_filters and limit <= 25:
+            include_geometry = True
+        elif wants_html(request):
+            include_geometry = False
+        else:
+            include_geometry = True
+    else:
+        include_geometry = bool(geometry)
+    if skip_count is None:
+        skip_count_eff = wants_html(request)
+    else:
+        skip_count_eff = bool(skip_count)
     bulk_busy = collection_has_destructive_bulk_activity(collection_id)
     force_read = request.query_params.get("force", "").lower() in ("1", "true", "yes")
     exclude_bulk_job_ids = active_shadow_exclude_job_ids(collection_id)
-    try:
-        await apply_items_query_timeouts(
-            db,
-            during_bulk=bulk_busy and not force_read,
-        )
-        features, number_matched = await features_crud.list_features_paginated(
+    is_composite = is_composite_collection(collection)
+
+    # Exact CAR/parcel tokens: resolve via id / indexed property equality (skip trigram %q%).
+    exact_feature_ids: list[str] | None = None
+    if fulltext_q and features_crud.is_exact_search_token(fulltext_q) and not is_composite:
+        from app.services.collection_property_indexes import normalize_property_index_fields
+
+        exact_feature_ids = await features_crud.resolve_exact_search_feature_ids(
             db,
             collection_id,
-            limit=limit,
-            offset=offset,
-            bbox=bbox_tuple,
-            datetime_start=dt_start,
-            datetime_end=dt_end,
-            sortby=sortby,
-            sortdesc=sortdesc,
-            property_filters=property_filters or None,
-            structured_filters=structured_filters or None,
-            fulltext_q=fulltext_q,
-            collection_feature_count=collection.feature_count,
-            include_geometry=include_geometry,
-            skip_count=skip_count,
+            fulltext_q,
+            property_keys=normalize_property_index_fields(
+                getattr(collection, "property_index_fields", None)
+            ),
+            limit=max(limit, 50),
             exclude_bulk_job_ids=exclude_bulk_job_ids or None,
         )
+        # Exact path always disables ILIKE — empty means "no matches", not "fall back to scan".
+        fulltext_q = None
+        # Exact match is always a tiny set — always return real geometries for the map.
+        if wants_html(request) and not is_raster and geometry is None:
+            include_geometry = True
+
+    # filter=car_code:eq:… (filter builder / other apps): same indexed equality path as exact q=.
+    # Without this, DISTINCT over properties->>'car_code' on a huge partition can hit statement_timeout
+    # and surface the misleading "bulk import" busy page.
+    if (
+        exact_feature_ids is None
+        and structured_filters
+        and not is_composite
+        and not fulltext_q
+        and not property_filters
+    ):
+        resolved_eq = await features_crud.resolve_structured_eq_feature_ids(
+            db,
+            collection_id,
+            structured_filters,
+            limit=max(limit, 50),
+            exclude_bulk_job_ids=exclude_bulk_job_ids or None,
+        )
+        if resolved_eq is not None:
+            exact_feature_ids = resolved_eq
+            structured_filters = []
+            if wants_html(request) and not is_raster and geometry is None:
+                include_geometry = True
+
+    try:
+        from app.services.db_load_gate import DbLoadOverloaded, run_items_list_db
+
+        async def _load_page():
+            await apply_items_query_timeouts(
+                db,
+                during_bulk=bulk_busy and not force_read,
+            )
+            if is_composite:
+                member_ids = await composite_member_ids(db, collection)
+                rows, number_matched = await list_composite_features_paginated(
+                    db,
+                    member_ids,
+                    limit=limit,
+                    offset=offset,
+                    bbox=bbox_tuple,
+                    datetime_start=dt_start,
+                    datetime_end=dt_end,
+                    sortby=sortby,
+                    sortdesc=sortdesc,
+                    property_filters=property_filters or None,
+                    structured_filters=structured_filters or None,
+                    fulltext_q=fulltext_q,
+                    include_geometry=include_geometry,
+                    skip_count=skip_count_eff,
+                )
+                read_list = []
+                for mid, feat in rows:
+                    r = _feature_to_read(feat, props_include_set)
+                    comp_id = format_composite_item_id(mid, feat.id)
+                    props = dict(r.properties or {})
+                    props["_member_collection_id"] = mid
+                    props["_member_feature_id"] = feat.id
+                    read_list.append(r.model_copy(update={"id": comp_id, "properties": props}))
+                return read_list, number_matched
+            if exact_feature_ids is not None:
+                if not exact_feature_ids:
+                    return [], 0
+                features, number_matched = await features_crud.list_features_paginated(
+                    db,
+                    collection_id,
+                    limit=limit,
+                    offset=offset,
+                    bbox=bbox_tuple,
+                    datetime_start=dt_start,
+                    datetime_end=dt_end,
+                    sortby=sortby,
+                    sortdesc=sortdesc,
+                    property_filters=property_filters or None,
+                    structured_filters=structured_filters or None,
+                    fulltext_q=None,
+                    feature_ids=exact_feature_ids,
+                    collection_feature_count=len(exact_feature_ids),
+                    include_geometry=include_geometry,
+                    skip_count=True,
+                    exclude_bulk_job_ids=exclude_bulk_job_ids or None,
+                )
+                return [_feature_to_read(f, props_include_set) for f in features], number_matched
+            features, number_matched = await features_crud.list_features_paginated(
+                db,
+                collection_id,
+                limit=limit,
+                offset=offset,
+                bbox=bbox_tuple,
+                datetime_start=dt_start,
+                datetime_end=dt_end,
+                sortby=sortby,
+                sortdesc=sortdesc,
+                property_filters=property_filters or None,
+                structured_filters=structured_filters or None,
+                fulltext_q=fulltext_q,
+                collection_feature_count=collection.feature_count,
+                include_geometry=include_geometry,
+                skip_count=skip_count_eff,
+                exclude_bulk_job_ids=exclude_bulk_job_ids or None,
+            )
+            return [_feature_to_read(f, props_include_set) for f in features], number_matched
+
+        read_list, number_matched = await run_items_list_db(request, _load_page)
+    except DbLoadOverloaded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Items list is busy; try again in a moment.",
+            headers={"Retry-After": "2"},
+        ) from exc
     except DBAPIError as exc:
         if is_items_query_timeout_error(exc):
             if wants_html(request):
@@ -262,8 +454,8 @@ async def list_items(
                 )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Items list temporarily unavailable while bulk import is running on this collection.",
-                headers={"Retry-After": "30"},
+                detail="Items list query timed out. Narrow filters or retry; the server did not keep holding a DB connection.",
+                headers={"Retry-After": "5"},
             ) from exc
         raise
     base = _base_url(request)
@@ -277,11 +469,10 @@ async def list_items(
         q["offset"] = str(new_offset)
         q["limit"] = str(limit)
         return f"{base_path}?{urlencode(sorted(q.items()))}"
-    if offset + len(features) < number_matched:
+    if offset + len(read_list) < number_matched:
         links.append(Link(href=_page_href(offset + limit), rel="next", type="application/geo+json"))
     if offset > 0:
         links.append(Link(href=_page_href(max(0, offset - limit)), rel="prev", type="application/geo+json"))
-    read_list = [_feature_to_read(f, props_include_set) for f in features]
     # Build GeoJSON features once (used for extent, cache, HTML, and JSON response)
     features_geojson = []
     bboxes_only: list[list[float]] = []
@@ -313,8 +504,14 @@ async def list_items(
             content=json.dumps({"bbox": extent_bbox, "numberMatched": number_matched}),
             media_type="application/json",
         )
-    # Warm search result cache for dynamic tiler (queue mode); only when we have geometry (not bbox-only)
-    if get_settings().tiles_dynamic_use_queue and include_geometry:
+    # Warm search-result cache so /tiles/dynamic with the same params can encode MVT
+    # without re-running the items query (showcase path for other apps).
+    _settings = get_settings()
+    if (
+        include_geometry
+        and getattr(_settings, "tiles_search_result_cache_ttl_seconds", 0) > 0
+        and any(f.get("geometry") for f in features_geojson)
+    ):
         from app.services.dynamic_tile_cache import _params_key_from_query, set_search_result
         params_key = _params_key_from_query(
             limit=limit,
@@ -352,7 +549,7 @@ async def list_items(
         if offset > 0:
             q_prev = {**query_params, "offset": str(max(0, offset - limit))}
             prev_page_url = base_path + "?" + urlencode(sorted(q_prev.items()))
-        if offset + len(features) < number_matched:
+        if offset + len(read_list) < number_matched:
             q_next = {**query_params, "offset": str(offset + limit)}
             next_page_url = base_path + "?" + urlencode(sorted(q_next.items()))
         # Fetch style and tiles in parallel (no dependency on features)
@@ -367,6 +564,22 @@ async def list_items(
         )
         has_static_tiles = bool(rec and rec.pmtiles_path and PathLib(rec.pmtiles_path).exists())
         can_edit = await can_edit_collection(db, collection, current_user)
+        # Prefer stored collection extent for map fit when browsing unfiltered pages.
+        collection_extent_bbox = None
+        if not bbox and not datetime_param and not filter_param and not fulltext_q and not property_filters:
+            ext = getattr(collection, "extent", None) or {}
+            spatial = ext.get("spatial") if isinstance(ext, dict) else None
+            bbox_list = None
+            if isinstance(spatial, dict):
+                bbox_list = spatial.get("bbox")
+            if isinstance(bbox_list, list) and bbox_list:
+                first = bbox_list[0] if isinstance(bbox_list[0], list) else bbox_list
+                if isinstance(first, (list, tuple)) and len(first) >= 4:
+                    try:
+                        collection_extent_bbox = [float(first[0]), float(first[1]), float(first[2]), float(first[3])]
+                    except (TypeError, ValueError):
+                        collection_extent_bbox = None
+        map_extent_bbox = collection_extent_bbox or extent_bbox
         return html_response(
             "items.html",
             base=base,
@@ -376,10 +589,10 @@ async def list_items(
             can_edit_collection=can_edit,
             features=read_list,
             features_geojson=features_geojson,
-            extent_bbox=extent_bbox,
+            extent_bbox=map_extent_bbox,
             property_keys=property_keys,
             number_matched=number_matched,
-            number_returned=len(features),
+            number_returned=len(read_list),
             limit=limit,
             limit_max_value=get_settings().items_max_limit,
             offset=offset,
@@ -403,7 +616,7 @@ async def list_items(
         features=read_list,
         bbox=extent_bbox,
         numberMatched=number_matched,
-        numberReturned=len(features),
+        numberReturned=len(read_list),
         links=links + [Link(href=f"{base_path}?f=html", rel="alternate", type="text/html")],
     )
     payload = fc.model_dump(mode="json")
@@ -446,6 +659,21 @@ async def get_collection_queryables(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    from app.services.collection_property_indexes import normalize_property_index_fields
+
+    if is_composite_collection(collection):
+        member_ids = await composite_member_ids(db, collection)
+        configured = normalize_property_index_fields(
+            getattr(collection, "property_index_fields", None)
+        )
+        merged = await get_composite_property_keys(db, member_ids, configured)
+        return {"properties": merged}
+    configured = normalize_property_index_fields(
+        getattr(collection, "property_index_fields", None)
+    )
+    # Large layers: prefer configured index fields and skip DISTINCT sampling of feature rows.
+    if configured:
+        return {"properties": configured}
     keys = await features_crud.get_collection_property_keys(db, collection_id)
     return {"properties": keys}
 
@@ -465,7 +693,7 @@ async def create_bulk_upload_session(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     mode, replace_filter_lines = validate_bulk_import_mode_and_filters(
@@ -513,7 +741,7 @@ async def upload_bulk_session_part(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     s = get_upload_session(upload_id)
@@ -549,7 +777,7 @@ async def complete_bulk_upload_session(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     s = get_upload_session(upload_id)
@@ -609,9 +837,6 @@ async def complete_bulk_upload_session(
         zip_inner_shp_paths=zip_inner_shp_paths,
         replace_filters=replace_filter_lines if replace_filter_lines else None,
     )
-    if bool(settings.bulk_sharded_ingest_enabled):
-        payload.job_kind = "parent"
-        payload.finalize_collection = True
     try:
         register_bulk_import_job(job.job_id, storage_key)
         enqueue(payload)
@@ -639,7 +864,7 @@ async def abort_bulk_upload_session(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     s = get_upload_session(upload_id)
@@ -655,7 +880,7 @@ async def abort_bulk_upload_session(
     "/{collection_id}/items/bulk",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Bulk import from geospatial file",
-    description="Upload a file (KML, GPKG, GeoJSON, GeoJSONSeq/.geojsonl/.geojsonseq, or .zip). A .zip may contain one or more shapefiles (.shp and sidecars); all .shp found inside the zip (including in subfolders) are imported into the collection. Import runs asynchronously. Use mode=append, replace, or replace_filtered (with replace_filters). Returns job_id and status_url.",
+    description="Upload a file (KML, GPKG, GeoJSON, GeoJSONSeq/.geojsonl/.geojsonseq, or .zip). Import runs asynchronously. Use mode=append or replace. Returns job_id and status_url.",
 )
 async def bulk_import_items(
     request: Request,
@@ -666,7 +891,7 @@ async def bulk_import_items(
     ),
     mode: str = Form(
         "append",
-        description="append = add; replace = delete all then import; replace_filtered = delete matching replace_filters then import",
+        description="append = add to collection; replace = swap entire collection from staged import",
     ),
     replace_filters: str | None = Form(
         None,
@@ -683,7 +908,7 @@ async def bulk_import_items(
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
 
@@ -734,9 +959,6 @@ async def bulk_import_items(
             zip_inner_shp_paths=zip_inner_shp_paths,
             replace_filters=replace_filter_lines if replace_filter_lines else None,
         )
-        if bool(settings.bulk_sharded_ingest_enabled):
-            payload.job_kind = "parent"
-            payload.finalize_collection = True
         enqueue(payload)
     except Exception as e:
         try:
@@ -858,21 +1080,33 @@ async def download_items_data(
     _GEOJSONL_CHUNK_TARGET = 256 * 1024  # 256 KB per yield for good throughput, still low RAM
 
     async def _iter_geojsonl():
-        # Use a dedicated session so we don't hold the request-scoped connection for the
-        # whole download; close it explicitly so the pool never leaks (fixes GC warning).
         session = AsyncSessionLocal()
         try:
-            gen = features_crud.stream_features_geojsonl(
-                session,
-                collection_id,
-                bbox=bbox_tuple,
-                datetime_start=dt_start,
-                datetime_end=dt_end,
-                property_filters=property_filters or None,
-                structured_filters=structured_filters or None,
-                fulltext_q=fulltext_q,
-                batch_size=_GEOJSONL_BATCH_SIZE,
-            )
+            if is_composite_collection(collection):
+                member_ids = await composite_member_ids(session, collection)
+                gen = stream_composite_features_geojsonl(
+                    session,
+                    member_ids,
+                    bbox=bbox_tuple,
+                    datetime_start=dt_start,
+                    datetime_end=dt_end,
+                    property_filters=property_filters or None,
+                    structured_filters=structured_filters or None,
+                    fulltext_q=fulltext_q,
+                    batch_size=_GEOJSONL_BATCH_SIZE,
+                )
+            else:
+                gen = features_crud.stream_features_geojsonl(
+                    session,
+                    collection_id,
+                    bbox=bbox_tuple,
+                    datetime_start=dt_start,
+                    datetime_end=dt_end,
+                    property_filters=property_filters or None,
+                    structured_filters=structured_filters or None,
+                    fulltext_q=fulltext_q,
+                    batch_size=_GEOJSONL_BATCH_SIZE,
+                )
             try:
                 buf: list[bytes] = []
                 buf_size = 0
@@ -910,6 +1144,170 @@ async def download_items_data(
 
 
 @router.get(
+    "/{collection_id}/items/{feature_id}/raster-statistics",
+    summary="Zonal statistics using this feature as the zone",
+    description=(
+        "Loads this feature's Polygon/MultiPolygon from the database and computes "
+        "Titiler zonal statistics against a registered raster coverage "
+        "(`raster_collection_id` + `raster_feature_id`) or a STAC item "
+        "(`catalog_id` + `stac_collection_id` + `stac_item_id` + `asset`/`assets`). "
+        "Set `categorical=true` for unique value counts."
+    ),
+)
+async def item_raster_statistics(
+    request: Request,
+    collection_id: str,
+    feature_id: str = Path(..., description="Zone feature id"),
+    raster_collection_id: str | None = Query(None, description="Raster collection id"),
+    raster_feature_id: str | None = Query(None, description="Raster coverage feature id"),
+    catalog_id: str | None = Query(None, description="STAC catalog id"),
+    stac_collection_id: str | None = Query(None, description="STAC collection id"),
+    stac_item_id: str | None = Query(None, description="STAC item id"),
+    asset: str | None = Query(None, description="Single STAC asset key"),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user_optional),
+):
+    from fastapi.responses import JSONResponse
+
+    from app.api.routes.stac_items import (
+        _get_enabled_catalog_ref_for_tiles,
+        _titiler_session_or_public_grant,
+    )
+    from app.services.stac_item_client import get_asset_href, get_stac_item_cached
+    from app.services.zonal_statistics import (
+        ensure_raster_coverage_feature,
+        load_zone_feature_geojson,
+        normalize_titiler_statistics_payload,
+        post_titiler_zonal_statistics,
+        query_flag_true,
+        resolve_local_cog_url_for_titiler,
+    )
+
+    use_local = bool(raster_collection_id and raster_feature_id)
+    use_stac = bool(catalog_id and stac_collection_id and stac_item_id)
+    if use_local == use_stac:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Provide either raster_collection_id+raster_feature_id "
+                "or catalog_id+stac_collection_id+stac_item_id"
+            ),
+        )
+
+    geojson_feature, zone_meta = await load_zone_feature_geojson(
+        db, collection_id, feature_id, current_user, require_auth_user=use_local
+    )
+    query_pairs = list(request.query_params.multi_items())
+    categorical = query_flag_true(query_pairs, "categorical")
+
+    if use_local:
+        feature = await ensure_raster_coverage_feature(
+            db, raster_collection_id, raster_feature_id, current_user
+        )
+        cog_url = resolve_local_cog_url_for_titiler(
+            collection_id=raster_collection_id,
+            feature_id=raster_feature_id,
+            feature=feature,
+        )
+        await db.close()
+        raw = await post_titiler_zonal_statistics(
+            forward_path="/cog/statistics",
+            url=cog_url,
+            geojson_feature=geojson_feature,
+            query_pairs=query_pairs,
+            request=request,
+        )
+        bidx = [v for k, v in query_pairs if k == "bidx" and v]
+        payload = normalize_titiler_statistics_payload(
+            raw,
+            categorical=categorical,
+            raster_meta={
+                "collection_id": raster_collection_id,
+                "feature_id": raster_feature_id,
+                "bidx": [int(x) for x in bidx if str(x).isdigit()] or None,
+            },
+            zone_meta=zone_meta,
+        )
+        return JSONResponse(content=payload)
+
+    await _titiler_session_or_public_grant(
+        db, catalog_id, stac_collection_id, stac_item_id, current_user
+    )
+    catalog_ref = await _get_enabled_catalog_ref_for_tiles(db, catalog_id)
+    try:
+        item = await get_stac_item_cached(catalog_ref, stac_collection_id, stac_item_id)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown or invalid asset key")
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not load STAC item: {e!s}",
+        ) from e
+    await db.close()
+
+    requested_assets = [v for (k, v) in query_pairs if k == "assets" and v]
+    if requested_assets:
+        item_url = None
+        try:
+            for L in item.get("links") or []:
+                if isinstance(L, dict) and L.get("rel") == "self" and L.get("href"):
+                    item_url = str(L["href"])
+                    break
+        except Exception:
+            item_url = None
+        if not item_url:
+            item_url = (
+                f"{catalog_ref.stac_api_root_url.rstrip('/')}"
+                f"/collections/{stac_collection_id}/items/{stac_item_id}"
+            )
+        forward_path = "/stac/statistics"
+        url = item_url
+        raster_meta = {
+            "catalog_id": catalog_id,
+            "collection_id": stac_collection_id,
+            "item_id": stac_item_id,
+            "assets": requested_assets,
+        }
+    else:
+        if not asset or not str(asset).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Query param `asset` (or repeated `assets`) is required for STAC",
+            )
+        try:
+            url = get_asset_href(item, str(asset).strip())
+        except KeyError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown or invalid asset key")
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        forward_path = "/cog/statistics"
+        raster_meta = {
+            "catalog_id": catalog_id,
+            "collection_id": stac_collection_id,
+            "item_id": stac_item_id,
+            "asset": str(asset).strip(),
+        }
+
+    raw = await post_titiler_zonal_statistics(
+        forward_path=forward_path,
+        url=url,
+        geojson_feature=geojson_feature,
+        query_pairs=query_pairs,
+        drop_keys=frozenset({"asset"}),
+        request=request,
+    )
+    payload = normalize_titiler_statistics_payload(
+        raw,
+        categorical=categorical,
+        raster_meta=raster_meta,
+        zone_meta=zone_meta,
+    )
+    return JSONResponse(content=payload)
+
+
+@router.get(
     "/{collection_id}/items/{feature_id}",
     summary="Get a feature by id (GeoJSON). Use ?f=html for HTML (map, edit, delete).",
 )
@@ -921,17 +1319,24 @@ async def get_item(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user_optional),
 ):
-    feature = await features_crud.get_feature(db, collection_id, feature_id)
-    if not feature:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Feature not found",
-        )
     collection = await collections_crud.get_collection(db, collection_id)
     if not collection:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     if not await can_see_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feature not found")
+    feature = await features_crud.get_feature(db, collection_id, feature_id)
+    composite_item_id = feature_id
+    if not feature and is_composite_collection(collection):
+        member_ids = await composite_member_ids(db, collection)
+        found = await get_composite_feature(db, member_ids, feature_id)
+        if found:
+            member_id, feature = found
+            composite_item_id = format_composite_item_id(member_id, feature.id)
+    if not feature:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Feature not found",
+        )
     geom_dict = geometry_to_geojson(feature.geometry)
     if bbox_only:
         bbox = bbox_from_geometries([geom_dict])
@@ -940,13 +1345,19 @@ async def get_item(
             media_type="application/json",
         )
     base = _base_url(request)
+    props = dict(feature.properties) if feature.properties else {}
+    if is_composite_collection(collection):
+        parsed = parse_composite_item_id(composite_item_id)
+        if parsed:
+            props.setdefault("_member_collection_id", parsed[0])
+            props.setdefault("_member_feature_id", parsed[1])
     feat_geojson = FeatureGeoJSON(
         type="Feature",
-        id=feature.id,
-        geometry=Geometry(**geom_dict) if geom_dict else None,
-        properties=feature.properties,
+        id=composite_item_id if is_composite_collection(collection) else feature.id,
+        geometry=_geometry_model(geom_dict),
+        properties=props,
         links=[
-            Link(href=f"{base}/collections/{collection_id}/items/{feature_id}", rel="self", type="application/geo+json"),
+            Link(href=f"{base}/collections/{collection_id}/items/{composite_item_id}", rel="self", type="application/geo+json"),
             Link(href=f"{base}/collections/{collection_id}", rel="collection", type="application/json"),
         ],
     )
@@ -1010,7 +1421,7 @@ async def get_item_edit(
     feat_geojson = FeatureGeoJSON(
         type="Feature",
         id=feature.id,
-        geometry=Geometry(**geom_dict) if geom_dict else None,
+        geometry=_geometry_model(geom_dict),
         properties=feature.properties,
         links=[
             Link(href=f"{base}/collections/{collection_id}/items/{feature_id}", rel="self", type="application/geo+json"),
@@ -1065,7 +1476,7 @@ async def replace_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
     try:
@@ -1114,7 +1525,7 @@ async def patch_item(
     return FeatureGeoJSON(
         type="Feature",
         id=feature.id,
-        geometry=Geometry(**geom_dict) if geom_dict else None,
+        geometry=_geometry_model(geom_dict),
         properties=feature.properties,
         links=[
             Link(href=f"{base}/collections/{collection_id}/items/{feature_id}", rel="self", type="application/geo+json"),
@@ -1149,7 +1560,7 @@ async def create_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Collection not found",
         )
-    ensure_vector_collection(collection)
+    ensure_vector_data_collection(collection)
     if not await can_edit_collection(db, collection, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this collection")
 
