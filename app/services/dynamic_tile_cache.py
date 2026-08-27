@@ -190,28 +190,65 @@ def set_search_result(collection_id: str, params_key: str, payload: bytes) -> No
 
 
 def push_tile_job(collection_id: str, params_key: str, z: int, x: int, y: int) -> None:
-    """Enqueue a tile build job for workers. Payload: json dict with collection_id, params_key, z, x, y."""
+    """Enqueue a tile encode job (LIFO: newest pan/zoom tiles win).
+
+    Payload: collection_id, params_key, z, x, y, enqueued_at (unix seconds).
+    """
+    import time
+
     try:
-        r = _redis_bytes()
-        # Use decode_responses=True for RPUSH of string
         import redis
-        r_str = redis.from_url(get_settings().redis_url, decode_responses=True)
-        payload = json.dumps({"collection_id": collection_id, "params_key": params_key, "z": z, "x": x, "y": y})
-        r_str.rpush(TILE_JOBS_QUEUE_KEY, payload)
+
+        settings = get_settings()
+        r_str = redis.from_url(settings.redis_url, decode_responses=True)
+        payload = json.dumps(
+            {
+                "collection_id": collection_id,
+                "params_key": params_key,
+                "z": z,
+                "x": x,
+                "y": y,
+                "enqueued_at": time.time(),
+            }
+        )
+        # LPUSH + BLPOP = LIFO (newest viewport tiles preempt backlog).
+        pipe = r_str.pipeline()
+        pipe.lpush(TILE_JOBS_QUEUE_KEY, payload)
+        max_jobs = int(getattr(settings, "tiles_dynamic_queue_max_jobs", 0) or 0)
+        if max_jobs > 0:
+            # Keep only the newest max_jobs entries (trim from the right / oldest side).
+            pipe.ltrim(TILE_JOBS_QUEUE_KEY, 0, max_jobs - 1)
+        pipe.execute()
     except Exception:
         pass
 
 
 def pop_tile_job(timeout: int = 5) -> dict | None:
-    """Block until a tile job is available (for workers). Returns dict with collection_id, params_key, z, x, y."""
+    """Block until a fresh tile job is available. Skips stale jobs (LIFO backlog)."""
+    import time
+
     try:
         import redis
-        r = redis.from_url(get_settings().redis_url, decode_responses=True)
-        result = r.blpop(TILE_JOBS_QUEUE_KEY, timeout=timeout)
-        if not result:
-            return None
-        _, payload = result
-        return json.loads(payload)
+
+        settings = get_settings()
+        r = redis.from_url(settings.redis_url, decode_responses=True)
+        max_age = float(getattr(settings, "tiles_dynamic_queue_job_max_age_seconds", 0) or 0)
+        # Drain a few stale heads quickly without spinning forever on an empty queue.
+        deadline = time.time() + max(0.05, float(timeout))
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            result = r.blpop(TILE_JOBS_QUEUE_KEY, timeout=max(1, int(remaining)))
+            if not result:
+                return None
+            _, payload = result
+            job = json.loads(payload)
+            if max_age > 0:
+                enqueued_at = float(job.get("enqueued_at") or 0)
+                if enqueued_at and (time.time() - enqueued_at) > max_age:
+                    continue
+            return job
     except Exception:
         return None
 

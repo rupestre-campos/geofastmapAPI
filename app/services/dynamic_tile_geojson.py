@@ -145,7 +145,11 @@ async def get_geojson_for_tile(
                 bbox = (minx, miny, maxx, maxy)
             else:
                 bbox = tile_bbox
-            limit = min(settings.items_max_limit, getattr(settings, "tiles_mvt_max_features", 10_000))
+            # Tile browse: allow up to tiles_mvt_max_features (not items page size).
+            limit = max(
+                1,
+                int(getattr(settings, "tiles_mvt_max_features", 0) or settings.items_max_limit),
+            )
             rows, _ = await list_composite_features_paginated(
                 db,
                 member_ids,
@@ -208,7 +212,11 @@ async def get_geojson_for_tile(
         else:
             bbox = tile_bbox
 
-        limit = min(settings.items_max_limit, getattr(settings, "tiles_mvt_max_features", 10_000))
+        # Tile browse: allow up to tiles_mvt_max_features (not items page size).
+        limit = max(
+            1,
+            int(getattr(settings, "tiles_mvt_max_features", 0) or settings.items_max_limit),
+        )
         features, _ = await features_crud.list_features_paginated(
             db,
             collection_id,
