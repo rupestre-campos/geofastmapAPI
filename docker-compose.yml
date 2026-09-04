@@ -65,7 +65,11 @@ services:
     image: redis:7-alpine
     container_name: geofastmap_redis
     ports:
-      - "6379:6379"
+      # Do NOT publish Redis to the host in production. Host publish creates docker-proxy
+      # processes that can peg multiple CPUs under tile-cache traffic. Containers reach
+      # Redis via the Compose network: redis://redis:6379/0
+      # Uncomment only for local debugging from the host:
+      # - "6379:6379"
 
   api:
     build: .

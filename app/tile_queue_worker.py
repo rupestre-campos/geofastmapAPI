@@ -2,8 +2,9 @@
 """
 Dynamic tile queue worker (TiTiler-style): LIFO Redis jobs, DB-free encode.
 
-API fills Redis search GeoJSON once; workers only filter + encode MVT and write
-tile cache. Spawns multiple OS processes so one container uses many CPU cores.
+API fills Redis search GeoJSON once and may enqueue adjacent zooms once.
+Workers only filter + encode MVT and write tile cache — they must not
+re-enqueue neighbors (that recursively floods Redis / docker-proxy).
 """
 from __future__ import annotations
 
@@ -11,10 +12,28 @@ import os
 import signal
 import sys
 import time
-from multiprocessing import Event, Process, get_context
+from multiprocessing import Process, get_context
 from typing import Any
 
 from app.core.config import get_settings
+
+
+def _set_process_title(title: str) -> None:
+    """Make workers readable in htop (comm / argv)."""
+    try:
+        import setproctitle
+
+        setproctitle.setproctitle(title)
+        return
+    except Exception:
+        pass
+    try:
+        import ctypes
+
+        # PR_SET_NAME: 15-byte thread/process name shown by htop
+        ctypes.CDLL(None).prctl(15, title[:15].encode("utf-8", "replace"), 0, 0, 0)
+    except Exception:
+        pass
 
 
 def _resolve_concurrency(settings: Any) -> int:
@@ -22,14 +41,14 @@ def _resolve_concurrency(settings: Any) -> int:
     if configured > 0:
         return max(1, configured)
     cpus = os.cpu_count() or 2
-    return max(1, min(cpus, 8))
+    # Leave headroom for API / Postgres / Redis on small hosts (htop showed 8 cores saturated).
+    return max(1, min(cpus, 4))
 
 
-def _encode_job(job: dict[str, Any], precompute_adjacent_zooms: bool = True) -> str:
-    """Encode one tile. Returns a short status tag for logs."""
+def _encode_job(job: dict[str, Any]) -> str:
+    """Encode one tile. Returns a short status tag for logs. Never enqueues more jobs."""
     from app.services.dynamic_tile_cache import (
         get_search_result,
-        push_tile_job,
         set_tile_with_params,
     )
     from app.services.dynamic_tile_geojson import filter_geojson_to_tile_bbox
@@ -49,31 +68,25 @@ def _encode_job(job: dict[str, Any], precompute_adjacent_zooms: bool = True) -> 
     try:
         tile_bytes = encode_geojson_to_mvt(filtered, collection_id, z, x, y)
     except Exception as e:
-        print(f"[tile worker] MVT encode failed {collection_id} {z}/{x}/{y}: {e}", file=sys.stderr)
+        print(f"[dyn-tile] MVT encode failed {collection_id} {z}/{x}/{y}: {e}", file=sys.stderr)
         return "encode_error"
 
     set_tile_with_params(collection_id, z, x, y, params_key, tile_bytes)
-
-    if precompute_adjacent_zooms:
-        # Parent/children go to the LIFO queue so newer viewport work still wins.
-        if z > 0:
-            push_tile_job(collection_id, params_key, z - 1, x // 2, y // 2)
-        if z < 22:
-            push_tile_job(collection_id, params_key, z + 1, x * 2, y * 2)
-            push_tile_job(collection_id, params_key, z + 1, x * 2 + 1, y * 2)
-            push_tile_job(collection_id, params_key, z + 1, x * 2, y * 2 + 1)
-            push_tile_job(collection_id, params_key, z + 1, x * 2 + 1, y * 2 + 1)
     return "ok"
 
 
-def process_one_job(precompute_adjacent_zooms: bool = True) -> bool:
-    """Process one tile job. Returns True if a job ran."""
+def process_one_job(precompute_adjacent_zooms: bool = False) -> bool:
+    """Process one tile job. Returns True if a job ran.
+
+    ``precompute_adjacent_zooms`` is ignored (API owns one-hop prefetch). Kept for call-site compat.
+    """
     from app.services.dynamic_tile_cache import pop_tile_job
 
+    _ = precompute_adjacent_zooms
     job = pop_tile_job(timeout=5)
     if not job:
         return False
-    _encode_job(job, precompute_adjacent_zooms)
+    _encode_job(job)
     return True
 
 
@@ -81,15 +94,16 @@ def _consumer_process(stop_event: Any, worker_id: int) -> None:
     """Independent process: BLPOP LIFO jobs and encode (no shared DB)."""
     from app.services.dynamic_tile_cache import pop_tile_job
 
-    print(f"[tile worker #{worker_id}] ready", flush=True)
+    _set_process_title(f"geofast-dyn-tile-{worker_id}")
+    print(f"[dyn-tile #{worker_id}] ready", flush=True)
     while not stop_event.is_set():
         job = pop_tile_job(timeout=1)
         if not job:
             continue
         try:
-            _encode_job(job, True)
+            _encode_job(job)
         except Exception as e:
-            print(f"[tile worker #{worker_id}] job failed: {e}", file=sys.stderr)
+            print(f"[dyn-tile #{worker_id}] job failed: {e}", file=sys.stderr)
 
 
 def main() -> None:
@@ -98,9 +112,10 @@ def main() -> None:
         print("Set TILES_DYNAMIC_USE_QUEUE=true to run tile queue workers.", file=sys.stderr)
         sys.exit(1)
 
+    _set_process_title("geofast-dyn-tile-main")
     concurrency = _resolve_concurrency(settings)
     print(
-        f"Dynamic tile queue worker started (LIFO, processes={concurrency}). Waiting for jobs...",
+        f"Dynamic tile queue worker started (LIFO, processes={concurrency}, no recursive prefetch). Waiting for jobs...",
         flush=True,
     )
 
@@ -116,7 +131,12 @@ def main() -> None:
     signal.signal(signal.SIGINT, _stop)
 
     for i in range(concurrency):
-        p = ctx.Process(target=_consumer_process, args=(stop_event, i + 1), daemon=True)
+        p = ctx.Process(
+            target=_consumer_process,
+            args=(stop_event, i + 1),
+            name=f"geofast-dyn-tile-{i + 1}",
+            daemon=True,
+        )
         p.start()
         procs.append(p)
 
@@ -128,8 +148,13 @@ def main() -> None:
                 if p.is_alive():
                     alive.append(p)
                     continue
-                print(f"[tile worker] restarting dead process #{i + 1}", flush=True)
-                np = ctx.Process(target=_consumer_process, args=(stop_event, i + 1), daemon=True)
+                print(f"[dyn-tile] restarting dead process #{i + 1}", flush=True)
+                np = ctx.Process(
+                    target=_consumer_process,
+                    args=(stop_event, i + 1),
+                    name=f"geofast-dyn-tile-{i + 1}",
+                    daemon=True,
+                )
                 np.start()
                 alive.append(np)
             procs = alive

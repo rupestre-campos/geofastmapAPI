@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     # Fail fast when the pool is saturated (slow View items / tile storms) instead of
     # blocking every other request for half a minute.
     database_pool_timeout: float = 8.0
+    # Recycle pooled connections (seconds). Keep below typical idle/LB/NAT timeouts.
+    database_pool_recycle_seconds: int = 300
+    # asyncpg connect timeout (seconds) so a wedged Postgres fails fast.
+    database_connect_timeout_seconds: float = 10.0
+    # Optional per-statement timeout from the driver (0 = disabled; prefer SET LOCAL in hot paths).
+    database_command_timeout_seconds: float = 0.0
     # Ephemeral engine in raster_batch (per asyncio.run job); keep small to avoid doubling many full pools.
     raster_batch_db_pool_size: int = 1
     raster_batch_db_max_overflow: int = 2
@@ -198,7 +204,7 @@ class Settings(BaseSettings):
     tiles_dynamic_worker_url: str = ""  # e.g. http://localhost:8001
     # When true, use Redis search cache + LIFO tile job queue (workers encode only; no DB in workers).
     tiles_dynamic_use_queue: bool = False
-    # Concurrent encode processes inside one tile_queue_worker container (0 = auto: min(cpu_count, 8)).
+    # Concurrent encode processes inside one tile_queue_worker container (0 = auto: min(cpu_count, 4)).
     tiles_dynamic_queue_concurrency: int = 0
     # Max pending jobs in geofastmap:tile_jobs (LIFO trims oldest). 0 = unlimited.
     tiles_dynamic_queue_max_jobs: int = 512

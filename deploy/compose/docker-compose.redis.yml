@@ -7,5 +7,6 @@ services:
     restart: unless-stopped
     image: redis:7-alpine
     container_name: geofastmap_redis
-    ports:
-      - "6379:6379"
+    # Prefer no host publish (avoids docker-proxy CPU storms). Uncomment for host access:
+    # ports:
+    #   - "6379:6379"

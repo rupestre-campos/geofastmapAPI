@@ -15,7 +15,24 @@ def test_resolve_concurrency_explicit():
 
 def test_resolve_concurrency_auto_caps():
     with patch("app.tile_queue_worker.os.cpu_count", return_value=32):
-        assert _resolve_concurrency(SimpleNamespace(tiles_dynamic_queue_concurrency=0)) == 8
+        assert _resolve_concurrency(SimpleNamespace(tiles_dynamic_queue_concurrency=0)) == 4
+
+
+def test_encode_job_does_not_push_adjacent():
+    """Workers must not recursively enqueue neighbors (Redis / docker-proxy storm)."""
+    job = {"collection_id": "c", "params_key": "p", "z": 5, "x": 1, "y": 2}
+    with (
+        patch("app.services.dynamic_tile_cache.get_search_result", return_value=b'{"type":"FeatureCollection","features":[]}'),
+        patch("app.services.dynamic_tile_geojson.filter_geojson_to_tile_bbox", return_value=b'{"type":"FeatureCollection","features":[]}'),
+        patch("app.services.mvt_encode.encode_geojson_to_mvt", return_value=b"mvt"),
+        patch("app.services.dynamic_tile_cache.set_tile_with_params") as set_tile,
+        patch("app.services.dynamic_tile_cache.push_tile_job") as push,
+    ):
+        from app.tile_queue_worker import _encode_job
+
+        assert _encode_job(job) == "ok"
+        set_tile.assert_called_once()
+        push.assert_not_called()
 
 
 def test_push_tile_job_is_lifo_and_trims():

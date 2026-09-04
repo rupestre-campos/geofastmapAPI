@@ -64,22 +64,27 @@ def test_database_sync_url_fallback(monkeypatch):
     assert settings.database_sync_url == "postgresql+other://u@p/db"
 
 
+def test_is_db_disconnect_error():
+    from app.db.session import is_db_disconnect_error
+
+    class ConnectionDoesNotExistError(Exception):
+        pass
+
+    assert is_db_disconnect_error(ConnectionDoesNotExistError("connection was closed"))
+    assert is_db_disconnect_error(RuntimeError("connection was closed in the middle of operation"))
+    assert not is_db_disconnect_error(ValueError("bad input"))
+
+
 @pytest.mark.asyncio
-async def test_get_db_yields_session():
-    """get_db is an async generator that yields a session. No real DB required."""
-    mock_session = MagicMock()
-    mock_session_context = AsyncMock()
-    mock_session_context.__aenter__.return_value = mock_session
-    mock_session_context.__aexit__.return_value = None
-    mock_session_factory = MagicMock(return_value=mock_session_context)
+async def test_get_db_disconnect_returns_503():
+    from fastapi import HTTPException
+
+    mock_session_factory = MagicMock(side_effect=RuntimeError("connection was closed in the middle of operation"))
 
     with patch.object(db_session, "AsyncSessionLocal", mock_session_factory):
         gen = db_session.get_db()
-        sessions = []
-        async for session in gen:
-            sessions.append(session)
-            break
-        assert len(sessions) == 1
-        assert sessions[0] is mock_session
-        mock_session_factory.assert_called_once()
+        with pytest.raises(HTTPException) as ei:
+            await gen.__anext__()
+        assert ei.value.status_code == 503
+        assert "connection" in ei.value.detail.lower() or "database" in ei.value.detail.lower()
 

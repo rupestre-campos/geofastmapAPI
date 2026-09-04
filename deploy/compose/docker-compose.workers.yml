@@ -43,7 +43,7 @@ services:
       - ../env/.env.workers
     environment:
       TILES_DYNAMIC_USE_QUEUE: "true"
-      # 0 = auto (min(cpu_count, 8)); raise on large hosts
+      # 0 = auto (min(cpu_count, 4)); raise on large hosts if needed
       TILES_DYNAMIC_QUEUE_CONCURRENCY: "0"
     command: python -m app.tile_queue_worker
     cpus: "4"
