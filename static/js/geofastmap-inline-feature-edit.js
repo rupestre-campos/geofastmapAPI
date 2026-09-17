@@ -307,7 +307,16 @@
     if (!ids.length) return false;
     var feats;
     try {
-      feats = map.queryRenderedFeatures(e.point, { layers: ids });
+      var touch =
+        global.GeofastmapGeometryEditor &&
+        global.GeofastmapGeometryEditor.isTouchLayout &&
+        global.GeofastmapGeometryEditor.isTouchLayout();
+      var tolerance = touch ? 22 : 6;
+      var hitArea = [
+        [e.point.x - tolerance, e.point.y - tolerance],
+        [e.point.x + tolerance, e.point.y + tolerance],
+      ];
+      feats = map.queryRenderedFeatures(hitArea, { layers: ids });
     } catch (err) {
       return false;
     }
@@ -480,30 +489,32 @@
           }),
         };
 
-        Promise.all([import('https://esm.sh/@geoman-io/maplibre-geoman-free@0.6.2'), import('https://esm.sh/maplibre-gl-geo-editor@0.7.3')])
-          .then(function (mods) {
-            var Geoman = mods[0].Geoman || mods[0].default;
-            var GeoEditor = mods[1].GeoEditor;
-            var geoman = new Geoman(map, {});
-            map.once('gm:loaded', function () {
+        if (!global.GeofastmapGeometryEditor) {
+          alert('Could not load map editor support. Reload the page.');
+          stop();
+          return;
+        }
+        global.GeofastmapGeometryEditor
+          .create(map, {
+            controlPosition: 'top-right',
+            editorOptions: {
+              position: 'top-left',
+              toolbarOrientation: 'vertical',
+              columns: 2,
+              drawModes: drawModes,
+              editModes: editModes,
+              showFeatureProperties: true,
+              fitBoundsOnLoad: true,
+              attributeSchema: attributeSchema,
+            },
+          })
+          .then(function (result) {
               if (!state || !state.active) return;
-              var geoEditor = new GeoEditor({
-                position: 'top-left',
-                toolbarOrientation: 'vertical',
-                columns: 2,
-                drawModes: drawModes,
-                editModes: editModes,
-                showFeatureProperties: true,
-                fitBoundsOnLoad: true,
-                attributeSchema: attributeSchema,
-              });
-              geoEditor.setGeoman(geoman);
-              map.addControl(geoEditor, 'top-left');
+              var geoEditor = result.geoEditor;
               geoEditor.loadGeoJson(gj);
               state.geoEditor = geoEditor;
-              state.geoman = geoman;
+              state.geoman = result.geoman;
               wireInlineSaveButtons(map, base, collectionId, featureId, bar);
-            });
           })
           .catch(function (err) {
             console.warn('GeoEditor failed', err);
@@ -520,7 +531,7 @@
           '<button type="button" class="btn btn-sm btn-primary geofastmap-inline-save-geom" disabled title="Loads after editor is ready">Save geometry</button> ' +
           '<button type="button" class="btn btn-sm btn-primary geofastmap-inline-save-all" disabled title="Loads after editor is ready">Save all</button> ' +
           '<button type="button" class="btn btn-sm geofastmap-inline-cancel">Cancel</button>' +
-          '<span class="meta" style="margin-left:8px;">Click the feature to edit properties. Ctrl+Z / Ctrl+Y undo/redo.</span>';
+          '<span class="meta" style="margin-left:8px;">Tap or click the feature to edit properties. Ctrl+Z / Ctrl+Y undo/redo.</span>';
         bar.style.cssText =
           'position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:20;background:var(--card,#fff);border:1px solid var(--border,#ccc);padding:8px 12px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.15);display:flex;flex-wrap:wrap;align-items:center;gap:6px;max-width:96%;';
         wrap.style.position = wrap.style.position || 'relative';

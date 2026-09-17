@@ -32,6 +32,7 @@
         {% endif %}
       </div>
     </div>
+    <p id="geometry-editor-status" class="geometry-editor-status" role="status" aria-live="polite">Loading drawing tools…</p>
     <div class="geom-edit-bar geom-edit-bar-visible" id="geom-edit-bar" role="region" aria-label="Create">
       <span class="geom-edit-label">Create</span>
       <button type="button" class="btn btn-primary" id="btn-create-feature" title="Create feature with drawn geometry and properties below">Create feature</button>
@@ -66,6 +67,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
+  <script src="{{ base }}/static/js/geofastmap-geometry-editor.js?v=1"></script>
   <script>
     const base = {{ base | tojson }};
     const collectionId = {{ collection_id | tojson }};
@@ -226,15 +228,10 @@
       var editModes = ['select', 'drag', 'change', 'rotate', 'cut', 'delete', 'scale', 'copy', 'split', 'union', 'difference', 'simplify', 'lasso'];
       var drawModes = ['polygon', 'line', 'rectangle', 'circle', 'marker', 'freehand'];
       var attributeSchema = { polygon: [], line: [], point: [], common: [] };
-      Promise.all([
-        import('https://esm.sh/@geoman-io/maplibre-geoman-free@0.6.2'),
-        import('https://esm.sh/maplibre-gl-geo-editor@0.7.3')
-      ]).then(function(modules) {
-        var Geoman = modules[0].Geoman || modules[0].default;
-        var GeoEditor = modules[1].GeoEditor;
-        var geoman = new Geoman(map, {});
-        map.once('gm:loaded', function() {
-          geoEditor = new GeoEditor({
+      GeofastmapGeometryEditor.create(map, {
+        statusEl: 'geometry-editor-status',
+        controlPosition: 'top-right',
+        editorOptions: {
             position: 'top-left',
             toolbarOrientation: 'vertical',
             columns: 2,
@@ -243,11 +240,10 @@
             showFeatureProperties: true,
             fitBoundsOnLoad: false,
             attributeSchema: attributeSchema
-          });
-          geoEditor.setGeoman(geoman);
-          map.addControl(geoEditor, 'top-left');
+        }
+      }).then(function(result) {
+          geoEditor = result.geoEditor;
           geoEditor.loadGeoJson({ type: 'FeatureCollection', features: [] });
-        });
       }).catch(function(err) { console.warn('GeoEditor load failed', err); });
       });
     }
@@ -265,6 +261,10 @@
 
     document.getElementById('btn-create-feature').onclick = function() {
       var feats = getEditorFeatures();
+      if (feats.length > 1) {
+        alert('Only one geometry can be created at a time. Delete the extra shape or combine compatible shapes before saving.');
+        return;
+      }
       var geom = editorFeaturesToGeometry(feats);
       if (!geom) { alert('Draw a geometry on the map first.'); return; }
       var props = collectPropsFromTable();

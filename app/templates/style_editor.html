@@ -75,6 +75,7 @@
         <button type="button" class="btn btn-sm btn-fullscreen" id="map-fullscreen-btn" title="View map full screen">Fullscreen</button>
       </div>
     </div>
+    <p id="geometry-editor-status" class="geometry-editor-status" role="status" aria-live="polite">Loading drawing tools…</p>
     {% include "_style_toolbox.html" %}
     <div class="card" id="style-sharing-wrap" style="display:none; margin-top: var(--space-lg);">
       <h2 class="card-title">Visibility &amp; sharing</h2>
@@ -110,6 +111,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
+  <script src="{{ base }}/static/js/geofastmap-geometry-editor.js?v=1"></script>
   {% include "_style_editor_toolbox_script.html" %}
   <script>
     const base = {{ base | tojson }};
@@ -1009,17 +1011,9 @@
       };
     }
 
-      var geomanReady = false;
-      Promise.all([
-        import('https://esm.sh/@geoman-io/maplibre-geoman-free@0.6.2'),
-        import('https://esm.sh/maplibre-gl-geo-editor@0.7.3')
-      ]).then(function(modules) {
-        var Geoman = modules[0].Geoman || modules[0].default;
-        var GeoEditor = modules[1].GeoEditor;
-        var geoman = new Geoman(map, {});
-        map.once('gm:loaded', function() {
-          geomanReady = true;
-          geoEditor = new GeoEditor({
+      GeofastmapGeometryEditor.create(map, {
+        statusEl: 'geometry-editor-status',
+        editorOptions: {
             position: 'top-left',
             toolbarOrientation: 'vertical',
             columns: 2,
@@ -1028,26 +1022,19 @@
             showFeatureProperties: false,
             fitBoundsOnLoad: true,
             attributeSchema: { polygon: [], line: [], point: [], common: [] }
-          });
-          geoEditor.setGeoman(geoman);
-          map.addControl(geoEditor, 'top-left');
+        }
+      }).then(function(result) {
+          geoEditor = result.geoEditor;
           geoEditor.loadGeoJson({ type: 'FeatureCollection', features: [] });
           function onEditorChange() { syncEditorFeaturesToMap(); }
           if (geoEditor.on) {
             geoEditor.on('change', onEditorChange);
             geoEditor.on('update', onEditorChange);
           }
-          map.on('pm:create', onEditorChange);
-          map.on('pm:edit', onEditorChange);
-          map.on('pm:remove', onEditorChange);
+          map.on('gm:create', onEditorChange);
+          map.on('gm:editend', onEditorChange);
+          map.on('gm:remove', onEditorChange);
           attachStyleEditorFeaturePopup();
-        });
-        setTimeout(function() {
-          if (!geomanReady && map && !map.__geofastmapMultiLayerPopupBound) {
-            console.warn('Geoman gm:loaded did not fire in time; attaching map feature popups anyway.');
-            attachStyleEditorFeaturePopup();
-          }
-        }, 4000);
       }).catch(function(err) {
         console.warn('GeoEditor load failed', err);
         attachStyleEditorFeaturePopup();

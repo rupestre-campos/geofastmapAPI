@@ -172,8 +172,9 @@
       </label>
     </div>
 
-    <p class="meta" style="margin-top:0;">Search uses the current map viewport bbox. Zoom/pan to the hole area, then run Search STAC.</p>
+    <p class="meta" style="margin-top:0;">Search uses a drawn polygon when present; otherwise it uses the current map viewport. On touch screens, tap each vertex and tap the first vertex again to finish.</p>
     <div id="mosaic-planner-map" class="map-container"></div>
+    <p class="meta">Use the polygon tool on the map to define an exact search area. Use the trash tool to return to viewport search.</p>
     <p class="meta">After planning, you can swap/remove selected images, then save.</p>
   </div>
 
@@ -240,6 +241,7 @@
       var swapLoadingMoreKey = null;
       var BASEMAPS = {};
       var basemapList = [];
+      var aoiDraw = null;
       // For per-footprint image overlays (un-georeferenced thumbnails mapped to footprint bbox)
       // Use stable "slot" indices (row order) for overlay ids so swapping items doesn't blank the map.
       var _thumbOverlayKeys = [];
@@ -345,7 +347,23 @@
       // Map is created async above
       function getMap() { return window.__mp_map; }
 
+      function getDrawnAoi() {
+        if (!aoiDraw) return null;
+        try {
+          var all = aoiDraw.getAll();
+          var feature = all && all.features && all.features[0];
+          if (!feature || !feature.geometry || feature.geometry.type !== 'Polygon') return null;
+          var bbox = bboxFromFootprint(feature.geometry);
+          if (!bbox || bbox.length !== 4) return null;
+          return { bbox: bbox, aoi_geojson: feature.geometry };
+        } catch (e) {
+          return null;
+        }
+      }
+
       function bboxFromMap() {
+        var drawn = getDrawnAoi();
+        if (drawn) return drawn.bbox.map(function(x) { return Number(x.toFixed(6)); }).join(',');
         var map = getMap();
         if (!map) return '-180,-85,180,85';
         var b = map.getBounds();
@@ -392,6 +410,7 @@
           return;
         }
         try {
+          if (aoiDraw) aoiDraw.deleteAll();
           var maxLat = 85.051129;
           var south = Math.max(-maxLat, Math.min(maxLat, b[1]));
           var north = Math.max(-maxLat, Math.min(maxLat, b[3]));
@@ -414,6 +433,35 @@
         map.on('moveend', function() { try { syncBboxInputFromMap(); } catch (e) {} });
         map.on('load', function() {
         mapLoaded = true;
+        if (window.MapboxDraw) {
+          var classes = MapboxDraw.constants && MapboxDraw.constants.classes;
+          if (classes) {
+            classes.CANVAS = 'maplibregl-canvas';
+            classes.CONTROL_BASE = 'maplibregl-ctrl';
+            classes.CONTROL_PREFIX = 'maplibregl-ctrl-';
+            classes.CONTROL_GROUP = 'maplibregl-ctrl-group';
+            classes.ATTRIBUTION = 'maplibregl-ctrl-attrib';
+          }
+          aoiDraw = new MapboxDraw({
+            displayControlsDefault: false,
+            controls: { polygon: true, trash: true },
+            defaultMode: 'simple_select',
+            touchEnabled: true
+          });
+          map.addControl(aoiDraw, 'top-left');
+          function keepSingleAoi(e) {
+            if (!aoiDraw) return;
+            var createdId = e && e.features && e.features[0] && e.features[0].id;
+            var all = aoiDraw.getAll();
+            (all.features || []).forEach(function(feature) {
+              if (createdId && feature.id !== createdId) aoiDraw.delete(feature.id);
+            });
+            syncBboxInputFromMap();
+          }
+          map.on('draw.create', keepSingleAoi);
+          map.on('draw.update', function() { syncBboxInputFromMap(); });
+          map.on('draw.delete', function() { syncBboxInputFromMap(); });
+        }
         syncBboxInputFromMap();
         map.addSource('footprints', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
         // Tiny fill to make polygons clickable without obscuring imagery.
@@ -451,7 +499,13 @@
         // Click footprint to select image
         map.on('click', function(e) {
           try {
-            var feats = map.queryRenderedFeatures(e.point, { layers: ['fp-fill', 'fp-line'] }) || [];
+            var coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+            var tolerance = coarse ? 22 : 6;
+            var hitArea = [
+              [e.point.x - tolerance, e.point.y - tolerance],
+              [e.point.x + tolerance, e.point.y + tolerance]
+            ];
+            var feats = map.queryRenderedFeatures(hitArea, { layers: ['fp-fill', 'fp-line'] }) || [];
             if (!feats.length) return;
             var k = feats[0] && feats[0].properties ? feats[0].properties.key : null;
             if (!k) return;
@@ -840,6 +894,8 @@
       }
 
       function getAoiAndBbox() {
+        var drawn = getDrawnAoi();
+        if (drawn) return drawn;
         var bb = bboxFromMap();
         var p = bb.split(',').map(function(x) { return parseFloat(x.trim()); });
         if (p.length === 4 && p.every(function(n) { return isFinite(n); })) {

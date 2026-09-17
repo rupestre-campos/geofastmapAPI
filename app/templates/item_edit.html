@@ -94,6 +94,7 @@
         {% endif %}
       </div>
     </div>
+    <p id="geometry-editor-status" class="geometry-editor-status" role="status" aria-live="polite">Loading drawing tools…</p>
     <div class="geom-edit-bar geom-edit-bar-visible" id="geom-edit-bar" role="region" aria-label="Save edits">
       <span class="geom-edit-label">Save</span>
       <button type="button" class="btn btn-primary" id="btn-save-geom-only" title="Save the geometry to the server">Save geometry</button>
@@ -136,6 +137,7 @@
 {% block script %}
   <script src="https://unpkg.com/maplibre-gl@5.18.0/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="{{ base }}/static/js/geofastmap-utils.js"></script>
+  <script src="{{ base }}/static/js/geofastmap-geometry-editor.js?v=1"></script>
   {% include "_style_editor_toolbox_script.html" %}
   <script>
     const base = {{ base | tojson }};
@@ -329,15 +331,9 @@
         common: keys.map(function(k) { return { name: k, label: k, type: 'string' }; })
       };
 
-      Promise.all([
-        import('https://esm.sh/@geoman-io/maplibre-geoman-free@0.6.2'),
-        import('https://esm.sh/maplibre-gl-geo-editor@0.7.3')
-      ]).then(function(modules) {
-        var Geoman = modules[0].Geoman || modules[0].default;
-        var GeoEditor = modules[1].GeoEditor;
-        var geoman = new Geoman(map, {});
-        map.once('gm:loaded', function() {
-          geoEditor = new GeoEditor({
+      GeofastmapGeometryEditor.create(map, {
+        statusEl: 'geometry-editor-status',
+        editorOptions: {
             position: 'top-left',
             toolbarOrientation: 'vertical',
             columns: 2,
@@ -346,9 +342,9 @@
             showFeatureProperties: true,
             fitBoundsOnLoad: true,
             attributeSchema: attributeSchema
-          });
-          geoEditor.setGeoman(geoman);
-          map.addControl(geoEditor, 'top-left');
+        }
+      }).then(function(result) {
+          geoEditor = result.geoEditor;
           geoEditor.loadGeoJson(featureGeojson);
           setTimeout(function() { injectExplodeButton(); }, 100);
           function applyDefaultStyleToEditorLayers() {
@@ -379,7 +375,6 @@
           }
           map.once('idle', applyDefaultStyleToEditorLayers);
           [100, 350, 700].forEach(function(ms) { setTimeout(applyDefaultStyleToEditorLayers, ms); });
-        });
       }).catch(function(err) {
         console.warn('GeoEditor load failed', err);
         addOverlayLayers();
